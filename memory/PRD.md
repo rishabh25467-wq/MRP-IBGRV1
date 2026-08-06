@@ -46,6 +46,13 @@
 - Fixed: for each ItemGroupItem, now compares all ChangeState entries' `EngineeringChangeOrderID` revision suffix (float-parsed, handles both integer `_2` and decimal `_4.4` suffixes) and extracts fields from only the highest-revision one.
 - Verified: FLT2_4.1 output now matches the reference Excel with ZERO discrepancies across all 5 levels/91 components. Testing agent: 100% pass, no regressions.
 
+## Feature: Bare Part Number Auto-Resolution (2026-08-06)
+- User wanted to search by bare part number (e.g. `P26584`) instead of needing to know the exact revision-suffixed BOM ID (e.g. `P26584_2`).
+- `explode_bom()` now tries exact BOM ID match first, falling back to output-product resolution (reusing existing latest-revision-picking logic) if no exact match — fully backward compatible with exact-ID searches.
+- Frontend shows a persistent "Resolved to: {bom_id}" badge so users can confirm which revision was found.
+- Verified: bare `8060522` → resolves to `8060522_1` (23 components); bare `6800-004061` → resolves to `6800-004061_2` (latest of 2 revisions, not stale `_1`). Testing agent: 100% pass, exact-ID search and all prior regressions intact.
+- Also fixed: intermittent component-count flakiness (91 vs 89) caused by transient SAP SOAP timeouts silently dropping subtrees — added 3-attempt retry with backoff to sub-BOM lookups. Verified stable across 7+ consecutive runs.
+
 ## Backlog / Next Tasks
 - P1: Excel/CSV export of search results
 - P1: Bulk/all-BOMs pull mode

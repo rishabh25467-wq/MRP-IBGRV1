@@ -154,6 +154,18 @@ function App() {
           </Button>
         </form>
 
+        {result && (
+          <div className="mb-6 -mt-4">
+            <Badge
+              variant="outline"
+              className="bg-[#0052FF]/5 text-[#0052FF] border-[#0052FF]/30 font-data"
+              data-testid="resolved-bom-id-badge"
+            >
+              Resolved to: {result.bom_id}
+            </Badge>
+          </div>
+        )}
+
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10">
           <StatCard
             icon={Stack}
