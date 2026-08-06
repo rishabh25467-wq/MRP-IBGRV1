@@ -1,15 +1,17 @@
 """Purchasing Plan orchestration.
 
-Pipeline: OMS monthly sales forecast -> map OMS part numbers to SAP parts via
-the OMS part-map -> explode each mapped part's SAP BOM (reusing the existing
-SOAP client) -> aggregate required quantity at LEAF-level components only
-(sub-assemblies are skipped, only their own leaf materials count) -> attach
-live SAP standard costs -> return quantity + value broken down by month, for
-the next 2 months (relative to today), plus a list of OMS parts that could
-not be mapped/exploded into a SAP BOM (shown as a warning in the UI).
+Pipeline: OMS monthly sales forecast -> resolve each OMS part number to a SAP
+BOM (trying the part number directly first, since SAP recognizes it as a
+valid Product/BOM ID for most parts; the OMS wm-part-map value is only a
+secondary fallback - see build_purchasing_plan for details) -> explode the
+resolved BOM (reusing the existing SOAP client) -> aggregate required
+quantity at LEAF-level components only (sub-assemblies are skipped, only
+their own leaf materials count) -> attach live SAP standard costs -> return
+quantity + value broken down by month, for the next 2 months (relative to
+today), plus a list of OMS parts that could not be resolved/exploded into a
+SAP BOM (shown as a warning in the UI).
 """
 import logging
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
 logger = logging.getLogger(__name__)
@@ -66,52 +68,69 @@ def build_purchasing_plan(oms_client, sap_soap_client, sap_valuation_client) -> 
     for demand in demand_by_month.values():
         all_part_nos.update(demand.keys())
 
-    # 2. Resolve every forecasted OMS part number to its SAP part ID.
-    missing_boms = []
-    sap_id_by_part_no = {}
-    for part_no in all_part_nos:
-        sap_id = (part_map.get(part_no) or "").strip()
-        if not sap_id:
-            missing_boms.append({"part_no": part_no, "sap_id": None, "reason": "No SAP part mapping found in OMS"})
-        else:
-            sap_id_by_part_no[part_no] = sap_id
+    # 2. Explode each part's BOM using the OMS part number ITSELF first -
+    # empirically, SAP recognizes it directly as a valid Product/BOM ID for
+    # most parts. Only for parts where that fails do we try the wm-part-map's
+    # mapped value as a second-wave fallback (avoids doubling SOAP calls for
+    # the common case where the direct lookup already succeeds). All calls
+    # share one sub-BOM cache since many top-level parts share the same
+    # hardware/packaging sub-components - this avoids re-fetching the same
+    # sub-BOM over and over across dozens of top-level parts. Explosions run
+    # sequentially (not concurrently) so the shared cache is actually
+    # populated before the next part needs it, and to avoid overloading the
+    # SAP tenant with too many simultaneous connections (each explode_bom()
+    # call already fans out internally across BOM levels).
+    shared_bom_cache = {}
 
-    # 3. Explode each distinct mapped SAP part's BOM exactly once (cached), in parallel.
-    unique_sap_ids = list(set(sap_id_by_part_no.values()))
-
-    def explode(sap_id):
+    def explode(candidate_id):
         try:
-            return sap_id, sap_soap_client.explode_bom(sap_id)
+            return candidate_id, sap_soap_client.explode_bom(candidate_id, shared_cache=shared_bom_cache)
         except Exception as e:
-            logger.warning(f"BOM explosion failed for SAP id {sap_id}: {e}")
-            return sap_id, None
+            logger.warning(f"BOM explosion failed for SAP id {candidate_id}: {e}")
+            return candidate_id, None
 
-    # Each explode_bom() call already fans out internally (its own thread pool
-    # per BOM level) - running many of these top-level explosions concurrently
-    # multiplies into far too many simultaneous connections to the SAP tenant
-    # and causes connection timeouts. Keep this outer level small.
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        bom_by_sap_id = dict(executor.map(explode, unique_sap_ids)) if unique_sap_ids else {}
+    bom_by_id = dict(explode(part_no) for part_no in sorted(all_part_nos))
 
-    for part_no, sap_id in sap_id_by_part_no.items():
-        if not bom_by_sap_id.get(sap_id):
-            missing_boms.append({"part_no": part_no, "sap_id": sap_id, "reason": "No SAP BOM found for this mapped part"})
+    unresolved_part_nos = [p for p in all_part_nos if not bom_by_id.get(p)]
+    fallback_ids = sorted({
+        (part_map.get(p) or "").strip()
+        for p in unresolved_part_nos
+        if (part_map.get(p) or "").strip() and (part_map.get(p) or "").strip() != p
+    })
+    if fallback_ids:
+        bom_by_id.update(explode(cid) for cid in fallback_ids)
+
+    # Pick, for each part_no, whichever candidate actually resolved to a BOM.
+    resolved_id_by_part_no = {}
+    missing_boms = []
+    for part_no in all_part_nos:
+        mapped = (part_map.get(part_no) or "").strip()
+        candidates = [part_no] + ([mapped] if mapped and mapped != part_no else [])
+        resolved = next((cid for cid in candidates if bom_by_id.get(cid)), None)
+        if resolved:
+            resolved_id_by_part_no[part_no] = resolved
+        else:
+            missing_boms.append({
+                "part_no": part_no,
+                "sap_id": mapped if mapped and mapped != part_no else None,
+                "reason": f"No SAP BOM found (tried: {', '.join(candidates)})",
+            })
 
     # 4. Precompute per-unit leaf requirements for each successfully exploded BOM.
-    leaves_by_sap_id = {}
-    for sap_id, bom in bom_by_sap_id.items():
+    leaves_by_id = {}
+    for candidate_id, bom in bom_by_id.items():
         if not bom:
             continue
         leaves = {}
         _collect_leaves(bom["tree"], leaves)
-        leaves_by_sap_id[sap_id] = leaves
+        leaves_by_id[candidate_id] = leaves
 
     # 5. Aggregate required leaf-component quantity, per month.
     components = {}
     for month, demand in demand_by_month.items():
         for part_no, qty in demand.items():
-            sap_id = sap_id_by_part_no.get(part_no)
-            leaves = leaves_by_sap_id.get(sap_id) if sap_id else None
+            resolved_id = resolved_id_by_part_no.get(part_no)
+            leaves = leaves_by_id.get(resolved_id) if resolved_id else None
             if not leaves:
                 continue
             for leaf_product_id, leaf in leaves.items():
@@ -152,18 +171,10 @@ def build_purchasing_plan(oms_client, sap_soap_client, sap_valuation_client) -> 
         })
     result_components.sort(key=lambda c: c["product_id"])
 
-    # De-duplicate missing_boms (same part_no should only appear once).
-    seen = set()
-    deduped_missing = []
-    for item in missing_boms:
-        if item["part_no"] in seen:
-            continue
-        seen.add(item["part_no"])
-        deduped_missing.append(item)
-    deduped_missing.sort(key=lambda m: m["part_no"])
+    missing_boms.sort(key=lambda m: m["part_no"])
 
     return {
         "months": months,
         "components": result_components,
-        "missing_boms": deduped_missing,
+        "missing_boms": missing_boms,
     }

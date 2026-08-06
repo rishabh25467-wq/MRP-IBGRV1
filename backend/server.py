@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import uuid
 from pathlib import Path
 from typing import List, Optional
 
@@ -12,7 +13,7 @@ from starlette.middleware.cors import CORSMiddleware
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from bom_categorizer import categorize_items, BomCategorizerError
-from oms_client import OMSClient, OMSError
+from oms_client import OMSClient
 from purchasing_plan import build_purchasing_plan
 
 ROOT_DIR = Path(__file__).parent
@@ -41,6 +42,12 @@ oms_client = OMSClient(
     username=os.environ['OMS_USERNAME'],
     password=os.environ['OMS_PASSWORD'],
 )
+
+# In-memory job store for the long-running (multi-minute, live OMS+SAP)
+# Purchasing Plan generation - kept out-of-request so the client never has to
+# hold a single HTTP connection open longer than the ingress/proxy timeout;
+# the frontend polls /purchasing-plan/status/{job_id} instead.
+purchasing_plan_jobs: dict = {}
 
 
 class BomNode(BaseModel):
@@ -116,6 +123,13 @@ class PurchasingPlanResponse(BaseModel):
     missing_boms: List[MissingBom]
 
 
+class PurchasingPlanJobStatus(BaseModel):
+    job_id: str
+    status: str  # "running" | "done" | "failed"
+    result: Optional[PurchasingPlanResponse] = None
+    error: Optional[str] = None
+
+
 @api_router.get("/")
 async def root():
     return {"message": "SAP BOM Lookup API"}
@@ -166,16 +180,34 @@ async def categorize(payload: CategorizeRequest):
     return CategorizeResponse(categories=categories)
 
 
-@api_router.get("/purchasing-plan", response_model=PurchasingPlanResponse)
-async def purchasing_plan():
-    try:
-        result = await asyncio.to_thread(build_purchasing_plan, oms_client, sap_soap_client, sap_valuation_client)
-    except OMSError as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    except Exception as e:
-        logger.error(f"Purchasing plan generation failed: {e}")
-        raise HTTPException(status_code=502, detail=f"Failed to generate purchasing plan: {e}")
-    return PurchasingPlanResponse(**result)
+@api_router.post("/purchasing-plan/generate")
+async def start_purchasing_plan_job():
+    job_id = str(uuid.uuid4())
+    purchasing_plan_jobs[job_id] = {"status": "running", "result": None, "error": None}
+
+    async def run():
+        try:
+            result = await asyncio.to_thread(build_purchasing_plan, oms_client, sap_soap_client, sap_valuation_client)
+            purchasing_plan_jobs[job_id] = {"status": "done", "result": result, "error": None}
+        except Exception as e:
+            logger.error(f"Purchasing plan generation failed: {e}")
+            purchasing_plan_jobs[job_id] = {"status": "failed", "result": None, "error": str(e)}
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+@api_router.get("/purchasing-plan/status/{job_id}", response_model=PurchasingPlanJobStatus)
+async def purchasing_plan_status(job_id: str):
+    job = purchasing_plan_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return PurchasingPlanJobStatus(
+        job_id=job_id,
+        status=job["status"],
+        result=PurchasingPlanResponse(**job["result"]) if job["result"] else None,
+        error=job["error"],
+    )
 
 
 app.include_router(api_router)

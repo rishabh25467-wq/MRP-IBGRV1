@@ -51,19 +51,45 @@ export default function PurchasingPlanPage() {
   const [error, setError] = useState(null);
   const [lastGenerated, setLastGenerated] = useState(null);
   const [warningsOpen, setWarningsOpen] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  const POLL_INTERVAL_MS = 3000;
+  const MAX_POLL_MS = 15 * 60 * 1000;
 
   const generatePlan = async () => {
     setLoading(true);
     setError(null);
+    setElapsedSeconds(0);
+    const startedAt = Date.now();
     try {
-      const response = await axios.get(`${API}/purchasing-plan`);
-      setPlan(response.data);
-      setLastGenerated(new Date());
-      toast.success("Purchasing plan generated", {
-        description: `${response.data.components.length} components across ${response.data.months.length} months`,
-      });
+      const { data } = await axios.post(`${API}/purchasing-plan/generate`);
+      const jobId = data.job_id;
+
+      // Long-running live OMS+SAP pipeline (can take 1-3+ minutes) - poll a
+      // status endpoint instead of holding one HTTP request open, since that
+      // would exceed the platform's ingress/proxy timeout.
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        setElapsedSeconds(Math.round((Date.now() - startedAt) / 1000));
+        const { data: job } = await axios.get(`${API}/purchasing-plan/status/${jobId}`);
+        if (job.status === "done") {
+          setPlan(job.result);
+          setLastGenerated(new Date());
+          toast.success("Purchasing plan generated", {
+            description: `${job.result.components.length} components across ${job.result.months.length} months`,
+          });
+          break;
+        }
+        if (job.status === "failed") {
+          throw new Error(job.error || "Failed to generate purchasing plan");
+        }
+        if (Date.now() - startedAt > MAX_POLL_MS) {
+          throw new Error("Purchasing plan generation is taking too long. Please try again.");
+        }
+      }
     } catch (err) {
-      const detail = err?.response?.data?.detail || "Failed to generate purchasing plan";
+      const detail = err?.response?.data?.detail || err.message || "Failed to generate purchasing plan";
       setError(detail);
       toast.error("Purchasing plan generation failed", { description: detail });
     } finally {
@@ -106,7 +132,7 @@ export default function PurchasingPlanPage() {
           data-testid="generate-purchasing-plan-button"
         >
           <ShoppingCartSimple size={14} className="mr-1.5" />
-          {loading ? "Generating Plan..." : plan ? "Regenerate Purchasing Plan" : "Generate Purchasing Plan"}
+          {loading ? `Generating... (${elapsedSeconds}s)` : plan ? "Regenerate Purchasing Plan" : "Generate Purchasing Plan"}
         </Button>
         {plan && (
           <Badge
@@ -217,10 +243,16 @@ export default function PurchasingPlanPage() {
         )}
 
         {loading && (
-          <div className="space-y-1.5" data-testid="purchasing-plan-loading-skeleton">
-            {[...Array(8)].map((_, i) => (
-              <Skeleton key={i} className="h-8 w-full rounded-sm" />
-            ))}
+          <div data-testid="purchasing-plan-loading-skeleton">
+            <p className="text-[13px] text-[#475467] mb-2" data-testid="purchasing-plan-loading-message">
+              Fetching sales forecast from OMS and exploding live SAP BOMs across hundreds of components - this can
+              take several minutes depending on SAP responsiveness ({elapsedSeconds}s elapsed)...
+            </p>
+            <div className="space-y-1.5">
+              {[...Array(8)].map((_, i) => (
+                <Skeleton key={i} className="h-8 w-full rounded-sm" />
+              ))}
+            </div>
           </div>
         )}
 

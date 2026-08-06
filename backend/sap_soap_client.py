@@ -192,19 +192,25 @@ class SAPSoapBOMClient:
 
         return bom
 
-    def explode_bom(self, bom_id: str):
+    def explode_bom(self, bom_id: str, shared_cache: dict = None):
         """Recursively explode a BOM into a hierarchical tree (each node with its
         own children list), resolving each component's own sub-BOM (if any) by
         output product, matching SAP's native Multi-Level BoM Visualization
         report. Sub-BOM lookups are resolved level-by-level (BFS) concurrently for
         speed, then assembled into a tree. Accepts either an exact BOM ID
         (e.g. 'P26584_2') or a bare product/part ID (e.g. 'P26584'), in which case
-        the latest active revision is resolved automatically via output product."""
+        the latest active revision is resolved automatically via output product.
+
+        `shared_cache` optionally lets a caller re-use sub-BOM lookups across
+        MULTIPLE explode_bom() calls (e.g. the Purchasing Plan feature explodes
+        many top-level parts that commonly share the same hardware/packaging
+        sub-components) - pass the same dict into successive calls to avoid
+        redundant SAP round-trips. Defaults to a fresh, call-local cache."""
         root = self._fetch_bom_by_id(bom_id) or self._fetch_bom_by_output_product(bom_id)
         if root is None:
             return None
 
-        sub_bom_cache = {}
+        sub_bom_cache = shared_cache if shared_cache is not None else {}
         total_components = 0
         max_level_seen = 0
         lookups_done = 0

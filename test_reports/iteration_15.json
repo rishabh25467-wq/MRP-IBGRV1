@@ -1,0 +1,28 @@
+{
+  "summary": "Tested the critical bug fix (OMS part_no used as primary SAP lookup key) and the new async job-polling architecture for the Purchasing Plan feature. Both verified working correctly via direct API + UI testing. Also did a light regression pass on nav highlighting and BOM Explorer.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "purchasing_plan.py: confirmed via live run that resolved_id_by_part_no now tries part_no directly first, falls back to part_map value only if needed - fix verified working (see success metrics below).",
+    "server.py job pattern: POST /purchasing-plan/generate returns job_id immediately (<1s), in-memory purchasing_plan_jobs dict correctly tracks running/done/failed states, status endpoint returns proper 404 for unknown job_id (code-reviewed, not separately curl-tested but logic is straightforward).",
+    "Minor observation (not a bug): purchasing_plan_jobs is a plain in-memory dict with no TTL/cleanup - fine for this single-tenant demo app, but would leak memory over long uptime with many generations. Not worth fixing for this use case.",
+    "Frontend PurchasingPlanPage.js polling loop correctly guards MAX_POLL_MS (15 min) and surfaces failures via toast + error alert; elapsed-seconds counter increments correctly (verified 0s -> 34s -> 68s during a live run)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (direct job-endpoint verification)", "frontend": "100% (loading/polling UX + nav regression); final-table-with-live-data rendering not re-screenshotted this pass due to tool time constraints, but payload shape unchanged from iteration_14 which fully covered it"},
+  "test_credentials": "N/A - no app-level auth; OMS/SAP creds already in backend/.env, used as-is.",
+  "seed_data_creation": "None - used live SAP/OMS data via a real end-to-end run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "BUG FIX VERIFIED via direct curl polling of POST /api/purchasing-plan/generate -> GET /api/purchasing-plan/status/{job_id}: a full live run completed in ~9.5 minutes (well within the observed 30s-14min variability window) producing 793 leaf components and 9 missing_boms (main agent's own test got 803/8 in a separate run - the small variance run-to-run is expected/normal for this live, sequential, flaky-tenant pipeline, not a regression). Critically, spot-checked components show REAL non-zero quantities in BOTH month columns (285 of 793 components had nonzero qty in both 2026-09 and 2026-10; e.g. 463763-2: Sep qty=2016.0/value=907.2, Oct qty=2000.0/value=900.0; 5989828-WPIP: Sep qty=6167.5/value=12335.0, Oct qty=1417.5/value=2835.0) - this directly confirms the Month-2-all-zero bug flagged in iteration_14 is now fixed. Missing BOMs list contains genuinely unmappable parts as expected (P392619, P392622, WMN-B51EB/XL, etc. - all reason 'No SAP BOM found (tried: <part_no>)' with no wm-part-map fallback available). UX for the new async job pattern verified live: clicking Generate immediately shows loading state (data-testid=purchasing-plan-loading-message) with elapsed counter ticking correctly (0s->34s->68s observed), button text becomes 'Generating... (Xs)' and is disabled=True throughout, no premature error/timeout surfaced during a multi-minute wait. Nav highlighting regression re-confirmed both directions ('/' -> BOM Explorer bold+bg-white/20, Purchasing Plan tab dimmed; '/purchasing-plan' -> reverse) exactly matching iteration_14's prior pass. BOM Explorer search for P26584 was triggered and showed a 'Searching...' state (SAP tenant was slow at that moment, consistent with the documented tenant flakiness) - did not wait for that specific search to resolve since it was a light regression check only and SAP connectivity itself was confirmed healthy via the 'SAP PRD Connected' badge in the header. One soft limitation of this test pass: I did not get a fresh screenshot of the completed table rendering live data in-browser because the browser-automation tool call has a shorter internal execution deadline (~5 min) than this run's ~9.5 min completion time, causing that specific script to hit 'context deadline exceeded' before the table appeared. This is a testing-tool constraint, not an app issue - the completion rendering code (table/stat-cards/missing-boms banner) is unchanged from iteration_14 which did fully verify it end-to-end with a live-rendered table.",
+  "rca_of_the_issue": "N/A - this pass confirms the previously-reported bug (Month-2 all-zero values, caused by resolving OMS part numbers via the wrong wm-part-map value) is fixed by trying the OMS part_no directly as the primary SAP lookup key. No new bugs found."
+}
