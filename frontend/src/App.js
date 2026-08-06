@@ -79,7 +79,7 @@ function App() {
       setResult(response.data);
       setLastSynced(new Date());
       toast.success(`BOM ${response.data.bom_id} loaded`, {
-        description: `${response.data.total_components} components across ${response.data.total_groups} groups`,
+        description: `${response.data.total_components} components across ${response.data.max_level} levels`,
       });
     } catch (err) {
       const detail = err?.response?.data?.detail || "Failed to fetch BOM from SAP";
@@ -90,12 +90,7 @@ function App() {
     }
   };
 
-  const activeCount = result
-    ? result.groups.reduce(
-        (acc, g) => acc + g.components.filter((c) => c.active).length,
-        0
-      )
-    : 0;
+  const activeCount = result ? result.rows.filter((r) => r.active).length : 0;
 
   return (
     <div className="min-h-screen bg-[#F8F9FA] text-[#0A2540]">
@@ -162,8 +157,8 @@ function App() {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10">
           <StatCard
             icon={Stack}
-            label="Total Groups"
-            value={result ? result.total_groups : "—"}
+            label="Max Level"
+            value={result ? result.max_level : "—"}
             testId="stat-total-groups"
           />
           <StatCard
@@ -211,9 +206,9 @@ function App() {
             <Table>
               <TableHeader>
                 <TableRow className="border-border/40">
-                  <TableHead className="font-heading text-xs uppercase tracking-wide">Group</TableHead>
-                  <TableHead className="font-heading text-xs uppercase tracking-wide">Line Item</TableHead>
-                  <TableHead className="font-heading text-xs uppercase tracking-wide">Material ID</TableHead>
+                  <TableHead className="font-heading text-xs uppercase tracking-wide">Level</TableHead>
+                  <TableHead className="font-heading text-xs uppercase tracking-wide">Product ID</TableHead>
+                  <TableHead className="font-heading text-xs uppercase tracking-wide">Description</TableHead>
                   <TableHead className="font-heading text-xs uppercase tracking-wide">Quantity</TableHead>
                   <TableHead className="font-heading text-xs uppercase tracking-wide">UOM</TableHead>
                   <TableHead className="font-heading text-xs uppercase tracking-wide">ECO</TableHead>
@@ -221,39 +216,43 @@ function App() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {result.groups.flatMap((group) =>
-                  group.components.map((comp, idx) => (
-                    <TableRow
-                      key={`${group.group_id}-${idx}`}
-                      className="border-border/40 hover:bg-[#F8F9FA] transition-colors"
-                      data-testid={`bom-row-${group.group_id}-${idx}`}
+                {result.rows.map((row, idx) => (
+                  <TableRow
+                    key={`${row.level}-${row.product_id}-${idx}`}
+                    className="border-border/40 hover:bg-[#F8F9FA] transition-colors"
+                    data-testid={`bom-row-${idx}`}
+                  >
+                    <TableCell className="font-data text-sm tabular-nums py-2 px-3">{row.level}</TableCell>
+                    <TableCell
+                      className="font-data text-sm tabular-nums py-2 px-3"
+                      style={{ paddingLeft: `${(row.level - 1) * 20 + 12}px` }}
                     >
-                      <TableCell className="font-data text-sm tabular-nums py-2 px-3">{group.group_id}</TableCell>
-                      <TableCell className="font-data text-sm tabular-nums py-2 px-3">{comp.line_item}</TableCell>
-                      <TableCell className="font-data text-sm tabular-nums py-2 px-3">{comp.material_id || "—"}</TableCell>
-                      <TableCell className="font-data text-sm tabular-nums py-2 px-3">{comp.quantity ?? "—"}</TableCell>
-                      <TableCell className="font-data text-sm py-2 px-3">{comp.unit_of_measure || "—"}</TableCell>
-                      <TableCell className="font-data text-sm py-2 px-3">{comp.eco_id || "—"}</TableCell>
-                      <TableCell className="py-2 px-3">
-                        <Badge
-                          className={
-                            comp.active
-                              ? "bg-[#16A34A]/10 text-[#16A34A] border-[#16A34A]/30"
-                              : "bg-[#DC2626]/10 text-[#DC2626] border-[#DC2626]/30"
-                          }
-                          variant="outline"
-                        >
-                          {comp.active ? (
-                            <CheckCircle size={12} weight="fill" className="mr-1" />
-                          ) : (
-                            <XCircle size={12} weight="fill" className="mr-1" />
-                          )}
-                          {comp.active ? "Yes" : "No"}
-                        </Badge>
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
+                      {row.has_sub_bom ? "▾ " : ""}
+                      {row.product_id}
+                    </TableCell>
+                    <TableCell className="font-data text-sm py-2 px-3">{row.description || "—"}</TableCell>
+                    <TableCell className="font-data text-sm tabular-nums py-2 px-3">{row.quantity ?? "—"}</TableCell>
+                    <TableCell className="font-data text-sm py-2 px-3">{row.unit_of_measure || "—"}</TableCell>
+                    <TableCell className="font-data text-sm py-2 px-3">{row.eco_id || "—"}</TableCell>
+                    <TableCell className="py-2 px-3">
+                      <Badge
+                        className={
+                          row.active
+                            ? "bg-[#16A34A]/10 text-[#16A34A] border-[#16A34A]/30"
+                            : "bg-[#DC2626]/10 text-[#DC2626] border-[#DC2626]/30"
+                        }
+                        variant="outline"
+                      >
+                        {row.active ? (
+                          <CheckCircle size={12} weight="fill" className="mr-1" />
+                        ) : (
+                          <XCircle size={12} weight="fill" className="mr-1" />
+                        )}
+                        {row.active ? "Yes" : "No"}
+                      </Badge>
+                    </TableCell>
+                  </TableRow>
+                ))}
                 {result.total_components === 0 && (
                   <TableRow>
                     <TableCell colSpan={7} className="text-center py-8 font-data text-sm text-[#0A2540]/50">

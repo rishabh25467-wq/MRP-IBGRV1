@@ -1,4 +1,4 @@
-"""Backend tests for SAP BOM Lookup API."""
+"""Backend tests for SAP BOM Lookup API (SOAP multi-level explosion)."""
 import os
 from pathlib import Path
 
@@ -28,41 +28,22 @@ class TestRoot:
         assert "message" in r.json()
 
 
-# ---- Connection status ----
+# ---- Connection status (SOAP endpoint) ----
 class TestConnectionStatus:
     def test_connection_status_connected(self, api):
         r = api.get(f"{BASE_URL}/api/bom/connection-status", timeout=60)
         assert r.status_code == 200
         data = r.json()
-        assert "connected" in data and "message" in data
-        assert data["connected"] is True, f"Expected connected=True; got {data}"
+        assert data.get("connected") is True, f"Expected connected=True; got {data}"
+        assert isinstance(data.get("message"), str)
 
 
-# ---- BOM search ----
+# ---- BOM search (multi-level flat rows) ----
 class TestBomSearch:
-    def test_search_valid_bom(self, api):
-        r = api.get(f"{BASE_URL}/api/bom/search", params={"bom_id": "8060522_1"}, timeout=90)
-        assert r.status_code == 200, r.text[:500]
-        data = r.json()
-        assert data["bom_id"] == "8060522_1"
-        assert isinstance(data["total_components"], int)
-        assert data["total_components"] > 0
-        assert isinstance(data["total_groups"], int)
-        assert data["total_groups"] > 0
-        assert isinstance(data["groups"], list)
-        # Validate structure of first group/component
-        g = data["groups"][0]
-        assert "group_id" in g and "components" in g
-        assert len(g["components"]) > 0
-        c = g["components"][0]
-        for k in ("material_id", "quantity", "unit_of_measure", "eco_id", "active"):
-            assert k in c
-
     def test_search_invalid_bom_returns_404(self, api):
         r = api.get(f"{BASE_URL}/api/bom/search", params={"bom_id": "INVALID_BOM_999"}, timeout=60)
         assert r.status_code == 404, r.text[:500]
-        detail = r.json().get("detail", "")
-        assert "not found" in detail.lower()
+        assert "not found" in r.json().get("detail", "").lower()
 
     def test_search_missing_bom_id_returns_422(self, api):
         r = api.get(f"{BASE_URL}/api/bom/search", timeout=30)
@@ -73,34 +54,45 @@ class TestBomSearch:
         assert r.status_code == 422
 
     def test_search_bom_whitespace_trimmed(self, api):
-        r = api.get(f"{BASE_URL}/api/bom/search", params={"bom_id": "  8060522_1  "}, timeout=90)
+        r = api.get(f"{BASE_URL}/api/bom/search", params={"bom_id": "  8060522_1  "}, timeout=120)
         assert r.status_code == 200
         assert r.json()["bom_id"] == "8060522_1"
 
-    # ---- Bug fix verification: FLT2_4.1 must return 16 components across 2 groups ----
-    def test_search_flt2_4_1_returns_full_components(self, api):
+    # ---- Regression: 8060522_1 now multi-level (33/2) ----
+    def test_search_8060522_1_regression(self, api):
+        r = api.get(f"{BASE_URL}/api/bom/search", params={"bom_id": "8060522_1"}, timeout=120)
+        assert r.status_code == 200, r.text[:500]
+        data = r.json()
+        assert data["bom_id"] == "8060522_1"
+        assert data["total_components"] == 33, f"Expected 33 got {data['total_components']}"
+        assert data["max_level"] == 2, f"Expected max_level=2 got {data['max_level']}"
+        assert isinstance(data["rows"], list) and len(data["rows"]) == 33
+        # Validate row schema
+        row = data["rows"][0]
+        for k in ("level", "product_id", "description", "quantity", "unit_of_measure", "eco_id", "active", "has_sub_bom"):
+            assert k in row, f"Row missing key {k}"
+        assert row["level"] == 1
+
+    # ---- Main feature: FLT2_4.1 multi-level explosion (145/5) ----
+    def test_search_flt2_4_1_multilevel(self, api):
         r = api.get(f"{BASE_URL}/api/bom/search", params={"bom_id": "FLT2_4.1"}, timeout=120)
         assert r.status_code == 200, r.text[:500]
         data = r.json()
         assert data["bom_id"] == "FLT2_4.1"
-        assert data["total_groups"] == 2, f"Expected 2 groups, got {data['total_groups']}"
-        assert data["total_components"] == 16, f"Expected 16 components, got {data['total_components']}"
-        # Sum of components across groups == 16
-        total_in_groups = sum(len(g["components"]) for g in data["groups"])
-        assert total_in_groups == 16
-        # Every component must have required fields populated
-        for g in data["groups"]:
-            for c in g["components"]:
-                assert c.get("material_id"), f"material_id missing: {c}"
-                assert c.get("quantity") is not None
-                assert c.get("unit_of_measure")
-                assert "eco_id" in c
-                assert "active" in c
-
-    # ---- Regression: 8060522_1 must still return 10 components across 2 groups ----
-    def test_search_8060522_1_regression(self, api):
-        r = api.get(f"{BASE_URL}/api/bom/search", params={"bom_id": "8060522_1"}, timeout=90)
-        assert r.status_code == 200
-        data = r.json()
-        assert data["total_groups"] == 2
-        assert data["total_components"] == 10
+        assert data["total_components"] == 145, f"Expected 145 got {data['total_components']}"
+        assert data["max_level"] == 5, f"Expected max_level=5 got {data['max_level']}"
+        assert len(data["rows"]) == 145
+        # Level distribution
+        levels = {row["level"] for row in data["rows"]}
+        assert levels.issubset({1, 2, 3, 4, 5})
+        assert 1 in levels and 5 in levels
+        # Spot-check known row: Level 1 6700-303008 qty=0.5 UOM=EA
+        target = [r for r in data["rows"] if r["level"] == 1 and r["product_id"] == "6700-303008"]
+        assert target, "Expected level-1 row for 6700-303008"
+        assert target[0]["quantity"] == 0.5
+        assert target[0]["unit_of_measure"] == "EA"
+        # Verify has_sub_bom flag exists on some rows
+        assert any(r["has_sub_bom"] for r in data["rows"]), "Expected at least one has_sub_bom=True row"
+        # Active count close to 144
+        active_count = sum(1 for r in data["rows"] if r["active"])
+        assert active_count >= 140, f"Expected ~144 active, got {active_count}"

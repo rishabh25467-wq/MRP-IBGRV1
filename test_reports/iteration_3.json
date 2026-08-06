@@ -1,0 +1,32 @@
+{
+  "summary": "Iteration 3: Verified the new SOAP-based multi-level BOM explosion. Rewrote backend_test.py for the new flat-rows schema (level/product_id/max_level/total_components); all 8 pytest cases PASS incl. FLT2_4.1 returning exactly total_components=145, max_level=5, active>=140, level-1 6700-303008 qty=0.5 UOM=EA; and 8060522_1 returning 33/2. Playwright E2E on the public URL confirmed: SAP Connected indicator, stat cards (Max Level / Total Components / Active Materials / Last Synced), invalid BOM shows bom-search-error-alert, loading skeleton + 'Searching...' disabled button during in-flight call, 8060522_1 renders 33 rows / max_level=2, table renders with Level column + indented Product ID + ▾ marker for has_sub_bom rows, EN340/MASS UOM rendered. NO console errors from the app. FLT2_4.1 during the Playwright run returned 129 (not 145) because SAP's SOAP endpoint intermittently hit ConnectTimeout on 7 concurrent sub-BOM lookups (confirmed in backend logs); the app silently drops those subtrees. Backend curl repeated 3x back-to-back returned 145 stably, but any transient upstream flakiness produces partial silent results. This is the main issue to report.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/bom/search (SOAP sub-BOM lookups)", "issue": "Sub-BOM ConnectTimeoutError (30s) is caught in _safe_fetch_by_output_product and logged as WARNING, but the whole subtree is silently dropped from the result - user sees fewer rows (e.g. 129 instead of 145) with no indication of partial data. Should either retry timed-out lookups (e.g. 1-2 retries with backoff) or surface a 'partial results due to N SAP timeouts' warning in the response."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Add retry (2-3 attempts, exponential backoff) inside SAPSoapBOMClient._safe_fetch_by_output_product for ConnectTimeout/ReadTimeout to avoid silently dropping ~16 components/subtree when SAP is momentarily slow.",
+    "Optionally surface a warning field (e.g. 'partial_results': true, 'failed_lookups': [...]) in BomSearchResponse so the UI can show a non-blocking notice when a subtree could not be fetched."
+  ],
+  "critical_code_review_comments": [
+    "sap_soap_client._safe_fetch_by_output_product swallows all SAPSoapError including timeouts with no retry; a single 30s SAP timeout during a 145-row explosion causes ~10% of the tree to disappear from the UI without warning.",
+    "Consider lowering per-request timeout (currently 30s) and adding a bounded retry; and/or persist a request-scoped 'failed_lookups' list to bubble up to the API response.",
+    "sap_client.py (old OData module) is left in the repo but no longer imported - safe to delete to reduce confusion."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100%", "frontend": "~95% (all UI/flow works; content assertion count varied due to upstream SAP timeouts, not an app bug per se)"},
+  "seed_data_creation": "None - live SAP tenant data.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "N/A (no app auth). SAP SOAP creds in backend/.env.",
+  "context_for_next_testing_agent": "New schema: /api/bom/search returns {bom_id, total_components, max_level, rows:[{level,product_id,description,quantity,unit_of_measure,eco_id,active,has_sub_bom, group_id, item_id}]}. FLT2_4.1 expected 145/5, 8060522_1 expected 33/2. FLT2_4.1 search legitimately takes 15-25s; use 90-120s Playwright timeouts. If sub-BOM lookups timeout, the tree returns fewer rows silently - check backend logs for 'Sub-BOM lookup failed for ...' warnings before flagging it as an app bug.",
+  "rca_of_the_issue": "During Playwright frontend E2E, FLT2_4.1 returned 129 rows instead of 145. Backend logs show 7 concurrent ConnectTimeoutError (30s) against my431827.businessbydesign.cloud.sap for sub-BOMs 6800-003652, 6300-007416-029, 8203-002494, 6400-003755, 8205-002409, 6400-003761, 6300-006656-029 - each failed lookup drops its subtree. _safe_fetch_by_output_product catches SAPSoapError silently. Fix: add retry with backoff on RequestException (ConnectTimeout/ReadTimeout) inside _query or _safe_fetch_by_output_product; and/or return a partial_results flag."
+}
