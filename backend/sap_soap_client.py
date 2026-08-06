@@ -175,10 +175,12 @@ class SAPSoapBOMClient:
                 uom_match = re.search(r"<InputProductQuantityUoM>([^<]*)</InputProductQuantityUoM>", best_state)
                 eco_match = re.search(r"<EngineeringChangeOrderID>([^<]*)</EngineeringChangeOrderID>", best_state)
                 deleted_match = re.search(r"<DeletionIndicator>([^<]*)</DeletionIndicator>", best_state)
+                uuid_match = re.search(r"<InputProductUUID>([^<]*)</InputProductUUID>", best_state)
 
                 items.append({
                     "item_id": item_id_match.group(1) if item_id_match else None,
                     "product_id": product_id_match.group(1),
+                    "product_uuid": uuid_match.group(1) if uuid_match else None,
                     "description": desc_match.group(1) if desc_match else None,
                     "quantity": float(qty_match.group(1)) if qty_match and qty_match.group(1) else None,
                     "unit_of_measure": uom_match.group(1) if uom_match else None,
@@ -242,6 +244,7 @@ class SAPSoapBOMClient:
                             "group_id": group["group_id"],
                             "item_id": item["item_id"],
                             "product_id": item["product_id"],
+                            "product_uuid": item["product_uuid"],
                             "description": item["description"],
                             "quantity": cum_qty,
                             "unit_of_measure": item["unit_of_measure"],

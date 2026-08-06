@@ -18,6 +18,7 @@ import {
   ArrowsInSimple,
   FileArrowDown,
   Database,
+  CurrencyCircleDollar,
 } from "@phosphor-icons/react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -41,6 +42,17 @@ const StatCard = ({ icon: Icon, label, value, testId }) => (
     <span className="font-sans text-2xl font-bold tabular-nums text-[#1D2939]">{value}</span>
   </div>
 );
+
+const collectAllUuids = (nodes) => {
+  let uuids = [];
+  nodes.forEach((node) => {
+    if (node.product_uuid) uuids.push(node.product_uuid);
+    if (node.children && node.children.length > 0) {
+      uuids = uuids.concat(collectAllUuids(node.children));
+    }
+  });
+  return uuids;
+};
 
 const collectExpandableKeys = (nodes, prefix = "") => {
   let keys = [];
@@ -94,6 +106,9 @@ function App() {
   const [lastSynced, setLastSynced] = useState(null);
   const [connection, setConnection] = useState({ connected: null, message: "Checking connection..." });
   const [expandedKeys, setExpandedKeys] = useState(new Set());
+  const [costs, setCosts] = useState({});
+  const [loadingCosts, setLoadingCosts] = useState(false);
+  const [costsLoaded, setCostsLoaded] = useState(false);
 
   const checkConnection = useCallback(async () => {
     try {
@@ -140,6 +155,28 @@ function App() {
     toast.success("Excel file downloaded", { description: `BOM_${result.bom_id}.xlsx` });
   };
 
+  const loadStandardCosts = async () => {
+    if (!result) return;
+    const uuids = Array.from(new Set(collectAllUuids(result.tree)));
+    if (uuids.length === 0) {
+      toast.info("No costable components found in this BOM");
+      return;
+    }
+    setLoadingCosts(true);
+    try {
+      const response = await axios.post(`${API}/bom/standard-costs`, { product_uuids: uuids });
+      setCosts(response.data.costs || {});
+      setCostsLoaded(true);
+      const found = Object.values(response.data.costs || {}).filter(Boolean).length;
+      toast.success("Standard costs loaded", { description: `${found} of ${uuids.length} components have a live SAP cost` });
+    } catch (err) {
+      const detail = err?.response?.data?.detail || "Failed to fetch standard costs from SAP";
+      toast.error("Cost lookup failed", { description: detail });
+    } finally {
+      setLoadingCosts(false);
+    }
+  };
+
   const handleSearch = async (e) => {
     e.preventDefault();
     if (!bomId.trim()) return;
@@ -148,6 +185,8 @@ function App() {
     setError(null);
     setResult(null);
     setExpandedKeys(new Set());
+    setCosts({});
+    setCostsLoaded(false);
 
     try {
       const response = await axios.get(`${API}/bom/search`, { params: { bom_id: bomId.trim() } });
@@ -261,6 +300,17 @@ function App() {
           <Button
             type="button"
             size="sm"
+            onClick={loadStandardCosts}
+            disabled={!result || loadingCosts}
+            className="h-8 bg-[#7A271A] hover:bg-[#611C13] text-white text-xs rounded-sm transition-colors"
+            data-testid="load-standard-costs-button"
+          >
+            <CurrencyCircleDollar size={13} className="mr-1.5" />
+            {loadingCosts ? "Loading Costs..." : costsLoaded ? "Refresh Costs" : "Load Standard Costs"}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
             onClick={exportToExcel}
             disabled={!result}
             className="h-8 bg-[#027A48] hover:bg-[#02623A] text-white text-xs rounded-sm transition-colors"
@@ -312,7 +362,7 @@ function App() {
             <table className="border-collapse w-full" data-testid="bom-tree-table">
               <thead>
                 <tr>
-                  {["Level", "Product ID", "Description", "Quantity", "UOM", "ECO", "Active"].map((h) => (
+                  {["Level", "Product ID", "Description", "Quantity", "UOM", "ECO", "Active", "Std Cost", "Ext Cost"].map((h) => (
                     <th
                       key={h}
                       className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide"
@@ -374,11 +424,29 @@ function App() {
                         {node.active ? "Yes" : "No"}
                       </Badge>
                     </td>
+                    <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828]" data-testid={`bom-std-cost-${path}`}>
+                      {loadingCosts ? (
+                        <span className="text-[#98A2B3]">…</span>
+                      ) : costsLoaded ? (
+                        costs[(node.product_uuid || "").toUpperCase()] ? (
+                          `${costs[node.product_uuid.toUpperCase()].currency || ""} ${costs[node.product_uuid.toUpperCase()].amount.toFixed(2)}`
+                        ) : (
+                          <span className="text-[#98A2B3]">No cost</span>
+                        )
+                      ) : (
+                        <span className="text-[#98A2B3]">—</span>
+                      )}
+                    </td>
+                    <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828] font-medium" data-testid={`bom-ext-cost-${path}`}>
+                      {costsLoaded && costs[(node.product_uuid || "").toUpperCase()] && node.quantity != null
+                        ? `${costs[node.product_uuid.toUpperCase()].currency || ""} ${(costs[node.product_uuid.toUpperCase()].amount * node.quantity).toFixed(2)}`
+                        : <span className="text-[#98A2B3]">—</span>}
+                    </td>
                   </tr>
                 ))}
                 {result.total_components === 0 && (
                   <tr>
-                    <td colSpan={7} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]">
+                    <td colSpan={9} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]">
                       No components found for this BOM
                     </td>
                   </tr>

@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from starlette.middleware.cors import CORSMiddleware
 
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
+from sap_valuation_client import SAPValuationClient, SAPValuationError
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -26,12 +27,19 @@ sap_soap_client = SAPSoapBOMClient(
     password=os.environ['SAP_SOAP_PASSWORD'],
 )
 
+sap_valuation_client = SAPValuationClient(
+    base_url=os.environ['SAP_ODATA_BASE_URL'],
+    username=os.environ['SAP_ODATA_USERNAME'],
+    password=os.environ['SAP_ODATA_PASSWORD'],
+)
+
 
 class BomNode(BaseModel):
     level: int
     group_id: Optional[str] = None
     item_id: Optional[str] = None
     product_id: str
+    product_uuid: Optional[str] = None
     description: Optional[str] = None
     quantity: Optional[float] = None
     unit_of_measure: Optional[str] = None
@@ -54,6 +62,19 @@ class BomSearchResponse(BaseModel):
 class ConnectionStatus(BaseModel):
     connected: bool
     message: str
+
+
+class StandardCostsRequest(BaseModel):
+    product_uuids: List[str]
+
+
+class StandardCost(BaseModel):
+    amount: float
+    currency: Optional[str] = None
+
+
+class StandardCostsResponse(BaseModel):
+    costs: dict[str, Optional[StandardCost]]
 
 
 @api_router.get("/")
@@ -86,6 +107,15 @@ async def search_bom(bom_id: str = Query(..., min_length=1)):
         max_level=result["max_level"] or 1,
         tree=result["tree"],
     )
+
+
+@api_router.post("/bom/standard-costs", response_model=StandardCostsResponse)
+async def standard_costs(payload: StandardCostsRequest):
+    try:
+        costs = await asyncio.to_thread(sap_valuation_client.get_standard_costs, payload.product_uuids)
+    except SAPValuationError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return StandardCostsResponse(costs=costs)
 
 
 app.include_router(api_router)
