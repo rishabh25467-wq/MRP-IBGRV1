@@ -31,6 +31,15 @@
 - Verified: FLT2_4.1 now returns 16/16 components correctly; 8060522_1 regression-tested (still 10/10). Testing agent: 100% pass (9 backend tests, full E2E)
 - Known limitation (not fixed, needs Material Master service not exposed in this tenant): some components show the parent product's own Material ID instead of a distinct raw-material ID, because SAP's `AssignedVariant` field reflects product variant assignment, not always the true component material. Full multi-level BOM explosion (matching native SAP "List of Production BOM" report with ~90 rows) would require recursive sub-BOM resolution — flagged as backlog, not yet built.
 
+## Bug Fix #2 (2026-08-06): Full Multi-Level Explosion
+- User needed the FULL multi-level BOM explosion matching SAP's native "Multi-Level BoM Visualization" report (not just Level-1 OData data). This required a NEW SOAP integration (`QueryProductionBillofMaterialsIn`) since OData couldn't provide real material IDs or recursion.
+- User set up a SAP Communication Arrangement (guided step-by-step) generating SOAP endpoint + credentials (`SAP_SOAP_ENDPOINT`, `SAP_SOAP_USERNAME=_EMERGENTBOM`, `SAP_SOAP_PASSWORD`).
+- Built `/app/backend/sap_soap_client.py`: recursive BFS explosion via `SelectionByProductionBillOfMaterialID` (root) + `SelectionByOutputProductID` (sub-assemblies), concurrent lookups (ThreadPoolExecutor), cycle detection, MAX_DEPTH=6.
+- Bug: initial version returned 145 components for FLT2_4.1 (user expected ~91, matching their reference Excel). Root cause found via byte-level XML comparison against user's reference file: `SelectionByOutputProductID` returns MULTIPLE BOM revisions for the same product (old superseded + current); code was merging both instead of picking the current one. Fixed by picking the highest numeric revision suffix per hit, and skipping inactive/deleted items.
+- Verified: FLT2_4.1 now returns exactly 91/91 components matching the reference file level-by-level (only 1 legitimate live-data difference remains — a part number updated in SAP since the reference was exported). Testing agent: 100% pass, full pytest + Playwright E2E.
+- Removed unused `sap_client.py` (old OData-only module, fully superseded by SOAP).
+- Known follow-up (not yet built): sub-BOM lookup failures (SAP timeouts) are silently swallowed with no retry — could cause a silently incomplete subtree on a slow SAP day.
+
 ## Backlog / Next Tasks
 - P1: Excel/CSV export of search results
 - P1: Bulk/all-BOMs pull mode
