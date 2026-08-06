@@ -27,7 +27,7 @@ sap_soap_client = SAPSoapBOMClient(
 )
 
 
-class BomRow(BaseModel):
+class BomNode(BaseModel):
     level: int
     group_id: Optional[str] = None
     item_id: Optional[str] = None
@@ -38,13 +38,17 @@ class BomRow(BaseModel):
     eco_id: Optional[str] = None
     active: bool = True
     has_sub_bom: bool = False
+    children: List["BomNode"] = []
+
+
+BomNode.model_rebuild()
 
 
 class BomSearchResponse(BaseModel):
     bom_id: str
     total_components: int
     max_level: int
-    rows: List[BomRow] = []
+    tree: List[BomNode] = []
 
 
 class ConnectionStatus(BaseModel):
@@ -76,13 +80,11 @@ async def search_bom(bom_id: str = Query(..., min_length=1)):
     if result is None:
         raise HTTPException(status_code=404, detail=f"BOM '{bom_id}' not found in SAP")
 
-    max_level = max((row["level"] for row in result["rows"]), default=1)
-
     return BomSearchResponse(
         bom_id=result["bom_id"],
         total_components=result["total_components"],
-        max_level=max_level,
-        rows=result["rows"],
+        max_level=result["max_level"] or 1,
+        tree=result["tree"],
     )
 
 

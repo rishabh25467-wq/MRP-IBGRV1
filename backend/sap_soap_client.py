@@ -160,10 +160,11 @@ class SAPSoapBOMClient:
         return bom
 
     def explode_bom(self, bom_id: str):
-        """Recursively explode a BOM into a flat multi-level list, resolving each
-        component's own sub-BOM (if any) by output product, matching SAP's native
-        Multi-Level BoM Visualization report. Processed level-by-level (BFS) with
-        concurrent sub-BOM lookups for speed. Accepts either an exact BOM ID
+        """Recursively explode a BOM into a hierarchical tree (each node with its
+        own children list), resolving each component's own sub-BOM (if any) by
+        output product, matching SAP's native Multi-Level BoM Visualization
+        report. Sub-BOM lookups are resolved level-by-level (BFS) concurrently for
+        speed, then assembled into a tree. Accepts either an exact BOM ID
         (e.g. 'P26584_2') or a bare product/part ID (e.g. 'P26584'), in which case
         the latest active revision is resolved automatically via output product."""
         root = self._fetch_bom_by_id(bom_id) or self._fetch_bom_by_output_product(bom_id)
@@ -171,13 +172,16 @@ class SAPSoapBOMClient:
             return None
 
         sub_bom_cache = {}
-        rows = []
+        total_components = 0
+        max_level_seen = 0
         lookups_done = 0
-        frontier = [(root, 1, frozenset({bom_id, root["bom_id"]}))]
+        # each frontier entry: (bom, level, ancestors, children_list_to_append_into)
+        root_children = []
+        frontier = [(root, 1, frozenset({bom_id, root["bom_id"]}), root_children)]
 
         while frontier and lookups_done < MAX_LOOKUPS:
             candidate_ids = set()
-            for bom, level, ancestors in frontier:
+            for bom, level, ancestors, _ in frontier:
                 if level >= MAX_DEPTH:
                     continue
                 for group in bom["groups"]:
@@ -195,12 +199,13 @@ class SAPSoapBOMClient:
                 lookups_done += len(to_fetch)
 
             next_frontier = []
-            for bom, level, ancestors in frontier:
+            for bom, level, ancestors, children_out in frontier:
+                max_level_seen = max(max_level_seen, level)
                 for group in bom["groups"]:
                     for item in group["items"]:
                         if not item["active"]:
                             continue
-                        row = {
+                        node = {
                             "level": level,
                             "group_id": group["group_id"],
                             "item_id": item["item_id"],
@@ -211,20 +216,23 @@ class SAPSoapBOMClient:
                             "eco_id": item["eco_id"],
                             "active": item["active"],
                             "has_sub_bom": False,
+                            "children": [],
                         }
-                        rows.append(row)
+                        children_out.append(node)
+                        total_components += 1
 
                         sub_bom = sub_bom_cache.get(item["product_id"])
                         if sub_bom and sub_bom["groups"] and item["product_id"] not in ancestors:
-                            row["has_sub_bom"] = True
-                            next_frontier.append((sub_bom, level + 1, ancestors | {item["product_id"]}))
+                            node["has_sub_bom"] = True
+                            next_frontier.append((sub_bom, level + 1, ancestors | {item["product_id"]}, node["children"]))
 
             frontier = next_frontier
 
         return {
             "bom_id": root["bom_id"],
-            "total_components": len(rows),
-            "rows": rows,
+            "total_components": total_components,
+            "max_level": max_level_seen,
+            "tree": root_children,
         }
 
     def _safe_fetch_by_output_product(self, product_id: str):

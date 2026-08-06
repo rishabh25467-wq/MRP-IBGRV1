@@ -11,6 +11,10 @@ import {
   CheckSquare,
   ClockCounterClockwise,
   WarningCircle,
+  CaretRight,
+  CaretDown,
+  ArrowsOutSimple,
+  ArrowsInSimple,
 } from "@phosphor-icons/react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -45,6 +49,31 @@ const StatCard = ({ icon: Icon, label, value, testId }) => (
   </div>
 );
 
+const collectExpandableKeys = (nodes, prefix = "") => {
+  let keys = [];
+  nodes.forEach((node, i) => {
+    const key = prefix ? `${prefix}-${i}` : `${i}`;
+    if (node.children && node.children.length > 0) {
+      keys.push(key);
+      keys = keys.concat(collectExpandableKeys(node.children, key));
+    }
+  });
+  return keys;
+};
+
+const flattenVisibleTree = (nodes, expandedKeys, depth = 0, prefix = "") => {
+  let out = [];
+  nodes.forEach((node, i) => {
+    const path = prefix ? `${prefix}-${i}` : `${i}`;
+    const hasChildren = node.children && node.children.length > 0;
+    out.push({ node, path, depth, hasChildren });
+    if (hasChildren && expandedKeys.has(path)) {
+      out = out.concat(flattenVisibleTree(node.children, expandedKeys, depth + 1, path));
+    }
+  });
+  return out;
+};
+
 function App() {
   const [bomId, setBomId] = useState("");
   const [loading, setLoading] = useState(false);
@@ -52,6 +81,7 @@ function App() {
   const [result, setResult] = useState(null);
   const [lastSynced, setLastSynced] = useState(null);
   const [connection, setConnection] = useState({ connected: null, message: "Checking connection..." });
+  const [expandedKeys, setExpandedKeys] = useState(new Set());
 
   const checkConnection = useCallback(async () => {
     try {
@@ -66,6 +96,27 @@ function App() {
     checkConnection();
   }, [checkConnection]);
 
+  const toggleKey = (key) => {
+    setExpandedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  const expandAll = () => {
+    if (!result) return;
+    setExpandedKeys(new Set(collectExpandableKeys(result.tree)));
+  };
+
+  const collapseAll = () => {
+    setExpandedKeys(new Set());
+  };
+
   const handleSearch = async (e) => {
     e.preventDefault();
     if (!bomId.trim()) return;
@@ -73,6 +124,7 @@ function App() {
     setLoading(true);
     setError(null);
     setResult(null);
+    setExpandedKeys(new Set());
 
     try {
       const response = await axios.get(`${API}/bom/search`, { params: { bom_id: bomId.trim() } });
@@ -90,7 +142,7 @@ function App() {
     }
   };
 
-  const activeCount = result ? result.rows.filter((r) => r.active).length : 0;
+  const activeCount = result ? result.total_components : 0;
 
   return (
     <div className="min-h-screen bg-[#F8F9FA] text-[#0A2540]">
@@ -215,6 +267,35 @@ function App() {
 
         {!loading && result && (
           <div className="border border-border/40 bg-white" data-testid="bom-results-table-container">
+            <div className="flex items-center justify-between border-b border-border/40 px-4 py-3">
+              <span className="font-heading text-xs uppercase tracking-wide text-[#0A2540]/60">
+                Drill down or expand the full tree
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={expandAll}
+                  className="font-heading text-xs rounded-full border-[#0A2540]/20"
+                  data-testid="expand-all-button"
+                >
+                  <ArrowsOutSimple size={14} className="mr-1.5" />
+                  Expand All
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={collapseAll}
+                  className="font-heading text-xs rounded-full border-[#0A2540]/20"
+                  data-testid="collapse-all-button"
+                >
+                  <ArrowsInSimple size={14} className="mr-1.5" />
+                  Collapse All
+                </Button>
+              </div>
+            </div>
             <Table>
               <TableHeader>
                 <TableRow className="border-border/40">
@@ -228,44 +309,62 @@ function App() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {result.rows.map((row, idx) => (
-                  <TableRow
-                    key={`${row.level}-${row.product_id}-${idx}`}
-                    className="border-border/40 hover:bg-[#F8F9FA] transition-colors"
-                    data-testid={`bom-row-${idx}`}
-                  >
-                    <TableCell className="font-data text-sm tabular-nums py-2 px-3">{row.level}</TableCell>
-                    <TableCell
-                      className="font-data text-sm tabular-nums py-2 px-3"
-                      style={{ paddingLeft: `${(row.level - 1) * 20 + 12}px` }}
+                {result &&
+                  flattenVisibleTree(result.tree, expandedKeys).map(({ node, path, depth, hasChildren }) => (
+                    <TableRow
+                      key={path}
+                      className="border-border/40 hover:bg-[#F8F9FA] transition-colors"
+                      data-testid={`bom-row-${path}`}
                     >
-                      {row.has_sub_bom ? "▾ " : ""}
-                      {row.product_id}
-                    </TableCell>
-                    <TableCell className="font-data text-sm py-2 px-3">{row.description || "—"}</TableCell>
-                    <TableCell className="font-data text-sm tabular-nums py-2 px-3">{row.quantity ?? "—"}</TableCell>
-                    <TableCell className="font-data text-sm py-2 px-3">{row.unit_of_measure || "—"}</TableCell>
-                    <TableCell className="font-data text-sm py-2 px-3">{row.eco_id || "—"}</TableCell>
-                    <TableCell className="py-2 px-3">
-                      <Badge
-                        className={
-                          row.active
-                            ? "bg-[#16A34A]/10 text-[#16A34A] border-[#16A34A]/30"
-                            : "bg-[#DC2626]/10 text-[#DC2626] border-[#DC2626]/30"
-                        }
-                        variant="outline"
+                      <TableCell className="font-data text-sm tabular-nums py-2 px-3">{node.level}</TableCell>
+                      <TableCell
+                        className="font-data text-sm tabular-nums py-2 px-3"
+                        style={{ paddingLeft: `${depth * 20 + 12}px` }}
                       >
-                        {row.active ? (
-                          <CheckCircle size={12} weight="fill" className="mr-1" />
-                        ) : (
-                          <XCircle size={12} weight="fill" className="mr-1" />
-                        )}
-                        {row.active ? "Yes" : "No"}
-                      </Badge>
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {result.total_components === 0 && (
+                        <span className="inline-flex items-center gap-1.5">
+                          {hasChildren ? (
+                            <button
+                              type="button"
+                              onClick={() => toggleKey(path)}
+                              className="text-[#0052FF] hover:text-[#0040CC] transition-colors"
+                              data-testid={`bom-toggle-${path}`}
+                            >
+                              {expandedKeys.has(path) ? (
+                                <CaretDown size={12} weight="bold" />
+                              ) : (
+                                <CaretRight size={12} weight="bold" />
+                              )}
+                            </button>
+                          ) : (
+                            <span className="w-3" />
+                          )}
+                          {node.product_id}
+                        </span>
+                      </TableCell>
+                      <TableCell className="font-data text-sm py-2 px-3">{node.description || "—"}</TableCell>
+                      <TableCell className="font-data text-sm tabular-nums py-2 px-3">{node.quantity ?? "—"}</TableCell>
+                      <TableCell className="font-data text-sm py-2 px-3">{node.unit_of_measure || "—"}</TableCell>
+                      <TableCell className="font-data text-sm py-2 px-3">{node.eco_id || "—"}</TableCell>
+                      <TableCell className="py-2 px-3">
+                        <Badge
+                          className={
+                            node.active
+                              ? "bg-[#16A34A]/10 text-[#16A34A] border-[#16A34A]/30"
+                              : "bg-[#DC2626]/10 text-[#DC2626] border-[#DC2626]/30"
+                          }
+                          variant="outline"
+                        >
+                          {node.active ? (
+                            <CheckCircle size={12} weight="fill" className="mr-1" />
+                          ) : (
+                            <XCircle size={12} weight="fill" className="mr-1" />
+                          )}
+                          {node.active ? "Yes" : "No"}
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                {result && result.total_components === 0 && (
                   <TableRow>
                     <TableCell colSpan={7} className="text-center py-8 font-data text-sm text-[#0A2540]/50">
                       No components found for this BOM

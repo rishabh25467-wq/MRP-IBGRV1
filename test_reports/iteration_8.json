@@ -1,0 +1,24 @@
+{
+  "summary": "Verified new collapsible drill-down tree UI + Expand All/Collapse All + regression on stats and data. Backend response now returns `tree` (nested) instead of flat `rows`; rewrote backend_test.py to walk the tree and re-validate 91/5 for FLT2_4.1 and 23/2 for 8060522_1. All 12 backend tests pass. All frontend flows work exactly as specified: default drill-down shows only level-1 rows, chevron toggles children in/out, Expand All reveals full tree, Collapse All returns to level-1 only, fresh search resets collapse state, bare-part-number resolution + resolved badge, invalid-BOM error alert, SAP Connected indicator green.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Minor doc mismatch: the review request states 8060522_1 has 8 Level-1 rows, but SAP actually returns 10 Level-1 rows (total_components is still 23 as expected). Behaviour is correct; only the task description count was off. No code fix required."
+  ],
+  "critical_code_review_comments": [],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (12/12)", "frontend": "100%"},
+  "seed_data_creation": "None - uses live SAP data.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend response shape uses `tree` (List[BomNode] with nested `children`) - do NOT use the old `rows` field. Use flatten_tree() helper in backend_test.py. For 8060522_1: 10 Level-1 root nodes, 23 total (task description of '8 level-1' is inaccurate; SAP returns 10). FLT2_4.1: 16 Level-1 root nodes, 91 total, max_level 5. Frontend testids: bom-row-{path} (e.g. bom-row-0, bom-row-0-1), bom-toggle-{path}, expand-all-button, collapse-all-button. Level indentation confirmed: 12px @ L1, 32px @ L2 (20px per level). Correct preview URL: https://sap-data-sync.preview.emergentagent.com (NOT sapbom.preview...).",
+  "rca_of_the_issue": "N/A - no defects. Only reported the doc count discrepancy (8 vs 10 Level-1 rows for 8060522_1)."
+}
