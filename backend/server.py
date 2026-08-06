@@ -12,6 +12,8 @@ from starlette.middleware.cors import CORSMiddleware
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from bom_categorizer import categorize_items, BomCategorizerError
+from oms_client import OMSClient, OMSError
+from purchasing_plan import build_purchasing_plan
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -32,6 +34,12 @@ sap_valuation_client = SAPValuationClient(
     base_url=os.environ['SAP_ODATA_BASE_URL'],
     username=os.environ['SAP_ODATA_USERNAME'],
     password=os.environ['SAP_ODATA_PASSWORD'],
+)
+
+oms_client = OMSClient(
+    base_url=os.environ['OMS_BASE_URL'],
+    username=os.environ['OMS_USERNAME'],
+    password=os.environ['OMS_PASSWORD'],
 )
 
 
@@ -86,6 +94,28 @@ class CategorizeResponse(BaseModel):
     categories: dict[str, str]
 
 
+class PurchasingPlanComponent(BaseModel):
+    product_id: str
+    description: Optional[str] = None
+    unit_of_measure: Optional[str] = None
+    qty_by_month: dict[str, float]
+    unit_cost: Optional[float] = None
+    currency: Optional[str] = None
+    value_by_month: dict[str, Optional[float]]
+
+
+class MissingBom(BaseModel):
+    part_no: str
+    sap_id: Optional[str] = None
+    reason: str
+
+
+class PurchasingPlanResponse(BaseModel):
+    months: List[str]
+    components: List[PurchasingPlanComponent]
+    missing_boms: List[MissingBom]
+
+
 @api_router.get("/")
 async def root():
     return {"message": "SAP BOM Lookup API"}
@@ -134,6 +164,18 @@ async def categorize(payload: CategorizeRequest):
     except BomCategorizerError as e:
         raise HTTPException(status_code=502, detail=str(e))
     return CategorizeResponse(categories=categories)
+
+
+@api_router.get("/purchasing-plan", response_model=PurchasingPlanResponse)
+async def purchasing_plan():
+    try:
+        result = await asyncio.to_thread(build_purchasing_plan, oms_client, sap_soap_client, sap_valuation_client)
+    except OMSError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        logger.error(f"Purchasing plan generation failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to generate purchasing plan: {e}")
+    return PurchasingPlanResponse(**result)
 
 
 app.include_router(api_router)

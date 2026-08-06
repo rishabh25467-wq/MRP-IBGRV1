@@ -1,0 +1,105 @@
+"""Radish OMS (external Order Management System) client.
+
+Provides the sales-forecast data used by the Purchasing Plan feature:
+  - wm-part-map: OMS SKU/part number -> SAP part/BOM ID
+  - sales-monthly/customers: list of customers with sales for a given month
+  - sales-monthly/parts: per-customer part-level sales forecast for a month
+
+Auth: POST /api/auth/login with username/password returns a Bearer JWT.
+The token is cached and only re-fetched on expiry or a 401 response.
+"""
+import logging
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+import requests
+
+logger = logging.getLogger(__name__)
+
+TOKEN_REFRESH_SECONDS = 30 * 60
+
+
+class OMSError(Exception):
+    pass
+
+
+class OMSClient:
+    def __init__(self, base_url: str, username: str, password: str):
+        self.base_url = base_url.rstrip("/")
+        self.username = username
+        self.password = password
+        self._token = None
+        self._token_fetched_at = 0
+
+    def _login(self):
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/auth/login",
+                json={"username": self.username, "password": self.password},
+                timeout=20,
+            )
+        except requests.exceptions.RequestException as e:
+            raise OMSError(f"Could not reach OMS: {e}")
+        if resp.status_code != 200:
+            raise OMSError(f"OMS login failed: HTTP {resp.status_code}")
+        self._token = resp.json()["token"]
+        self._token_fetched_at = time.time()
+
+    def _get(self, path: str, params: dict = None):
+        if not self._token or (time.time() - self._token_fetched_at) > TOKEN_REFRESH_SECONDS:
+            self._login()
+        resp = requests.get(
+            f"{self.base_url}{path}",
+            headers={"Authorization": f"Bearer {self._token}"},
+            params=params,
+            timeout=30,
+        )
+        if resp.status_code == 401:
+            self._login()
+            resp = requests.get(
+                f"{self.base_url}{path}",
+                headers={"Authorization": f"Bearer {self._token}"},
+                params=params,
+                timeout=30,
+            )
+        if resp.status_code != 200:
+            raise OMSError(f"OMS request to {path} failed: HTTP {resp.status_code}: {resp.text[:200]}")
+        return resp.json()
+
+    def get_part_map(self) -> dict:
+        """Returns {oms_part_no: sap_part_id}."""
+        return self._get("/api/ms/wm-part-map").get("map", {})
+
+    def get_customers(self, month: str) -> list:
+        return self._get("/api/ms/sales-monthly/customers", {"month": month}).get("customers", [])
+
+    def get_parts(self, month: str, customer: str) -> list:
+        return self._get(
+            "/api/ms/sales-monthly/parts",
+            {"month": month, "customer": customer, "view": "fulfilment"},
+        ).get("parts", [])
+
+    def get_monthly_demand(self, month: str) -> dict:
+        """Aggregates planned (forecast) quantity per OMS part number, across
+        every customer, for a given 'YYYY-MM' month. Returns {part_no: qty}."""
+        customers = self.get_customers(month)
+
+        def fetch(customer_name):
+            try:
+                return self.get_parts(month, customer_name)
+            except OMSError as e:
+                logger.warning(f"Failed to fetch OMS parts for '{customer_name}' in {month}: {e}")
+                return []
+
+        names = [c["customer_name"] for c in customers if c.get("customer_name")]
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(fetch, names))
+
+        demand = {}
+        for parts in results:
+            for part in parts:
+                part_no = part.get("part_no")
+                qty = part.get("planned_qty") or 0
+                if part_no:
+                    demand[part_no] = demand.get(part_no, 0) + qty
+        return demand

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import "@/App.css";
 import axios from "axios";
 import * as XLSX from "xlsx";
@@ -29,6 +28,7 @@ import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Toaster, toast } from "@/components/ui/sonner";
+import { NavTabs } from "@/components/NavTabs";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -143,25 +143,6 @@ const flattenVisibleTree = (nodes, expandedKeys, depth = 0, prefix = "") => {
   });
   return out;
 };
-
-const NavTabs = () => (
-  <div className="flex items-center gap-1">
-    <Link
-      to="/"
-      className="px-3 py-1 rounded-sm text-xs font-bold font-heading bg-white/20 text-white"
-      data-testid="nav-bom-explorer"
-    >
-      BOM Explorer
-    </Link>
-    <Link
-      to="/purchasing-plan"
-      className="px-3 py-1 rounded-sm text-xs font-bold font-heading text-white/70 hover:bg-white/10 hover:text-white transition-colors"
-      data-testid="nav-purchasing-plan"
-    >
-      Purchasing Plan
-    </Link>
-  </div>
-);
 
 export default function BomExplorerPage() {
   const [bomId, setBomId] = useState("");
