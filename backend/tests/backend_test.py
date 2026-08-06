@@ -122,6 +122,36 @@ class TestBomSearch:
                 assert row["eco_id"] != "FLT2_4.3", "Stale eco FLT2_4.3 on instruction manual row"
 
 
+# ---- NEW FEATURE: bare part number auto-resolves to latest revision ----
+class TestBarePartNumberResolution:
+    """When user enters a bare part number (no _1/_2 suffix), backend must
+    fall back to output-product resolution and pick the latest revision."""
+
+    def test_bare_8060522_resolves_to_8060522_1(self, api):
+        r = api.get(f"{BASE_URL}/api/bom/search", params={"bom_id": "8060522"}, timeout=120)
+        assert r.status_code == 200, r.text[:500]
+        data = r.json()
+        assert data["bom_id"] == "8060522_1", f"Expected resolved bom_id='8060522_1', got {data['bom_id']}"
+        assert data["total_components"] == 23, f"Expected 23 got {data['total_components']}"
+        assert data["max_level"] == 2, f"Expected max_level=2 got {data['max_level']}"
+        assert len(data["rows"]) == 23
+
+    def test_bare_6800_004061_resolves_to_latest_revision_2(self, api):
+        r = api.get(f"{BASE_URL}/api/bom/search", params={"bom_id": "6800-004061"}, timeout=120)
+        assert r.status_code == 200, r.text[:500]
+        data = r.json()
+        assert data["bom_id"] == "6800-004061_2", (
+            f"Expected latest revision '6800-004061_2', got {data['bom_id']} "
+            "(must NOT resolve to old _1 revision)"
+        )
+        assert data["total_components"] == 19, f"Expected 19 got {data['total_components']}"
+
+    def test_totally_invalid_part_returns_404(self, api):
+        r = api.get(f"{BASE_URL}/api/bom/search", params={"bom_id": "NOTAREALPART999"}, timeout=60)
+        assert r.status_code == 404, r.text[:500]
+        assert "not found" in r.json().get("detail", "").lower()
+
+
 # ---- Stability / reliability regression: retry fix for transient SAP timeouts ----
 # NOTE: kept in TestBomSearch class so pytest-xdist loadscope pins it to the same worker
 # as test_search_flt2_4_1_multilevel; two concurrent FLT2 explosions on different workers

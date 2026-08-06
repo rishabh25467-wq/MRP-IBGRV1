@@ -1,0 +1,20 @@
+{
+  "summary": "Iteration 7: Verified NEW bare-part-number auto-resolution feature end-to-end (backend + frontend). Added TestBarePartNumberResolution class to backend_test.py with 3 new cases. Backend pytest: 11/12 PASS in ~130s — the single failure was TestConnectionStatus timing out at SAP endpoint during concurrent xdist loadscope run (the same Cloudflare/SAP concurrency artifact flagged in iteration_6). Serial retry of that exact test: PASSED in 1.2s, confirming it is infra-concurrency-related, not an app defect. All new-feature and regression tests passed on the first run: bare '8060522'→resolved bom_id '8060522_1', 23/2; bare '6800-004061'→resolved '6800-004061_2' (NOT stale _1), 19 components; exact 'FLT2_4.1'→91/5 with INSTRUCTION MANUAL row 6902-602142/FLT2_4.4 intact; exact '8060522_1'→23/2 identical to bare; 'NOTAREALPART999'→404 with detail 'BOM NOTAREALPART999 not found in SAP'. Frontend Playwright E2E on public URL: placeholder updated to 'Enter Part/BOM ID e.g. P26584 or FLT2_4.1'; bare '8060522' UI shows toast 'BOM 8060522_1 loaded, 23 components across 2 levels' + MAX LEVEL 2 / TOTAL 23 / 23 tbody rows; bare '6800-004061' shows resolved id '6800-004061_2' + 19 rows; FLT2_4.1 shows 91/5 with 6902-602142 & FLT2_4.4 present; exact 8060522_1 shows 23/2; NOTAREALPART999 shows bom-search-error-alert 'Lookup failed — BOM 'NOTAREALPART999' not found in SAP'. Backward compatibility fully preserved.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "pytest.ini `-n 2 --dist loadscope` still causes flaky TestConnectionStatus failures when placed on a different worker than the heavy TestBomSearch — connection-status probe can time out at SAP while the other worker is mid-explosion. Consider running SOAP-dependent tests serially (`-n 0`) or pinning connection-status into the TestBomSearch xdist group.",
+    "Carry-over: legacy /app/backend/sap_client.py (OData, unused) still in repo — candidate for deletion.",
+    "Consider adding UI badge/label that explicitly shows 'Resolved to <bom_id>' when the user-typed input differs from the returned bom_id (currently only visible in the toast, which auto-dismisses — resolved id is not persistently shown in the results header)."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None - live SAP tenant data.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "N/A (no app auth). SAP SOAP creds in backend/.env.",
+  "context_for_next_testing_agent": "New bare-part-number fallback feature verified stable in this iteration. Backend uses `_fetch_bom_by_id(bom_id) or _fetch_bom_by_output_product(bom_id)` — exact ID priority preserved, output-product fallback correctly returns latest revision via _revision_number ranking (verified 6800-004061_2 over _1). Same TestConnectionStatus xdist-concurrency flake as iteration_6 re-observed; ignore under xdist, verify serially. Regression suite (FLT2_4.1=91/5 and 8060522_1=23/2) still green.",
+  "rca_of_the_issue": "N/A — no defects found. TestConnectionStatus xdist failure RCA: two workers hitting SAP simultaneously (heavy explosion on gw0 + connect-status probe on gw1) can trigger a 30s ConnectTimeout at SAP; retrying serially always passes. Not an app bug."
+}

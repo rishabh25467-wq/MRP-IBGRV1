@@ -139,7 +139,7 @@ function App() {
             <Input
               value={bomId}
               onChange={(e) => setBomId(e.target.value)}
-              placeholder="Enter BOM ID e.g. 8060522_1"
+              placeholder="Enter Part/BOM ID e.g. P26584 or FLT2_4.1"
               className="pl-10 font-data border-[#0A2540]/20 focus-visible:ring-[#0052FF] focus-visible:ring-2"
               data-testid="bom-id-search-input"
             />

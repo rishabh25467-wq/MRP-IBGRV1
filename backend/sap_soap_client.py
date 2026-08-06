@@ -163,15 +163,17 @@ class SAPSoapBOMClient:
         """Recursively explode a BOM into a flat multi-level list, resolving each
         component's own sub-BOM (if any) by output product, matching SAP's native
         Multi-Level BoM Visualization report. Processed level-by-level (BFS) with
-        concurrent sub-BOM lookups for speed."""
-        root = self._fetch_bom_by_id(bom_id)
+        concurrent sub-BOM lookups for speed. Accepts either an exact BOM ID
+        (e.g. 'P26584_2') or a bare product/part ID (e.g. 'P26584'), in which case
+        the latest active revision is resolved automatically via output product."""
+        root = self._fetch_bom_by_id(bom_id) or self._fetch_bom_by_output_product(bom_id)
         if root is None:
             return None
 
         sub_bom_cache = {}
         rows = []
         lookups_done = 0
-        frontier = [(root, 1, frozenset({bom_id}))]
+        frontier = [(root, 1, frozenset({bom_id, root["bom_id"]}))]
 
         while frontier and lookups_done < MAX_LOOKUPS:
             candidate_ids = set()
