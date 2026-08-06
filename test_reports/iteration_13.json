@@ -1,0 +1,24 @@
+{
+  "summary": "Focused UI/E2E testing on Total BOM Cost double-counting fix and new AI Categorize feature, plus data-leakage/reset check on BOM switch and quick regression smoke-checks. All passed.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "computeTotalCost() in App.js correctly does direct-cost-or-fallback-to-children rollup, verified numerically: for P26584 (7 rows), top-level sum (MPS-B 1.85 + P26688 9.85 + P26680 16.05 + FLAP3943 0.01 + ZINC-ING 8.88 = 36.64) matches displayed Total BOM Cost (INR 36.65, 0.01 diff from per-row rounding) - correctly excludes double-counting children (ROD-9 8.19, SH6.0HR 20.52) since parents P26688/P26680 already have direct costs.",
+    "collectAllItems() correctly excludes nodes with children (hasChildren check) - confirmed only leaf items sent to /api/bom/categorize.",
+    "CATEGORY column rendering correctly checks hasChildren first -> shows plain italic gray 'Sub-Assembly' text for P26688/P26680, never a purple AI badge, both before and after categorization runs."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A - no backend endpoint changes tested via curl this round (relied on UI e2e)", "frontend": "100% (all requested flows verified)"},
+  "test_credentials": "N/A - no app-level auth.",
+  "seed_data_creation": "None - used live SAP data (P26584_3, 5989828_4).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Verified this session's targeted items: (1) Total BOM Cost double-counting fix - CONFIRMED WORKING: displayed total (INR 36.65) equals sum of only the 5 top-level rows' ext costs, not the sum including nested children ROD-9/SH6.0HR (which would be ~65.36) - no double counting. (2) AI Categorize - CONFIRMED WORKING: button transitions 'AI Categorize' -> 'Categorizing...' -> 'Re-Categorize'; leaf items (MPS-B=Packaging, ROD-9=Steel, SH6.0HR=Sheet Metal, FLAP3943=Packaging, ZINC-ING=Zinc) get purple/colored badges; parent items with children (P26688, P26680) correctly show plain italic gray 'Sub-Assembly' text, not a category badge - this is the key regression fix and it works. Clicking Re-Categorize a second time re-ran without errors and repopulated correctly. (3) Switching from P26584 (with costs+categories loaded) to BOM 5989828 correctly reset Total BOM Cost stat to '—', reset both action buttons back to their initial 'Load Standard Costs'/'AI Categorize' labels, and reset STD COST/EXT COST/CATEGORY columns to '—' placeholders for the new BOM - no data leakage. (4) BOM 5989828 data-accuracy regression re-check passed: '5989828-24' shows qty=2 EA, 'HRPO1.8X45.1' shows qty=0.1 MASS - matches expected fixed values. No bugs found in any of the new/changed features this session.",
+  "rca_of_the_issue": "N/A - no functional bugs found."
+}

@@ -11,6 +11,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_valuation_client import SAPValuationClient, SAPValuationError
+from bom_categorizer import categorize_items, BomCategorizerError
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -77,6 +78,14 @@ class StandardCostsResponse(BaseModel):
     costs: dict[str, Optional[StandardCost]]
 
 
+class CategorizeRequest(BaseModel):
+    items: List[dict]
+
+
+class CategorizeResponse(BaseModel):
+    categories: dict[str, str]
+
+
 @api_router.get("/")
 async def root():
     return {"message": "SAP BOM Lookup API"}
@@ -116,6 +125,15 @@ async def standard_costs(payload: StandardCostsRequest):
     except SAPValuationError as e:
         raise HTTPException(status_code=502, detail=str(e))
     return StandardCostsResponse(costs=costs)
+
+
+@api_router.post("/bom/categorize", response_model=CategorizeResponse)
+async def categorize(payload: CategorizeRequest):
+    try:
+        categories = await categorize_items(payload.items)
+    except BomCategorizerError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return CategorizeResponse(categories=categories)
 
 
 app.include_router(api_router)

@@ -19,6 +19,7 @@ import {
   FileArrowDown,
   Database,
   CurrencyCircleDollar,
+  Sparkle,
 } from "@phosphor-icons/react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -52,6 +53,21 @@ const collectAllUuids = (nodes) => {
     }
   });
   return uuids;
+};
+
+const collectAllItems = (nodes) => {
+  const items = new Map();
+  const walk = (list) => {
+    list.forEach((node) => {
+      const hasChildren = node.children && node.children.length > 0;
+      if (node.product_id && !hasChildren && !items.has(node.product_id)) {
+        items.set(node.product_id, { product_id: node.product_id, description: node.description });
+      }
+      if (hasChildren) walk(node.children);
+    });
+  };
+  walk(nodes);
+  return Array.from(items.values());
 };
 
 const computeTotalCost = (nodes, costs) => {
@@ -137,6 +153,9 @@ function App() {
   const [costs, setCosts] = useState({});
   const [loadingCosts, setLoadingCosts] = useState(false);
   const [costsLoaded, setCostsLoaded] = useState(false);
+  const [categories, setCategories] = useState({});
+  const [loadingCategories, setLoadingCategories] = useState(false);
+  const [categoriesLoaded, setCategoriesLoaded] = useState(false);
 
   const checkConnection = useCallback(async () => {
     try {
@@ -205,6 +224,27 @@ function App() {
     }
   };
 
+  const loadCategories = async () => {
+    if (!result) return;
+    const items = collectAllItems(result.tree);
+    if (items.length === 0) {
+      toast.info("No components found in this BOM");
+      return;
+    }
+    setLoadingCategories(true);
+    try {
+      const response = await axios.post(`${API}/bom/categorize`, { items });
+      setCategories(response.data.categories || {});
+      setCategoriesLoaded(true);
+      toast.success("AI categorization complete", { description: `${Object.keys(response.data.categories || {}).length} components classified` });
+    } catch (err) {
+      const detail = err?.response?.data?.detail || "Failed to categorize components with AI";
+      toast.error("Categorization failed", { description: detail });
+    } finally {
+      setLoadingCategories(false);
+    }
+  };
+
   const handleSearch = async (e) => {
     e.preventDefault();
     if (!bomId.trim()) return;
@@ -215,6 +255,8 @@ function App() {
     setExpandedKeys(new Set());
     setCosts({});
     setCostsLoaded(false);
+    setCategories({});
+    setCategoriesLoaded(false);
 
     try {
       const response = await axios.get(`${API}/bom/search`, { params: { bom_id: bomId.trim() } });
@@ -339,6 +381,17 @@ function App() {
           <Button
             type="button"
             size="sm"
+            onClick={loadCategories}
+            disabled={!result || loadingCategories}
+            className="h-8 bg-[#5925DC] hover:bg-[#4A1FB8] text-white text-xs rounded-sm transition-colors"
+            data-testid="ai-categorize-button"
+          >
+            <Sparkle size={13} className="mr-1.5" />
+            {loadingCategories ? "Categorizing..." : categoriesLoaded ? "Re-Categorize" : "AI Categorize"}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
             onClick={exportToExcel}
             disabled={!result}
             className="h-8 bg-[#027A48] hover:bg-[#02623A] text-white text-xs rounded-sm transition-colors"
@@ -402,7 +455,7 @@ function App() {
             <table className="border-collapse w-full" data-testid="bom-tree-table">
               <thead>
                 <tr>
-                  {["Level", "Product ID", "Description", "Quantity", "UOM", "ECO", "Active", "Std Cost", "Ext Cost"].map((h) => (
+                  {["Level", "Product ID", "Description", "Category", "Quantity", "UOM", "ECO", "Active", "Std Cost", "Ext Cost"].map((h) => (
                     <th
                       key={h}
                       className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide"
@@ -444,6 +497,23 @@ function App() {
                       </span>
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] text-[#101828]">{node.description || "—"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1 text-[13px]" data-testid={`bom-category-${path}`}>
+                      {hasChildren ? (
+                        <span className="text-[#98A2B3] italic">Sub-Assembly</span>
+                      ) : loadingCategories ? (
+                        <span className="text-[#98A2B3]">…</span>
+                      ) : categoriesLoaded ? (
+                        categories[node.product_id] ? (
+                          <Badge className="bg-[#F4F3FF] text-[#5925DC] border-[#D9D6FE] rounded" variant="outline">
+                            {categories[node.product_id]}
+                          </Badge>
+                        ) : (
+                          <span className="text-[#98A2B3]">—</span>
+                        )
+                      ) : (
+                        <span className="text-[#98A2B3]">—</span>
+                      )}
+                    </td>
                     <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828]">{node.quantity ?? "—"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] text-[#101828]">{node.unit_of_measure || "—"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] text-[#101828]">{node.eco_id || "—"}</td>
@@ -486,7 +556,7 @@ function App() {
                 ))}
                 {result.total_components === 0 && (
                   <tr>
-                    <td colSpan={9} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]">
+                    <td colSpan={10} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]">
                       No components found for this BOM
                     </td>
                   </tr>
