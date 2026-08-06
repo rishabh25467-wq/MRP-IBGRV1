@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import "@/App.css";
 import axios from "axios";
+import * as XLSX from "xlsx";
 import {
   MagnifyingGlass,
   Circle,
@@ -15,6 +16,7 @@ import {
   CaretDown,
   ArrowsOutSimple,
   ArrowsInSimple,
+  FileArrowDown,
 } from "@phosphor-icons/react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -59,6 +61,25 @@ const collectExpandableKeys = (nodes, prefix = "") => {
     }
   });
   return keys;
+};
+
+const flattenFullTree = (nodes, depth = 0) => {
+  let out = [];
+  nodes.forEach((node) => {
+    out.push({
+      Level: depth + 1,
+      "Product ID": node.product_id,
+      Description: node.description || "",
+      Quantity: node.quantity ?? "",
+      UOM: node.unit_of_measure || "",
+      ECO: node.eco_id || "",
+      Active: node.active ? "Yes" : "No",
+    });
+    if (node.children && node.children.length > 0) {
+      out = out.concat(flattenFullTree(node.children, depth + 1));
+    }
+  });
+  return out;
 };
 
 const flattenVisibleTree = (nodes, expandedKeys, depth = 0, prefix = "") => {
@@ -115,6 +136,17 @@ function App() {
 
   const collapseAll = () => {
     setExpandedKeys(new Set());
+  };
+
+  const exportToExcel = () => {
+    if (!result) return;
+    const data = flattenFullTree(result.tree);
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    worksheet["!cols"] = [{ wch: 7 }, { wch: 20 }, { wch: 40 }, { wch: 10 }, { wch: 8 }, { wch: 16 }, { wch: 8 }];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "BOM");
+    XLSX.writeFile(workbook, `BOM_${result.bom_id}.xlsx`);
+    toast.success("Excel file downloaded", { description: `BOM_${result.bom_id}.xlsx` });
   };
 
   const handleSearch = async (e) => {
@@ -293,6 +325,16 @@ function App() {
                 >
                   <ArrowsInSimple size={14} className="mr-1.5" />
                   Collapse All
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={exportToExcel}
+                  className="bg-[#0A2540] hover:bg-[#0A2540]/80 text-white font-heading text-xs rounded-full"
+                  data-testid="export-excel-button"
+                >
+                  <FileArrowDown size={14} className="mr-1.5" />
+                  Export to Excel
                 </Button>
               </div>
             </div>
