@@ -59,6 +59,11 @@
 - Frontend: default "drill down" mode shows only Level-1 rows collapsed; click a chevron to expand/collapse a branch; "Expand All"/"Collapse All" buttons control the whole tree at once; fresh search resets to collapsed. Rendering uses a flattened-visible-rows helper (not a recursive JSX component) to avoid a babel/visual-edits plugin crash on self-referencing components.
 - Verified: testing agent 100% pass (12/12 backend, all frontend flows) — data correctness (91/5 for FLT2_4.1, 23/2 for 8060522_1) unaffected by the UI-only restructuring.
 
+## Feature: Excel Export (2026-08-06)
+- Added "Export to Excel" button (client-side, `xlsx`/SheetJS library) that downloads the FULL BOM tree (not just visible/expanded rows) as `BOM_{bom_id}.xlsx` with columns Level, Product ID, Description, Quantity, UOM, ECO, Active in DFS parent-then-children order.
+- No backend changes — reuses already-fetched tree data in browser memory, no extra SAP calls.
+- Verified: testing agent 100% pass — correct filenames, full row counts (23 for 8060522_1, 91 for FLT2_4.1) regardless of UI collapse state, button correctly hidden until a search succeeds.
+
 ## Backlog / Next Tasks
 - P1: Excel/CSV export of search results
 - P1: Bulk/all-BOMs pull mode
