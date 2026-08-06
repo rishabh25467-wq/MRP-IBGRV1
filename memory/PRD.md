@@ -40,6 +40,12 @@
 - Removed unused `sap_client.py` (old OData-only module, fully superseded by SOAP).
 - Known follow-up (not yet built): sub-BOM lookup failures (SAP timeouts) are silently swallowed with no retry — could cause a silently incomplete subtree on a slow SAP day.
 
+## Bug Fix #3 (2026-08-06): Stale Revision Within Single Line Item
+- User spotted a precision mismatch: level-1 "INSTRUCTION MANUAL" line showed stale product code `6902-602120`/ECO `FLT2_4.3` when SAP's live UI showed current `6902-602142`/ECO `FLT2_4.4`.
+- Root cause: a single ItemGroupItem in the SOAP response can carry MULTIPLE `ProductionBillOfMaterialItemGroupChangeState` entries (revision history for that exact line); parser was grabbing the first (oldest) via `re.search` instead of the latest.
+- Fixed: for each ItemGroupItem, now compares all ChangeState entries' `EngineeringChangeOrderID` revision suffix (float-parsed, handles both integer `_2` and decimal `_4.4` suffixes) and extracts fields from only the highest-revision one.
+- Verified: FLT2_4.1 output now matches the reference Excel with ZERO discrepancies across all 5 levels/91 components. Testing agent: 100% pass, no regressions.
+
 ## Backlog / Next Tasks
 - P1: Excel/CSV export of search results
 - P1: Bulk/all-BOMs pull mode

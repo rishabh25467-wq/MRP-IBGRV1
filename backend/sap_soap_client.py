@@ -1,6 +1,7 @@
 """SAP Business ByDesign multi-level BOM explosion via QueryProductionBillofMaterialsIn SOAP service."""
 import logging
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
@@ -225,8 +226,11 @@ class SAPSoapBOMClient:
         }
 
     def _safe_fetch_by_output_product(self, product_id: str):
-        try:
-            return self._fetch_bom_by_output_product(product_id)
-        except SAPSoapError as e:
-            logger.warning(f"Sub-BOM lookup failed for {product_id}: {e}")
-            return None
+        for attempt in range(3):
+            try:
+                return self._fetch_bom_by_output_product(product_id)
+            except SAPSoapError as e:
+                logger.warning(f"Sub-BOM lookup failed for {product_id} (attempt {attempt + 1}/3): {e}")
+                if attempt < 2:
+                    time.sleep(1.5 * (attempt + 1))
+        return None

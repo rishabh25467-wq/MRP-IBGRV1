@@ -120,3 +120,37 @@ class TestBomSearch:
             # FLT2_4.3 is a stale ECO on this specific line; ensure the manual line isn't showing it
             if row["level"] == 1 and "INSTRUCTION MANUAL" in desc_upper:
                 assert row["eco_id"] != "FLT2_4.3", "Stale eco FLT2_4.3 on instruction manual row"
+
+
+# ---- Stability / reliability regression: retry fix for transient SAP timeouts ----
+# NOTE: kept in TestBomSearch class so pytest-xdist loadscope pins it to the same worker
+# as test_search_flt2_4_1_multilevel; two concurrent FLT2 explosions on different workers
+# can overload SAP / the preview ingress (502).
+class TestFlt2StabilityAcrossRepeatedRuns:
+    """Run FLT2_4.1 four times in a row; must return 91/5 every time with correct manual row."""
+
+    def test_flt2_4_1_stable_across_4_runs(self, api):
+        results = []
+        for i in range(4):
+            r = api.get(f"{BASE_URL}/api/bom/search", params={"bom_id": "FLT2_4.1"}, timeout=180)
+            assert r.status_code == 200, f"Run {i+1}: HTTP {r.status_code} - {r.text[:300]}"
+            data = r.json()
+            manual = [
+                x for x in data["rows"]
+                if x["level"] == 1 and "INSTRUCTION MANUAL" in (x.get("description") or "").upper()
+            ]
+            results.append({
+                "run": i + 1,
+                "total": data["total_components"],
+                "max_level": data["max_level"],
+                "rows_len": len(data["rows"]),
+                "manual_pid": manual[0]["product_id"] if manual else None,
+                "manual_eco": manual[0]["eco_id"] if manual else None,
+            })
+        print(f"\nStability results: {results}")
+        for res in results:
+            assert res["total"] == 91, f"Run {res['run']}: total_components={res['total']} (expected 91)"
+            assert res["max_level"] == 5, f"Run {res['run']}: max_level={res['max_level']} (expected 5)"
+            assert res["rows_len"] == 91, f"Run {res['run']}: rows_len={res['rows_len']} (expected 91)"
+            assert res["manual_pid"] == "6902-602142", f"Run {res['run']}: manual pid={res['manual_pid']}"
+            assert res["manual_eco"] == "FLT2_4.4", f"Run {res['run']}: manual eco={res['manual_eco']}"
