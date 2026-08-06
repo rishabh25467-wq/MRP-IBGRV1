@@ -73,3 +73,14 @@
 
 ## Update - Feb 2026
 - Fixed: Entire Product ID cell (not just chevron icon) is now clickable to expand/collapse tree rows. Added hover highlight (`hover:bg-[#E5F0FA]`) and `cursor-pointer` on cells with children. Verified via screenshot tool - clicking anywhere in a parent row's Product ID cell toggles expand/collapse correctly.
+
+## Update - Feb 2026 (Session 2)
+- Fixed: Entire Product ID cell clickable to expand/collapse (not just chevron icon)
+- Fixed 2 real SAP data-accuracy bugs in sap_soap_client.py:
+  1. Header BOM revision selection now prefers ConsistencyStatus=3 (Consistent/released) over merely highest numeric suffix (a "Check Pending" revision was being wrongly preferred)
+  2. Item-level ECO change-state selection now prefers an ECO ID that matches the item's own product ID naming convention (part-specific ECO) over unrelated higher-numbered batch ECO counters - fixes cases with messy/mixed ECO ID history on a single line item
+- NEW: Live Standard Cost per BOM component via SAP OData custom service "materialvaluationdata" (Business Object: MaterialValuationData). Chain: Product UUID -> ValuationLevel (filter by MaterialUUID) -> ObjectID (converted to dashed UUID) -> ValuationPrice (filter by ValuationLevelUUID) -> pick currently-valid record by date range. New file `/app/backend/sap_valuation_client.py`, endpoint `POST /api/bom/standard-costs`. Credentials: SAP_ODATA_USERNAME/PASSWORD in backend/.env (business user UNEECOPSTEAM, NOT the technical SOAP user - technical users can't hold Business Roles in this tenant).
+- NEW: Total BOM Cost rollup stat card - sums each top-level branch's own direct cost, only falling back to summing a node's children when the node itself has no direct cost (avoids double-counting a manufactured sub-assembly's cost AND its raw materials' costs together).
+- NEW: AI Categorize feature (GPT-5.4-mini via emergentintegrations, EMERGENT_LLM_KEY) - classifies each LEAF-level BOM component (not sub-assemblies) into a material category (Raw Material, Hardware, Zinc, Steel, Sheet Metal, Packaging, etc). New file `/app/backend/bom_categorizer.py`, endpoint `POST /api/bom/categorize`. Rule enforced: screw/washer/nut/bolt/rivet always -> "Hardware". Items with children show plain "Sub-Assembly" text, never sent to AI.
+- Investigated (dead end, documented for future reference): SAP Engineering Change Order status lookup (ManageEngineeringChangeOrderIn) - service exists but "Engineering Change Processing" communication scenario is not available for external Communication Arrangement setup in this tenant's edition. Gross/Net Weight - exhaustively tested, confirmed ZERO materials in the entire SAP tenant have weight data populated in any of 4 candidate custom fields (ItemNetWeight, TotalGrossMaster, zTotalNetWeight, zTotalGrossWeight) - not an integration issue, data simply doesn't exist in SAP yet.
+- All features tested via testing_agent_v4 (iteration_12, iteration_13) - all passed.

@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 BATCH_SIZE = 80
 
 SUGGESTED_CATEGORIES = [
-    "Raw Material", "Hardware", "Fastener", "Plastic", "Sheet Metal",
+    "Raw Material", "Hardware", "Plastic", "Sheet Metal",
     "Zinc", "Copper Alloy", "Aluminum", "Steel", "Stainless Steel",
     "Rubber/Elastomer", "Electronics", "Packaging", "Stationery",
     "Adhesive", "Label/Printing", "Sub-Assembly", "Other",
@@ -26,7 +26,10 @@ SYSTEM_MESSAGE = (
     "You are an expert manufacturing engineer who classifies Bill of Materials (BOM) "
     "line items into a single, concise material/type category based on their Product ID "
     "and Description. Prefer these common categories when they fit: "
-    f"{', '.join(SUGGESTED_CATEGORIES)}. If none fit well, use your own short (1-3 word) "
+    f"{', '.join(SUGGESTED_CATEGORIES)}. "
+    "IMPORTANT RULE: any screw, washer, nut, bolt, rivet, or similar fastener must ALWAYS "
+    "be categorized as 'Hardware' - never a separate 'Fastener' category. "
+    "If none of the suggested categories fit well, use your own short (1-3 word) "
     "category, but reuse the SAME label for similar items so results stay consistent. "
     "Respond with ONLY a valid JSON object mapping each product_id to its category string, "
     "no markdown, no explanation."
