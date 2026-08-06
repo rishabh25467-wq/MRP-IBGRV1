@@ -1,54 +1,281 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
 import axios from "axios";
-import { HOME } from "@/constants/testIds";
+import {
+  MagnifyingGlass,
+  Circle,
+  CheckCircle,
+  XCircle,
+  Package,
+  Stack,
+  CheckSquare,
+  ClockCounterClockwise,
+  WarningCircle,
+} from "@phosphor-icons/react";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Toaster, toast } from "@/components/ui/sonner";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
-const Home = () => {
-  const helloWorldApi = async () => {
+const StatCard = ({ icon: Icon, label, value, testId }) => (
+  <div
+    className="border border-border/40 bg-white p-5 flex flex-col gap-2"
+    data-testid={testId}
+  >
+    <div className="flex items-center gap-2 text-[#0A2540]/60">
+      <Icon size={16} weight="regular" />
+      <span className="font-heading text-xs uppercase tracking-wide">{label}</span>
+    </div>
+    <span className="font-data text-2xl tabular-nums font-semibold text-[#0A2540]">
+      {value}
+    </span>
+  </div>
+);
+
+function App() {
+  const [bomId, setBomId] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [result, setResult] = useState(null);
+  const [lastSynced, setLastSynced] = useState(null);
+  const [connection, setConnection] = useState({ connected: null, message: "Checking connection..." });
+
+  const checkConnection = useCallback(async () => {
     try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
+      const response = await axios.get(`${API}/bom/connection-status`);
+      setConnection(response.data);
     } catch (e) {
-      console.error(e, `errored out requesting / api`);
+      setConnection({ connected: false, message: "Unable to reach backend" });
+    }
+  }, []);
+
+  useEffect(() => {
+    checkConnection();
+  }, [checkConnection]);
+
+  const handleSearch = async (e) => {
+    e.preventDefault();
+    if (!bomId.trim()) return;
+
+    setLoading(true);
+    setError(null);
+    setResult(null);
+
+    try {
+      const response = await axios.get(`${API}/bom/search`, { params: { bom_id: bomId.trim() } });
+      setResult(response.data);
+      setLastSynced(new Date());
+      toast.success(`BOM ${response.data.bom_id} loaded`, {
+        description: `${response.data.total_components} components across ${response.data.total_groups} groups`,
+      });
+    } catch (err) {
+      const detail = err?.response?.data?.detail || "Failed to fetch BOM from SAP";
+      setError(detail);
+      toast.error("BOM lookup failed", { description: detail });
+    } finally {
+      setLoading(false);
     }
   };
 
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
+  const activeCount = result
+    ? result.groups.reduce(
+        (acc, g) => acc + g.components.filter((c) => c.active).length,
+        0
+      )
+    : 0;
 
   return (
-    <div>
-      <header className="App-header">
-        <a
-          data-testid={HOME.emergentLink}
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
+    <div className="min-h-screen bg-[#F8F9FA] text-[#0A2540]">
+      <Toaster position="top-right" />
+
+      <header className="border-b border-border/40 bg-white">
+        <div className="max-w-6xl mx-auto px-8 py-6 flex items-center justify-between gap-6">
+          <div>
+            <h1 className="font-heading text-4xl font-bold tracking-tight" data-testid="app-title">
+              SAP BOM Lookup
+            </h1>
+            <p className="font-data text-sm text-[#0A2540]/60 mt-1">
+              Business ByDesign · Production Bill of Material
+            </p>
+          </div>
+
+          <div
+            className="flex items-center gap-2 border border-border/40 px-3 py-2 rounded-full shrink-0"
+            data-testid="connection-status-indicator"
+          >
+            {connection.connected === null ? (
+              <Circle size={10} weight="fill" className="text-[#D97706] animate-pulse" />
+            ) : connection.connected ? (
+              <Circle size={10} weight="fill" className="text-[#16A34A] animate-pulse" />
+            ) : (
+              <Circle size={10} weight="fill" className="text-[#DC2626]" />
+            )}
+            <span className="font-data text-xs whitespace-nowrap">
+              {connection.connected === null
+                ? "Checking SAP..."
+                : connection.connected
+                ? "SAP Connected"
+                : "SAP Disconnected"}
+            </span>
+          </div>
+        </div>
       </header>
-    </div>
-  );
-};
 
-function App() {
-  return (
-    <div className="App">
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
+      <main className="max-w-6xl mx-auto px-8 py-10">
+        <form onSubmit={handleSearch} className="flex items-center gap-3 mb-10">
+          <div className="relative flex-1 max-w-md">
+            <MagnifyingGlass
+              size={18}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-[#0A2540]/40"
+            />
+            <Input
+              value={bomId}
+              onChange={(e) => setBomId(e.target.value)}
+              placeholder="Enter BOM ID e.g. 8060522_1"
+              className="pl-10 font-data border-[#0A2540]/20 focus-visible:ring-[#0052FF] focus-visible:ring-2"
+              data-testid="bom-id-search-input"
+            />
+          </div>
+          <Button
+            type="submit"
+            disabled={loading || !bomId.trim()}
+            className="bg-[#0052FF] hover:bg-[#0040CC] text-white rounded-full px-6 font-heading font-medium transition-colors"
+            data-testid="bom-search-submit-button"
+          >
+            {loading ? "Searching..." : "Pull BOM"}
+          </Button>
+        </form>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10">
+          <StatCard
+            icon={Stack}
+            label="Total Groups"
+            value={result ? result.total_groups : "—"}
+            testId="stat-total-groups"
+          />
+          <StatCard
+            icon={Package}
+            label="Total Components"
+            value={result ? result.total_components : "—"}
+            testId="stat-total-components"
+          />
+          <StatCard
+            icon={CheckSquare}
+            label="Active Materials"
+            value={result ? activeCount : "—"}
+            testId="stat-active-materials"
+          />
+          <StatCard
+            icon={ClockCounterClockwise}
+            label="Last Synced"
+            value={lastSynced ? lastSynced.toLocaleTimeString() : "—"}
+            testId="stat-last-synced"
+          />
+        </div>
+
+        {error && (
+          <Alert
+            variant="destructive"
+            className="mb-8 border-[#DC2626]/40 bg-[#DC2626]/5"
+            data-testid="bom-search-error-alert"
+          >
+            <WarningCircle size={18} />
+            <AlertTitle className="font-heading">Lookup failed</AlertTitle>
+            <AlertDescription className="font-data text-sm">{error}</AlertDescription>
+          </Alert>
+        )}
+
+        {loading && (
+          <div className="space-y-2" data-testid="bom-loading-skeleton">
+            {[...Array(6)].map((_, i) => (
+              <Skeleton key={i} className="h-10 w-full" />
+            ))}
+          </div>
+        )}
+
+        {!loading && result && (
+          <div className="border border-border/40 bg-white" data-testid="bom-results-table-container">
+            <Table>
+              <TableHeader>
+                <TableRow className="border-border/40">
+                  <TableHead className="font-heading text-xs uppercase tracking-wide">Group</TableHead>
+                  <TableHead className="font-heading text-xs uppercase tracking-wide">Line Item</TableHead>
+                  <TableHead className="font-heading text-xs uppercase tracking-wide">Material ID</TableHead>
+                  <TableHead className="font-heading text-xs uppercase tracking-wide">Quantity</TableHead>
+                  <TableHead className="font-heading text-xs uppercase tracking-wide">UOM</TableHead>
+                  <TableHead className="font-heading text-xs uppercase tracking-wide">ECO</TableHead>
+                  <TableHead className="font-heading text-xs uppercase tracking-wide">Active</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {result.groups.flatMap((group) =>
+                  group.components.map((comp, idx) => (
+                    <TableRow
+                      key={`${group.group_id}-${idx}`}
+                      className="border-border/40 hover:bg-[#F8F9FA] transition-colors"
+                      data-testid={`bom-row-${group.group_id}-${idx}`}
+                    >
+                      <TableCell className="font-data text-sm tabular-nums py-2 px-3">{group.group_id}</TableCell>
+                      <TableCell className="font-data text-sm tabular-nums py-2 px-3">{group.group_number}</TableCell>
+                      <TableCell className="font-data text-sm tabular-nums py-2 px-3">{comp.material_id || "—"}</TableCell>
+                      <TableCell className="font-data text-sm tabular-nums py-2 px-3">{comp.quantity ?? "—"}</TableCell>
+                      <TableCell className="font-data text-sm py-2 px-3">{comp.unit_of_measure || "—"}</TableCell>
+                      <TableCell className="font-data text-sm py-2 px-3">{comp.eco_id || "—"}</TableCell>
+                      <TableCell className="py-2 px-3">
+                        <Badge
+                          className={
+                            comp.active
+                              ? "bg-[#16A34A]/10 text-[#16A34A] border-[#16A34A]/30"
+                              : "bg-[#DC2626]/10 text-[#DC2626] border-[#DC2626]/30"
+                          }
+                          variant="outline"
+                        >
+                          {comp.active ? (
+                            <CheckCircle size={12} weight="fill" className="mr-1" />
+                          ) : (
+                            <XCircle size={12} weight="fill" className="mr-1" />
+                          )}
+                          {comp.active ? "Yes" : "No"}
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+                {result.total_components === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center py-8 font-data text-sm text-[#0A2540]/50">
+                      No components found for this BOM
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+
+        {!loading && !result && !error && (
+          <div
+            className="border border-dashed border-border/40 py-16 flex flex-col items-center gap-3 text-[#0A2540]/40"
+            data-testid="bom-empty-state"
+          >
+            <Package size={32} weight="regular" />
+            <p className="font-data text-sm">Enter a BOM ID above and click "Pull BOM" to fetch data from SAP</p>
+          </div>
+        )}
+      </main>
     </div>
   );
 }
