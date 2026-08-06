@@ -55,18 +55,30 @@ const collectAllUuids = (nodes) => {
 };
 
 const computeTotalCost = (nodes, costs) => {
+  // A parent's own Standard Cost already reflects its fully-loaded value
+  // (including whatever went into making it, if it's a manufactured
+  // sub-assembly) - adding its children's costs on top would double-count.
+  // Only fall back to summing a node's children when the node itself has
+  // no direct cost of its own.
   const totals = {};
-  const walk = (list) => {
+  const directCost = (node) => {
+    const cost = node.product_uuid ? costs[node.product_uuid.toUpperCase()] : null;
+    if (cost && node.quantity != null) {
+      return { currency: cost.currency || "—", amount: cost.amount * node.quantity };
+    }
+    return null;
+  };
+  const rollup = (list) => {
     list.forEach((node) => {
-      const cost = node.product_uuid ? costs[node.product_uuid.toUpperCase()] : null;
-      if (cost && node.quantity != null) {
-        const currency = cost.currency || "—";
-        totals[currency] = (totals[currency] || 0) + cost.amount * node.quantity;
+      const direct = directCost(node);
+      if (direct) {
+        totals[direct.currency] = (totals[direct.currency] || 0) + direct.amount;
+      } else if (node.children && node.children.length > 0) {
+        rollup(node.children);
       }
-      if (node.children && node.children.length > 0) walk(node.children);
     });
   };
-  walk(nodes);
+  rollup(nodes);
   return totals;
 };
 
