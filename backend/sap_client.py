@@ -79,32 +79,48 @@ class SAPBOMClient:
 
         return hierarchy
 
-    def get_component_details(self, bom_id: str):
-        """Component change-states are linked to a BOM via EngineeringChangeOrderID
-        (which matches the BOM ID) and are returned in the same order as the
-        hierarchy's flattened item list."""
-        params = {
-            "$filter": f"EngineeringChangeOrderID eq '{bom_id}'",
-            "$expand": "ProductionBillOfMaterialAssignedVariant",
-            "$format": "json",
-        }
-        data = self._get(self.details_url, params)
-        results = data.get("d", {}).get("results", [])
-        details = []
+    CHANGE_STATE_OFFSET = 0x4000
 
-        for change_state in results:
-            variants = change_state.get("ProductionBillOfMaterialAssignedVariant", [])
-            variant = variants[0] if variants else {}
+    @classmethod
+    def _to_change_state_id(cls, item_object_id: str) -> str:
+        """Each ItemGroupItem's component detail lives in bom_service1's
+        ChangeStateCollection at a deterministic offset from its own ObjectID
+        (verified empirically: change_state_id == item_object_id + 0x4000)."""
+        return format(int(item_object_id, 16) + cls.CHANGE_STATE_OFFSET, "032X")
 
-            details.append({
-                "eco_id": change_state.get("EngineeringChangeOrderID"),
-                "quantity": variant.get("Quantity"),
-                "unit_of_measure": variant.get("unitCode"),
-                "material_uuid": variant.get("MaterialUUID"),
-                "material_id": variant.get("InternalID") or variant.get("MaterialUUID"),
-                "quantity_fixed": change_state.get("QuantityFixedIndicator"),
-                "deleted": change_state.get("DeletedIndicator"),
-            })
+    def get_component_details_by_ids(self, item_object_ids: list):
+        """Direct-key lookup of component details for specific hierarchy items,
+        chunked into OR filters to avoid relying on shared ECO/BOM identifiers
+        (which don't always match between hierarchy items and their details)."""
+        id_map = {self._to_change_state_id(item_id): item_id for item_id in item_object_ids}
+        change_state_ids = list(id_map.keys())
+        details = {}
+        chunk_size = 20
+
+        for i in range(0, len(change_state_ids), chunk_size):
+            chunk = change_state_ids[i:i + chunk_size]
+            params = {
+                "$filter": " or ".join([f"ObjectID eq '{cid}'" for cid in chunk]),
+                "$expand": "ProductionBillOfMaterialAssignedVariant",
+                "$format": "json",
+            }
+            data = self._get(self.details_url, params)
+            for change_state in data.get("d", {}).get("results", []):
+                item_id = id_map.get(change_state.get("ObjectID"))
+                if not item_id:
+                    continue
+                variants = change_state.get("ProductionBillOfMaterialAssignedVariant", [])
+                variant = variants[0] if variants else {}
+
+                details[item_id] = {
+                    "eco_id": change_state.get("EngineeringChangeOrderID"),
+                    "quantity": variant.get("Quantity"),
+                    "unit_of_measure": variant.get("unitCode"),
+                    "material_uuid": variant.get("MaterialUUID"),
+                    "material_id": variant.get("InternalID") or variant.get("MaterialUUID"),
+                    "quantity_fixed": change_state.get("QuantityFixedIndicator"),
+                    "deleted": change_state.get("DeletedIndicator"),
+                }
 
         return details
 
@@ -113,8 +129,8 @@ class SAPBOMClient:
         if hierarchy is None:
             return None
 
-        details = self.get_component_details(bom_id)
-        detail_iter = iter(details)
+        all_item_ids = [item_id for group in hierarchy["groups"] for item_id in group["item_ids"]]
+        details = self.get_component_details_by_ids(all_item_ids)
 
         result = {
             "bom_id": hierarchy["bom_id"],
@@ -132,9 +148,10 @@ class SAPBOMClient:
                 "components": [],
             }
 
-            for line_index, _ in enumerate(group["item_ids"]):
-                detail = next(detail_iter, None)
+            for line_index, item_id in enumerate(group["item_ids"]):
+                detail = details.get(item_id)
                 if not detail:
+                    logger.warning(f"No component detail found for item {item_id}")
                     continue
                 is_active = not detail["deleted"]
                 group_record["components"].append({

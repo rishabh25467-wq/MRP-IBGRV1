@@ -76,3 +76,31 @@ class TestBomSearch:
         r = api.get(f"{BASE_URL}/api/bom/search", params={"bom_id": "  8060522_1  "}, timeout=90)
         assert r.status_code == 200
         assert r.json()["bom_id"] == "8060522_1"
+
+    # ---- Bug fix verification: FLT2_4.1 must return 16 components across 2 groups ----
+    def test_search_flt2_4_1_returns_full_components(self, api):
+        r = api.get(f"{BASE_URL}/api/bom/search", params={"bom_id": "FLT2_4.1"}, timeout=120)
+        assert r.status_code == 200, r.text[:500]
+        data = r.json()
+        assert data["bom_id"] == "FLT2_4.1"
+        assert data["total_groups"] == 2, f"Expected 2 groups, got {data['total_groups']}"
+        assert data["total_components"] == 16, f"Expected 16 components, got {data['total_components']}"
+        # Sum of components across groups == 16
+        total_in_groups = sum(len(g["components"]) for g in data["groups"])
+        assert total_in_groups == 16
+        # Every component must have required fields populated
+        for g in data["groups"]:
+            for c in g["components"]:
+                assert c.get("material_id"), f"material_id missing: {c}"
+                assert c.get("quantity") is not None
+                assert c.get("unit_of_measure")
+                assert "eco_id" in c
+                assert "active" in c
+
+    # ---- Regression: 8060522_1 must still return 10 components across 2 groups ----
+    def test_search_8060522_1_regression(self, api):
+        r = api.get(f"{BASE_URL}/api/bom/search", params={"bom_id": "8060522_1"}, timeout=90)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total_groups"] == 2
+        assert data["total_components"] == 10
