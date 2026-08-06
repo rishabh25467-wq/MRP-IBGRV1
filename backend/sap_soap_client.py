@@ -89,19 +89,29 @@ class SAPSoapBOMClient:
     def _parse(cls, xml_text: str):
         """A SelectionByOutputProductID query can return multiple BOM revisions
         for the same product (old + current). Only the latest revision (highest
-        numeric suffix) should be used - older ones are superseded/obsolete."""
+        numeric suffix) should be used - older ones are superseded/obsolete.
+        A revision's header ConsistencyStatus (SAP code: 1=Check Pending,
+        2=Inconsistent, 3=Consistent) must be checked first - a "Check Pending"
+        or "Inconsistent" revision can carry a higher numeric suffix than the
+        actual current/released one, so it must never be preferred over a
+        Consistent revision."""
         hit_blocks = re.findall(r"<ProductionBillOfMaterials>(.*?)</ProductionBillOfMaterials>", xml_text, re.S)
         if not hit_blocks:
             return None
 
-        best_block, best_id, best_revision = None, None, None
+        best_block, best_id, best_revision, best_consistent = None, None, None, False
         for block in hit_blocks:
             id_match = re.search(r"<ProductionBillOfMaterialID>([^<]*)</ProductionBillOfMaterialID>", block)
             if not id_match:
                 continue
+            consistency_match = re.search(r"<ConsistencyStatus>([^<]*)</ConsistencyStatus>", block)
+            is_consistent = bool(consistency_match) and consistency_match.group(1).strip() == "3"
             revision = cls._revision_number(id_match.group(1))
-            if best_revision is None or revision > best_revision:
-                best_block, best_id, best_revision = block, id_match.group(1), revision
+            # A Consistent revision always outranks a non-Consistent one,
+            # regardless of numeric suffix; ties within the same consistency
+            # tier are broken by the highest revision number.
+            if best_block is None or (is_consistent, revision) > (best_consistent, best_revision):
+                best_block, best_id, best_revision, best_consistent = block, id_match.group(1), revision, is_consistent
 
         if best_block is None:
             return None
