@@ -1,0 +1,99 @@
+{
+  "theme": "Archetype 4: Swiss & High-Contrast",
+  "typography": {
+    "headings": "IBM Plex Sans",
+    "body": "IBM Plex Mono",
+    "hierarchy": {
+      "H1": "text-4xl tracking-tight font-bold",
+      "H2": "text-2xl tracking-tight font-semibold",
+      "H3": "text-xl font-medium",
+      "Data/Table": "text-sm tabular-nums"
+    },
+    "instructions": "Never use Inter for headings. Keep letter-spacing tight on headings. Use tabular-nums for BOM quantities, Material IDs, and ECOs to align perfectly."
+  },
+  "colors": {
+    "primary": "#0A2540",
+    "accent": "#0052FF",
+    "background": {
+      "light": "#F8F9FA",
+      "dark": "#0A0A0A"
+    },
+    "surface": {
+      "light": "#FFFFFF",
+      "dark": "#121212"
+    },
+    "status": {
+      "success": "#16A34A",
+      "error": "#DC2626",
+      "warning": "#D97706"
+    },
+    "instructions": "No full-screen gradients. Use solid stark colors. Emphasize high contrast for readability. FORBIDDEN: teal green or teal blue (#1B93A4). Tinted greys only."
+  },
+  "visual_enhancers": {
+    "surface_strategy": "Grid Borders (The Technical Look). Expose the skeleton, make the grid visible. 1px subtle borders (border-border/40) for tables and stats containers.",
+    "motion": "Minimalist. Use micro-interactions for feedback. Hover state lift on rows (bg-muted). Subtle pulse (animate-pulse) for the live SAP connection dot indicator.",
+    "glassmorphism": "Avoid in data-heavy areas, use Flat Solid backgrounds for tables to prevent visual refraction of dense BOM data."
+  },
+  "components": {
+    "libraries_to_install": [
+      "yarn add @phosphor-icons/react"
+    ],
+    "shadcn_required": [
+      "table",
+      "input",
+      "button",
+      "card",
+      "badge",
+      "alert",
+      "sonner",
+      "skeleton"
+    ],
+    "custom_instructions": [
+      "Use Shadcn components for structural logic but apply custom tailwind styling.",
+      "Card/Containers: Flat background, sharp edges or subtle roundness (max 4px radius), 1px border, no heavy drop shadows.",
+      "Table: Dense spacing (py-2 px-3 cells), distinct borders for scanning massive BOM hierarchies.",
+      "Toast: Use Sonner for SAP API success/error feedback."
+    ]
+  },
+  "layouts": {
+    "strategy": "High Density Grid (Mode B) for dashboard context.",
+    "spacing": "Tight inside data widgets (gap-4). Generous padding around the main app container (p-8 or p-12).",
+    "structure": [
+      "Header: BOM Search Bar (wide) + Connection Status Indicator (right aligned)",
+      "Stats Section: 4-column dense grid (Bento Mode B) for summary metrics (Total Components, Total Groups, Active Materials, Last Synced)",
+      "Main Content: Full width Table displaying the hierarchical BOM (Group > Line Item > Material > Quantity > UOM > ECO > Active)"
+    ]
+  },
+  "accessibility": {
+    "contrast": "APCA standard or minimum WCAG AA. Text on status badges MUST meet 4.5:1 ratio.",
+    "focus": "Focus states must have HIGHER contrast, e.g., focus:ring-2 focus:ring-accent",
+    "testing": "All interactive elements (search input, submit button, active status toggles/badges) MUST include a data-testid attribute in kebab-case."
+  },
+  "icons": {
+    "library": "@phosphor-icons/react",
+    "style": "Use Regular or Duotone weight to maintain technical precision for ERP data."
+  },
+  "image_urls": {},
+  "instructions_to_main_agent": [
+    "Build a robust React (JavaScript, not TSX) interface that mimics an elite, technical command center for SAP Business ByDesign.",
+    "Do NOT use raw HTML inputs or selects; always use Shadcn Input, Button, etc.",
+    "Maintain raw data integrity: always use the monospace font family for IDs and Quantities.",
+    "Implement a robust 'mock' of the SAP BOM API call if the FastAPI backend is not yet attached. Simulate loading (skeletons) and potential error states to demonstrate UI resilience.",
+    "Delete default App-logo logic and center-aligning styles from App.css. Enforce a top-left aligned, rigid grid flow.",
+    "Include a visible 'SAP Connected' vs 'SAP Disconnected' status indicator in the top right."
+  ],
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
+    "You tend to converge toward generic, 'on distribution' outputs. In frontend design, this creates what users call the 'AI slop' aesthetic. Avoid this: make creative, distinctive frontends that surprise and delight.",
+    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients.",
+    "Don't make generic centered layouts, simplistic gradients, and uniform styling.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "You MUST NOT apply universal transition. Eg: transition: all. This results in breaking transforms. Always add transitions for specific interactive elements like button, input excluding transforms.",
+    "You MUST NOT center align the app container, ie do not add .App { text-align: center; } in the css file. This disrupts the human natural reading flow of text.",
+    "Always use modern button styles like pill-shaped, or sharp button with interaction animations & color relevant to the app style.",
+    "NEVER: use AI assistant Emoji characters like 🤖🧠💭💡🔮🎯 etc for icons.",
+    "Every interaction needs micro-animations - hover states, transitions, and entrance animations. Static = dead.",
+    "Use 2-3x more spacing than feels comfortable for layout separation. Cramped designs look cheap.",
+    "Prioritize using pre-existing components from src/components/ui when applicable.",
+    "Use sonner for toasts. Sonner component are located in /app/src/components/ui/sonner.tsx"
+  ]
+}
