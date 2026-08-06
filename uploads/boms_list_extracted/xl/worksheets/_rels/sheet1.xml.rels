@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships" xmlns:asx="http://www.sap.com/abapxml"><Relationship Id="rId1" Target="tables/tableSingleCells1.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/tableSingleCells"/><Relationship Id="rId2" Target="tables/tables1.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table"/></Relationships>
