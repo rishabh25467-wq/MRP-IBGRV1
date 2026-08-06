@@ -70,3 +70,6 @@
 - P2: Persist search history in MongoDB
 - P2: Material Master lookup to resolve MaterialUUID → readable Material ID when InternalID is absent
 - P2: Multi-level (nested L3/L4/L5) BOM hierarchy support
+
+## Update - Feb 2026
+- Fixed: Entire Product ID cell (not just chevron icon) is now clickable to expand/collapse tree rows. Added hover highlight (`hover:bg-[#E5F0FA]`) and `cursor-pointer` on cells with children. Verified via screenshot tool - clicking anywhere in a parent row's Product ID cell toggles expand/collapse correctly.

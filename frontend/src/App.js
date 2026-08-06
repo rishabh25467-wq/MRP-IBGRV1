@@ -331,23 +331,22 @@ function App() {
                   >
                     <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828]">{node.level}</td>
                     <td
-                      className="border border-[#D0D5DD] py-1 text-[13px] tabular-nums text-[#101828]"
+                      className={`border border-[#D0D5DD] py-1 text-[13px] tabular-nums text-[#101828] ${
+                        hasChildren ? "cursor-pointer hover:bg-[#E5F0FA]" : ""
+                      }`}
                       style={{ paddingLeft: `${depth * 24 + 8}px`, paddingRight: "8px" }}
+                      onClick={hasChildren ? () => toggleKey(path) : undefined}
+                      data-testid={`bom-toggle-${path}`}
                     >
                       <span className="inline-flex items-center gap-1.5">
                         {hasChildren ? (
-                          <button
-                            type="button"
-                            onClick={() => toggleKey(path)}
-                            className="text-[#004B87] hover:text-[#003A6A] transition-colors"
-                            data-testid={`bom-toggle-${path}`}
-                          >
+                          <span className="text-[#004B87]">
                             {expandedKeys.has(path) ? (
                               <CaretDown size={12} weight="bold" />
                             ) : (
                               <CaretRight size={12} weight="bold" />
                             )}
-                          </button>
+                          </span>
                         ) : (
                           <span className="w-3" />
                         )}
