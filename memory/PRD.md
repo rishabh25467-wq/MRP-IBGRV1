@@ -53,6 +53,12 @@
 - Verified: bare `8060522` → resolves to `8060522_1` (23 components); bare `6800-004061` → resolves to `6800-004061_2` (latest of 2 revisions, not stale `_1`). Testing agent: 100% pass, exact-ID search and all prior regressions intact.
 - Also fixed: intermittent component-count flakiness (91 vs 89) caused by transient SAP SOAP timeouts silently dropping subtrees — added 3-attempt retry with backoff to sub-BOM lookups. Verified stable across 7+ consecutive runs.
 
+## Feature: Drillable Tree View (2026-08-06)
+- User needed a hierarchical, collapsible view instead of a flat table — hard to tell which Level-2 item belongs to which Level-1 parent.
+- Backend `explode_bom()` restructured to return a proper nested `tree` (each node has a `children` array) instead of a flat `rows` list, built during the same concurrent BFS resolution for speed.
+- Frontend: default "drill down" mode shows only Level-1 rows collapsed; click a chevron to expand/collapse a branch; "Expand All"/"Collapse All" buttons control the whole tree at once; fresh search resets to collapsed. Rendering uses a flattened-visible-rows helper (not a recursive JSX component) to avoid a babel/visual-edits plugin crash on self-referencing components.
+- Verified: testing agent 100% pass (12/12 backend, all frontend flows) — data correctness (91/5 for FLT2_4.1, 23/2 for 8060522_1) unaffected by the UI-only restructuring.
+
 ## Backlog / Next Tasks
 - P1: Excel/CSV export of search results
 - P1: Bulk/all-BOMs pull mode
