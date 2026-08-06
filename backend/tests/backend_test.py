@@ -96,3 +96,27 @@ class TestBomSearch:
         # All rows should be active (inactive/deleted items are now filtered out)
         active_count = sum(1 for r in data["rows"] if r["active"])
         assert active_count == 91, f"Expected all 91 rows active, got {active_count}"
+
+        # ---- Precision bug fix: latest ChangeState (revision) must be selected ----
+        # The INSTRUCTION MANUAL level-1 row must show the CURRENT revision:
+        #   product_id=6902-602142, description=INSTRUCTION MANUAL FLT2, eco_id=FLT2_4.4
+        # NOT the stale prior revision: 6902-602120 / FLT2 INSTRUCTION MANUAL / FLT2_4.3
+        manual_rows = [
+            r for r in data["rows"]
+            if r["level"] == 1 and "INSTRUCTION MANUAL" in (r.get("description") or "").upper()
+        ]
+        assert manual_rows, "Expected a level-1 INSTRUCTION MANUAL row"
+        assert len(manual_rows) == 1, f"Expected exactly one instruction manual level-1 row, got {len(manual_rows)}"
+        m = manual_rows[0]
+        assert m["product_id"] == "6902-602142", f"Stale product_id: {m['product_id']}"
+        assert m["description"].upper().strip() == "INSTRUCTION MANUAL FLT2", f"Unexpected desc: {m['description']}"
+        assert m["eco_id"] == "FLT2_4.4", f"Stale eco_id: {m['eco_id']}"
+
+        # Ensure stale values do not appear ANYWHERE in the response
+        for row in data["rows"]:
+            assert row.get("product_id") != "6902-602120", "Stale product_id 6902-602120 found"
+            desc_upper = (row.get("description") or "").upper()
+            assert desc_upper != "FLT2 INSTRUCTION MANUAL", f"Stale description found on row {row}"
+            # FLT2_4.3 is a stale ECO on this specific line; ensure the manual line isn't showing it
+            if row["level"] == 1 and "INSTRUCTION MANUAL" in desc_upper:
+                assert row["eco_id"] != "FLT2_4.3", "Stale eco FLT2_4.3 on instruction manual row"

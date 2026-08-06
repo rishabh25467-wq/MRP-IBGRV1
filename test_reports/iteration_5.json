@@ -1,0 +1,20 @@
+{
+  "summary": "Iteration 5: Verified the precision bug fix in sap_soap_client.py._parse() where multiple <ProductionBillOfMaterialItemGroupChangeState> entries per ItemGroupItem now correctly resolve to the LATEST revision (highest EngineeringChangeOrderID suffix, float-parsed). Extended backend_test.py with precision assertions on the FLT2_4.1 INSTRUCTION MANUAL line-item. Ran full pytest suite: 8/8 PASS in 59s. Playwright E2E on public URL confirmed the exact fix end-to-end: level-1 INSTRUCTION MANUAL row shows product_id=6902-602142, description='INSTRUCTION MANUAL FLT2', ECO='FLT2_4.4' (screenshot captured). Stale values 6902-602120 / 'FLT2 INSTRUCTION MANUAL' / FLT2_4.3-on-manual-row are absent. Regression counts unchanged: FLT2_4.1 = 91/5 with Total Components=91, Active Materials=91, Max Level=5; 8060522_1 = 23 rows; INVALID_BOM_999 -> bom-search-error-alert 'BOM INVALID_BOM_999 not found in SAP'; SAP Connected indicator green. Spot check 6700-303008 level-1 row still present. No app console errors (only the expected 404 for the invalid BOM lookup).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Carry-over from iteration_3/4: _safe_fetch_by_output_product still silently swallows SAP ConnectTimeout/ReadTimeout with no retry / no partial_results flag; bounded retry+backoff recommended.",
+    "Legacy sap_client.py (unused OData module) still in repo - candidate for deletion.",
+    "The revision-suffix parser now handles floats like '4.3' vs '4.4'; consider extracting comparison to a documented helper and adding unit tests covering edge cases (missing suffix, non-numeric suffix, equal revisions)."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None - live SAP tenant data.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "N/A (no app auth). SAP SOAP creds in backend/.env.",
+  "context_for_next_testing_agent": "Precision fix VERIFIED: multi-ChangeState-per-ItemGroupItem now picks highest EngineeringChangeOrderID suffix. FLT2_4.1 instruction-manual level-1 row correctly reflects 6902-602142/FLT2_4.4 (was 6902-602120/FLT2_4.3). Counts unchanged: FLT2_4.1=91/5, 8060522_1=23/2. backend_test.py extended with the precision assertions.",
+  "rca_of_the_issue": "N/A - fix verified working."
+}

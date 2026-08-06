@@ -75,11 +75,14 @@ class SAPSoapBOMClient:
         return self._parse(self._query(selection))
 
     @staticmethod
-    @staticmethod
-    def _revision_number(bom_id: str) -> int:
-        """Extract the trailing numeric revision suffix (e.g. '..._2' -> 2)."""
-        match = re.search(r"_(\d+)$", bom_id)
-        return int(match.group(1)) if match else -1
+    def _revision_number(value: str) -> float:
+        """Extract the trailing revision suffix after the last '_' (e.g.
+        '..._2' -> 2.0, '..._4.4' -> 4.4) so revisions can be compared numerically."""
+        match = re.search(r"_([\d.]+)$", value)
+        try:
+            return float(match.group(1)) if match else -1.0
+        except ValueError:
+            return -1.0
 
     @classmethod
     def _parse(cls, xml_text: str):
@@ -113,15 +116,33 @@ class SAPSoapBOMClient:
             for item_match in re.finditer(r"<ItemGroupItem>(.*?)</ItemGroupItem>", group_block, re.S):
                 item_block = item_match.group(1)
                 item_id_match = re.search(r"<ItemGroupItemID>([^<]*)</ItemGroupItemID>", item_block)
-                product_id_match = re.search(r"<InputProductID>.*?<ProductID>([^<]*)</ProductID>", item_block, re.S)
-                desc_match = re.search(r"<InputProductDescription>([^<]*)</InputProductDescription>", item_block)
-                qty_match = re.search(r"<InputProductQuantity[^>]*>([^<]*)</InputProductQuantity>", item_block)
-                uom_match = re.search(r"<InputProductQuantityUoM>([^<]*)</InputProductQuantityUoM>", item_block)
-                eco_match = re.search(r"<EngineeringChangeOrderID>([^<]*)</EngineeringChangeOrderID>", item_block)
-                deleted_match = re.search(r"<DeletionIndicator>([^<]*)</DeletionIndicator>", item_block)
 
+                # An ItemGroupItem can carry MULTIPLE ChangeState entries (revision
+                # history for that specific line) - only the one with the latest
+                # EngineeringChangeOrderID revision reflects the current, correct data.
+                change_states = re.findall(
+                    r"<ProductionBillOfMaterialItemGroupChangeState>(.*?)</ProductionBillOfMaterialItemGroupChangeState>",
+                    item_block, re.S,
+                )
+                if not change_states:
+                    continue
+
+                best_state, best_state_revision = None, None
+                for state_block in change_states:
+                    eco_match = re.search(r"<EngineeringChangeOrderID>([^<]*)</EngineeringChangeOrderID>", state_block)
+                    revision = cls._revision_number(eco_match.group(1)) if eco_match else -1.0
+                    if best_state_revision is None or revision > best_state_revision:
+                        best_state, best_state_revision = state_block, revision
+
+                product_id_match = re.search(r"<InputProductID>.*?<ProductID>([^<]*)</ProductID>", best_state, re.S)
                 if not product_id_match:
                     continue
+
+                desc_match = re.search(r"<InputProductDescription>([^<]*)</InputProductDescription>", best_state)
+                qty_match = re.search(r"<InputProductQuantity[^>]*>([^<]*)</InputProductQuantity>", best_state)
+                uom_match = re.search(r"<InputProductQuantityUoM>([^<]*)</InputProductQuantityUoM>", best_state)
+                eco_match = re.search(r"<EngineeringChangeOrderID>([^<]*)</EngineeringChangeOrderID>", best_state)
+                deleted_match = re.search(r"<DeletionIndicator>([^<]*)</DeletionIndicator>", best_state)
 
                 items.append({
                     "item_id": item_id_match.group(1) if item_id_match else None,
