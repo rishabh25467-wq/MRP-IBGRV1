@@ -1,0 +1,19 @@
+{
+  "summary": "Iteration 4: Verified the revision-dedup + inactive-item-skip bug fix in sap_soap_client.py. Updated backend_test.py with new expected counts (FLT2_4.1=91/5, 8060522_1=23/2) and re-ran full pytest suite - ALL 8 tests PASS in ~28s. Playwright E2E on public URL confirmed the exact same numbers end-to-end: FLT2_4.1 -> 91 rows, Total Components=91, Max Level=5, Active Materials=91, all 91 rows show green 'Yes' active badge (0 'No' badges), 18 rows show '▾' sub-BOM marker (has_sub_bom); 8060522_1 -> 23 rows with expected CLS310207HW-* product IDs; INVALID_BOM_999 shows bom-search-error-alert with 'BOM INVALID_BOM_999 not found in SAP'; SAP Connected indicator green on page load; loading skeleton observed during FLT2_4.1 recursive SOAP call. Toast notification 'BOM FLT2_4.1 loaded - 91 components across 5 levels' also shown. No console errors from the app.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Prior iteration_3 note still open: _safe_fetch_by_output_product silently swallows SAP ConnectTimeout/ReadTimeout with no retry; on a slow SAP day a subtree can silently drop. Consider bounded retry with backoff and/or a 'partial_results' flag in BomSearchResponse. Not observed in this iteration (all runs stable).",
+    "sap_client.py (old OData module) still in repo and unused - safe to delete."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None - live SAP tenant data.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "N/A (no app auth). SAP SOAP creds in backend/.env.",
+  "context_for_next_testing_agent": "Bug fix VERIFIED end-to-end. FLT2_4.1 now returns exactly 91 components / max_level=5 with all items active (down from 145 due to revision-dedup: SAP's SelectionByOutputProductID returns multiple revisions of the same output product; _parse() now picks only the highest numeric revision suffix, and explode_bom() skips inactive items). 8060522_1 returns 23/2 (was 33 pre-fix). Backend tests updated to these new expected values.",
+  "rca_of_the_issue": "N/A - fix verified working."
+}

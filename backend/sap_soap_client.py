@@ -75,14 +75,36 @@ class SAPSoapBOMClient:
         return self._parse(self._query(selection))
 
     @staticmethod
-    def _parse(xml_text: str):
-        bom_id_match = re.search(r"<ProductionBillOfMaterialID>([^<]*)</ProductionBillOfMaterialID>", xml_text)
-        if not bom_id_match:
+    @staticmethod
+    def _revision_number(bom_id: str) -> int:
+        """Extract the trailing numeric revision suffix (e.g. '..._2' -> 2)."""
+        match = re.search(r"_(\d+)$", bom_id)
+        return int(match.group(1)) if match else -1
+
+    @classmethod
+    def _parse(cls, xml_text: str):
+        """A SelectionByOutputProductID query can return multiple BOM revisions
+        for the same product (old + current). Only the latest revision (highest
+        numeric suffix) should be used - older ones are superseded/obsolete."""
+        hit_blocks = re.findall(r"<ProductionBillOfMaterials>(.*?)</ProductionBillOfMaterials>", xml_text, re.S)
+        if not hit_blocks:
             return None
 
-        bom = {"bom_id": bom_id_match.group(1), "groups": []}
+        best_block, best_id, best_revision = None, None, None
+        for block in hit_blocks:
+            id_match = re.search(r"<ProductionBillOfMaterialID>([^<]*)</ProductionBillOfMaterialID>", block)
+            if not id_match:
+                continue
+            revision = cls._revision_number(id_match.group(1))
+            if best_revision is None or revision > best_revision:
+                best_block, best_id, best_revision = block, id_match.group(1), revision
 
-        for group_match in re.finditer(r"<ProductionBillOfMaterialItemGroup>(.*?)</ProductionBillOfMaterialItemGroup>", xml_text, re.S):
+        if best_block is None:
+            return None
+
+        bom = {"bom_id": best_id, "groups": []}
+
+        for group_match in re.finditer(r"<ProductionBillOfMaterialItemGroup>(.*?)</ProductionBillOfMaterialItemGroup>", best_block, re.S):
             group_block = group_match.group(1)
             group_id_match = re.search(r"<ItemGroupID>([^<]*)</ItemGroupID>", group_block)
             group_id = group_id_match.group(1) if group_id_match else None
@@ -137,7 +159,7 @@ class SAPSoapBOMClient:
                 for group in bom["groups"]:
                     for item in group["items"]:
                         pid = item["product_id"]
-                        if pid not in ancestors and pid not in sub_bom_cache:
+                        if item["active"] and pid not in ancestors and pid not in sub_bom_cache:
                             candidate_ids.add(pid)
 
             to_fetch = list(candidate_ids)[: max(0, MAX_LOOKUPS - lookups_done)]
@@ -152,6 +174,8 @@ class SAPSoapBOMClient:
             for bom, level, ancestors in frontier:
                 for group in bom["groups"]:
                     for item in group["items"]:
+                        if not item["active"]:
+                            continue
                         row = {
                             "level": level,
                             "group_id": group["group_id"],

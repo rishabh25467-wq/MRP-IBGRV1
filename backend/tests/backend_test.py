@@ -64,9 +64,9 @@ class TestBomSearch:
         assert r.status_code == 200, r.text[:500]
         data = r.json()
         assert data["bom_id"] == "8060522_1"
-        assert data["total_components"] == 33, f"Expected 33 got {data['total_components']}"
+        assert data["total_components"] == 23, f"Expected 23 got {data['total_components']}"
         assert data["max_level"] == 2, f"Expected max_level=2 got {data['max_level']}"
-        assert isinstance(data["rows"], list) and len(data["rows"]) == 33
+        assert isinstance(data["rows"], list) and len(data["rows"]) == 23
         # Validate row schema
         row = data["rows"][0]
         for k in ("level", "product_id", "description", "quantity", "unit_of_measure", "eco_id", "active", "has_sub_bom"):
@@ -79,9 +79,9 @@ class TestBomSearch:
         assert r.status_code == 200, r.text[:500]
         data = r.json()
         assert data["bom_id"] == "FLT2_4.1"
-        assert data["total_components"] == 145, f"Expected 145 got {data['total_components']}"
+        assert data["total_components"] == 91, f"Expected 91 got {data['total_components']}"
         assert data["max_level"] == 5, f"Expected max_level=5 got {data['max_level']}"
-        assert len(data["rows"]) == 145
+        assert len(data["rows"]) == 91
         # Level distribution
         levels = {row["level"] for row in data["rows"]}
         assert levels.issubset({1, 2, 3, 4, 5})
@@ -93,6 +93,6 @@ class TestBomSearch:
         assert target[0]["unit_of_measure"] == "EA"
         # Verify has_sub_bom flag exists on some rows
         assert any(r["has_sub_bom"] for r in data["rows"]), "Expected at least one has_sub_bom=True row"
-        # Active count close to 144
+        # All rows should be active (inactive/deleted items are now filtered out)
         active_count = sum(1 for r in data["rows"] if r["active"])
-        assert active_count >= 140, f"Expected ~144 active, got {active_count}"
+        assert active_count == 91, f"Expected all 91 rows active, got {active_count}"
