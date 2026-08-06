@@ -132,12 +132,13 @@ class SAPBOMClient:
                 "components": [],
             }
 
-            for _ in group["item_ids"]:
+            for line_index, _ in enumerate(group["item_ids"]):
                 detail = next(detail_iter, None)
                 if not detail:
                     continue
                 is_active = not detail["deleted"]
                 group_record["components"].append({
+                    "line_item": (line_index + 1) * 10,
                     "material_id": detail["material_id"],
                     "quantity": float(detail["quantity"]) if detail["quantity"] else None,
                     "unit_of_measure": detail["unit_of_measure"],

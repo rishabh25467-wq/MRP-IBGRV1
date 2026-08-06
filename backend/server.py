@@ -28,6 +28,7 @@ sap_client = SAPBOMClient(
 
 
 class BomComponent(BaseModel):
+    line_item: Optional[int] = None
     material_id: Optional[str] = None
     quantity: Optional[float] = None
     unit_of_measure: Optional[str] = None

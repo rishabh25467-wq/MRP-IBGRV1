@@ -229,7 +229,7 @@ function App() {
                       data-testid={`bom-row-${group.group_id}-${idx}`}
                     >
                       <TableCell className="font-data text-sm tabular-nums py-2 px-3">{group.group_id}</TableCell>
-                      <TableCell className="font-data text-sm tabular-nums py-2 px-3">{group.group_number}</TableCell>
+                      <TableCell className="font-data text-sm tabular-nums py-2 px-3">{comp.line_item}</TableCell>
                       <TableCell className="font-data text-sm tabular-nums py-2 px-3">{comp.material_id || "—"}</TableCell>
                       <TableCell className="font-data text-sm tabular-nums py-2 px-3">{comp.quantity ?? "—"}</TableCell>
                       <TableCell className="font-data text-sm py-2 px-3">{comp.unit_of_measure || "—"}</TableCell>
