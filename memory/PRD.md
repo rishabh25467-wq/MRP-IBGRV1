@@ -25,6 +25,12 @@
 - Verified live against real tenant (my431827.businessbydesign.cloud.sap) with BOM `8060522_1` → 10 components / 2 groups
 - Testing agent: 100% backend + frontend pass, no blocking issues. Fixed post-test: Line Item column now shows per-component sequence (10/20/30...) instead of duplicating group number.
 
+## Bug Fix (2026-08-06)
+- User reported BOM `FLT2_4.1` "does not show any items" — root cause: `get_component_details()` filtered bom_service1 by `EngineeringChangeOrderID eq bom_id` and zipped results positionally with hierarchy items; broke when sub-items reference a different ECO than the parent BOM (common in real/complex BOMs, e.g. FLT2_4.1's group 20 items reference ECO `FLT2_4.3`), silently dropping most items (2 shown instead of 16)
+- Fix: replaced with direct ObjectID-key lookup — `change_state_object_id = item_object_id_int + 0x4000` (empirically verified constant offset against live SAP data), batched into chunked OData `$filter` queries, matched back by ObjectID instead of ECO name/position
+- Verified: FLT2_4.1 now returns 16/16 components correctly; 8060522_1 regression-tested (still 10/10). Testing agent: 100% pass (9 backend tests, full E2E)
+- Known limitation (not fixed, needs Material Master service not exposed in this tenant): some components show the parent product's own Material ID instead of a distinct raw-material ID, because SAP's `AssignedVariant` field reflects product variant assignment, not always the true component material. Full multi-level BOM explosion (matching native SAP "List of Production BOM" report with ~90 rows) would require recursive sub-BOM resolution — flagged as backlog, not yet built.
+
 ## Backlog / Next Tasks
 - P1: Excel/CSV export of search results
 - P1: Bulk/all-BOMs pull mode
