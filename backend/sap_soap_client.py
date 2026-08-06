@@ -175,13 +175,13 @@ class SAPSoapBOMClient:
         total_components = 0
         max_level_seen = 0
         lookups_done = 0
-        # each frontier entry: (bom, level, ancestors, children_list_to_append_into)
+        # each frontier entry: (bom, level, ancestors, children_list_to_append_into, parent_cum_qty)
         root_children = []
-        frontier = [(root, 1, frozenset({bom_id, root["bom_id"]}), root_children)]
+        frontier = [(root, 1, frozenset({bom_id, root["bom_id"]}), root_children, 1.0)]
 
         while frontier and lookups_done < MAX_LOOKUPS:
             candidate_ids = set()
-            for bom, level, ancestors, _ in frontier:
+            for bom, level, ancestors, _, _ in frontier:
                 if level >= MAX_DEPTH:
                     continue
                 for group in bom["groups"]:
@@ -199,19 +199,20 @@ class SAPSoapBOMClient:
                 lookups_done += len(to_fetch)
 
             next_frontier = []
-            for bom, level, ancestors, children_out in frontier:
+            for bom, level, ancestors, children_out, parent_cum_qty in frontier:
                 max_level_seen = max(max_level_seen, level)
                 for group in bom["groups"]:
                     for item in group["items"]:
                         if not item["active"]:
                             continue
+                        cum_qty = round(item["quantity"] * parent_cum_qty, 6) if item["quantity"] is not None else None
                         node = {
                             "level": level,
                             "group_id": group["group_id"],
                             "item_id": item["item_id"],
                             "product_id": item["product_id"],
                             "description": item["description"],
-                            "quantity": item["quantity"],
+                            "quantity": cum_qty,
                             "unit_of_measure": item["unit_of_measure"],
                             "eco_id": item["eco_id"],
                             "active": item["active"],
@@ -224,7 +225,10 @@ class SAPSoapBOMClient:
                         sub_bom = sub_bom_cache.get(item["product_id"])
                         if sub_bom and sub_bom["groups"] and item["product_id"] not in ancestors:
                             node["has_sub_bom"] = True
-                            next_frontier.append((sub_bom, level + 1, ancestors | {item["product_id"]}, node["children"]))
+                            next_frontier.append((
+                                sub_bom, level + 1, ancestors | {item["product_id"]},
+                                node["children"], cum_qty if cum_qty is not None else parent_cum_qty,
+                            ))
 
             frontier = next_frontier
 

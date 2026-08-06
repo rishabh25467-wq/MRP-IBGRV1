@@ -149,6 +149,43 @@ class TestBomSearch:
             assert desc_upper != "FLT2 INSTRUCTION MANUAL", f"Stale description found on node {node}"
 
 
+# ---- Cumulative quantity multiplication fix (bug fix under review) ----
+class TestCumulativeQuantities:
+    def test_8060522_1_p_acbkt_children_are_multiplied(self, api):
+        r = api.get(f"{BASE_URL}/api/bom/search", params={"bom_id": "8060522_1"}, timeout=120)
+        assert r.status_code == 200
+        tree = r.json()["tree"]
+        p_acbkt = next((n for n in tree if n["product_id"] == "P-ACBKT"), None)
+        assert p_acbkt is not None, "P-ACBKT L1 node missing"
+        assert p_acbkt["quantity"] == 2.0, f"P-ACBKT qty expected 2.0 got {p_acbkt['quantity']}"
+        kids = {c["product_id"]: c["quantity"] for c in p_acbkt.get("children", [])}
+        assert kids.get("CRCOIL1.45X65") == 0.464, f"Expected 0.464 got {kids.get('CRCOIL1.45X65')}"
+        assert kids.get("PPHGREY") == 0.02088, f"Expected 0.02088 got {kids.get('PPHGREY')}"
+
+    def test_8060522_1_qty_one_parents_children_unchanged(self, api):
+        r = api.get(f"{BASE_URL}/api/bom/search", params={"bom_id": "8060522_1"}, timeout=120)
+        assert r.status_code == 200
+        tree = r.json()["tree"]
+        by_id = {n["product_id"]: n for n in tree}
+        # CLS310207HW-2 qty=1 -> children unchanged
+        c2 = {c["product_id"]: c["quantity"] for c in by_id["CLS310207HW-2"]["children"]}
+        assert c2["POLY3.5X5LD"] == 0.005
+        assert c2["ANCHORM8"] == 6.0
+        # VOL-ACB-HB-R qty=1 -> children unchanged
+        vr = {c["product_id"]: c["quantity"] for c in by_id["VOL-ACB-HB-R"]["children"]}
+        assert vr["CRCOIL1.45X177"] == 0.53
+        assert vr["PPHGREY"] == 0.0302
+
+    def test_flt2_regression_unchanged_after_fix(self, api):
+        r = api.get(f"{BASE_URL}/api/bom/search", params={"bom_id": "FLT2_4.1"}, timeout=180)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total_components"] == 91
+        assert data["max_level"] == 5
+        t = next(n for n in data["tree"] if n["product_id"] == "6700-303008")
+        assert t["quantity"] == 0.5
+
+
 # ---- Bare part number resolution ----
 class TestBarePartNumberResolution:
     def test_bare_8060522_resolves_to_8060522_1(self, api):
