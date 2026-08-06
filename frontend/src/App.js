@@ -17,20 +17,13 @@ import {
   ArrowsOutSimple,
   ArrowsInSimple,
   FileArrowDown,
+  Database,
 } from "@phosphor-icons/react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Toaster, toast } from "@/components/ui/sonner";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -38,16 +31,14 @@ const API = `${BACKEND_URL}/api`;
 
 const StatCard = ({ icon: Icon, label, value, testId }) => (
   <div
-    className="border border-border/40 bg-white p-5 flex flex-col gap-2"
+    className="bg-white border border-[#D0D5DD] rounded-sm p-3 shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] flex flex-col gap-1.5"
     data-testid={testId}
   >
-    <div className="flex items-center gap-2 text-[#0A2540]/60">
-      <Icon size={16} weight="regular" />
-      <span className="font-heading text-xs uppercase tracking-wide">{label}</span>
+    <div className="flex items-center gap-1.5 text-[#475467]">
+      <Icon size={14} weight="bold" />
+      <span className="font-heading text-xs font-bold uppercase tracking-wider">{label}</span>
     </div>
-    <span className="font-data text-2xl tabular-nums font-semibold text-[#0A2540]">
-      {value}
-    </span>
+    <span className="font-sans text-2xl font-bold tabular-nums text-[#1D2939]">{value}</span>
   </div>
 );
 
@@ -177,61 +168,55 @@ function App() {
   const activeCount = result ? result.total_components : 0;
 
   return (
-    <div className="min-h-screen bg-[#F8F9FA] text-[#0A2540]">
+    <div className="h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]">
       <Toaster position="top-right" />
 
-      <header className="border-b border-border/40 bg-white">
-        <div className="max-w-6xl mx-auto px-8 py-6 flex items-center justify-between gap-6">
-          <div>
-            <h1 className="font-heading text-4xl font-bold tracking-tight" data-testid="app-title">
-              SAP BOM Lookup
-            </h1>
-            <p className="font-data text-sm text-[#0A2540]/60 mt-1">
-              Business ByDesign · Production Bill of Material
-            </p>
-          </div>
+      {/* Header */}
+      <header className="h-12 bg-[#004B87] shadow-[0_1px_3px_0_rgba(16,24,40,0.1)] flex items-center justify-between px-4 shrink-0 z-10">
+        <div className="flex items-center gap-2.5" data-testid="app-title">
+          <Database size={18} weight="bold" className="text-white" />
+          <span className="font-heading text-sm font-bold text-white tracking-tight">SAP BOM Explorer</span>
+          <span className="font-sans text-xs text-white/60 hidden sm:inline">| Production Bill of Material</span>
+        </div>
 
-          <div
-            className="flex items-center gap-2 border border-border/40 px-3 py-2 rounded-full shrink-0"
-            data-testid="connection-status-indicator"
-          >
-            {connection.connected === null ? (
-              <Circle size={10} weight="fill" className="text-[#D97706] animate-pulse" />
-            ) : connection.connected ? (
-              <Circle size={10} weight="fill" className="text-[#16A34A] animate-pulse" />
-            ) : (
-              <Circle size={10} weight="fill" className="text-[#DC2626]" />
-            )}
-            <span className="font-data text-xs whitespace-nowrap">
-              {connection.connected === null
-                ? "Checking SAP..."
-                : connection.connected
-                ? "SAP Connected"
-                : "SAP Disconnected"}
-            </span>
-          </div>
+        <div
+          className="flex items-center gap-2 bg-white/10 border border-white/20 px-2.5 py-1 rounded-sm shrink-0"
+          data-testid="connection-status-indicator"
+        >
+          {connection.connected === null ? (
+            <Circle size={8} weight="fill" className="text-[#F79009] animate-pulse" />
+          ) : connection.connected ? (
+            <Circle size={8} weight="fill" className="text-[#12B76A] animate-pulse" />
+          ) : (
+            <Circle size={8} weight="fill" className="text-[#F04438]" />
+          )}
+          <span className="font-sans text-xs text-white whitespace-nowrap">
+            {connection.connected === null
+              ? "Checking SAP..."
+              : connection.connected
+              ? "SAP PRD Connected"
+              : "SAP Disconnected"}
+          </span>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-8 py-10">
-        <form onSubmit={handleSearch} className="flex items-center gap-3 mb-10">
-          <div className="relative flex-1 max-w-md">
-            <MagnifyingGlass
-              size={18}
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-[#0A2540]/40"
-            />
+      {/* Toolbar */}
+      <div className="bg-white border-b border-[#D0D5DD] p-2 flex items-center gap-3 shrink-0 flex-wrap">
+        <form onSubmit={handleSearch} className="flex items-center gap-2">
+          <div className="relative">
+            <MagnifyingGlass size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
             <Input
               value={bomId}
               onChange={(e) => setBomId(e.target.value)}
-              placeholder="Enter Part/BOM ID e.g. P26584 or FLT2_4.1"
-              className="pl-10 font-data border-[#0A2540]/20 focus-visible:ring-[#0052FF] focus-visible:ring-2"
+              placeholder="Part / BOM ID e.g. P26584 or FLT2_4.1"
+              className="h-8 pl-7 w-72 text-[13px] rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]"
               data-testid="bom-id-search-input"
             />
           </div>
           <Button
             type="submit"
             disabled={loading || !bomId.trim()}
-            className="bg-[#0052FF] hover:bg-[#0040CC] text-white rounded-full px-6 font-heading font-medium transition-colors"
+            className="h-8 bg-[#004B87] hover:bg-[#003A6A] active:bg-[#00294D] text-white rounded-sm px-4 text-[13px] font-bold transition-colors"
             data-testid="bom-search-submit-button"
           >
             {loading ? "Searching..." : "Pull BOM"}
@@ -239,36 +224,65 @@ function App() {
         </form>
 
         {result && (
-          <div className="mb-6 -mt-4">
-            <Badge
-              variant="outline"
-              className="bg-[#0052FF]/5 text-[#0052FF] border-[#0052FF]/30 font-data"
-              data-testid="resolved-bom-id-badge"
-            >
-              Resolved to: {result.bom_id}
-            </Badge>
-          </div>
+          <Badge
+            variant="outline"
+            className="bg-[#E5F0FA] text-[#004B87] border-[#B8D4ED] rounded font-sans text-xs h-8 flex items-center"
+            data-testid="resolved-bom-id-badge"
+          >
+            Resolved: {result.bom_id}
+          </Badge>
         )}
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10">
-          <StatCard
-            icon={Stack}
-            label="Max Level"
-            value={result ? result.max_level : "—"}
-            testId="stat-total-groups"
-          />
+        <div className="flex items-center gap-2 ml-auto">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={expandAll}
+            disabled={!result}
+            className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054] transition-colors"
+            data-testid="expand-all-button"
+          >
+            <ArrowsOutSimple size={13} className="mr-1.5" />
+            Expand All
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={collapseAll}
+            disabled={!result}
+            className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054] transition-colors"
+            data-testid="collapse-all-button"
+          >
+            <ArrowsInSimple size={13} className="mr-1.5" />
+            Collapse All
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            onClick={exportToExcel}
+            disabled={!result}
+            className="h-8 bg-[#027A48] hover:bg-[#02623A] text-white text-xs rounded-sm transition-colors"
+            data-testid="export-excel-button"
+          >
+            <FileArrowDown size={13} className="mr-1.5" />
+            Export to Excel
+          </Button>
+        </div>
+      </div>
+
+      {/* Content */}
+      <main className="flex-1 overflow-auto p-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+          <StatCard icon={Stack} label="Max Level" value={result ? result.max_level : "—"} testId="stat-total-groups" />
           <StatCard
             icon={Package}
             label="Total Components"
             value={result ? result.total_components : "—"}
             testId="stat-total-components"
           />
-          <StatCard
-            icon={CheckSquare}
-            label="Active Materials"
-            value={result ? activeCount : "—"}
-            testId="stat-active-materials"
-          />
+          <StatCard icon={CheckSquare} label="Active Materials" value={result ? activeCount : "—"} testId="stat-active-materials" />
           <StatCard
             icon={ClockCounterClockwise}
             label="Last Synced"
@@ -278,153 +292,110 @@ function App() {
         </div>
 
         {error && (
-          <Alert
-            variant="destructive"
-            className="mb-8 border-[#DC2626]/40 bg-[#DC2626]/5"
-            data-testid="bom-search-error-alert"
-          >
-            <WarningCircle size={18} />
-            <AlertTitle className="font-heading">Lookup failed</AlertTitle>
-            <AlertDescription className="font-data text-sm">{error}</AlertDescription>
+          <Alert variant="destructive" className="mb-4 rounded-sm border-[#F04438]/40 bg-[#FEF3F2]" data-testid="bom-search-error-alert">
+            <WarningCircle size={16} />
+            <AlertTitle className="font-heading text-sm">Lookup failed</AlertTitle>
+            <AlertDescription className="font-sans text-[13px]">{error}</AlertDescription>
           </Alert>
         )}
 
         {loading && (
-          <div className="space-y-2" data-testid="bom-loading-skeleton">
-            {[...Array(6)].map((_, i) => (
-              <Skeleton key={i} className="h-10 w-full" />
+          <div className="space-y-1.5" data-testid="bom-loading-skeleton">
+            {[...Array(8)].map((_, i) => (
+              <Skeleton key={i} className="h-8 w-full rounded-sm" />
             ))}
           </div>
         )}
 
         {!loading && result && (
-          <div className="border border-border/40 bg-white" data-testid="bom-results-table-container">
-            <div className="flex items-center justify-between border-b border-border/40 px-4 py-3">
-              <span className="font-heading text-xs uppercase tracking-wide text-[#0A2540]/60">
-                Drill down or expand the full tree
-              </span>
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={expandAll}
-                  className="font-heading text-xs rounded-full border-[#0A2540]/20"
-                  data-testid="expand-all-button"
-                >
-                  <ArrowsOutSimple size={14} className="mr-1.5" />
-                  Expand All
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={collapseAll}
-                  className="font-heading text-xs rounded-full border-[#0A2540]/20"
-                  data-testid="collapse-all-button"
-                >
-                  <ArrowsInSimple size={14} className="mr-1.5" />
-                  Collapse All
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={exportToExcel}
-                  className="bg-[#0A2540] hover:bg-[#0A2540]/80 text-white font-heading text-xs rounded-full"
-                  data-testid="export-excel-button"
-                >
-                  <FileArrowDown size={14} className="mr-1.5" />
-                  Export to Excel
-                </Button>
-              </div>
-            </div>
-            <Table>
-              <TableHeader>
-                <TableRow className="border-border/40">
-                  <TableHead className="font-heading text-xs uppercase tracking-wide">Level</TableHead>
-                  <TableHead className="font-heading text-xs uppercase tracking-wide">Product ID</TableHead>
-                  <TableHead className="font-heading text-xs uppercase tracking-wide">Description</TableHead>
-                  <TableHead className="font-heading text-xs uppercase tracking-wide">Quantity</TableHead>
-                  <TableHead className="font-heading text-xs uppercase tracking-wide">UOM</TableHead>
-                  <TableHead className="font-heading text-xs uppercase tracking-wide">ECO</TableHead>
-                  <TableHead className="font-heading text-xs uppercase tracking-wide">Active</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {result &&
-                  flattenVisibleTree(result.tree, expandedKeys).map(({ node, path, depth, hasChildren }) => (
-                    <TableRow
-                      key={path}
-                      className="border-border/40 hover:bg-[#F8F9FA] transition-colors"
-                      data-testid={`bom-row-${path}`}
+          <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-x-auto" data-testid="bom-results-table-container">
+            <table className="border-collapse w-full" data-testid="bom-tree-table">
+              <thead>
+                <tr>
+                  {["Level", "Product ID", "Description", "Quantity", "UOM", "ECO", "Active"].map((h) => (
+                    <th
+                      key={h}
+                      className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide"
                     >
-                      <TableCell className="font-data text-sm tabular-nums py-2 px-3">{node.level}</TableCell>
-                      <TableCell
-                        className="font-data text-sm tabular-nums py-2 px-3"
-                        style={{ paddingLeft: `${depth * 20 + 12}px` }}
-                      >
-                        <span className="inline-flex items-center gap-1.5">
-                          {hasChildren ? (
-                            <button
-                              type="button"
-                              onClick={() => toggleKey(path)}
-                              className="text-[#0052FF] hover:text-[#0040CC] transition-colors"
-                              data-testid={`bom-toggle-${path}`}
-                            >
-                              {expandedKeys.has(path) ? (
-                                <CaretDown size={12} weight="bold" />
-                              ) : (
-                                <CaretRight size={12} weight="bold" />
-                              )}
-                            </button>
-                          ) : (
-                            <span className="w-3" />
-                          )}
-                          {node.product_id}
-                        </span>
-                      </TableCell>
-                      <TableCell className="font-data text-sm py-2 px-3">{node.description || "—"}</TableCell>
-                      <TableCell className="font-data text-sm tabular-nums py-2 px-3">{node.quantity ?? "—"}</TableCell>
-                      <TableCell className="font-data text-sm py-2 px-3">{node.unit_of_measure || "—"}</TableCell>
-                      <TableCell className="font-data text-sm py-2 px-3">{node.eco_id || "—"}</TableCell>
-                      <TableCell className="py-2 px-3">
-                        <Badge
-                          className={
-                            node.active
-                              ? "bg-[#16A34A]/10 text-[#16A34A] border-[#16A34A]/30"
-                              : "bg-[#DC2626]/10 text-[#DC2626] border-[#DC2626]/30"
-                          }
-                          variant="outline"
-                        >
-                          {node.active ? (
-                            <CheckCircle size={12} weight="fill" className="mr-1" />
-                          ) : (
-                            <XCircle size={12} weight="fill" className="mr-1" />
-                          )}
-                          {node.active ? "Yes" : "No"}
-                        </Badge>
-                      </TableCell>
-                    </TableRow>
+                      {h}
+                    </th>
                   ))}
-                {result && result.total_components === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={7} className="text-center py-8 font-data text-sm text-[#0A2540]/50">
+                </tr>
+              </thead>
+              <tbody>
+                {flattenVisibleTree(result.tree, expandedKeys).map(({ node, path, depth, hasChildren }, i) => (
+                  <tr
+                    key={path}
+                    className={`${i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} hover:bg-[#F0F4F8] transition-colors duration-150`}
+                    data-testid={`bom-row-${path}`}
+                  >
+                    <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828]">{node.level}</td>
+                    <td
+                      className="border border-[#D0D5DD] py-1 text-[13px] tabular-nums text-[#101828]"
+                      style={{ paddingLeft: `${depth * 24 + 8}px`, paddingRight: "8px" }}
+                    >
+                      <span className="inline-flex items-center gap-1.5">
+                        {hasChildren ? (
+                          <button
+                            type="button"
+                            onClick={() => toggleKey(path)}
+                            className="text-[#004B87] hover:text-[#003A6A] transition-colors"
+                            data-testid={`bom-toggle-${path}`}
+                          >
+                            {expandedKeys.has(path) ? (
+                              <CaretDown size={12} weight="bold" />
+                            ) : (
+                              <CaretRight size={12} weight="bold" />
+                            )}
+                          </button>
+                        ) : (
+                          <span className="w-3" />
+                        )}
+                        {node.product_id}
+                      </span>
+                    </td>
+                    <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] text-[#101828]">{node.description || "—"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828]">{node.quantity ?? "—"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] text-[#101828]">{node.unit_of_measure || "—"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] text-[#101828]">{node.eco_id || "—"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1">
+                      <Badge
+                        className={
+                          node.active
+                            ? "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6] rounded"
+                            : "bg-[#FEF3F2] text-[#B42318] border-[#FECDCA] rounded"
+                        }
+                        variant="outline"
+                      >
+                        {node.active ? (
+                          <CheckCircle size={12} weight="fill" className="mr-1" />
+                        ) : (
+                          <XCircle size={12} weight="fill" className="mr-1" />
+                        )}
+                        {node.active ? "Yes" : "No"}
+                      </Badge>
+                    </td>
+                  </tr>
+                ))}
+                {result.total_components === 0 && (
+                  <tr>
+                    <td colSpan={7} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]">
                       No components found for this BOM
-                    </TableCell>
-                  </TableRow>
+                    </td>
+                  </tr>
                 )}
-              </TableBody>
-            </Table>
+              </tbody>
+            </table>
           </div>
         )}
 
         {!loading && !result && !error && (
           <div
-            className="border border-dashed border-border/40 py-16 flex flex-col items-center gap-3 text-[#0A2540]/40"
+            className="border border-dashed border-[#D0D5DD] rounded-sm py-16 flex flex-col items-center gap-3 text-[#98A2B3] bg-white"
             data-testid="bom-empty-state"
           >
-            <Package size={32} weight="regular" />
-            <p className="font-data text-sm">Enter a BOM ID above and click "Pull BOM" to fetch data from SAP</p>
+            <Package size={28} weight="regular" />
+            <p className="font-sans text-[13px]">Enter a Part/BOM ID above and click "Pull BOM" to fetch data from SAP</p>
           </div>
         )}
       </main>
