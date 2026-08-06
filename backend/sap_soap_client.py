@@ -76,6 +76,19 @@ class SAPSoapBOMClient:
         return self._parse(self._query(selection))
 
     @staticmethod
+    def _eco_matches_own_product(eco_id: str, product_id: str) -> bool:
+        """A well-formed, part-specific Engineering Change Order ID follows the
+        SAP convention '{product_id}_{revision}'. When an item's change
+        history mixes naming conventions (e.g. a shared/batch ECO numbered
+        after the parent BOM vs. a proper part-specific ECO), the part-specific
+        one is the trustworthy signal of which change record actually applies
+        to that exact input product - it should be preferred over one merely
+        because it has a numerically higher suffix from an unrelated counter."""
+        if not eco_id or not product_id:
+            return False
+        return re.sub(r"_[\d.]+$", "", eco_id) == product_id
+
+    @staticmethod
     def _revision_number(value: str) -> float:
         """Extract the trailing revision suffix after the last '_' (e.g.
         '..._2' -> 2.0, '..._4.4' -> 4.4) so revisions can be compared numerically."""
@@ -129,8 +142,13 @@ class SAPSoapBOMClient:
                 item_id_match = re.search(r"<ItemGroupItemID>([^<]*)</ItemGroupItemID>", item_block)
 
                 # An ItemGroupItem can carry MULTIPLE ChangeState entries (revision
-                # history for that specific line) - only the one with the latest
-                # EngineeringChangeOrderID revision reflects the current, correct data.
+                # history for that specific line). Prefer whichever has an
+                # EngineeringChangeOrderID that follows SAP's part-specific
+                # naming convention ('{this item's own product ID}_{revision}') -
+                # that is the trustworthy signal of the currently applicable
+                # change, since unrelated/batch-style ECO counters can carry a
+                # higher numeric suffix without actually being more recent for
+                # this specific item. Ties are broken by highest revision number.
                 change_states = re.findall(
                     r"<ProductionBillOfMaterialItemGroupChangeState>(.*?)</ProductionBillOfMaterialItemGroupChangeState>",
                     item_block, re.S,
@@ -138,12 +156,15 @@ class SAPSoapBOMClient:
                 if not change_states:
                     continue
 
-                best_state, best_state_revision = None, None
+                best_state, best_state_revision, best_state_self_matched = None, None, False
                 for state_block in change_states:
                     eco_match = re.search(r"<EngineeringChangeOrderID>([^<]*)</EngineeringChangeOrderID>", state_block)
-                    revision = cls._revision_number(eco_match.group(1)) if eco_match else -1.0
-                    if best_state_revision is None or revision > best_state_revision:
-                        best_state, best_state_revision = state_block, revision
+                    pid_match = re.search(r"<InputProductID>.*?<ProductID>([^<]*)</ProductID>", state_block, re.S)
+                    eco_id = eco_match.group(1) if eco_match else None
+                    revision = cls._revision_number(eco_id) if eco_id else -1.0
+                    self_matched = cls._eco_matches_own_product(eco_id, pid_match.group(1) if pid_match else None)
+                    if best_state is None or (self_matched, revision) > (best_state_self_matched, best_state_revision):
+                        best_state, best_state_revision, best_state_self_matched = state_block, revision, self_matched
 
                 product_id_match = re.search(r"<InputProductID>.*?<ProductID>([^<]*)</ProductID>", best_state, re.S)
                 if not product_id_match:
