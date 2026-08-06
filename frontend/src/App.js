@@ -54,6 +54,22 @@ const collectAllUuids = (nodes) => {
   return uuids;
 };
 
+const computeTotalCost = (nodes, costs) => {
+  const totals = {};
+  const walk = (list) => {
+    list.forEach((node) => {
+      const cost = node.product_uuid ? costs[node.product_uuid.toUpperCase()] : null;
+      if (cost && node.quantity != null) {
+        const currency = cost.currency || "—";
+        totals[currency] = (totals[currency] || 0) + cost.amount * node.quantity;
+      }
+      if (node.children && node.children.length > 0) walk(node.children);
+    });
+  };
+  walk(nodes);
+  return totals;
+};
+
 const collectExpandableKeys = (nodes, prefix = "") => {
   let keys = [];
   nodes.forEach((node, i) => {
@@ -324,7 +340,7 @@ function App() {
 
       {/* Content */}
       <main className="flex-1 overflow-auto p-4">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
           <StatCard icon={Stack} label="Max Level" value={result ? result.max_level : "—"} testId="stat-total-groups" />
           <StatCard
             icon={Package}
@@ -333,6 +349,18 @@ function App() {
             testId="stat-total-components"
           />
           <StatCard icon={CheckSquare} label="Active Materials" value={result ? activeCount : "—"} testId="stat-active-materials" />
+          <StatCard
+            icon={CurrencyCircleDollar}
+            label="Total BOM Cost"
+            value={
+              costsLoaded && result
+                ? Object.entries(computeTotalCost(result.tree, costs))
+                    .map(([currency, total]) => `${currency} ${total.toFixed(2)}`)
+                    .join(" + ") || "No cost data"
+                : "—"
+            }
+            testId="stat-total-bom-cost"
+          />
           <StatCard
             icon={ClockCounterClockwise}
             label="Last Synced"
