@@ -1,99 +1,116 @@
 {
-  "theme": "Archetype 4: Swiss & High-Contrast",
+  "theme": "light",
   "typography": {
-    "headings": "IBM Plex Sans",
-    "body": "IBM Plex Mono",
-    "hierarchy": {
-      "H1": "text-4xl tracking-tight font-bold",
-      "H2": "text-2xl tracking-tight font-semibold",
-      "H3": "text-xl font-medium",
-      "Data/Table": "text-sm tabular-nums"
+    "fonts": {
+      "heading": "Chivo, sans-serif",
+      "body": "IBM Plex Sans, sans-serif",
+      "mono": "IBM Plex Mono, monospace"
     },
-    "instructions": "Never use Inter for headings. Keep letter-spacing tight on headings. Use tabular-nums for BOM quantities, Material IDs, and ECOs to align perfectly."
+    "hierarchy": {
+      "h1": "text-2xl font-bold tracking-tight text-[#1D2939]",
+      "h2": "text-lg font-bold text-[#1D2939]",
+      "h3": "text-base font-semibold text-[#344054]",
+      "body": "text-sm text-[#475467] leading-snug",
+      "data": "text-[13px] text-[#101828]",
+      "label": "text-xs font-bold uppercase tracking-wider text-[#475467]"
+    }
   },
   "colors": {
-    "primary": "#0A2540",
-    "accent": "#0052FF",
-    "background": {
-      "light": "#F8F9FA",
-      "dark": "#0A0A0A"
+    "primary": {
+      "DEFAULT": "#004B87",
+      "hover": "#003A6A",
+      "active": "#00294D",
+      "foreground": "#FFFFFF"
     },
-    "surface": {
-      "light": "#FFFFFF",
-      "dark": "#121212"
+    "secondary": {
+      "DEFAULT": "#E5F0FA",
+      "foreground": "#004B87",
+      "border": "#B8D4ED"
+    },
+    "background": "#F2F4F7",
+    "surface": "#FFFFFF",
+    "border": "#D0D5DD",
+    "grid": {
+      "header_bg": "#EAECF0",
+      "header_text": "#344054",
+      "row_even": "#FFFFFF",
+      "row_odd": "#F9FAFB",
+      "border": "#D0D5DD",
+      "hover": "#F0F4F8"
     },
     "status": {
-      "success": "#16A34A",
-      "error": "#DC2626",
-      "warning": "#D97706"
-    },
-    "instructions": "No full-screen gradients. Use solid stark colors. Emphasize high contrast for readability. FORBIDDEN: teal green or teal blue (#1B93A4). Tinted greys only."
+      "success": "#027A48",
+      "success_bg": "#ECFDF3",
+      "success_border": "#ABEFC6",
+      "warning": "#B54708",
+      "warning_bg": "#FFFAEB",
+      "error": "#B42318",
+      "error_bg": "#FEF3F2"
+    }
   },
   "visual_enhancers": {
-    "surface_strategy": "Grid Borders (The Technical Look). Expose the skeleton, make the grid visible. 1px subtle borders (border-border/40) for tables and stats containers.",
-    "motion": "Minimalist. Use micro-interactions for feedback. Hover state lift on rows (bg-muted). Subtle pulse (animate-pulse) for the live SAP connection dot indicator.",
-    "glassmorphism": "Avoid in data-heavy areas, use Flat Solid backgrounds for tables to prevent visual refraction of dense BOM data."
+    "radii": {
+      "container": "rounded-sm",
+      "button": "rounded-sm",
+      "input": "rounded-sm",
+      "badge": "rounded"
+    },
+    "shadows": {
+      "card": "shadow-[0_1px_2px_0_rgba(16,24,40,0.05)]",
+      "dropdown": "shadow-[0_4px_6px_-1px_rgba(16,24,40,0.1),_0_2px_4px_-2px_rgba(16,24,40,0.05)]",
+      "header": "shadow-[0_1px_3px_0_rgba(16,24,40,0.1)]"
+    },
+    "borders": {
+      "width": "border",
+      "style": "solid",
+      "color": "border-[#D0D5DD]"
+    }
   },
   "components": {
-    "libraries_to_install": [
-      "yarn add @phosphor-icons/react"
-    ],
-    "shadcn_required": [
-      "table",
-      "input",
-      "button",
-      "card",
-      "badge",
-      "alert",
-      "sonner",
-      "skeleton"
-    ],
-    "custom_instructions": [
-      "Use Shadcn components for structural logic but apply custom tailwind styling.",
-      "Card/Containers: Flat background, sharp edges or subtle roundness (max 4px radius), 1px border, no heavy drop shadows.",
-      "Table: Dense spacing (py-2 px-3 cells), distinct borders for scanning massive BOM hierarchies.",
-      "Toast: Use Sonner for SAP API success/error feedback."
-    ]
+    "header": "A distinctive top header bar (bg-[#004B87]) with crisp white text. Very compact (h-12). Include the Oracle JDE/UX One style logo area on the left and the SAP connection status pill on the right.",
+    "toolbar": "A functional sub-header (bg-white border-b border-[#D0D5DD] p-2 flex items-center gap-4). Houses the BOM ID search input, 'Expand All' / 'Collapse All' buttons, and the 'Excel Export' action. Use dense icon buttons (Phosphor Icons or Lucide).",
+    "stat_cards": "Flat design (bg-white border border-[#D0D5DD] rounded-sm p-3 shadow-sm). Label should be text-xs font-bold uppercase text-[#475467]. Value should be text-2xl font-bold text-[#1D2939].",
+    "tree_table": "The core UI component. Use pure HTML table elements (<table className='border-collapse w-full'>). Header rows (th) must have bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054]. Data rows (td) must have alternating backgrounds (odd:bg-[#F9FAFB] even:bg-white), border border-[#D0D5DD] px-2 py-1 text-[13px] text-[#101828]. Hover states on rows (hover:bg-[#F0F4F8]).",
+    "tree_indentation": "For multi-level hierarchy, use a combination of padding-left on the first cell based on the row's 'level' attribute (e.g., style={{ paddingLeft: `${row.level * 24 + 8}px` }}) and a chevron icon (ChevronRight for collapsed, ChevronDown for expanded) as an interactive toggle.",
+    "badges": "For 'Active Materials' or 'Resolved BOM ID', use subtle backgrounds with bold text. e.g., bg-[#ECFDF3] text-[#027A48] border border-[#ABEFC6] for Active.",
+    "search_input": "Dense and sharp. h-8, px-2, text-[13px], rounded-sm, border-[#D0D5DD] focus:border-[#004B87] focus:ring-1 focus:ring-[#004B87]."
   },
-  "layouts": {
-    "strategy": "High Density Grid (Mode B) for dashboard context.",
-    "spacing": "Tight inside data widgets (gap-4). Generous padding around the main app container (p-8 or p-12).",
-    "structure": [
-      "Header: BOM Search Bar (wide) + Connection Status Indicator (right aligned)",
-      "Stats Section: 4-column dense grid (Bento Mode B) for summary metrics (Total Components, Total Groups, Active Materials, Last Synced)",
-      "Main Content: Full width Table displaying the hierarchical BOM (Group > Line Item > Material > Quantity > UOM > ECO > Active)"
-    ]
+  "layout": {
+    "strategy": "Full viewport desktop layout (h-screen, flex flex-col, overflow-hidden). 1. Header (fixed height). 2. Toolbar (fixed height). 3. Scrollable content pane (flex-1 bg-[#F2F4F7] p-4).",
+    "grid": "Use a 4-column CSS grid for the Stat Cards (grid grid-cols-1 md:grid-cols-4 gap-4 mb-4). The Data Grid takes up the remaining vertical space.",
+    "spacing": "Tight, efficient 'Enterprise' spacing. Reduce padding on structural elements. Emphasize alignment and data density."
   },
-  "accessibility": {
-    "contrast": "APCA standard or minimum WCAG AA. Text on status badges MUST meet 4.5:1 ratio.",
-    "focus": "Focus states must have HIGHER contrast, e.g., focus:ring-2 focus:ring-accent",
-    "testing": "All interactive elements (search input, submit button, active status toggles/badges) MUST include a data-testid attribute in kebab-case."
+  "motion": {
+    "transitions": "Instant and functional. Only use transitions for hover states on buttons and table rows (duration-150 ease-in-out).",
+    "interactions": "Chevrons should rotate smoothly (-rotate-90 to 0) when expanding/collapsing."
   },
-  "icons": {
-    "library": "@phosphor-icons/react",
-    "style": "Use Regular or Duotone weight to maintain technical precision for ERP data."
-  },
-  "image_urls": {},
   "instructions_to_main_agent": [
-    "Build a robust React (JavaScript, not TSX) interface that mimics an elite, technical command center for SAP Business ByDesign.",
-    "Do NOT use raw HTML inputs or selects; always use Shadcn Input, Button, etc.",
-    "Maintain raw data integrity: always use the monospace font family for IDs and Quantities.",
-    "Implement a robust 'mock' of the SAP BOM API call if the FastAPI backend is not yet attached. Simulate loading (skeletons) and potential error states to demonstrate UI resilience.",
-    "Delete default App-logo logic and center-aligning styles from App.css. Enforce a top-left aligned, rigid grid flow.",
-    "Include a visible 'SAP Connected' vs 'SAP Disconnected' status indicator in the top right."
+    "1. Setup global fonts in the project (import 'IBM Plex Sans' and 'Chivo' from Google Fonts). Apply 'font-sans' mapping to 'IBM Plex Sans'.",
+    "2. Build the main layout skeleton: Header (top), Toolbar (middle), and Main Content (bottom, scrollable).",
+    "3. Implement the top Header (dark corporate blue) containing the app title and the SAP Connection Status pill (e.g., a green dot and 'SAP PRD Connected').",
+    "4. Implement the Toolbar with a Search Bar (Input component, sharp corners), 'Expand/Collapse All' buttons, and 'Export to Excel' button.",
+    "5. Build the 4 Stat Cards: 'Total Components', 'Max Level', 'Active Materials', 'Last Synced'.",
+    "6. Build the Tree Table component. It MUST use native <table> tags with border-collapse and border applied to both th and td to achieve the 'Excel-like' grid aesthetic. The first column (Level/Product ID) should contain the expand/collapse chevron and apply dynamic padding based on the depth level.",
+    "7. Mock a realistic multi-level Bill of Materials data structure to populate the grid (Level 0, Level 1, Level 2, etc.).",
+    "8. Ensure the design strictly adheres to the JD Edwards UX One visual language: dense data, crisp lines, solid borders, alternating row colors, and sharp corners.",
+    "9. Add data-testid attributes to all interactive elements for robust testing."
   ],
   "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
     "You tend to converge toward generic, 'on distribution' outputs. In frontend design, this creates what users call the 'AI slop' aesthetic. Avoid this: make creative, distinctive frontends that surprise and delight.",
-    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients.",
+    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients",
     "Don't make generic centered layouts, simplistic gradients, and uniform styling.",
-    "Create depth through layered design elements with z-index hierarchy.",
-    "You MUST NOT apply universal transition. Eg: transition: all. This results in breaking transforms. Always add transitions for specific interactive elements like button, input excluding transforms.",
-    "You MUST NOT center align the app container, ie do not add .App { text-align: center; } in the css file. This disrupts the human natural reading flow of text.",
-    "Always use modern button styles like pill-shaped, or sharp button with interaction animations & color relevant to the app style.",
-    "NEVER: use AI assistant Emoji characters like 🤖🧠💭💡🔮🎯 etc for icons.",
-    "Every interaction needs micro-animations - hover states, transitions, and entrance animations. Static = dead.",
-    "Use 2-3x more spacing than feels comfortable for layout separation. Cramped designs look cheap.",
-    "Prioritize using pre-existing components from src/components/ui when applicable.",
-    "Use sonner for toasts. Sonner component are located in /app/src/components/ui/sonner.tsx"
+    "Create depth through layered design elements with z-index hierarchy",
+    "Use glass-morphism effects with backdrop filters sparingly; rely primarily on solid backgrounds for this enterprise app.",
+    "You MUST NOT apply universal transition. Eg: `transition: all`. This results in breaking transforms. Always add transitions for specific interactive elements like button, input excluding transforms",
+    "You MUST NOT center align the app container, ie do not add `.App { text-align: center; }` in the css file. This disrupts the human natural reading flow of text",
+    "Always use modern button styles like pill-shaped, or sharp button with interaction animations & color relevant to the app style. For this app, use sharp, 2px rounded-sm enterprise buttons.",
+    "NEVER: use AI assistant Emoji characters like 🤖🧠💭💡🔮🎯 etc for icons. Use Phosphor Icons or Lucide.",
+    "Every interaction needs micro-animations - hover states, transitions. Static = dead.",
+    "Use appropriate spacing. For enterprise apps, this means structured, purposeful padding. Compact but readable.",
+    "Subtle grain textures, custom cursors, selection states, and loading animations: separates good from extraordinary.",
+    "Prioritize using pre-existing components from src/components/ui when applicable",
+    "Create new components that match the style and conventions of existing components when needed",
+    "Use `sonner` for toasts. Sonner component are located in `/app/src/components/ui/sonner.tsx`",
+    "All interactive and key informational elements MUST include a `data-testid` attribute to facilitate robust automated testing."
   ]
 }
