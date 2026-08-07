@@ -19,6 +19,7 @@ import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 import requests
 from requests.auth import HTTPBasicAuth
@@ -177,3 +178,50 @@ class SAPPlanningClient:
                     f"SAP write failed for planning area {row.get('SupplyPlanningAreaID')}: {last_error}"
                 )
         return updated
+
+
+def bulk_push_to_sap(db, planning_client, progress_callback=None) -> dict:
+    """Pushes MSL->Safety Stock and Lead Time (Days)->Procurement Lead Time
+    for EVERY component that has a captured SAP link (product_uuid) and at
+    least one of msl/lead_time_days set - powers the Admin page's "Push All
+    to SAP" button (the bulk counterpart to the per-row Push to SAP).
+    Uses bounded concurrency ACROSS DIFFERENT materials (safe - SAP's
+    object-lock only contends on writes to the SAME material's rows, which
+    push_planning_data already retries) to keep a large run from taking
+    forever. progress_callback(processed, total) is invoked after each
+    material finishes, for job-status polling. Returns
+    {total, pushed, failed: [{product_id, error}]}."""
+    docs = list(db["component_master"].find({
+        "product_uuid": {"$exists": True, "$ne": None},
+        "$or": [{"msl": {"$ne": None}}, {"lead_time_days": {"$ne": None}}],
+    }))
+    total = len(docs)
+    pushed = 0
+    failed = []
+    processed = 0
+
+    def push_one(doc):
+        try:
+            planning = planning_client.get_planning_data([doc["product_uuid"]])
+            data = planning.get(doc["product_uuid"].upper())
+            if not data:
+                return doc["_id"], False, "SAP has no Supply Planning record for this material"
+            planning_client.push_planning_data(doc["product_uuid"], data["rows"], doc.get("msl"), doc.get("lead_time_days"))
+            db["component_master"].update_one({"_id": doc["_id"]}, {"$set": {"sap_pushed_at": datetime.now(timezone.utc)}})
+            return doc["_id"], True, None
+        except SAPPlanningError as e:
+            return doc["_id"], False, str(e)
+        except Exception as e:
+            return doc["_id"], False, f"Unexpected error: {e}"
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        for product_id, success, error in executor.map(push_one, docs):
+            processed += 1
+            if success:
+                pushed += 1
+            else:
+                failed.append({"product_id": product_id, "error": error})
+            if progress_callback:
+                progress_callback(processed, total)
+
+    return {"total": total, "pushed": pushed, "failed": failed}

@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import "@/App.css";
 import axios from "axios";
+import * as XLSX from "xlsx";
 import {
   Database,
   MagnifyingGlass,
@@ -12,6 +13,8 @@ import {
   Tag,
   X,
   CloudArrowUp,
+  DownloadSimple,
+  UploadSimple,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -45,6 +48,12 @@ export default function AdminPage() {
   const [pushing, setPushing] = useState(false);
   const [recategorizing, setRecategorizing] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [pushAllOpen, setPushAllOpen] = useState(false);
+  const [pushAllStatus, setPushAllStatus] = useState("idle"); // idle | running | done | failed
+  const [pushAllProgress, setPushAllProgress] = useState({ processed: 0, total: 0 });
+  const [pushAllResult, setPushAllResult] = useState(null);
+  const [pushAllError, setPushAllError] = useState(null);
   const [sortConfig, setSortConfig] = useState({ field: "product_id", direction: "asc" });
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
   const [pendingRowForNewCategory, setPendingRowForNewCategory] = useState(null);
@@ -293,6 +302,103 @@ export default function AdminPage() {
     }
   };
 
+  const exportMslLeadTimeTemplate = () => {
+    const rows = items.map((it) => ({
+      "Product ID": it.product_id,
+      Description: it.description || "",
+      Category: it.category || "",
+      MSL: it.msl ?? "",
+      "Lead Time (Days)": it.lead_time_days ?? "",
+      "Has SAP Link": it.has_sap_link ? "Yes" : "No",
+    }));
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    worksheet["!cols"] = [{ wch: 18 }, { wch: 40 }, { wch: 16 }, { wch: 10 }, { wch: 16 }, { wch: 12 }];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "MSL & Lead Time");
+    XLSX.writeFile(workbook, "Component_MSL_LeadTime_Template.xlsx");
+    toast.success("Template downloaded", {
+      description: "Edit the MSL / Lead Time (Days) columns, then use Import from Excel to bring your changes back in.",
+    });
+  };
+
+  const handleImportFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+
+    setImporting(true);
+    try {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: "array" });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet);
+
+      let updated = 0;
+      const notFound = [];
+      const CONCURRENCY = 8;
+      for (let i = 0; i < rows.length; i += CONCURRENCY) {
+        const batch = rows.slice(i, i + CONCURRENCY);
+        await Promise.all(
+          batch.map(async (row) => {
+            const productId = row["Product ID"];
+            if (!productId) return;
+            const payload = {};
+            if (row["MSL"] !== undefined && row["MSL"] !== "") payload.msl = Number(row["MSL"]);
+            if (row["Lead Time (Days)"] !== undefined && row["Lead Time (Days)"] !== "") {
+              payload.lead_time_days = Number(row["Lead Time (Days)"]);
+            }
+            if (Object.keys(payload).length === 0) return;
+            try {
+              await axios.patch(`${API}/admin/components/${encodeURIComponent(productId)}`, payload);
+              updated += 1;
+            } catch (err) {
+              notFound.push(productId);
+            }
+          })
+        );
+      }
+
+      toast.success(`Imported ${updated} row${updated === 1 ? "" : "s"}`, {
+        description: notFound.length ? `${notFound.length} product ID(s) not found: ${notFound.slice(0, 5).join(", ")}${notFound.length > 5 ? "..." : ""}` : "MSL / Lead Time updated. Refreshing list...",
+      });
+      loadComponents();
+    } catch (err) {
+      toast.error("Import failed", { description: err.message });
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const startPushAllToSap = async () => {
+    setPushAllOpen(true);
+    setPushAllStatus("running");
+    setPushAllProgress({ processed: 0, total: 0 });
+    setPushAllResult(null);
+    setPushAllError(null);
+    try {
+      const { data } = await axios.post(`${API}/admin/components/push-all-to-sap`);
+      const jobId = data.job_id;
+      const poll = async () => {
+        const { data: job } = await axios.get(`${API}/admin/components/push-all-to-sap/${jobId}`);
+        if (job.progress) setPushAllProgress(job.progress);
+        if (job.status === "running") {
+          setTimeout(poll, 1500);
+        } else if (job.status === "done") {
+          setPushAllStatus("done");
+          setPushAllResult(job.result);
+          loadComponents();
+        } else {
+          setPushAllStatus("failed");
+          setPushAllError(job.error);
+        }
+      };
+      poll();
+    } catch (err) {
+      setPushAllStatus("failed");
+      setPushAllError(err?.response?.data?.detail || err.message);
+    }
+  };
+
   const filteredSorted = useMemo(() => {
     const q = search.trim().toLowerCase();
     let result = items.filter((it) => {
@@ -414,6 +520,48 @@ export default function AdminPage() {
         >
           <CloudArrowUp size={13} className={`mr-1.5 ${backfilling ? "animate-pulse" : ""}`} />
           {backfilling ? "Backfilling..." : "Backfill SAP Links"}
+        </Button>
+        <div className="w-px h-6 bg-[#D0D5DD]" />
+        <Button
+          type="button"
+          variant="outline"
+          onClick={exportMslLeadTimeTemplate}
+          className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
+          data-testid="admin-export-excel-button"
+          title="Download MSL / Lead Time for every component as an Excel file to edit offline"
+        >
+          <DownloadSimple size={13} className="mr-1.5" />
+          Export to Excel
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => document.getElementById("admin-import-file-input").click()}
+          disabled={importing}
+          className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
+          data-testid="admin-import-excel-button"
+          title="Upload an edited MSL / Lead Time Excel file to update components in bulk"
+        >
+          <UploadSimple size={13} className={`mr-1.5 ${importing ? "animate-pulse" : ""}`} />
+          {importing ? "Importing..." : "Import from Excel"}
+        </Button>
+        <input
+          id="admin-import-file-input"
+          type="file"
+          accept=".xlsx,.xls"
+          onChange={handleImportFile}
+          className="hidden"
+          data-testid="admin-import-file-input"
+        />
+        <Button
+          type="button"
+          onClick={startPushAllToSap}
+          className="h-8 bg-[#B54708] hover:bg-[#93370D] text-white text-xs rounded-sm"
+          data-testid="admin-push-all-to-sap-button"
+          title="Push MSL / Lead Time to SAP for every linked component that has a value set"
+        >
+          <CloudArrowUp size={13} className="mr-1.5" />
+          Push All to SAP
         </Button>
         <span className="text-xs text-[#475467] ml-auto font-sans" data-testid="admin-item-count">
           {filteredSorted.length} of {items.length} components
@@ -760,6 +908,71 @@ export default function AdminPage() {
             >
               <CloudArrowUp size={13} className="mr-1.5" />
               {pushing ? "Pushing..." : "Confirm Push"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={pushAllOpen} onOpenChange={(open) => !open && pushAllStatus !== "running" && setPushAllOpen(false)}>
+        <DialogContent className="max-w-md" data-testid="push-all-to-sap-dialog">
+          <DialogHeader>
+            <DialogTitle className="font-heading text-base">Push All to SAP</DialogTitle>
+          </DialogHeader>
+          {pushAllStatus === "running" && (
+            <div className="py-4 space-y-3" data-testid="push-all-running">
+              <div className="flex items-center gap-2 text-sm text-[#475467]">
+                <ArrowClockwise size={14} className="animate-spin" />
+                Pushing {pushAllProgress.processed} of {pushAllProgress.total || "?"} component(s)...
+              </div>
+              {pushAllProgress.total > 0 && (
+                <div className="w-full h-2 bg-[#EAECF0] rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-[#004B87] transition-all duration-300"
+                    style={{ width: `${(pushAllProgress.processed / pushAllProgress.total) * 100}%` }}
+                  />
+                </div>
+              )}
+              <p className="text-xs text-[#98A2B3]">This can take a while against the live SAP tenant - feel free to leave this open.</p>
+            </div>
+          )}
+          {pushAllStatus === "done" && pushAllResult && (
+            <div className="py-2 space-y-2" data-testid="push-all-result">
+              <p className="text-sm text-[#101828]">
+                Pushed <span className="font-bold">{pushAllResult.pushed}</span> of{" "}
+                <span className="font-bold">{pushAllResult.total}</span> component(s) successfully.
+              </p>
+              {pushAllResult.failed.length > 0 && (
+                <div>
+                  <p className="text-xs text-[#B42318] font-bold mb-1">{pushAllResult.failed.length} failed:</p>
+                  <div className="max-h-40 overflow-auto border border-[#FDA29B] rounded-sm bg-[#FEF3F2] p-2 space-y-1" data-testid="push-all-failed-list">
+                    {pushAllResult.failed.map((f) => (
+                      <div key={f.product_id} className="text-xs text-[#912018]">
+                        <span className="font-bold">{f.product_id}</span>: {f.error}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {pushAllResult.total === 0 && (
+                <p className="text-xs text-[#98A2B3]">No components had both a SAP link and an MSL/Lead Time value set.</p>
+              )}
+            </div>
+          )}
+          {pushAllStatus === "failed" && (
+            <div className="py-2 text-sm text-[#B42318]" data-testid="push-all-error">
+              {pushAllError}
+            </div>
+          )}
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setPushAllOpen(false)}
+              disabled={pushAllStatus === "running"}
+              className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
+              data-testid="push-all-close-button"
+            >
+              Close
             </Button>
           </div>
         </DialogContent>

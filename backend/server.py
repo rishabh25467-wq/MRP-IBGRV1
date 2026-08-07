@@ -15,7 +15,7 @@ from starlette.middleware.cors import CORSMiddleware
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
-from sap_planning_client import SAPPlanningClient, SAPPlanningError
+from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
 from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids
 from oms_client import OMSClient, OMSError
 from purchasing_plan import (
@@ -71,6 +71,11 @@ oms_client = OMSClient(
 # hold a single HTTP connection open longer than the ingress/proxy timeout;
 # the frontend polls /purchasing-plan/status/{job_id} instead.
 purchasing_plan_jobs: dict = {}
+
+# Same out-of-request pattern for the Admin page's bulk "Push All to SAP" -
+# can touch hundreds of materials, each needing a CSRF handshake + several
+# PATCHes, so it must run as a background job too.
+push_all_to_sap_jobs: dict = {}
 
 
 class BomNode(BaseModel):
@@ -602,6 +607,61 @@ async def push_component_to_sap(product_id: str):
         {"$set": {"sap_pushed_at": datetime.now(timezone.utc)}},
     )
     return PushToSapResponse(planning_areas_updated=updated, safety_stock=msl, lead_time_days=lead_time_days)
+
+
+class PushAllToSapProgress(BaseModel):
+    processed: int
+    total: int
+
+
+class PushAllToSapResult(BaseModel):
+    total: int
+    pushed: int
+    failed: List[dict]
+
+
+class PushAllToSapJobStatus(BaseModel):
+    job_id: str
+    status: str  # "running" | "done" | "failed"
+    progress: Optional[PushAllToSapProgress] = None
+    result: Optional[PushAllToSapResult] = None
+    error: Optional[str] = None
+
+
+@api_router.post("/admin/components/push-all-to-sap")
+async def start_push_all_to_sap():
+    """Bulk counterpart to the per-row Push to SAP - pushes MSL/Lead Time
+    for EVERY component that has a SAP link and at least one value set.
+    Runs as a background job (see purchasing_plan_jobs for the same
+    pattern) since it can take a while against the live SAP tenant."""
+    job_id = str(uuid.uuid4())
+    push_all_to_sap_jobs[job_id] = {"status": "running", "progress": {"processed": 0, "total": 0}, "result": None, "error": None}
+
+    def progress_callback(processed, total):
+        push_all_to_sap_jobs[job_id]["progress"] = {"processed": processed, "total": total}
+
+    async def run():
+        try:
+            result = await asyncio.to_thread(bulk_push_to_sap, db, sap_planning_client, progress_callback)
+            push_all_to_sap_jobs[job_id] = {
+                "status": "done", "progress": push_all_to_sap_jobs[job_id]["progress"], "result": result, "error": None,
+            }
+        except Exception as e:
+            logger.error(f"Bulk push-to-SAP failed: {e}")
+            push_all_to_sap_jobs[job_id] = {
+                "status": "failed", "progress": push_all_to_sap_jobs[job_id]["progress"], "result": None, "error": str(e),
+            }
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+@api_router.get("/admin/components/push-all-to-sap/{job_id}", response_model=PushAllToSapJobStatus)
+async def get_push_all_to_sap_status(job_id: str):
+    job = push_all_to_sap_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return PushAllToSapJobStatus(job_id=job_id, **job)
 
 
 class AddCategoryRequest(BaseModel):
