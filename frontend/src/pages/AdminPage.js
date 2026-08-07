@@ -1,0 +1,379 @@
+import { useState, useEffect, useMemo } from "react";
+import "@/App.css";
+import axios from "axios";
+import {
+  Database,
+  MagnifyingGlass,
+  ArrowClockwise,
+  SortAscending,
+  SortDescending,
+  Sparkle,
+} from "@phosphor-icons/react";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Toaster, toast } from "@/components/ui/sonner";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { NavTabs } from "@/components/NavTabs";
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const API = `${BACKEND_URL}/api`;
+
+const formatDate = (iso) => (iso ? new Date(iso).toLocaleString() : "—");
+
+export default function AdminPage() {
+  const [items, setItems] = useState([]);
+  const [categoriesTaxonomy, setCategoriesTaxonomy] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [selected, setSelected] = useState(new Set());
+  const [savingIds, setSavingIds] = useState(new Set());
+  const [mslInputs, setMslInputs] = useState({});
+  const [recategorizing, setRecategorizing] = useState(false);
+  const [sortConfig, setSortConfig] = useState({ field: "product_id", direction: "asc" });
+
+  const loadComponents = async () => {
+    setLoading(true);
+    try {
+      const { data } = await axios.get(`${API}/admin/components`);
+      setItems(data.items);
+      setCategoriesTaxonomy(data.categories);
+    } catch (err) {
+      toast.error("Could not load components", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadComponents();
+  }, []);
+
+  const markSaving = (productId, isSaving) => {
+    setSavingIds((prev) => {
+      const next = new Set(prev);
+      isSaving ? next.add(productId) : next.delete(productId);
+      return next;
+    });
+  };
+
+  const updateCategory = async (productId, category) => {
+    markSaving(productId, true);
+    try {
+      const { data } = await axios.patch(`${API}/admin/components/${encodeURIComponent(productId)}`, { category });
+      setItems((prev) => prev.map((it) => (it.product_id === productId ? data : it)));
+      toast.success(`${productId} set to "${category}"`);
+    } catch (err) {
+      toast.error("Could not save category", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      markSaving(productId, false);
+    }
+  };
+
+  const saveMsl = async (productId) => {
+    const raw = mslInputs[productId];
+    if (raw === undefined) return;
+    const msl = raw === "" ? 0 : Number(raw);
+    if (Number.isNaN(msl)) {
+      toast.error("MSL must be a number");
+      return;
+    }
+    markSaving(productId, true);
+    try {
+      const { data } = await axios.patch(`${API}/admin/components/${encodeURIComponent(productId)}`, { msl });
+      setItems((prev) => prev.map((it) => (it.product_id === productId ? data : it)));
+      setMslInputs((prev) => {
+        const next = { ...prev };
+        delete next[productId];
+        return next;
+      });
+    } catch (err) {
+      toast.error("Could not save MSL", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      markSaving(productId, false);
+    }
+  };
+
+  const toggleSelect = (productId) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(productId) ? next.delete(productId) : next.add(productId);
+      return next;
+    });
+  };
+
+  const toggleSelectAllVisible = () => {
+    setSelected((prev) => {
+      const allVisible = filteredSorted.map((it) => it.product_id);
+      const allSelected = allVisible.every((id) => prev.has(id));
+      const next = new Set(prev);
+      allVisible.forEach((id) => (allSelected ? next.delete(id) : next.add(id)));
+      return next;
+    });
+  };
+
+  const recategorizeSelected = async () => {
+    if (selected.size === 0) return;
+    setRecategorizing(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/components/recategorize`, {
+        product_ids: Array.from(selected),
+      });
+      setItems((prev) =>
+        prev.map((it) =>
+          data.categories[it.product_id]
+            ? { ...it, category: data.categories[it.product_id], category_source: "ai" }
+            : it
+        )
+      );
+      const changedCount = Object.keys(data.categories).length;
+      toast.success(`Re-categorized ${changedCount} item${changedCount === 1 ? "" : "s"}`, {
+        description: data.skipped_manual.length
+          ? `Skipped ${data.skipped_manual.length} manually-corrected item(s) to protect your fixes.`
+          : undefined,
+      });
+      setSelected(new Set());
+    } catch (err) {
+      toast.error("Re-categorization failed", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setRecategorizing(false);
+    }
+  };
+
+  const toggleSort = (field) => {
+    setSortConfig((prev) =>
+      prev.field === field ? { field, direction: prev.direction === "asc" ? "desc" : "asc" } : { field, direction: "asc" }
+    );
+  };
+
+  const filteredSorted = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    let result = items.filter((it) => {
+      const matchesSearch =
+        !q || it.product_id.toLowerCase().includes(q) || (it.description || "").toLowerCase().includes(q);
+      const matchesCategory =
+        categoryFilter === "all" ||
+        (categoryFilter === "uncategorized" ? !it.category : it.category === categoryFilter);
+      return matchesSearch && matchesCategory;
+    });
+    result = [...result].sort((a, b) => {
+      const av = (a[sortConfig.field] || "").toString().toLowerCase();
+      const bv = (b[sortConfig.field] || "").toString().toLowerCase();
+      const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+      return sortConfig.direction === "asc" ? cmp : -cmp;
+    });
+    return result;
+  }, [items, search, categoryFilter, sortConfig]);
+
+  const allVisibleSelected = filteredSorted.length > 0 && filteredSorted.every((it) => selected.has(it.product_id));
+  const SortIcon = sortConfig.direction === "asc" ? SortAscending : SortDescending;
+
+  return (
+    <div className="h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]">
+      <Toaster position="top-right" />
+
+      <header className="h-12 bg-[#004B87] shadow-[0_1px_3px_0_rgba(16,24,40,0.1)] flex items-center justify-between px-4 shrink-0 z-10">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2.5" data-testid="app-title">
+            <Database size={18} weight="bold" className="text-white" />
+            <span className="font-heading text-sm font-bold text-white tracking-tight">SAP BOM Explorer</span>
+            <span className="font-sans text-xs text-white/60 hidden sm:inline">| Admin</span>
+          </div>
+          <NavTabs />
+        </div>
+      </header>
+
+      <div className="bg-white border-b border-[#D0D5DD] p-2 flex items-center gap-3 shrink-0 flex-wrap">
+        <div className="relative">
+          <MagnifyingGlass size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
+          <input
+            type="text"
+            placeholder="Search product ID or description..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="h-8 w-64 pl-7 pr-2 text-[13px] rounded-sm border border-[#D0D5DD] text-[#101828] focus:outline-none focus:border-[#004B87] focus:ring-1 focus:ring-[#004B87]"
+            data-testid="admin-search-input"
+          />
+        </div>
+        <div className="flex items-center gap-1.5">
+          <label htmlFor="admin-category-filter" className="font-heading text-xs font-bold text-[#475467] uppercase">
+            Category
+          </label>
+          <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+            <SelectTrigger id="admin-category-filter" className="h-8 w-48 text-[13px] rounded-sm border-[#D0D5DD]" data-testid="admin-category-filter">
+              <SelectValue placeholder="All Categories" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Categories</SelectItem>
+              <SelectItem value="uncategorized">Uncategorized</SelectItem>
+              {categoriesTaxonomy.map((cat) => (
+                <SelectItem key={cat} value={cat} data-testid={`admin-category-filter-option-${cat}`}>
+                  {cat}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={loadComponents}
+          disabled={loading}
+          className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
+          data-testid="admin-refresh-button"
+        >
+          <ArrowClockwise size={13} className={`mr-1.5 ${loading ? "animate-spin" : ""}`} />
+          Refresh
+        </Button>
+        <Button
+          type="button"
+          onClick={recategorizeSelected}
+          disabled={selected.size === 0 || recategorizing}
+          className="h-8 bg-[#004B87] hover:bg-[#003A6A] text-white text-xs rounded-sm"
+          data-testid="admin-recategorize-button"
+        >
+          <Sparkle size={13} className={`mr-1.5 ${recategorizing ? "animate-pulse" : ""}`} />
+          {recategorizing ? "Re-Categorising..." : `Re-Categorise Selected (${selected.size})`}
+        </Button>
+        <span className="text-xs text-[#475467] ml-auto font-sans" data-testid="admin-item-count">
+          {filteredSorted.length} of {items.length} components
+        </span>
+      </div>
+
+      <main className="flex-1 overflow-auto p-3">
+        <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-auto" data-testid="admin-components-table-container">
+          <table className="w-full text-[13px] border-collapse">
+            <thead className="sticky top-0 z-[1]">
+              <tr>
+                <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 w-8">
+                  <Checkbox
+                    checked={allVisibleSelected}
+                    onCheckedChange={toggleSelectAllVisible}
+                    data-testid="admin-select-all-checkbox"
+                  />
+                </th>
+                <th
+                  onClick={() => toggleSort("product_id")}
+                  className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#DDE1E8] select-none"
+                  data-testid="admin-sort-product-id"
+                >
+                  <span className="inline-flex items-center gap-1">
+                    Product ID
+                    {sortConfig.field === "product_id" && <SortIcon size={11} weight="bold" />}
+                  </span>
+                </th>
+                <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
+                  Description
+                </th>
+                <th
+                  onClick={() => toggleSort("category")}
+                  className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#DDE1E8] select-none"
+                  data-testid="admin-sort-category"
+                >
+                  <span className="inline-flex items-center gap-1">
+                    Category
+                    {sortConfig.field === "category" && <SortIcon size={11} weight="bold" />}
+                  </span>
+                </th>
+                <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
+                  Source
+                </th>
+                <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
+                  MSL
+                </th>
+                <th
+                  onClick={() => toggleSort("updated_at")}
+                  className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#DDE1E8] select-none"
+                  data-testid="admin-sort-updated-at"
+                >
+                  <span className="inline-flex items-center gap-1">
+                    Updated
+                    {sortConfig.field === "updated_at" && <SortIcon size={11} weight="bold" />}
+                  </span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredSorted.map((it, i) => (
+                <tr
+                  key={it.product_id}
+                  className={`${i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} hover:bg-[#F0F4F8] transition-colors duration-150 ${savingIds.has(it.product_id) ? "opacity-60" : ""}`}
+                  data-testid={`admin-row-${it.product_id}`}
+                >
+                  <td className="border border-[#D0D5DD] px-2 py-1">
+                    <Checkbox
+                      checked={selected.has(it.product_id)}
+                      onCheckedChange={() => toggleSelect(it.product_id)}
+                      data-testid={`admin-select-${it.product_id}`}
+                    />
+                  </td>
+                  <td className="border border-[#D0D5DD] px-2 py-1 font-medium text-[#101828]">{it.product_id}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1 text-[#101828]">{it.description || "—"}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1">
+                    <Select
+                      value={it.category || "__none__"}
+                      onValueChange={(val) => updateCategory(it.product_id, val)}
+                      disabled={savingIds.has(it.product_id)}
+                    >
+                      <SelectTrigger className="h-7 text-xs rounded-sm border-[#D0D5DD]" data-testid={`admin-category-select-${it.product_id}`}>
+                        <SelectValue placeholder="Uncategorized" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {categoriesTaxonomy.map((cat) => (
+                          <SelectItem key={cat} value={cat}>
+                            {cat}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </td>
+                  <td className="border border-[#D0D5DD] px-2 py-1">
+                    <Badge
+                      variant="outline"
+                      className={
+                        it.category_source === "manual"
+                          ? "bg-[#E5F0FA] text-[#004B87] border-[#B8D4ED] rounded text-xs"
+                          : "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6] rounded text-xs"
+                      }
+                      data-testid={`admin-source-badge-${it.product_id}`}
+                    >
+                      {it.category_source === "manual" ? "Manual" : it.category ? "AI" : "—"}
+                    </Badge>
+                  </td>
+                  <td className="border border-[#D0D5DD] px-2 py-1">
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      placeholder="0"
+                      value={mslInputs[it.product_id] ?? (it.msl ?? "")}
+                      onChange={(e) => setMslInputs((prev) => ({ ...prev, [it.product_id]: e.target.value }))}
+                      onBlur={() => saveMsl(it.product_id)}
+                      onKeyDown={(e) => e.key === "Enter" && saveMsl(it.product_id)}
+                      disabled={savingIds.has(it.product_id)}
+                      className="h-7 w-20 px-1.5 text-xs border border-[#D0D5DD] rounded-sm bg-white text-[#101828] tabular-nums focus:outline-none focus:ring-1 focus:ring-[#004B87]"
+                      data-testid={`admin-msl-input-${it.product_id}`}
+                    />
+                  </td>
+                  <td className="border border-[#D0D5DD] px-2 py-1 text-xs text-[#667085]">{formatDate(it.updated_at)}</td>
+                </tr>
+              ))}
+              {filteredSorted.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="admin-no-components">
+                    {loading
+                      ? "Loading components..."
+                      : items.length === 0
+                      ? "No components discovered yet - run a BOM Explorer search or generate a Purchasing Plan first"
+                      : "No components match your filters"}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </main>
+    </div>
+  );
+}

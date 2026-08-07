@@ -11,12 +11,14 @@ bom_cache_service.py - avoids re-exploding live from SAP on every single
 regeneration; a background job keeps the cache fresh) -> aggregate required
 quantity at LEAF-level components only (sub-assemblies are skipped, only
 their own leaf materials count) -> attach live SAP standard costs -> net
-against live SAP on-hand inventory (Net Purchase Qty = max(0, Gross Required
-Qty - On-Hand Qty)) -> return gross + on-hand + net quantity/value for that
-month, plus a list of OMS parts that could not be resolved/exploded into a
-SAP BOM (shown as a warning in the UI, each tagged with a `confidence` of
-"fetch_error" - SAP was unreachable, likely transient, retryable via
-retry_missing_boms() - or "not_found" - SAP cleanly confirmed no BOM exists).
+against live SAP on-hand inventory, topped up by any saved Minimum Stock
+Level (Net Purchase Qty = max(0, Gross Required Qty + MSL - On-Hand Qty),
+MSL set via the Admin > Component Master page) -> return gross + on-hand +
+net quantity/value for that month, plus a list of OMS parts that could not
+be resolved/exploded into a SAP BOM (shown as a warning in the UI, each
+tagged with a `confidence` of "fetch_error" - SAP was unreachable, likely
+transient, retryable via retry_missing_boms() - or "not_found" - SAP cleanly
+confirmed no BOM exists).
 """
 import logging
 import re
@@ -78,6 +80,14 @@ def _explode(candidate_id, sap_soap_client, db):
     except BomFetchError as e:
         logger.warning(f"BOM explosion failed for SAP id {candidate_id}: {e}")
         return None, True
+
+
+def get_component_msl(db, product_ids) -> dict:
+    """Returns {product_id: msl} from the persisted component_master
+    collection (Minimum Stock Level, set via the Admin > Component Master
+    page) for the given leaf component product_ids."""
+    docs = db["component_master"].find({"_id": {"$in": list(product_ids)}, "msl": {"$ne": None}}, {"msl": 1})
+    return {d["_id"]: d["msl"] for d in docs}
 
 
 def get_part_overrides(db) -> dict:
@@ -264,12 +274,14 @@ def build_purchasing_plan(
         logger.warning(f"Standard cost lookup failed for purchasing plan: {e}")
         costs = {}
 
-    # 6. Net against live SAP on-hand inventory (best-effort - same principle
-    # as standard costs: a hiccup on the inventory report shouldn't take down
-    # the whole plan, it just leaves on-hand/net figures blank for that run).
-    # On-hand stock is a point-in-time snapshot (not per-month), so
-    # Net Purchase Qty = max(0, Gross Required Qty - On-Hand Qty) is applied
-    # independently to each requested month.
+    # 6. Net against live SAP on-hand inventory, additionally topped up by any
+    # saved Minimum Stock Level (MSL) - see get_component_msl - so on-hand
+    # stock never gets planned down below that safety buffer (standard MRP
+    # netting: Net = max(0, Gross Demand + MSL - On Hand)). Best-effort, same
+    # principle as standard costs: a hiccup on the inventory report shouldn't
+    # take down the whole plan, it just leaves on-hand/net figures blank for
+    # that run. On-hand stock is a point-in-time snapshot (not per-month), so
+    # this is applied independently to each requested month.
     try:
         on_hand_by_product = sap_inventory_client.get_on_hand_stock()
         inventory_as_of = datetime.now(timezone.utc)
@@ -278,6 +290,8 @@ def build_purchasing_plan(
         on_hand_by_product = {}
         inventory_as_of = None
 
+    msl_by_product = get_component_msl(db, components.keys())
+
     result_components = []
     for comp in components.values():
         cost = costs.get((comp.get("product_uuid") or "").upper())
@@ -285,21 +299,24 @@ def build_purchasing_plan(
         currency = cost.get("currency") if cost else None
         qty_by_month = {m: round(q, 4) for m, q in comp["qty_by_month"].items()}
         on_hand_qty = on_hand_by_product.get(comp["product_id"])
-        net_qty_by_month = (
-            {m: round(max(0.0, q - on_hand_qty), 4) for m, q in qty_by_month.items()}
-            if on_hand_qty is not None
-            else dict(qty_by_month)
-        )
+        msl = msl_by_product.get(comp["product_id"]) or 0.0
+        # Unknown on-hand (no inventory-report row for this material) is
+        # treated as 0 for netting purposes - safer to over-purchase than to
+        # silently assume enough stock already exists.
+        on_hand_for_netting = on_hand_qty if on_hand_qty is not None else 0.0
+        net_qty_by_month = {m: round(max(0.0, q + msl - on_hand_for_netting), 4) for m, q in qty_by_month.items()}
         result_components.append({
             "product_id": comp["product_id"],
             "description": comp["description"],
             "unit_of_measure": comp["unit_of_measure"],
             "qty_by_month": qty_by_month,
             "on_hand_qty": on_hand_qty,
+            "msl": msl if msl else None,
             "net_qty_by_month": net_qty_by_month,
             "unit_cost": amount,
             "currency": currency,
             "value_by_month": {
+
                 m: (round(q * amount, 2) if amount is not None else None)
                 for m, q in qty_by_month.items()
             },

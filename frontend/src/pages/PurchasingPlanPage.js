@@ -93,6 +93,7 @@ const groupByCategory = (components) => {
 const getPlanSortValue = (component, field) => {
   if (field === "product_id") return (component.product_id || "").toLowerCase();
   if (field === "on_hand") return component.on_hand_qty ?? -Infinity;
+  if (field === "msl") return component.msl ?? -Infinity;
   if (field === "total") return component.value_by_month ? Object.values(component.value_by_month).reduce((s, v) => s + (v || 0), 0) : -Infinity;
   if (field === "net_total") return component.net_value_by_month ? Object.values(component.net_value_by_month).reduce((s, v) => s + (v || 0), 0) : -Infinity;
   if (field.startsWith("qty:")) return component.qty_by_month[field.slice(4)] ?? -Infinity;
@@ -251,6 +252,7 @@ export default function PurchasingPlanPage() {
   const categoryTotalQty = (items, month) => items.reduce((sum, c) => sum + (c.qty_by_month[month] || 0), 0);
   const categoryTotalNetQty = (items, month) => items.reduce((sum, c) => sum + (c.net_qty_by_month[month] || 0), 0);
   const categoryTotalOnHand = (items) => items.reduce((sum, c) => sum + (c.on_hand_qty || 0), 0);
+  const categoryTotalMsl = (items) => items.reduce((sum, c) => sum + (c.msl || 0), 0);
   const categoryTotalValue = (items, month) => items.reduce((sum, c) => sum + (c.value_by_month[month] || 0), 0);
   const categoryTotalNetValue = (items, month) => items.reduce((sum, c) => sum + (c.net_value_by_month[month] || 0), 0);
   const categoryGrandTotal = (items) => items.reduce((sum, c) => sum + totalValueOverall(c), 0);
@@ -265,6 +267,7 @@ export default function PurchasingPlanPage() {
         Category: c.category || "Uncategorized",
         UOM: c.unit_of_measure || "",
         "On-Hand Inventory": c.on_hand_qty ?? "",
+        MSL: c.msl ?? "",
       };
       months.forEach((m) => {
         row[`${formatMonth(m)} Gross Qty`] = c.qty_by_month[m] ?? "";
@@ -622,6 +625,18 @@ export default function PurchasingPlanPage() {
                         (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
                     </span>
                   </th>
+                  <th
+                    onClick={() => toggleSort("msl")}
+                    className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#DDE1E8] select-none"
+                    data-testid="purchasing-plan-sort-header-msl"
+                    title="Minimum Stock Level - set via Admin > Component Master"
+                  >
+                    <span className="inline-flex items-center gap-1 justify-end">
+                      MSL
+                      {sortConfig.field === "msl" &&
+                        (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
+                    </span>
+                  </th>
                   {months.map((m) => (
                     <th
                       key={`${m}-qty`}
@@ -727,6 +742,9 @@ export default function PurchasingPlanPage() {
                         <td className="border border-[#D0D5DD] px-2 py-1.5 text-[13px] tabular-nums text-right font-bold text-[#344054]">
                           {formatQty(categoryTotalOnHand(items))}
                         </td>
+                        <td className="border border-[#D0D5DD] px-2 py-1.5 text-[13px] tabular-nums text-right font-bold text-[#344054]">
+                          {formatQty(categoryTotalMsl(items))}
+                        </td>
                         {months.map((m) => (
                           <td
                             key={`${category}-${m}-qty`}
@@ -784,6 +802,12 @@ export default function PurchasingPlanPage() {
                             >
                               {formatQty(c.on_hand_qty)}
                             </td>
+                            <td
+                              className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828] text-right"
+                              data-testid={`purchasing-plan-msl-${category}-${i}`}
+                            >
+                              {formatQty(c.msl)}
+                            </td>
                             {months.map((m) => (
                               <td
                                 key={`${c.product_id}-${m}-qty`}
@@ -839,7 +863,7 @@ export default function PurchasingPlanPage() {
                 })}
                 {filteredComponents.length === 0 && (
                   <tr>
-                    <td colSpan={6 + months.length * 4} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="purchasing-plan-no-components">
+                    <td colSpan={7 + months.length * 4} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="purchasing-plan-no-components">
                       {plan.components.length === 0
                         ? "No purchasable leaf components found in the forecast for these months"
                         : `No components in category "${categoryFilter}"`}

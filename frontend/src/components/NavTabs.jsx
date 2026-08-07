@@ -3,6 +3,7 @@ import { Link, useLocation } from "react-router-dom";
 const TABS = [
   { to: "/", label: "BOM Explorer", testId: "nav-bom-explorer" },
   { to: "/purchasing-plan", label: "Purchasing Plan", testId: "nav-purchasing-plan" },
+  { to: "/admin", label: "Admin", testId: "nav-admin" },
 ];
 
 export const NavTabs = () => {

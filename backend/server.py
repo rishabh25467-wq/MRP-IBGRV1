@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -14,7 +15,7 @@ from starlette.middleware.cors import CORSMiddleware
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
-from bom_categorizer import categorize_items, BomCategorizerError
+from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, SUGGESTED_CATEGORIES
 from oms_client import OMSClient
 from purchasing_plan import build_purchasing_plan, retry_missing_boms, get_part_overrides, save_part_override
 import bom_cache_service
@@ -120,6 +121,7 @@ class PurchasingPlanComponent(BaseModel):
     category: Optional[str] = None
     qty_by_month: dict[str, float]
     on_hand_qty: Optional[float] = None
+    msl: Optional[float] = None
     net_qty_by_month: dict[str, float]
     unit_cost: Optional[float] = None
     currency: Optional[str] = None
@@ -193,7 +195,7 @@ async def standard_costs(payload: StandardCostsRequest):
 @api_router.post("/bom/categorize", response_model=CategorizeResponse)
 async def categorize(payload: CategorizeRequest):
     try:
-        categories = await categorize_items(payload.items)
+        categories = await categorize_items(payload.items, db)
     except BomCategorizerError as e:
         raise HTTPException(status_code=502, detail=str(e))
     return CategorizeResponse(categories=categories)
@@ -221,7 +223,7 @@ async def start_purchasing_plan_job(payload: Optional[PurchasingPlanGenerateRequ
             items = [{"product_id": c["product_id"], "description": c["description"]} for c in result["components"]]
             if items:
                 try:
-                    categories = await categorize_items(items)
+                    categories = await categorize_items(items, db)
                 except BomCategorizerError as e:
                     logger.warning(f"Purchasing plan categorization failed: {e}")
                     categories = {}
@@ -346,6 +348,118 @@ async def trigger_bom_cache_refresh():
 
     asyncio.create_task(run())
     return {"triggered": True}
+
+
+class ComponentMasterItem(BaseModel):
+    product_id: str
+    description: Optional[str] = None
+    category: Optional[str] = None
+    category_source: Optional[str] = None
+    msl: Optional[float] = None
+    updated_at: Optional[str] = None
+
+
+def _to_component_master_item(doc: dict) -> ComponentMasterItem:
+    updated_at = doc.get("categorized_at") or doc.get("created_at")
+    return ComponentMasterItem(
+        product_id=doc["_id"],
+        description=doc.get("description"),
+        category=doc.get("category"),
+        category_source=doc.get("category_source"),
+        msl=doc.get("msl"),
+        updated_at=updated_at.isoformat() if updated_at else None,
+    )
+
+
+class ComponentMasterListResponse(BaseModel):
+    items: List[ComponentMasterItem]
+    categories: List[str]
+
+
+@api_router.get("/admin/components", response_model=ComponentMasterListResponse)
+async def list_admin_components():
+    """Every leaf component ever discovered by a BOM Explorer search or a
+    Purchasing Plan generation, with its current AI/manual category and MSL -
+    backs the Admin > Component Master page."""
+    def query():
+        return list(db["component_master"].find({}))
+
+    docs = await asyncio.to_thread(query)
+    items = [_to_component_master_item(d) for d in docs]
+    return ComponentMasterListResponse(items=items, categories=SUGGESTED_CATEGORIES)
+
+
+class UpdateComponentMasterRequest(BaseModel):
+    category: Optional[str] = None
+    msl: Optional[float] = None
+
+
+@api_router.patch("/admin/components/{product_id}", response_model=ComponentMasterItem)
+async def update_admin_component(product_id: str, payload: UpdateComponentMasterRequest):
+    """Manually correct a component's category (marks it category_source
+    "manual" so it's never overwritten by a bulk Re-Categorise) and/or set
+    its Minimum Stock Level, which the Purchasing Plan's netting math reads
+    directly (see purchasing_plan.get_component_msl)."""
+    update = {}
+    if payload.category is not None:
+        update["category"] = payload.category
+        update["category_source"] = "manual"
+        update["categorized_at"] = datetime.now(timezone.utc)
+    if payload.msl is not None:
+        update["msl"] = payload.msl
+    if not update:
+        raise HTTPException(status_code=400, detail="Provide category and/or msl to update")
+
+    def apply():
+        db["component_master"].update_one({"_id": product_id}, {"$set": update}, upsert=True)
+        return db["component_master"].find_one({"_id": product_id})
+
+    doc = await asyncio.to_thread(apply)
+    return _to_component_master_item(doc)
+
+
+class RecategorizeRequest(BaseModel):
+    product_ids: List[str]
+
+
+class RecategorizeResponse(BaseModel):
+    categories: dict[str, str]
+    skipped_manual: List[str]
+
+
+@api_router.post("/admin/components/recategorize", response_model=RecategorizeResponse)
+async def recategorize_components(payload: RecategorizeRequest):
+    """Forces a fresh AI categorization pass for the given product_ids,
+    bypassing the normal "skip if already categorized" check - the Admin >
+    Component Master page's "Re-Categorise" action. Any item a human has
+    manually corrected (category_source="manual") is skipped so a bulk
+    re-run never clobbers a deliberate correction."""
+    def get_targets():
+        docs = list(db["component_master"].find({"_id": {"$in": payload.product_ids}}))
+        targets = [{"product_id": d["_id"], "description": d.get("description")}
+                   for d in docs if d.get("category_source") != "manual"]
+        skipped = [d["_id"] for d in docs if d.get("category_source") == "manual"]
+        return targets, skipped
+
+    targets, skipped = await asyncio.to_thread(get_targets)
+    if not targets:
+        return RecategorizeResponse(categories={}, skipped_manual=skipped)
+
+    try:
+        ai_results = await _ai_categorize(targets)
+    except BomCategorizerError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    def persist():
+        now = datetime.now(timezone.utc)
+        for product_id, category in ai_results.items():
+            db["component_master"].update_one(
+                {"_id": product_id},
+                {"$set": {"category": category, "category_source": "ai", "categorized_at": now}},
+            )
+
+    await asyncio.to_thread(persist)
+    return RecategorizeResponse(categories=ai_results, skipped_manual=skipped)
 
 
 app.include_router(api_router)
