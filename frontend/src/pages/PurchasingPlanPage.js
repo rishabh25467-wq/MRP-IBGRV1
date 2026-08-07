@@ -15,6 +15,8 @@ import {
   FileArrowDown,
   ArrowsOutSimple,
   ArrowsInSimple,
+  ArrowClockwise,
+  XCircle,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -123,6 +125,7 @@ export default function PurchasingPlanPage() {
   const [collapsedCategories, setCollapsedCategories] = useState(new Set());
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [sortConfig, setSortConfig] = useState({ field: null, direction: "asc" });
+  const [retrying, setRetrying] = useState(false);
 
   const toggleCategoryCollapse = (category) => {
     setCollapsedCategories((prev) => {
@@ -191,6 +194,39 @@ export default function PurchasingPlanPage() {
 
   const months = plan?.months || [];
   const currency = plan?.components?.find((c) => c.currency)?.currency || "";
+  const fetchErrorPartNos = plan
+    ? plan.missing_boms.filter((mb) => mb.confidence === "fetch_error").map((mb) => mb.part_no)
+    : [];
+
+  const retryFailedLookups = async () => {
+    if (fetchErrorPartNos.length === 0) return;
+    setRetrying(true);
+    try {
+      const { data } = await axios.post(`${API}/purchasing-plan/retry-missing`, { part_nos: fetchErrorPartNos });
+      const resolvedNow = new Set(data.results.filter((r) => r.resolved).map((r) => r.part_no));
+      const updatedByPartNo = new Map(data.results.filter((r) => !r.resolved).map((r) => [r.part_no, r]));
+      setPlan((prev) => ({
+        ...prev,
+        missing_boms: prev.missing_boms
+          .filter((mb) => !resolvedNow.has(mb.part_no))
+          .map((mb) => {
+            const updated = updatedByPartNo.get(mb.part_no);
+            return updated ? { ...mb, sap_id: updated.sap_id, confidence: updated.confidence, reason: updated.reason } : mb;
+          }),
+      }));
+      if (resolvedNow.size > 0) {
+        toast.success(`${resolvedNow.size} part${resolvedNow.size === 1 ? "" : "s"} now resolved in SAP`, {
+          description: "Regenerate the plan to include them in the totals.",
+        });
+      } else {
+        toast.info("Still unreachable", { description: "Those parts couldn't be reached in SAP just now - try again shortly." });
+      }
+    } catch (err) {
+      toast.error("Retry failed", { description: err?.response?.data?.detail || err.message || "Could not reach the server" });
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   const availableCategories = plan
     ? Array.from(new Set(plan.components.map((c) => c.category || "Uncategorized"))).sort()
@@ -245,6 +281,7 @@ export default function PurchasingPlanPage() {
 
     if (plan.missing_boms.length > 0) {
       const missingRows = plan.missing_boms.map((mb) => ({
+        Status: mb.confidence === "fetch_error" ? "Unresolved (retry)" : "Confirmed no BOM",
         "OMS Part No": mb.part_no,
         "Mapped SAP ID": mb.sap_id || "",
         Reason: mb.reason,
@@ -380,6 +417,20 @@ export default function PurchasingPlanPage() {
             <span className="font-sans">BOM data as of {formatRelativeTime(plan.bom_data_as_of)}</span>
           </div>
         )}
+        {plan && plan.inventory_as_of && (
+          <div
+            className={`flex items-center gap-1.5 text-xs ${isStale(plan.inventory_as_of) ? "text-[#B54708]" : "text-[#475467]"}`}
+            title={new Date(plan.inventory_as_of).toLocaleString()}
+            data-testid="inventory-freshness-badge"
+          >
+            {isStale(plan.inventory_as_of) ? (
+              <WarningCircle size={13} weight="bold" />
+            ) : (
+              <Package size={13} weight="bold" />
+            )}
+            <span className="font-sans">Inventory as of {formatRelativeTime(plan.inventory_as_of)}</span>
+          </div>
+        )}
         <div className="flex items-center gap-1.5 text-[#475467] ml-auto" data-testid="purchasing-plan-last-generated">
           <ClockCounterClockwise size={13} weight="bold" />
           <span className="font-sans text-xs">
@@ -440,28 +491,48 @@ export default function PurchasingPlanPage() {
             className="mb-4 bg-[#FFFAEB] border border-[#FEDF89] rounded-sm"
             data-testid="missing-boms-warning-section"
           >
-            <button
-              type="button"
-              onClick={() => setWarningsOpen((v) => !v)}
-              className="w-full flex items-center gap-2 p-2.5 text-left"
-              data-testid="missing-boms-toggle"
-            >
-              {warningsOpen ? (
-                <CaretDown size={13} weight="bold" className="text-[#B54708]" />
-              ) : (
-                <CaretRight size={13} weight="bold" className="text-[#B54708]" />
+            <div className="w-full flex items-center gap-2 p-2.5">
+              <button
+                type="button"
+                onClick={() => setWarningsOpen((v) => !v)}
+                className="flex-1 flex items-center gap-2 text-left"
+                data-testid="missing-boms-toggle"
+              >
+                {warningsOpen ? (
+                  <CaretDown size={13} weight="bold" className="text-[#B54708]" />
+                ) : (
+                  <CaretRight size={13} weight="bold" className="text-[#B54708]" />
+                )}
+                <WarningCircle size={15} weight="fill" className="text-[#B54708]" />
+                <span className="font-heading text-xs font-bold text-[#B54708]">
+                  {plan.missing_boms.length} forecasted part{plan.missing_boms.length === 1 ? "" : "s"} could not be
+                  mapped to a SAP BOM - excluded from this plan
+                </span>
+              </button>
+              {fetchErrorPartNos.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={retryFailedLookups}
+                  disabled={retrying}
+                  className="h-7 text-xs rounded-sm border-[#B54708]/40 text-[#B54708] hover:bg-[#FEF0C7] shrink-0"
+                  data-testid="retry-failed-lookups-button"
+                >
+                  <ArrowClockwise size={12} className={`mr-1.5 ${retrying ? "animate-spin" : ""}`} />
+                  {retrying
+                    ? "Retrying..."
+                    : `Retry Failed Lookups (${fetchErrorPartNos.length})`}
+                </Button>
               )}
-              <WarningCircle size={15} weight="fill" className="text-[#B54708]" />
-              <span className="font-heading text-xs font-bold text-[#B54708]">
-                {plan.missing_boms.length} forecasted part{plan.missing_boms.length === 1 ? "" : "s"} could not be
-                mapped to a SAP BOM - excluded from this plan
-              </span>
-            </button>
+            </div>
             {warningsOpen && (
               <div className="border-t border-[#FEDF89] max-h-64 overflow-auto">
                 <table className="w-full text-[13px]" data-testid="missing-boms-table">
                   <thead>
                     <tr className="bg-[#FFF7E0]">
+                      <th className="text-left px-2.5 py-1 font-heading text-xs font-bold text-[#B54708] uppercase">
+                        Status
+                      </th>
                       <th className="text-left px-2.5 py-1 font-heading text-xs font-bold text-[#B54708] uppercase">
                         OMS Part No
                       </th>
@@ -476,6 +547,19 @@ export default function PurchasingPlanPage() {
                   <tbody>
                     {plan.missing_boms.map((mb, i) => (
                       <tr key={mb.part_no} className="border-t border-[#FEDF89]/60" data-testid={`missing-bom-row-${i}`}>
+                        <td className="px-2.5 py-1" data-testid={`missing-bom-confidence-${i}`}>
+                          {mb.confidence === "fetch_error" ? (
+                            <span className="inline-flex items-center gap-1 text-[#B54708]" title="SAP was unreachable - likely transient, safe to retry">
+                              <ArrowClockwise size={12} weight="bold" />
+                              Unresolved (retry)
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-[#7A4504]" title="SAP confirmed this part has no BOM">
+                              <XCircle size={12} weight="bold" />
+                              Confirmed no BOM
+                            </span>
+                          )}
+                        </td>
                         <td className="px-2.5 py-1 text-[#7A4504] font-medium">{mb.part_no}</td>
                         <td className="px-2.5 py-1 text-[#7A4504]">{mb.sap_id || "—"}</td>
                         <td className="px-2.5 py-1 text-[#7A4504]">{mb.reason}</td>

@@ -36,10 +36,15 @@ COLLECTION_NAME = "bom_node_cache"
 FETCH_RETRY_ATTEMPTS = 3
 
 
-class _FetchFailed(Exception):
+class BomFetchError(Exception):
     """A genuine SAP/network error (timeout, HTTP failure, etc), even after
     retries - distinct from SAP cleanly confirming a product has no BOM.
-    Callers must NOT persist this as a "no BOM" result."""
+    Raised (not swallowed) for the ROOT product a caller asks to explode, so
+    purchasing_plan.py can report an accurate "SAP lookup failed, unresolved"
+    reason instead of misleadingly claiming "SAP confirmed no BOM" (see bug
+    report: a persistent-vs-transient distinction the UI now surfaces).
+    Sub-node lookups deeper in a tree stay tolerant of this (a timeout on one
+    sub-assembly must not blow up resolving the rest of the tree)."""
 
 
 def _fetch_live(sap_soap_client, product_id):
@@ -47,7 +52,7 @@ def _fetch_live(sap_soap_client, product_id):
     BOM header+items - NOT a full explosion. Returns the raw bom dict, or
     None if SAP cleanly confirms there is no BOM for this product. Retries
     up to FETCH_RETRY_ATTEMPTS times with backoff before raising
-    _FetchFailed - this tenant frequently hits connect-timeouts under the
+    BomFetchError - this tenant frequently hits connect-timeouts under the
     concurrent load a Purchasing Plan run generates, and a single-shot
     failure was previously indistinguishable from "SAP confirms no BOM",
     causing materials that genuinely have a BOM in SAP to be misreported as
@@ -62,7 +67,7 @@ def _fetch_live(sap_soap_client, product_id):
             if attempt < FETCH_RETRY_ATTEMPTS - 1:
                 logger.warning(f"BOM fetch attempt {attempt + 1}/{FETCH_RETRY_ATTEMPTS} failed for '{product_id}', retrying: {e}")
                 time.sleep(1.5 * (attempt + 1))
-    raise _FetchFailed(str(last_error)) from last_error
+    raise BomFetchError(str(last_error)) from last_error
 
 
 
@@ -86,7 +91,8 @@ def build_tree_from_cache(root_id: str, sap_soap_client, db):
     actually used, so callers can show how fresh the underlying BOM data
     is), sourced from the local Mongo cache wherever possible, falling back
     to a live SAP fetch (and caching the result) only for product_ids never
-    seen before."""
+    seen before. Raises BomFetchError if the ROOT itself can't be reached
+    (distinct from a clean "return None" when SAP confirms no BOM exists)."""
     collection = db[COLLECTION_NAME]
     min_checked_at = None
 
@@ -104,13 +110,17 @@ def build_tree_from_cache(root_id: str, sap_soap_client, db):
         return raw, True, doc.get("last_checked_at")
 
     def get_or_fetch(product_id):
+        """Tolerant fetch used for BFS sub-nodes deeper in the tree - a
+        failure here just means that one sub-assembly's own children aren't
+        expanded this run, it must never abort resolving the rest of the
+        tree (see BomFetchError docstring)."""
         raw, was_cached, checked_at = get_cached(product_id)
         if was_cached:
             track(checked_at)
             return raw
         try:
             raw = _fetch_live(sap_soap_client, product_id)
-        except _FetchFailed as e:
+        except BomFetchError as e:
             logger.warning(f"BOM fetch failed for '{product_id}' (leaving uncached for retry next run): {e}")
             return None
         now = datetime.now(timezone.utc)
@@ -118,7 +128,18 @@ def build_tree_from_cache(root_id: str, sap_soap_client, db):
         track(now)
         return raw
 
-    root = get_or_fetch(root_id)
+    # Root fetch: unlike sub-nodes, a failure here must propagate as an
+    # error (not be swallowed into "no BOM") - see BomFetchError.
+    raw, was_cached, checked_at = get_cached(root_id)
+    if was_cached:
+        track(checked_at)
+        root = raw
+    else:
+        root = _fetch_live(sap_soap_client, root_id)
+        now = datetime.now(timezone.utc)
+        _upsert(collection, root_id, root, changed=True)
+        track(now)
+
     if root is None:
         return None
 
@@ -156,7 +177,7 @@ def build_tree_from_cache(root_id: str, sap_soap_client, db):
             def fetch_and_cache(pid):
                 try:
                     raw = _fetch_live(sap_soap_client, pid)
-                except _FetchFailed as e:
+                except BomFetchError as e:
                     logger.warning(f"BOM fetch failed for '{pid}' (leaving uncached for retry next run): {e}")
                     return None, False
                 _upsert(collection, pid, raw, changed=True)
@@ -230,7 +251,7 @@ def refresh_stale_nodes(sap_soap_client, db, max_workers: int = 5) -> dict:
         existing = collection.find_one({"_id": product_id})
         try:
             raw = _fetch_live(sap_soap_client, product_id)
-        except _FetchFailed as e:
+        except BomFetchError as e:
             logger.warning(f"Background refresh: fetch failed for '{product_id}', keeping existing cache entry: {e}")
             return "failed"
         old_bom_id = existing.get("bom_id") if existing else None

@@ -13,13 +13,16 @@ their own leaf materials count) -> attach live SAP standard costs -> net
 against live SAP on-hand inventory (Net Purchase Qty = max(0, Gross Required
 Qty - On-Hand Qty)) -> return gross + on-hand + net quantity/value for that
 month, plus a list of OMS parts that could not be resolved/exploded into a
-SAP BOM (shown as a warning in the UI).
+SAP BOM (shown as a warning in the UI, each tagged with a `confidence` of
+"fetch_error" - SAP was unreachable, likely transient, retryable via
+retry_missing_boms() - or "not_found" - SAP cleanly confirmed no BOM exists).
 """
 import logging
 import re
-from datetime import date
+from datetime import date, datetime, timezone
 
 import bom_cache_service
+from bom_cache_service import BomFetchError
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +68,104 @@ def _collect_leaves(nodes: list, leaves: dict):
             entry["product_uuid"] = node["product_uuid"]
 
 
+def _explode(candidate_id, sap_soap_client, db):
+    """Returns (bom_or_none, fetch_failed_bool). fetch_failed=True means SAP
+    couldn't be reached even after bom_cache_service's internal retries -
+    distinct from SAP cleanly confirming there's no BOM (see BomFetchError)."""
+    try:
+        return bom_cache_service.build_tree_from_cache(candidate_id, sap_soap_client, db), False
+    except BomFetchError as e:
+        logger.warning(f"BOM explosion failed for SAP id {candidate_id}: {e}")
+        return None, True
+
+
+def _resolve_boms(part_nos, part_map, sap_soap_client, db):
+    """For each OMS part number, resolves to a SAP BOM - trying the part
+    number directly first (empirically, SAP recognizes it directly as a
+    valid Product/BOM ID for most parts), falling back to the OMS
+    wm-part-map's mapped value only if that fails (avoids doubling SOAP
+    calls for the common case where the direct lookup already succeeds).
+    Resolution goes through the persistent Mongo-backed cache
+    (bom_cache_service) so repeat regenerations for the same/overlapping
+    parts are near-instant instead of re-exploding live from SAP every time.
+    Returns (bom_by_id, resolved_id_by_part_no, missing_boms) - each
+    missing_boms entry carries a `confidence` of "fetch_error" (SAP was
+    unreachable even after retries - transient, safe to retry) or
+    "not_found" (SAP cleanly confirmed no BOM exists for any candidate tried)."""
+    bom_by_id = {}
+    fetch_failed_by_id = {}
+    for part_no in sorted(part_nos):
+        bom_by_id[part_no], fetch_failed_by_id[part_no] = _explode(part_no, sap_soap_client, db)
+
+    unresolved_part_nos = [p for p in part_nos if not bom_by_id.get(p)]
+    fallback_ids = sorted({
+        (part_map.get(p) or "").strip()
+        for p in unresolved_part_nos
+        if (part_map.get(p) or "").strip() and (part_map.get(p) or "").strip() != p
+    })
+    for cid in fallback_ids:
+        bom_by_id[cid], fetch_failed_by_id[cid] = _explode(cid, sap_soap_client, db)
+
+    resolved_id_by_part_no = {}
+    missing_boms = []
+    for part_no in part_nos:
+        mapped = (part_map.get(part_no) or "").strip()
+        candidates = [part_no] + ([mapped] if mapped and mapped != part_no else [])
+        resolved = next((cid for cid in candidates if bom_by_id.get(cid)), None)
+        if resolved:
+            resolved_id_by_part_no[part_no] = resolved
+        else:
+            confidence = "fetch_error" if any(fetch_failed_by_id.get(cid) for cid in candidates) else "not_found"
+            reason = (
+                f"SAP lookup failed (connection issue) for: {', '.join(candidates)} - likely transient, safe to retry"
+                if confidence == "fetch_error"
+                else f"No SAP BOM found (tried: {', '.join(candidates)})"
+            )
+            missing_boms.append({
+                "part_no": part_no,
+                "sap_id": mapped if mapped and mapped != part_no else None,
+                "confidence": confidence,
+                "reason": reason,
+            })
+
+    return bom_by_id, resolved_id_by_part_no, missing_boms
+
+
+def retry_missing_boms(part_nos: list, part_map: dict, sap_soap_client, db) -> list:
+    """Re-attempts BOM resolution for a specific subset of previously-missing
+    OMS part numbers (e.g. after a transient SAP timeout) without re-running
+    the full Purchasing Plan pipeline - lets a user instantly re-check just
+    the failed lookups instead of waiting several minutes to regenerate the
+    whole plan. Any part that now resolves gets cached by
+    bom_cache_service.build_tree_from_cache the same as a normal run, so a
+    subsequent full "Regenerate" also picks it up near-instantly. Returns
+    [{part_no, sap_id, resolved, reason}, ...]."""
+    _, resolved_id_by_part_no, missing_boms = _resolve_boms(part_nos, part_map, sap_soap_client, db)
+    missing_by_part_no = {m["part_no"]: m for m in missing_boms}
+
+    results = []
+    for part_no in part_nos:
+        resolved_id = resolved_id_by_part_no.get(part_no)
+        if resolved_id:
+            results.append({
+                "part_no": part_no,
+                "sap_id": resolved_id if resolved_id != part_no else None,
+                "resolved": True,
+                "confidence": None,
+                "reason": None,
+            })
+        else:
+            missing = missing_by_part_no.get(part_no)
+            results.append({
+                "part_no": part_no,
+                "sap_id": missing.get("sap_id") if missing else None,
+                "resolved": False,
+                "confidence": missing.get("confidence") if missing else "not_found",
+                "reason": missing["reason"] if missing else "No SAP BOM found",
+            })
+    return results
+
+
 def build_purchasing_plan(
     oms_client, sap_soap_client, sap_valuation_client, sap_inventory_client, db, target_month: str = None
 ) -> dict:
@@ -78,51 +179,10 @@ def build_purchasing_plan(
     for demand in demand_by_month.values():
         all_part_nos.update(demand.keys())
 
-    # 2. Explode each part's BOM using the OMS part number ITSELF first -
-    # empirically, SAP recognizes it directly as a valid Product/BOM ID for
-    # most parts. Only for parts where that fails do we try the wm-part-map's
-    # mapped value as a second-wave fallback (avoids doubling SOAP calls for
-    # the common case where the direct lookup already succeeds). Resolution
-    # goes through the persistent Mongo-backed cache (bom_cache_service) so
-    # repeat regenerations for the same/overlapping parts are near-instant
-    # instead of re-exploding live from SAP every time; explosions run
-    # sequentially to avoid overloading the SAP tenant with too many
-    # simultaneous connections whenever a genuinely new/uncached part shows up.
-    def explode(candidate_id):
-        try:
-            return candidate_id, bom_cache_service.build_tree_from_cache(candidate_id, sap_soap_client, db)
-        except Exception as e:
-            logger.warning(f"BOM explosion failed for SAP id {candidate_id}: {e}")
-            return candidate_id, None
+    # 2. Resolve + explode each part's BOM (see _resolve_boms).
+    bom_by_id, resolved_id_by_part_no, missing_boms = _resolve_boms(all_part_nos, part_map, sap_soap_client, db)
 
-    bom_by_id = dict(explode(part_no) for part_no in sorted(all_part_nos))
-
-    unresolved_part_nos = [p for p in all_part_nos if not bom_by_id.get(p)]
-    fallback_ids = sorted({
-        (part_map.get(p) or "").strip()
-        for p in unresolved_part_nos
-        if (part_map.get(p) or "").strip() and (part_map.get(p) or "").strip() != p
-    })
-    if fallback_ids:
-        bom_by_id.update(explode(cid) for cid in fallback_ids)
-
-    # Pick, for each part_no, whichever candidate actually resolved to a BOM.
-    resolved_id_by_part_no = {}
-    missing_boms = []
-    for part_no in all_part_nos:
-        mapped = (part_map.get(part_no) or "").strip()
-        candidates = [part_no] + ([mapped] if mapped and mapped != part_no else [])
-        resolved = next((cid for cid in candidates if bom_by_id.get(cid)), None)
-        if resolved:
-            resolved_id_by_part_no[part_no] = resolved
-        else:
-            missing_boms.append({
-                "part_no": part_no,
-                "sap_id": mapped if mapped and mapped != part_no else None,
-                "reason": f"No SAP BOM found (tried: {', '.join(candidates)})",
-            })
-
-    # 4. Precompute per-unit leaf requirements for each successfully exploded BOM.
+    # 3. Precompute per-unit leaf requirements for each successfully exploded BOM.
     leaves_by_id = {}
     for candidate_id, bom in bom_by_id.items():
         if not bom:
@@ -141,7 +201,7 @@ def build_purchasing_plan(
     ]
     bom_data_as_of = min(checked_timestamps) if checked_timestamps else None
 
-    # 5. Aggregate required leaf-component quantity, per month.
+    # 4. Aggregate required leaf-component quantity, per month.
     components = {}
     for month, demand in demand_by_month.items():
         for part_no, qty in demand.items():
@@ -159,7 +219,7 @@ def build_purchasing_plan(
                 })
                 comp["qty_by_month"][month] += leaf["per_unit_qty"] * qty
 
-    # 6. Attach live SAP standard costs (best-effort - a valuation-service
+    # 5. Attach live SAP standard costs (best-effort - a valuation-service
     # hiccup shouldn't take down the whole plan, just leave costs/values blank).
     uuids = [c["product_uuid"] for c in components.values() if c.get("product_uuid")]
     try:
@@ -168,7 +228,7 @@ def build_purchasing_plan(
         logger.warning(f"Standard cost lookup failed for purchasing plan: {e}")
         costs = {}
 
-    # 7. Net against live SAP on-hand inventory (best-effort - same principle
+    # 6. Net against live SAP on-hand inventory (best-effort - same principle
     # as standard costs: a hiccup on the inventory report shouldn't take down
     # the whole plan, it just leaves on-hand/net figures blank for that run).
     # On-hand stock is a point-in-time snapshot (not per-month), so
@@ -176,9 +236,11 @@ def build_purchasing_plan(
     # independently to each requested month.
     try:
         on_hand_by_product = sap_inventory_client.get_on_hand_stock()
+        inventory_as_of = datetime.now(timezone.utc)
     except Exception as e:
         logger.warning(f"On-hand inventory lookup failed for purchasing plan: {e}")
         on_hand_by_product = {}
+        inventory_as_of = None
 
     result_components = []
     for comp in components.values():
@@ -219,4 +281,5 @@ def build_purchasing_plan(
         "components": result_components,
         "missing_boms": missing_boms,
         "bom_data_as_of": bom_data_as_of.isoformat() if bom_data_as_of else None,
+        "inventory_as_of": inventory_as_of.isoformat() if inventory_as_of else None,
     }

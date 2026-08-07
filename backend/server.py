@@ -16,7 +16,7 @@ from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from bom_categorizer import categorize_items, BomCategorizerError
 from oms_client import OMSClient
-from purchasing_plan import build_purchasing_plan
+from purchasing_plan import build_purchasing_plan, retry_missing_boms
 import bom_cache_service
 
 ROOT_DIR = Path(__file__).parent
@@ -130,6 +130,7 @@ class PurchasingPlanComponent(BaseModel):
 class MissingBom(BaseModel):
     part_no: str
     sap_id: Optional[str] = None
+    confidence: str = "not_found"  # "not_found" (SAP confirmed no BOM) | "fetch_error" (SAP unreachable, retryable)
     reason: str
 
 
@@ -138,6 +139,7 @@ class PurchasingPlanResponse(BaseModel):
     components: List[PurchasingPlanComponent]
     missing_boms: List[MissingBom]
     bom_data_as_of: Optional[str] = None
+    inventory_as_of: Optional[str] = None
 
 
 class PurchasingPlanJobStatus(BaseModel):
@@ -245,6 +247,32 @@ async def purchasing_plan_status(job_id: str):
         result=PurchasingPlanResponse(**job["result"]) if job["result"] else None,
         error=job["error"],
     )
+
+
+class RetryMissingBomsRequest(BaseModel):
+    part_nos: List[str]
+
+
+class RetryMissingBomResult(BaseModel):
+    part_no: str
+    sap_id: Optional[str] = None
+    resolved: bool
+    confidence: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class RetryMissingBomsResponse(BaseModel):
+    results: List[RetryMissingBomResult]
+
+
+@api_router.post("/purchasing-plan/retry-missing", response_model=RetryMissingBomsResponse)
+async def retry_missing_boms_endpoint(payload: RetryMissingBomsRequest):
+    """Instantly re-checks a specific subset of previously-missing OMS part
+    numbers against live SAP (e.g. after a transient connection timeout),
+    without re-running the whole multi-minute Purchasing Plan pipeline."""
+    part_map = await asyncio.to_thread(oms_client.get_part_map)
+    results = await asyncio.to_thread(retry_missing_boms, payload.part_nos, part_map, sap_soap_client, db)
+    return RetryMissingBomsResponse(results=results)
 
 
 class BomCacheStats(BaseModel):
