@@ -15,7 +15,7 @@ from starlette.middleware.cors import CORSMiddleware
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
-from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category
+from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category
 from oms_client import OMSClient, OMSError
 from purchasing_plan import (
     build_purchasing_plan, retry_missing_boms, get_part_overrides, save_part_override,
@@ -522,6 +522,14 @@ async def add_admin_category(payload: AddCategoryRequest):
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
     categories = await asyncio.to_thread(add_category, db, name)
+    return AddCategoryResponse(categories=categories)
+
+
+@api_router.delete("/admin/categories/{name}", response_model=AddCategoryResponse)
+async def delete_admin_category(name: str):
+    """Removes a category from the shared taxonomy. Components already
+    assigned to it are left untouched (see bom_categorizer.delete_category)."""
+    categories = await asyncio.to_thread(delete_category, db, name)
     return AddCategoryResponse(categories=categories)
 
 

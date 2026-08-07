@@ -65,6 +65,14 @@ def add_category(db, name: str) -> list[str]:
     return get_categories(db)
 
 
+def delete_category(db, name: str) -> list[str]:
+    """Removes a category from the master taxonomy. Any components already
+    assigned to it keep their existing category value (not cleared) - it
+    just stops appearing in the dropdown for future selection/AI runs."""
+    db[CATEGORY_COLLECTION].delete_one({"_id": name})
+    return get_categories(db)
+
+
 def _build_system_message(categories: list[str]) -> str:
     return (
         "You are an expert manufacturing engineer who classifies Bill of Materials (BOM) "

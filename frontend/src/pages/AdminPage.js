@@ -10,6 +10,7 @@ import {
   Sparkle,
   Plus,
   Tag,
+  X,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -40,6 +41,7 @@ export default function AdminPage() {
   const [pendingRowForNewCategory, setPendingRowForNewCategory] = useState(null);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [addingCategory, setAddingCategory] = useState(false);
+  const [deletingCategory, setDeletingCategory] = useState(null);
 
   const loadComponents = async () => {
     setLoading(true);
@@ -113,6 +115,19 @@ export default function AdminPage() {
       toast.error("Could not add category", { description: err?.response?.data?.detail || err.message });
     } finally {
       setAddingCategory(false);
+    }
+  };
+
+  const removeCategory = async (name) => {
+    setDeletingCategory(name);
+    try {
+      const { data } = await axios.delete(`${API}/admin/categories/${encodeURIComponent(name)}`);
+      setCategoriesTaxonomy(data.categories);
+      toast.success(`Category "${name}" removed`);
+    } catch (err) {
+      toast.error("Could not remove category", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setDeletingCategory(null);
     }
   };
 
@@ -452,8 +467,23 @@ export default function AdminPage() {
           </DialogHeader>
           <div className="flex flex-wrap gap-1.5 max-h-40 overflow-auto" data-testid="manage-categories-list">
             {categoriesTaxonomy.map((cat) => (
-              <Badge key={cat} variant="outline" className="bg-[#F9FAFB] text-[#344054] border-[#D0D5DD] rounded text-xs">
+              <Badge
+                key={cat}
+                variant="outline"
+                className={`bg-[#F9FAFB] text-[#344054] border-[#D0D5DD] rounded text-xs pr-1 gap-1 ${deletingCategory === cat ? "opacity-50" : ""}`}
+                data-testid={`category-badge-${cat}`}
+              >
                 {cat}
+                <button
+                  type="button"
+                  onClick={() => removeCategory(cat)}
+                  disabled={deletingCategory === cat}
+                  className="ml-0.5 rounded-full hover:bg-[#E4E7EC] p-0.5 transition-colors"
+                  aria-label={`Remove ${cat}`}
+                  data-testid={`remove-category-button-${cat}`}
+                >
+                  <X size={10} weight="bold" />
+                </button>
               </Badge>
             ))}
           </div>
