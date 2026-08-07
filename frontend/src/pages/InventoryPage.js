@@ -25,6 +25,21 @@ const formatQty = (value) => (value == null ? "—" : value.toLocaleString("en-I
 const formatMoney = (value, currency) =>
   value == null ? "—" : `${currency || ""} ${value.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+const formatIST = (iso) => {
+  if (!iso) return null;
+  return (
+    new Date(iso).toLocaleString("en-IN", {
+      timeZone: "Asia/Kolkata",
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    }) + " IST"
+  );
+};
+
 const StatCard = ({ icon: Icon, label, value, testId }) => (
   <div
     className="bg-white border border-[#D0D5DD] rounded-sm p-3 shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] flex flex-col gap-1.5"
@@ -39,9 +54,10 @@ const StatCard = ({ icon: Icon, label, value, testId }) => (
 );
 
 export default function InventoryPage() {
-  const [status, setStatus] = useState("idle"); // idle | running | done | failed
+  const [status, setStatus] = useState("idle"); // idle | cache-loading | running | done | failed
   const [items, setItems] = useState([]);
   const [categories, setCategories] = useState([]);
+  const [updatedAt, setUpdatedAt] = useState(null);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
@@ -49,7 +65,7 @@ export default function InventoryPage() {
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [page, setPage] = useState(1);
 
-  const loadInventory = async () => {
+  const refreshFromSap = async () => {
     setStatus("running");
     setError(null);
     try {
@@ -62,6 +78,7 @@ export default function InventoryPage() {
         } else if (job.status === "done") {
           setItems(job.result.items);
           setCategories(job.result.categories);
+          setUpdatedAt(job.result.updated_at);
           setStatus("done");
         } else {
           setStatus("failed");
@@ -75,8 +92,29 @@ export default function InventoryPage() {
     }
   };
 
+  const loadFromCache = async () => {
+    setStatus("cache-loading");
+    setError(null);
+    try {
+      const { data } = await axios.get(`${API}/inventory`);
+      if (data.items.length > 0) {
+        setItems(data.items);
+        setCategories(data.categories);
+        setUpdatedAt(data.updated_at);
+        setStatus("done");
+      } else {
+        // No cache yet (fresh deploy, background scheduler hasn't run its
+        // first cycle) - fall back to a live pull so the page isn't empty.
+        refreshFromSap();
+      }
+    } catch (err) {
+      setStatus("failed");
+      setError(err?.response?.data?.detail || err.message);
+    }
+  };
+
   useEffect(() => {
-    loadInventory();
+    loadFromCache();
   }, []);
 
   const sites = useMemo(() => {
@@ -137,11 +175,21 @@ export default function InventoryPage() {
 
       <main className="flex-1 overflow-auto max-w-[1600px] w-full mx-auto px-6 py-6 space-y-4">
         <div className="flex items-center justify-between">
-          <h1 className="font-heading text-xl font-bold text-[#1D2939]">Inventory</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="font-heading text-xl font-bold text-[#1D2939]">Inventory</h1>
+            {updatedAt && (
+              <span
+                className="text-xs text-[#475467] font-sans bg-white border border-[#D0D5DD] rounded-full px-2.5 py-1"
+                data-testid="inventory-last-updated"
+              >
+                Last Updated: {formatIST(updatedAt)}
+              </span>
+            )}
+          </div>
           <Button
             type="button"
             variant="outline"
-            onClick={loadInventory}
+            onClick={refreshFromSap}
             disabled={status === "running"}
             className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
             data-testid="inventory-refresh-button"
@@ -150,6 +198,13 @@ export default function InventoryPage() {
             {status === "running" ? "Loading from SAP..." : "Refresh"}
           </Button>
         </div>
+
+        {status === "cache-loading" && (
+          <div className="bg-white border border-[#D0D5DD] rounded-sm p-8 text-center text-sm text-[#475467]" data-testid="inventory-cache-loading">
+            <ArrowClockwise size={20} className="animate-spin inline-block mb-2" />
+            <p>Loading cached inventory...</p>
+          </div>
+        )}
 
         {status === "running" && items.length === 0 && (
           <div className="bg-white border border-[#D0D5DD] rounded-sm p-8 text-center text-sm text-[#475467]" data-testid="inventory-loading">

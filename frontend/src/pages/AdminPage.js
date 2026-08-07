@@ -410,6 +410,13 @@ export default function AdminPage() {
       return matchesSearch && matchesCategory;
     });
     result = [...result].sort((a, b) => {
+      const numericFields = ["msl", "lead_time_days"];
+      if (numericFields.includes(sortConfig.field)) {
+        const av = a[sortConfig.field] ?? -Infinity;
+        const bv = b[sortConfig.field] ?? -Infinity;
+        const cmp = av - bv;
+        return sortConfig.direction === "asc" ? cmp : -cmp;
+      }
       const av = (a[sortConfig.field] || "").toString().toLowerCase();
       const bv = (b[sortConfig.field] || "").toString().toLowerCase();
       const cmp = av < bv ? -1 : av > bv ? 1 : 0;
@@ -606,11 +613,25 @@ export default function AdminPage() {
                 <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
                   Source
                 </th>
-                <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
-                  MSL
+                <th
+                  onClick={() => toggleSort("msl")}
+                  className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#DDE1E8] select-none"
+                  data-testid="admin-sort-msl"
+                >
+                  <span className="inline-flex items-center gap-1">
+                    MSL
+                    {sortConfig.field === "msl" && <SortIcon size={11} weight="bold" />}
+                  </span>
                 </th>
-                <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
-                  Lead Time (Days)
+                <th
+                  onClick={() => toggleSort("lead_time_days")}
+                  className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#DDE1E8] select-none"
+                  data-testid="admin-sort-lead-time"
+                >
+                  <span className="inline-flex items-center gap-1">
+                    Lead Time (Days)
+                    {sortConfig.field === "lead_time_days" && <SortIcon size={11} weight="bold" />}
+                  </span>
                 </th>
                 <th
                   onClick={() => toggleSort("updated_at")}

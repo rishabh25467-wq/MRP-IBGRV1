@@ -16,7 +16,7 @@ from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
-from inventory_service import build_inventory
+from inventory_service import get_cached_inventory, refresh_inventory_cache
 from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids
 from oms_client import OMSClient, OMSError
 from purchasing_plan import (
@@ -399,6 +399,7 @@ class InventoryItem(BaseModel):
 class InventoryResponse(BaseModel):
     items: List[InventoryItem]
     categories: List[str]
+    updated_at: Optional[str] = None
 
 
 class InventoryJobStatus(BaseModel):
@@ -408,23 +409,39 @@ class InventoryJobStatus(BaseModel):
     error: Optional[str] = None
 
 
+@api_router.get("/inventory", response_model=InventoryResponse)
+async def get_inventory():
+    """Instant read of the last-refreshed inventory snapshot from the
+    `inventory_cache` collection - what the Inventory page loads on every
+    visit/mount. Empty items + updated_at=None if the background scheduler
+    hasn't completed its first cycle yet (fresh deploy); the frontend falls
+    back to triggering a live pull via POST /inventory in that case."""
+    cached = await asyncio.to_thread(get_cached_inventory, db)
+    return InventoryResponse(
+        items=cached["items"], categories=cached["categories"],
+        updated_at=cached["updated_at"].isoformat() if cached["updated_at"] else None,
+    )
+
+
 @api_router.post("/inventory")
 async def start_inventory_job():
-    """Live SAP On-Hand Inventory by item, with a per-location breakdown
-    (Site / Logistics Area / Stock Status) and valuation (qty x SAP
-    Standard Cost) - see inventory_service.build_inventory. Runs as a
-    background job (same pattern as Purchasing Plan generation) since the
-    underlying SAP OData report can be slow/paged and would otherwise risk
-    a proxy timeout on a plain synchronous request."""
+    """Forces a fresh live SAP On-Hand Inventory + Standard Costs pull (see
+    inventory_service.refresh_inventory_cache) and overwrites the cache -
+    the Inventory page's "Refresh" button, and also what the 2-hourly
+    background scheduler calls. Runs as a background job (same pattern as
+    Purchasing Plan generation) since the underlying SAP OData report can
+    be slow/paged and would otherwise risk a proxy timeout on a plain
+    synchronous request."""
     job_id = str(uuid.uuid4())
     inventory_jobs[job_id] = {"status": "running", "result": None, "error": None}
 
     async def run():
         try:
-            items = await asyncio.to_thread(build_inventory, db, sap_inventory_client, sap_valuation_client)
-            categories = sorted({it["category"] for it in items if it.get("category")})
+            cached = await asyncio.to_thread(refresh_inventory_cache, db, sap_inventory_client, sap_valuation_client)
             inventory_jobs[job_id] = {
-                "status": "done", "result": {"items": items, "categories": categories}, "error": None,
+                "status": "done",
+                "result": {"items": cached["items"], "categories": cached["categories"], "updated_at": cached["updated_at"].isoformat()},
+                "error": None,
             }
         except (SAPInventoryError, SAPValuationError) as e:
             inventory_jobs[job_id] = {"status": "failed", "result": None, "error": str(e)}
@@ -797,6 +814,12 @@ app.add_middleware(
 # bom_cache_service.refresh_stale_nodes() for the change-detection logic.
 BOM_CACHE_REFRESH_INTERVAL_SECONDS = 6 * 60 * 60
 
+# Same background-scheduler pattern for the Inventory page's cache (see
+# inventory_service.refresh_inventory_cache) - every 2h, well inside a
+# workday, so "Last Updated" on the Inventory page never gets too stale
+# even if nobody clicks "Refresh" manually.
+INVENTORY_CACHE_REFRESH_INTERVAL_SECONDS = 2 * 60 * 60
+
 
 @app.on_event("startup")
 async def start_bom_cache_refresh_loop():
@@ -811,6 +834,21 @@ async def start_bom_cache_refresh_loop():
             except Exception as e:
                 logger.error(f"BOM cache background refresh failed: {e}")
             await asyncio.sleep(BOM_CACHE_REFRESH_INTERVAL_SECONDS)
+
+    asyncio.create_task(loop())
+
+
+@app.on_event("startup")
+async def start_inventory_cache_refresh_loop():
+    async def loop():
+        await asyncio.sleep(45)
+        while True:
+            try:
+                cached = await asyncio.to_thread(refresh_inventory_cache, db, sap_inventory_client, sap_valuation_client)
+                logger.info(f"Inventory cache background refresh complete: {len(cached['items'])} item(s) as of {cached['updated_at'].isoformat()}")
+            except Exception as e:
+                logger.error(f"Inventory cache background refresh failed: {e}")
+            await asyncio.sleep(INVENTORY_CACHE_REFRESH_INTERVAL_SECONDS)
 
     asyncio.create_task(loop())
 

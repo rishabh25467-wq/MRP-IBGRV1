@@ -129,7 +129,16 @@ class SAPSoapBOMClient:
         if best_block is None:
             return None
 
-        bom = {"bom_id": best_id, "groups": []}
+        # The root product's OWN UUID (needed for Standard Costs / SAP
+        # Planning lookups on items that are BOM roots themselves, e.g.
+        # finished/semi-finished goods, which otherwise never get a
+        # product_uuid captured since they'd only get one by appearing as
+        # someone ELSE's ingredient) - carried on the winning revision's
+        # own ProductionBillOfMaterialVariant, not per-item.
+        variant_match = re.search(r"<ProductionBillOfMaterialVariant>(.*?)</ProductionBillOfMaterialVariant>", best_block, re.S)
+        root_uuid_match = re.search(r"<ProductUUID>([^<]*)</ProductUUID>", variant_match.group(1)) if variant_match else None
+
+        bom = {"bom_id": best_id, "product_uuid": root_uuid_match.group(1) if root_uuid_match else None, "groups": []}
 
         for group_match in re.finditer(r"<ProductionBillOfMaterialItemGroup>(.*?)</ProductionBillOfMaterialItemGroup>", best_block, re.S):
             group_block = group_match.group(1)

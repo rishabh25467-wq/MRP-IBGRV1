@@ -76,6 +76,7 @@ def _upsert(collection, product_id, raw_bom, changed):
     update = {
         "bom_id": raw_bom["bom_id"] if raw_bom else None,
         "groups": raw_bom["groups"] if raw_bom else [],
+        "product_uuid": raw_bom.get("product_uuid") if raw_bom else None,
         "found": bool(raw_bom and raw_bom.get("groups")),
         "last_checked_at": now,
     }
