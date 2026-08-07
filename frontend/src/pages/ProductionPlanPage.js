@@ -911,6 +911,7 @@ const MrpPlanTab = ({ actorName }) => {
   const mrpColumns = [
     { label: "Product ID", field: "product_id" },
     { label: "Description" },
+    { label: "UOM" },
     { label: "Lead Time (D)", field: "lead_time_days" },
     { label: "MSL", field: "msl" },
     { label: "On-Hand", field: "on_hand_qty" },
@@ -1168,6 +1169,7 @@ const MrpPlanTab = ({ actorName }) => {
                       </td>
                       <td className="border border-[#D0D5DD] px-2 py-1 font-medium text-[#101828]">{c.product_id}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-[#101828]">{c.description || "—"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467] text-xs">{c.unit_of_measure || "—"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">{c.lead_time_days ?? "—"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">{formatQty(c.msl)}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">{formatQty(c.on_hand_qty)}</td>
@@ -1185,10 +1187,10 @@ const MrpPlanTab = ({ actorName }) => {
                       c.demand_lines.map((l, j) => (
                         <tr key={`${c.product_id}-${j}`} className="bg-[#F5FAFF]" data-testid={`mrp-demand-line-${i}-${j}`}>
                           <td className="border border-[#D0D5DD]"></td>
-                          <td className="border border-[#D0D5DD] px-2 py-1 pl-6 text-xs text-[#475467]" colSpan={2}>
+                          <td className="border border-[#D0D5DD] px-2 py-1 pl-6 text-xs text-[#475467]" colSpan={3}>
                             {l.item_code} · {l.customer || "—"} · PO {l.customer_po || l.internal_pono || "—"}
                           </td>
-                          <td className="border border-[#D0D5DD] px-2 py-1 text-xs text-[#475467]" colSpan={2}>
+                          <td className="border border-[#D0D5DD] px-2 py-1 text-xs text-[#475467]" colSpan={3}>
                             Ship {formatDate(l.target_ship_date)} → Order by{" "}
                             <span className={isPastDue(l.order_by_date) ? "text-[#B42318] font-bold" : "text-[#004B87] font-bold"}>
                               {formatDate(l.order_by_date)}
@@ -1217,7 +1219,7 @@ const MrpPlanTab = ({ actorName }) => {
                       groups.map((g) => (
                         <tr key={`${c.product_id}-${g.key}`} className="bg-[#F5FAFF]" data-testid={`mrp-demand-bucket-${i}-${g.key}`}>
                           <td className="border border-[#D0D5DD]"></td>
-                          <td className="border border-[#D0D5DD] px-2 py-1 pl-6 text-xs text-[#475467]" colSpan={3}>
+                          <td className="border border-[#D0D5DD] px-2 py-1 pl-6 text-xs text-[#475467]" colSpan={5}>
                             {groupBy === "week" ? "Week" : "Month"} {g.key} ({g.count} PO line{g.count === 1 ? "" : "s"})
                           </td>
                           <td className="border border-[#D0D5DD] px-2 py-1"></td>
@@ -1230,7 +1232,7 @@ const MrpPlanTab = ({ actorName }) => {
               })}
               {sortedComponents.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="mrp-no-components">
+                  <td colSpan={9} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="mrp-no-components">
                     {plan.total_po_lines === 0
                       ? "No open PO lines are currently selected for production - go to the Open PO Demand tab and check off the POs you want to build, then generate again."
                       : plan.components.length === 0
@@ -1243,7 +1245,7 @@ const MrpPlanTab = ({ actorName }) => {
             {sortedComponents.length > 0 && (
               <tfoot>
                 <tr className="bg-[#EAECF0]" data-testid="mrp-totals-row">
-                  <td className="border border-[#D0D5DD]" colSpan={6}></td>
+                  <td className="border border-[#D0D5DD]" colSpan={7}></td>
                   <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums font-heading font-bold text-[#101828]">{formatQty(filteredTotalGross)}</td>
                   <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums font-heading font-bold text-[#B42318]">{formatQty(filteredTotalNet)}</td>
                 </tr>

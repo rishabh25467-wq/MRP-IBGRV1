@@ -261,6 +261,18 @@
 - Removed the (non-functional, since the actual scroll container was the page's `<main>`, not the table's own wrapper) `sticky top-0` class from the Open PO Demand table header per user's "reduce stickiness" request.
 - Verified live via Playwright: search "walmart" narrows 976→398 rows correctly, sort/shortage-only toggles all confirmed working, no regression on other pages.
 
+## Feature: PO Selection/Commitment Workflow with Audit Trail (Feb 2026, Session 10) - COMPLETE
+- New requirement: users must explicitly select which open PO lines production is actually committing to build; MRP only computes against selected lines (not the whole raw open-PO backlog), with a full who/when audit trail (no login system exists, so identity is a free-text "Your Name" box persisted in browser localStorage, sent as `actor` on every call).
+- New backend module `po_selection_service.py`: `po_selections` collection (current state per PO line, keyed `internal_pono::item_code`) + `po_selection_history` collection (append-only audit log, never overwritten). New endpoints: `GET/POST /api/production-plan/po-selections`, `/po-selections/toggle`, `GET /po-selections/history`.
+- `mrp_service.build_mrp_plan()` now filters the live Open-PO feed to ONLY selected lines before exploding BOMs (behavior change from earlier in this session) - response now also carries `total_open_po_lines` for context (X selected / Y total open).
+- Frontend: checkbox column ("Produce?") on Open PO Demand tab with inline "who/when" caption -> click opens a History dialog (full audit trail); a "Selected for production only" filter; a "Remove" action on MRP Plan tab's expanded demand lines (deselect-only, since everything shown there is by definition already selected); a live "N PO line(s) currently selected for production" hint before generating.
+- Fixed a UX bug (checkbox felt "sticky"/unresponsive) by making the toggle optimistic (flips instantly on click, rolls back only on API failure) instead of waiting on the round-trip.
+- Also completed in this session: search/sort/filter added to all 3 Production Plan tabs (shared `SortableHeader` + `compareValues` helpers, client-side); removed a non-functional sticky table header; a "resolve unresolved BOM mapping" feature on MRP Plan (Retry Failed Lookups + Fix Mapping override input, reuses the same `part_id_overrides` collection as Purchasing Plan so a correction benefits both pages); added missing UOM column to the MRP table.
+- Tested via testing_agent_v4 (iteration_34): 100% pass, no bugs found (optimistic checkbox, history dialog, selection-filtered MRP, cross-tab consistency, regression on search/sort/filter and Fix Mapping all confirmed working).
+
+## Backend behavior note for future sessions
+- MRP Plan will correctly show 0 components if no PO lines are currently selected - this is expected, not a bug. Users must check off POs on the Open PO Demand tab first.
+
 ## Data-accuracy bug found + escalated to OMS team (not a code fix - external feed issue)
 - User found specific POs (Walmart customer POs 9528550591 / 1529115718 / 0884026160) that OMS shows as CLOSED but the Open-PO Demand feed still returns as open (`qty_open > 0`).
 - Root cause confirmed: all 3 have `qty_shipped = 0` (nothing ever shipped) - so this is not the feed's own documented "split/blanket PO" caveat, but a separate gap: `qty_open` is computed as `qty_ordered - qty_shipped` only, without checking a PO's Closed/Cancelled status in OMS.
