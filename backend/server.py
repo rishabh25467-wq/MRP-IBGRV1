@@ -8,6 +8,7 @@ from typing import List, Optional
 from dotenv import load_dotenv
 from fastapi import APIRouter, FastAPI, HTTPException, Query
 from pydantic import BaseModel
+from pymongo import MongoClient
 from starlette.middleware.cors import CORSMiddleware
 
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
@@ -15,6 +16,7 @@ from sap_valuation_client import SAPValuationClient, SAPValuationError
 from bom_categorizer import categorize_items, BomCategorizerError
 from oms_client import OMSClient
 from purchasing_plan import build_purchasing_plan
+import bom_cache_service
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -24,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
+
+mongo_client = MongoClient(os.environ['MONGO_URL'])
+db = mongo_client[os.environ['DB_NAME']]
 
 sap_soap_client = SAPSoapBOMClient(
     endpoint=os.environ['SAP_SOAP_ENDPOINT'],
@@ -194,7 +199,7 @@ async def start_purchasing_plan_job(payload: Optional[PurchasingPlanGenerateRequ
     async def run():
         try:
             result = await asyncio.to_thread(
-                build_purchasing_plan, oms_client, sap_soap_client, sap_valuation_client, target_month
+                build_purchasing_plan, oms_client, sap_soap_client, sap_valuation_client, db, target_month
             )
             # Classify every leaf component by material/type category (same AI
             # categorizer the BOM Explorer uses) so the plan can be split/grouped
@@ -230,6 +235,43 @@ async def purchasing_plan_status(job_id: str):
     )
 
 
+class BomCacheStats(BaseModel):
+    cached_nodes: int
+    oldest_checked_at: Optional[str] = None
+    newest_checked_at: Optional[str] = None
+
+
+@api_router.get("/bom-cache/stats", response_model=BomCacheStats)
+async def bom_cache_stats():
+    def query():
+        collection = db[bom_cache_service.COLLECTION_NAME]
+        count = collection.count_documents({})
+        oldest = collection.find_one({}, sort=[("last_checked_at", 1)])
+        newest = collection.find_one({}, sort=[("last_checked_at", -1)])
+        return count, oldest, newest
+
+    count, oldest, newest = await asyncio.to_thread(query)
+    return BomCacheStats(
+        cached_nodes=count,
+        oldest_checked_at=oldest["last_checked_at"].isoformat() if oldest and oldest.get("last_checked_at") else None,
+        newest_checked_at=newest["last_checked_at"].isoformat() if newest and newest.get("last_checked_at") else None,
+    )
+
+
+@api_router.post("/bom-cache/refresh")
+async def trigger_bom_cache_refresh():
+    """Manually trigger the same change-detection sweep the background
+    scheduler runs periodically - fires it off in the background (can take
+    a while against a live SAP tenant) and returns immediately; check
+    /bom-cache/stats or the backend logs for progress/completion."""
+    async def run():
+        stats = await asyncio.to_thread(bom_cache_service.refresh_stale_nodes, sap_soap_client, db)
+        logger.info(f"Manually-triggered BOM cache refresh complete: {stats}")
+
+    asyncio.create_task(run())
+    return {"triggered": True}
+
+
 app.include_router(api_router)
 
 app.add_middleware(
@@ -239,4 +281,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Background maintenance: keep the persistent BOM cache within the ~12h
+# freshness requirement by re-checking every already-cached node's revision
+# on a fixed interval (well under 12h, with margin for a slow SAP tenant).
+# Cheap no-op for any node whose BOM hasn't actually changed - see
+# bom_cache_service.refresh_stale_nodes() for the change-detection logic.
+BOM_CACHE_REFRESH_INTERVAL_SECONDS = 6 * 60 * 60
+
+
+@app.on_event("startup")
+async def start_bom_cache_refresh_loop():
+    async def loop():
+        while True:
+            try:
+                stats = await asyncio.to_thread(bom_cache_service.refresh_stale_nodes, sap_soap_client, db)
+                logger.info(f"BOM cache background refresh complete: {stats}")
+            except Exception as e:
+                logger.error(f"BOM cache background refresh failed: {e}")
+            await asyncio.sleep(BOM_CACHE_REFRESH_INTERVAL_SECONDS)
+
+    asyncio.create_task(loop())
 

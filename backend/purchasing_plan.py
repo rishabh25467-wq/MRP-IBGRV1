@@ -5,7 +5,9 @@ user-picked or defaulted to next month) -> resolve each OMS part number to a
 SAP BOM (trying the part number directly first, since SAP recognizes it as a
 valid Product/BOM ID for most parts; the OMS wm-part-map value is only a
 secondary fallback - see build_purchasing_plan for details) -> explode the
-resolved BOM (reusing the existing SOAP client) -> aggregate required
+resolved BOM via the persistent, Mongo-backed BOM cache (see
+bom_cache_service.py - avoids re-exploding live from SAP on every single
+regeneration; a background job keeps the cache fresh) -> aggregate required
 quantity at LEAF-level components only (sub-assemblies are skipped, only
 their own leaf materials count) -> attach live SAP standard costs -> return
 quantity + value for that month, plus a list of OMS parts that could not be
@@ -14,6 +16,8 @@ resolved/exploded into a SAP BOM (shown as a warning in the UI).
 import logging
 import re
 from datetime import date
+
+import bom_cache_service
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +63,7 @@ def _collect_leaves(nodes: list, leaves: dict):
             entry["product_uuid"] = node["product_uuid"]
 
 
-def build_purchasing_plan(oms_client, sap_soap_client, sap_valuation_client, target_month: str = None) -> dict:
+def build_purchasing_plan(oms_client, sap_soap_client, sap_valuation_client, db, target_month: str = None) -> dict:
     months = [_validate_month(target_month) if target_month else _default_month()]
 
     # 1. Pull OMS sales forecast (aggregated per part number) for each month.
@@ -74,19 +78,15 @@ def build_purchasing_plan(oms_client, sap_soap_client, sap_valuation_client, tar
     # empirically, SAP recognizes it directly as a valid Product/BOM ID for
     # most parts. Only for parts where that fails do we try the wm-part-map's
     # mapped value as a second-wave fallback (avoids doubling SOAP calls for
-    # the common case where the direct lookup already succeeds). All calls
-    # share one sub-BOM cache since many top-level parts share the same
-    # hardware/packaging sub-components - this avoids re-fetching the same
-    # sub-BOM over and over across dozens of top-level parts. Explosions run
-    # sequentially (not concurrently) so the shared cache is actually
-    # populated before the next part needs it, and to avoid overloading the
-    # SAP tenant with too many simultaneous connections (each explode_bom()
-    # call already fans out internally across BOM levels).
-    shared_bom_cache = {}
-
+    # the common case where the direct lookup already succeeds). Resolution
+    # goes through the persistent Mongo-backed cache (bom_cache_service) so
+    # repeat regenerations for the same/overlapping parts are near-instant
+    # instead of re-exploding live from SAP every time; explosions run
+    # sequentially to avoid overloading the SAP tenant with too many
+    # simultaneous connections whenever a genuinely new/uncached part shows up.
     def explode(candidate_id):
         try:
-            return candidate_id, sap_soap_client.explode_bom(candidate_id, shared_cache=shared_bom_cache)
+            return candidate_id, bom_cache_service.build_tree_from_cache(candidate_id, sap_soap_client, db)
         except Exception as e:
             logger.warning(f"BOM explosion failed for SAP id {candidate_id}: {e}")
             return candidate_id, None
