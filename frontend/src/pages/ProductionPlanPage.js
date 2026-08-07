@@ -26,10 +26,20 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { NavTabs } from "@/components/NavTabs";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+const ACTOR_NAME_STORAGE_KEY = "productionPlanActorName";
+
+const useActorName = () => {
+  const [name, setName] = useState(() => localStorage.getItem(ACTOR_NAME_STORAGE_KEY) || "");
+  useEffect(() => {
+    localStorage.setItem(ACTOR_NAME_STORAGE_KEY, name);
+  }, [name]);
+  return [name, setName];
+};
 
 const StatCard = ({ icon: Icon, label, value, testId, tone }) => (
   <div
@@ -63,6 +73,11 @@ const isoWeekLabel = (isoDate) => {
   const weekNo = Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
   return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, "0")}`;
 };
+const formatDateTime = (isoDateTime) => {
+  if (!isoDateTime) return "—";
+  return new Date(isoDateTime).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+};
+const selectionKey = (internalPono, itemCode) => `${Math.trunc(Number(internalPono))}::${itemCode}`;
 
 const compareValues = (a, b) => {
   if (a == null && b == null) return 0;
@@ -92,8 +107,51 @@ const SortableHeader = ({ label, field, sortConfig, onSort, className, testId })
   );
 };
 
+// -------------------- Selection history dialog (shared) --------------------
+const SelectionHistoryDialog = ({ target, onClose }) => {
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!target) return;
+    setLoading(true);
+    axios
+      .get(`${API}/production-plan/po-selections/history`, { params: { internal_pono: target.internalPono, item_code: target.itemCode } })
+      .then(({ data }) => setEntries(data.entries))
+      .catch(() => setEntries([]))
+      .finally(() => setLoading(false));
+  }, [target]);
+
+  return (
+    <Dialog open={!!target} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-md" data-testid="selection-history-dialog">
+        <DialogHeader>
+          <DialogTitle>Selection History{target ? ` - ${target.itemCode}` : ""}</DialogTitle>
+          <DialogDescription>Every select/deselect action recorded for this PO line, most recent first.</DialogDescription>
+        </DialogHeader>
+        {loading ? (
+          <Skeleton className="h-20 w-full rounded-sm" />
+        ) : entries.length === 0 ? (
+          <p className="text-sm text-[#667085]" data-testid="selection-history-empty">No history recorded yet.</p>
+        ) : (
+          <div className="space-y-2 max-h-72 overflow-auto">
+            {entries.map((e, i) => (
+              <div key={i} className="flex items-center justify-between text-sm border-b border-[#EAECF0] pb-1.5" data-testid={`selection-history-entry-${i}`}>
+                <span className={e.action === "selected" ? "text-[#027A48] font-medium" : "text-[#B42318] font-medium"}>
+                  {e.action === "selected" ? "Selected" : "Deselected"} by {e.by}
+                </span>
+                <span className="text-xs text-[#667085]">{formatDateTime(e.at)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+};
+
 // -------------------- Open PO Demand tab --------------------
-const OpenPoDemandTab = () => {
+const OpenPoDemandTab = ({ actorName }) => {
   const [customer, setCustomer] = useState("");
   const [plant, setPlant] = useState("");
   const [rows, setRows] = useState([]);
@@ -104,6 +162,9 @@ const OpenPoDemandTab = () => {
   const [search, setSearch] = useState("");
   const [basisFilter, setBasisFilter] = useState("all");
   const [sortConfig, setSortConfig] = useState({ field: "target_ship_date", direction: "asc" });
+  const [selectionsByKey, setSelectionsByKey] = useState({});
+  const [selectedOnly, setSelectedOnly] = useState(false);
+  const [historyTarget, setHistoryTarget] = useState(null);
 
   const fetchDemand = async () => {
     setLoading(true);
@@ -112,17 +173,62 @@ const OpenPoDemandTab = () => {
       const params = {};
       if (customer.trim()) params.customer = customer.trim();
       if (plant.trim()) params.plant = plant.trim();
-      const { data } = await axios.get(`${API}/production-plan/open-po-demand`, { params });
-      setRows(data.rows);
-      setMeta({ count: data.count, truncated: data.truncated, max_changed_at: data.max_changed_at });
+      const [feedRes, selRes] = await Promise.all([
+        axios.get(`${API}/production-plan/open-po-demand`, { params }),
+        axios.get(`${API}/production-plan/po-selections`),
+      ]);
+      setRows(feedRes.data.rows);
+      setMeta({ count: feedRes.data.count, truncated: feedRes.data.truncated, max_changed_at: feedRes.data.max_changed_at });
+      const selMap = {};
+      selRes.data.selections.forEach((s) => {
+        selMap[s.key] = s;
+      });
+      setSelectionsByKey(selMap);
       setLoaded(true);
-      toast.success(`Loaded ${data.count} open PO line(s)`);
+      toast.success(`Loaded ${feedRes.data.count} open PO line(s)`);
     } catch (err) {
       const detail = err?.response?.data?.detail || err.message || "Failed to load Open PO Demand feed";
       setError(detail);
       toast.error("Could not load Open PO Demand feed", { description: detail });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const toggleSelection = async (row) => {
+    if (!actorName.trim()) {
+      toast.error("Enter your name first", { description: "Type your name in the box at the top of the page so purchasing knows who selected this." });
+      return;
+    }
+    const key = selectionKey(row.internal_pono, row.item_code);
+    const previous = selectionsByKey[key];
+    const wasSelected = !!previous?.selected;
+    const nowSelected = !wasSelected;
+
+    // Optimistic update - flip the checkbox instantly instead of waiting on
+    // the round-trip, which otherwise makes a controlled checkbox feel
+    // "stuck"/unresponsive to a quick click. Rolled back below on failure.
+    setSelectionsByKey((prev) => ({
+      ...prev,
+      [key]: { selected: nowSelected, selected_by: actorName.trim(), selected_at: new Date().toISOString() },
+    }));
+
+    try {
+      const { data } = await axios.post(`${API}/production-plan/po-selections/toggle`, {
+        internal_pono: row.internal_pono,
+        item_code: row.item_code,
+        customer_po: row.customer_po,
+        customer: row.customer,
+        selected: nowSelected,
+        actor: actorName.trim(),
+      });
+      setSelectionsByKey((prev) => ({ ...prev, [key]: { selected: data.selected, selected_by: data.selected_by, selected_at: data.selected_at } }));
+      toast.success(wasSelected ? "Removed from production selection" : "Marked for production", {
+        description: `${row.item_code} · PO ${row.customer_po || row.internal_pono}`,
+      });
+    } catch (err) {
+      setSelectionsByKey((prev) => ({ ...prev, [key]: previous }));
+      toast.error("Failed to update selection", { description: err?.response?.data?.detail || err.message });
     }
   };
 
@@ -141,6 +247,7 @@ const OpenPoDemandTab = () => {
   const q = search.trim().toLowerCase();
   const filteredRows = rows.filter((r) => {
     if (basisFilter !== "all" && r.target_ship_basis !== basisFilter) return false;
+    if (selectedOnly && !selectionsByKey[selectionKey(r.internal_pono, r.item_code)]?.selected) return false;
     if (!q) return true;
     return (
       (r.customer || "").toLowerCase().includes(q) ||
@@ -153,6 +260,7 @@ const OpenPoDemandTab = () => {
     const cmp = compareValues(getSortValue(a, sortConfig.field), getSortValue(b, sortConfig.field));
     return sortConfig.direction === "asc" ? cmp : -cmp;
   });
+  const selectedCount = rows.filter((r) => selectionsByKey[selectionKey(r.internal_pono, r.item_code)]?.selected).length;
 
   const columns = [
     { label: "Customer", field: "customer" },
@@ -235,13 +343,30 @@ const OpenPoDemandTab = () => {
               <SelectItem value="cfs_must_ship_by" data-testid="open-po-basis-filter-cfs">CFS Must-Ship-By</SelectItem>
             </SelectContent>
           </Select>
+          <label className="flex items-center gap-1.5 text-xs text-[#344054] cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={selectedOnly}
+              onChange={(e) => setSelectedOnly(e.target.checked)}
+              className="accent-[#004B87]"
+              data-testid="open-po-selected-only-toggle"
+            />
+            Selected for production only
+          </label>
           <span className="text-xs text-[#475467] ml-auto" data-testid="open-po-result-count">
             Showing {sortedRows.length} of {rows.length} line(s)
           </span>
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+        <StatCard
+          icon={CheckCircle}
+          label="Selected for Production"
+          value={loaded ? selectedCount : "—"}
+          tone="text-[#027A48]"
+          testId="stat-open-po-selected"
+        />
         <StatCard icon={Package} label="Open PO Lines" value={loaded ? meta.count : "—"} testId="stat-open-po-count" />
         <StatCard
           icon={WarningCircle}
@@ -278,6 +403,9 @@ const OpenPoDemandTab = () => {
           <table className="border-collapse w-full text-[13px]" data-testid="open-po-table">
             <thead>
               <tr>
+                <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
+                  Produce?
+                </th>
                 {columns.map((col) => (
                   <SortableHeader
                     key={col.label}
@@ -291,27 +419,50 @@ const OpenPoDemandTab = () => {
               </tr>
             </thead>
             <tbody>
-              {sortedRows.map((r, i) => (
-                <tr key={`${r.internal_pono}-${r.item_code}-${i}`} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`open-po-row-${i}`}>
-                  <td className="border border-[#D0D5DD] px-2 py-1 text-[#101828]">{r.customer || "—"}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1 text-[#101828]">{r.customer_po || "—"}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1 font-medium text-[#101828]">{r.item_code}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1 text-[#101828]">{r.description || "—"}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#101828]">{formatQty(r.qty_open)}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]">{formatDate(r.due_date)}</td>
-                  <td className={`border border-[#D0D5DD] px-2 py-1 font-medium ${isPastDue(r.target_ship_date) ? "text-[#B42318]" : "text-[#004B87]"}`}>
-                    {formatDate(r.target_ship_date)}
-                  </td>
-                  <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467] text-xs">
-                    {r.target_ship_basis === "cfs_must_ship_by" ? "CFS Must-Ship-By" : "Ex-Factory Offset"}
-                  </td>
-                  <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">{r.lead_day ?? "—"}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">{formatMoney(r.invoice_price, r.currency)}</td>
-                </tr>
-              ))}
+              {sortedRows.map((r, i) => {
+                const key = selectionKey(r.internal_pono, r.item_code);
+                const sel = selectionsByKey[key];
+                return (
+                  <tr key={`${r.internal_pono}-${r.item_code}-${i}`} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`open-po-row-${i}`}>
+                    <td className="border border-[#D0D5DD] px-2 py-1 text-center">
+                      <input
+                        type="checkbox"
+                        checked={!!sel?.selected}
+                        onChange={() => toggleSelection(r)}
+                        className="accent-[#004B87] cursor-pointer"
+                        data-testid={`open-po-select-checkbox-${i}`}
+                      />
+                      {sel?.selected_by && (
+                        <button
+                          type="button"
+                          onClick={() => setHistoryTarget({ internalPono: r.internal_pono, itemCode: r.item_code })}
+                          className="block text-[10px] text-[#475467] hover:text-[#004B87] hover:underline leading-tight mt-0.5 whitespace-nowrap"
+                          data-testid={`open-po-selection-caption-${i}`}
+                        >
+                          {sel.selected_by} · {formatDateTime(sel.selected_at)}
+                        </button>
+                      )}
+                    </td>
+                    <td className="border border-[#D0D5DD] px-2 py-1 text-[#101828]">{r.customer || "—"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1 text-[#101828]">{r.customer_po || "—"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1 font-medium text-[#101828]">{r.item_code}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1 text-[#101828]">{r.description || "—"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#101828]">{formatQty(r.qty_open)}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]">{formatDate(r.due_date)}</td>
+                    <td className={`border border-[#D0D5DD] px-2 py-1 font-medium ${isPastDue(r.target_ship_date) ? "text-[#B42318]" : "text-[#004B87]"}`}>
+                      {formatDate(r.target_ship_date)}
+                    </td>
+                    <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467] text-xs">
+                      {r.target_ship_basis === "cfs_must_ship_by" ? "CFS Must-Ship-By" : "Ex-Factory Offset"}
+                    </td>
+                    <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">{r.lead_day ?? "—"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">{formatMoney(r.invoice_price, r.currency)}</td>
+                  </tr>
+                );
+              })}
               {sortedRows.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="open-po-no-rows">
+                  <td colSpan={11} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="open-po-no-rows">
                     No open PO demand matches the current search/filters
                   </td>
                 </tr>
@@ -320,6 +471,8 @@ const OpenPoDemandTab = () => {
           </table>
         </div>
       )}
+
+      <SelectionHistoryDialog target={historyTarget} onClose={() => setHistoryTarget(null)} />
 
       {!loading && !loaded && !error && (
         <div className="border border-dashed border-[#D0D5DD] rounded-sm py-16 flex flex-col items-center gap-3 text-[#98A2B3] bg-white" data-testid="open-po-empty-state">
@@ -559,7 +712,7 @@ const BomAlternatesTab = () => {
 };
 
 // -------------------- MRP Plan tab --------------------
-const MrpPlanTab = () => {
+const MrpPlanTab = ({ actorName }) => {
   const [plan, setPlan] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -574,9 +727,23 @@ const MrpPlanTab = () => {
   const [retrying, setRetrying] = useState(false);
   const [overrideInputs, setOverrideInputs] = useState({});
   const [savingOverride, setSavingOverride] = useState({});
+  const [selectedForProductionCount, setSelectedForProductionCount] = useState(null);
 
   const POLL_INTERVAL_MS = 3000;
   const MAX_POLL_MS = 15 * 60 * 1000;
+
+  const refreshSelectedCount = async () => {
+    try {
+      const { data } = await axios.get(`${API}/production-plan/po-selections`);
+      setSelectedForProductionCount(data.selections.filter((s) => s.selected).length);
+    } catch {
+      setSelectedForProductionCount(null);
+    }
+  };
+
+  useEffect(() => {
+    refreshSelectedCount();
+  }, []);
 
   const generate = async () => {
     setLoading(true);
@@ -594,7 +761,9 @@ const MrpPlanTab = () => {
         if (job.status === "done") {
           setPlan(job.result);
           setExpanded(new Set());
-          toast.success("MRP plan generated", { description: `${job.result.components.length} component(s) from ${job.result.total_po_lines} open PO line(s)` });
+          toast.success("MRP plan generated", {
+            description: `${job.result.components.length} component(s) from ${job.result.total_po_lines} selected PO line(s) (of ${job.result.total_open_po_lines} open)`,
+          });
           break;
         }
         if (job.status === "failed") {
@@ -610,6 +779,27 @@ const MrpPlanTab = () => {
       toast.error("MRP plan generation failed", { description: detail });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const removeFromProduction = async (line) => {
+    if (!actorName.trim()) {
+      toast.error("Enter your name first", { description: "Type your name in the box at the top of the page so purchasing knows who made this change." });
+      return;
+    }
+    try {
+      await axios.post(`${API}/production-plan/po-selections/toggle`, {
+        internal_pono: line.internal_pono,
+        item_code: line.item_code,
+        customer_po: line.customer_po,
+        customer: line.customer,
+        selected: false,
+        actor: actorName.trim(),
+      });
+      toast.success("Removed from production selection", { description: "Regenerate the MRP plan to reflect this change." });
+      refreshSelectedCount();
+    } catch (err) {
+      toast.error("Failed to update selection", { description: err?.response?.data?.detail || err.message });
     }
   };
 
@@ -750,6 +940,20 @@ const MrpPlanTab = () => {
           <ListChecks size={14} className="mr-1.5" />
           {loading ? `Generating... (${elapsedSeconds}s)` : plan ? "Regenerate MRP Plan" : "Generate MRP Plan"}
         </Button>
+        {selectedForProductionCount != null && (
+          <span className="text-xs text-[#475467]" data-testid="mrp-selected-count-hint">
+            {selectedForProductionCount === 0 ? (
+              <span className="text-[#B54708] font-medium">
+                No POs selected yet - go to Open PO Demand to check off what to produce
+              </span>
+            ) : (
+              <>
+                <CheckCircle size={12} weight="fill" className="inline mr-1 text-[#027A48]" />
+                {selectedForProductionCount} PO line(s) currently selected for production
+              </>
+            )}
+          </span>
+        )}
         {plan && (
           <div className="flex items-center gap-1.5">
             <label className="font-heading text-xs font-bold text-[#475467] uppercase">View demand by</label>
@@ -803,7 +1007,12 @@ const MrpPlanTab = () => {
       )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
-        <StatCard icon={Package} label="PO Lines Considered" value={plan ? plan.total_po_lines : "—"} testId="stat-mrp-po-lines" />
+        <StatCard
+          icon={Package}
+          label="PO Lines Considered"
+          value={plan ? `${plan.total_po_lines} / ${plan.total_open_po_lines}` : "—"}
+          testId="stat-mrp-po-lines"
+        />
         <StatCard icon={Database} label="Components in Demand" value={plan ? plan.components.length : "—"} testId="stat-mrp-components" />
         <StatCard icon={WarningCircle} label="Components Short" value={plan ? shortageCount : "—"} tone="text-[#B42318]" testId="stat-mrp-shortages" />
         <StatCard icon={ListChecks} label="Total Net Procurement Qty" value={plan ? formatQty(totalNet) : "—"} tone="text-[#004B87]" testId="stat-mrp-net-qty" />
@@ -989,6 +1198,16 @@ const MrpPlanTab = () => {
                                 (lead time unset)
                               </span>
                             )}
+                            <button
+                              type="button"
+                              onClick={() => removeFromProduction(l)}
+                              className="ml-2 inline-flex items-center gap-0.5 text-[#B42318] hover:text-[#7A271A] hover:underline"
+                              title="Remove this PO line from the production selection"
+                              data-testid={`mrp-deselect-${i}-${j}`}
+                            >
+                              <XCircle size={11} weight="bold" />
+                              Remove
+                            </button>
                           </td>
                           <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-xs text-[#475467]">{formatQty(l.gross_qty)}</td>
                           <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-xs font-bold text-[#475467]">{formatQty(l.net_qty)}</td>
@@ -1012,7 +1231,9 @@ const MrpPlanTab = () => {
               {sortedComponents.length === 0 && (
                 <tr>
                   <td colSpan={8} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="mrp-no-components">
-                    {plan.components.length === 0
+                    {plan.total_po_lines === 0
+                      ? "No open PO lines are currently selected for production - go to the Open PO Demand tab and check off the POs you want to build, then generate again."
+                      : plan.components.length === 0
                       ? "No purchasable leaf components found against the current open PO demand"
                       : "No components match the current search/filters"}
                   </td>
@@ -1045,6 +1266,8 @@ const MrpPlanTab = () => {
 };
 
 export default function ProductionPlanPage() {
+  const [actorName, setActorName] = useActorName();
+
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]">
       <Toaster position="top-right" />
@@ -1057,6 +1280,17 @@ export default function ProductionPlanPage() {
             <span className="font-sans text-xs text-white/60 hidden sm:inline">| Production Plan</span>
           </div>
           <NavTabs />
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="font-sans text-xs text-white/70 hidden md:inline">Your name (for selection tracking):</span>
+          <input
+            type="text"
+            placeholder="Your name..."
+            value={actorName}
+            onChange={(e) => setActorName(e.target.value)}
+            className="h-7 w-40 px-2 text-[13px] rounded-sm border border-white/20 bg-white/10 text-white placeholder:text-white/50 focus:outline-none focus:border-white/60 focus:bg-white/20"
+            data-testid="actor-name-input"
+          />
         </div>
       </header>
 
@@ -1074,13 +1308,13 @@ export default function ProductionPlanPage() {
             </TabsTrigger>
           </TabsList>
           <TabsContent value="open-po" data-testid="production-plan-content-open-po">
-            <OpenPoDemandTab />
+            <OpenPoDemandTab actorName={actorName} />
           </TabsContent>
           <TabsContent value="alternates" data-testid="production-plan-content-alternates">
             <BomAlternatesTab />
           </TabsContent>
           <TabsContent value="mrp" data-testid="production-plan-content-mrp">
-            <MrpPlanTab />
+            <MrpPlanTab actorName={actorName} />
           </TabsContent>
         </Tabs>
       </main>

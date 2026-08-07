@@ -2,7 +2,11 @@
 
 Pipeline (see MRP_OPEN_PO_DEMAND_API.md for the source feed's exact shape):
   1. Pull open PO lines (item_code, qty_open, target_ship_date) from the
-     external Open-PO Demand feed (open_po_client.py).
+     external Open-PO Demand feed (open_po_client.py), then keep ONLY the
+     lines production has explicitly marked as selected-for-production
+     (po_selection_service - checked off on the Open PO Demand or MRP Plan
+     tab) - purchasing only ever sees demand production has actually
+     signed off on, not the entire raw open-PO backlog.
   2. Resolve each line's item_code to a SAP BOM through the same persistent,
      Mongo-backed cache every other feature uses (bom_cache_service) - so a
      BOM-alternate choice made on the Production Plan page's own Alternates
@@ -31,6 +35,7 @@ import bom_cache_service
 from bom_cache_service import BomFetchError
 from inventory_service import get_cached_inventory
 from purchasing_plan import get_part_overrides
+from po_selection_service import get_selected_keys, selection_key
 
 logger = logging.getLogger(__name__)
 
@@ -145,14 +150,20 @@ def get_component_msl(db, product_ids) -> dict:
 
 def build_mrp_plan(open_po_client, sap_soap_client, db, customer: str = None) -> dict:
     """Returns {generated_at, po_data_as_of, total_po_lines,
-    unresolved_items: [{item_code, confidence, reason}], components:
-    [{product_id, description, unit_of_measure, lead_time_days, msl,
-    on_hand_qty, total_gross_qty, total_net_qty, demand_lines: [{
-    internal_pono, customer_po, customer, item_code, target_ship_date,
-    order_by_date, lead_time_missing, gross_qty, net_qty}]}]}, components
-    sorted by total_net_qty descending (biggest shortages first)."""
+    total_open_po_lines, unresolved_items: [{item_code, confidence,
+    reason}], components: [{product_id, description, unit_of_measure,
+    lead_time_days, msl, on_hand_qty, total_gross_qty, total_net_qty,
+    demand_lines: [{internal_pono, customer_po, customer, item_code,
+    target_ship_date, order_by_date, lead_time_missing, gross_qty,
+    net_qty}]}]}, components sorted by total_net_qty descending (biggest
+    shortages first). Only PO lines production has explicitly marked
+    selected-for-production (po_selection_service) are counted -
+    total_open_po_lines is the full feed's count for context/comparison."""
     feed = open_po_client.get_open_po_demand(customer=customer)
-    rows = feed.get("rows", [])
+    all_rows = feed.get("rows", [])
+    selected_keys = get_selected_keys(db)
+    rows = [r for r in all_rows if r.get("internal_pono") is not None and r.get("item_code")
+            and selection_key(r["internal_pono"], r["item_code"]) in selected_keys]
 
     item_codes = sorted({r["item_code"] for r in rows if r.get("item_code")})
     overrides = get_part_overrides(db)
@@ -247,6 +258,7 @@ def build_mrp_plan(open_po_client, sap_soap_client, db, customer: str = None) ->
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "po_data_as_of": feed.get("max_changed_at"),
         "total_po_lines": len(rows),
+        "total_open_po_lines": len(all_rows),
         "unresolved_items": unresolved_items,
         "components": components,
     }

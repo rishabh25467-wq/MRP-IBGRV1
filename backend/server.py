@@ -28,6 +28,7 @@ from purchasing_plan import (
 import bom_cache_service
 import production_plan_service
 import mrp_service
+import po_selection_service
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -735,6 +736,7 @@ class MrpPlanResponse(BaseModel):
     generated_at: str
     po_data_as_of: Optional[str] = None
     total_po_lines: int
+    total_open_po_lines: int = 0
     unresolved_items: List[UnresolvedMrpItem]
     components: List[MrpComponent]
 
@@ -840,6 +842,107 @@ async def set_mrp_part_override(payload: SetMrpPartOverrideRequest):
         item_code=item_code, sap_id=sap_id, resolved=result["resolved"],
         confidence=result.get("confidence"), reason=result.get("reason"),
     )
+
+
+class PoSelectionEntry(BaseModel):
+    key: str
+    internal_pono: Optional[float] = None
+    item_code: Optional[str] = None
+    customer_po: Optional[str] = None
+    customer: Optional[str] = None
+    selected: bool
+    selected_by: Optional[str] = None
+    selected_at: Optional[str] = None
+
+
+class PoSelectionsResponse(BaseModel):
+    selections: List[PoSelectionEntry]
+
+
+@api_router.get("/production-plan/po-selections", response_model=PoSelectionsResponse)
+async def list_po_selections():
+    """Every open-PO line production has ever marked selected/deselected -
+    the Open PO Demand and MRP Plan tabs merge this onto their own rows (by
+    `internal_pono::item_code`) to render checkboxes + the 'who/when'
+    caption without a separate round-trip per row."""
+    docs = await asyncio.to_thread(po_selection_service.list_selections, db)
+    selections = [
+        PoSelectionEntry(
+            key=d["_id"], internal_pono=d.get("internal_pono"), item_code=d.get("item_code"),
+            customer_po=d.get("customer_po"), customer=d.get("customer"), selected=d["selected"],
+            selected_by=d.get("selected_by"), selected_at=d["selected_at"].isoformat() if d.get("selected_at") else None,
+        )
+        for d in docs
+    ]
+    return PoSelectionsResponse(selections=selections)
+
+
+class TogglePoSelectionRequest(BaseModel):
+    internal_pono: float
+    item_code: str
+    customer_po: Optional[str] = None
+    customer: Optional[str] = None
+    selected: bool
+    actor: str
+
+
+class TogglePoSelectionResponse(BaseModel):
+    key: str
+    selected: bool
+    selected_by: str
+    selected_at: str
+
+
+@api_router.post("/production-plan/po-selections/toggle", response_model=TogglePoSelectionResponse)
+async def toggle_po_selection(payload: TogglePoSelectionRequest):
+    """Marks (or unmarks) one open-PO line as selected-for-production. The
+    MRP Plan computation only ever nets demand for currently-selected
+    lines - see mrp_service.build_mrp_plan. No login system exists, so
+    `actor` is a free-text name the user typed once in their browser
+    (persisted client-side); every action is still appended to a full
+    audit history (po_selection_history), never overwritten."""
+    actor = payload.actor.strip()
+    if not actor:
+        raise HTTPException(status_code=400, detail="actor (your name) is required")
+    result = await asyncio.to_thread(
+        po_selection_service.toggle_selection, db, payload.internal_pono, payload.item_code,
+        payload.customer_po, payload.customer, payload.selected, actor,
+    )
+    return TogglePoSelectionResponse(
+        key=result["key"], selected=result["selected"], selected_by=result["selected_by"],
+        selected_at=result["selected_at"].isoformat(),
+    )
+
+
+class PoSelectionHistoryEntry(BaseModel):
+    internal_pono: Optional[float] = None
+    item_code: Optional[str] = None
+    customer_po: Optional[str] = None
+    customer: Optional[str] = None
+    action: str
+    by: str
+    at: str
+
+
+class PoSelectionHistoryResponse(BaseModel):
+    entries: List[PoSelectionHistoryEntry]
+
+
+@api_router.get("/production-plan/po-selections/history", response_model=PoSelectionHistoryResponse)
+async def po_selection_history(internal_pono: Optional[float] = Query(None), item_code: Optional[str] = Query(None)):
+    """Full select/deselect audit trail (who, when), optionally scoped to
+    one PO line (pass both internal_pono and item_code) for the per-row
+    History dialog - otherwise the most recent 200 actions across every
+    line, newest first."""
+    docs = await asyncio.to_thread(po_selection_service.get_history, db, internal_pono, item_code)
+    entries = [
+        PoSelectionHistoryEntry(
+            internal_pono=d.get("internal_pono"), item_code=d.get("item_code"), customer_po=d.get("customer_po"),
+            customer=d.get("customer"), action=d["action"], by=d["by"], at=d["at"].isoformat(),
+        )
+        for d in docs
+    ]
+    return PoSelectionHistoryResponse(entries=entries)
 
 
 class ComponentMasterItem(BaseModel):
