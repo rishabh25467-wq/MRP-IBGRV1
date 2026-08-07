@@ -1,0 +1,32 @@
+{
+  "summary": "Tested the NEW direct SAP Material lookup (QueryMaterialIn) fallback in the deep-backfill feature, focusing on the error-handling path since the live tenant confirms it rejects the call with 'Authorization role missing'. Verified via backend curl + Playwright UI end-to-end: job completed correctly, fail-fast logic works, authorization warning banner renders correctly in frontend, and no regression to Inventory smoke paths, BOM Explorer, or Purchasing Plan.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST/GET /api/inventory/deep-backfill-uuids", "issue": "result.resolved was 0 (not 1 as review request anticipated) - total was 1423 (close to the ~1424 expected). Root cause: the single free-resolvable item (via already_checked_boms/bom_node_cache reuse) was likely already consumed by main agent's own earlier curl verification pass before this test session started (explicitly called out as expected/non-bug behavior in the review note: 'queue may shrink slightly if any items got resolved via the free-reuse path'). Code review of the 'already_checked_boms' free-reuse branch in inventory_service.deep_backfill_uuids/fetch_one confirms the logic itself is correct; just could not observe a non-zero resolved count live in this session because the one eligible item was pre-consumed."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "No code changes required. Optional: if main agent wants a live-verified non-zero 'resolved' count, would need to manually seed an inventory item that has a cached bom_node_cache product_uuid but no component_master product_uuid before re-running (all previously-free-eligible items already appear consumed)."
+  ],
+  "critical_code_review_comments": [
+    "sap_material_client.py: resolve_uuid() correctly distinguishes SAPMaterialAuthError (fault string contains 'Authorization role missing') from generic SAPMaterialError - clean, minimal SOAP client.",
+    "inventory_service.deep_backfill_uuids(): auth_error_seen is a shared mutable flag (list-wrapped) read/written inside fetch_one() across ThreadPoolExecutor(max_workers=3) - correctly fails fast. Backend logs confirm only 3 'Authorization role missing' errors logged per job run (one per concurrent worker in-flight when the flag flips), NOT 1423 - i.e., the intended 'stop retrying a guaranteed failure' behavior works as designed given the concurrency model.",
+    "_get_deep_backfill_targets() now correctly includes previously-checked-but-unresolved items (second chance via Material lookup) - confirmed total=1423 matches the expected ~1424 scale from the review request.",
+    "server.py DeepBackfillResult/DeepBackfillJobStatus pydantic models match the actual JSON response shape exactly (total, resolved, still_missing, material_lookup_unauthorized, phase).",
+    "Frontend InventoryPage.js unauthorized-warning banner block (lines ~489-493) renders exactly the expected message and only when material_lookup_unauthorized=true; correctly suppresses the generic 'X item(s) still have no match' message in that case to avoid a confusing double-message."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None - used existing live inventory_cache/bom_node_cache/component_master state",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Verified this round: (1) POST /api/inventory/deep-backfill-uuids + GET status - resolving phase completed for total=1423 targets in well under 5s (fail-fast confirmed, not a multi-minute hang), then phase transitioned to 'refreshing_cache' which took ~100-120s (separate, slower live SAP OData pull) before status='done'. (2) result showed {total:1423, resolved:0, still_missing:1423, material_lookup_unauthorized:true} - resolved=0 instead of the anticipated small non-zero '1' is explained by the free-eligible item likely already being consumed in an earlier verification pass by main agent (this is explicitly flagged as expected/non-bug in the review request's 'other_misc_info'). (3) Frontend Playwright run: button click -> dialog -> running state with phase text ('Checking X of 1423 item(s) against SAP...') -> result state showing 'Resolved 0 of 1423 previously-unlinked item(s).' + the amber unauthorized-warning banner with exact expected copy -> Close button enabled and closes dialog correctly -> Last Updated badge auto-refreshed post-backfill. (4) GET /api/inventory confirmed cache refreshed with 1727/3177 items retaining non-null total_value (sticky-valuation fallback still intact from iteration_30 fix). (5) Inventory search/pagination smoke-tested, working. (6) BOM Explorer and Purchasing Plan pages load with no console errors - no regression.",
+  "rca_of_the_issue": "N/A - no unresolved bugs. The only deviation from review expectations (resolved=0 vs anticipated ~1) is a data-state artifact (free-eligible item already consumed pre-session) rather than a code defect, and is explicitly pre-flagged as acceptable in the review request itself."
+}

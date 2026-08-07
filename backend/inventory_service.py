@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 import requests
 from sap_valuation_client import SAPValuationError
+from sap_material_client import SAPMaterialError, SAPMaterialAuthError
 
 import bom_cache_service
 from bom_cache_service import BomFetchError
@@ -183,41 +184,73 @@ def refresh_inventory_cache(db, sap_inventory_client, sap_valuation_client) -> d
     return {"items": items, "categories": categories, "updated_at": updated_at}
 
 
-def deep_backfill_uuids(db, sap_soap_client, progress_callback=None) -> dict:
+def deep_backfill_uuids(db, sap_soap_client, sap_material_client=None, progress_callback=None) -> dict:
     """User-requested, one-time CONTROLLED live SAP lookup for every
     inventory item that still has no product_uuid after the free,
-    zero-API-call join in _resolve_missing_uuids (i.e. it's never appeared
-    as a BOM root OR leaf in anything explored so far). Unlike a normal
-    BOM Explorer/Purchasing Plan run, this deliberately throttles
-    concurrency (DEEP_BACKFILL_MAX_WORKERS, well below the 8 used
-    elsewhere) since this SAP tenant is known to hit connection timeouts
-    under load - the user explicitly chose "controlled one-time backfill,
-    accept it'll take a while and add some load" over waiting indefinitely
-    for organic coverage growth. Every result (a resolved UUID OR a
-    confirmed "no BOM at all") is permanently written to bom_node_cache via
-    the exact same _fetch_live/_upsert path BOM Explorer uses, so no ID is
-    ever re-queried by this or any other feature once it's been checked.
-    Returns {"total", "resolved", "still_missing"}."""
+    zero-API-call join in _resolve_missing_uuids. Two-step resolution per
+    item, deliberately throttled (DEEP_BACKFILL_MAX_WORKERS, well below the
+    8 used elsewhere) since this SAP tenant is known to hit connection
+    timeouts under load - the user explicitly chose "controlled one-time
+    backfill, accept it'll take a while and add some load" over waiting
+    indefinitely for organic coverage growth:
+      1. BOM-based (same as before): is this product a BOM root, or has it
+         already been checked before? Free/cheap, reuses bom_node_cache.
+      2. NEW - direct Material Master lookup (sap_material_client,
+         QueryMaterialIn): for anything step 1 couldn't resolve (no BOM
+         relationship anywhere) - this is the ONLY way to get a UUID for a
+         pure raw material that's never appeared as anyone's ingredient.
+         As of Feb 2026 this requires a SAP authorization grant that may
+         not be in place yet (see sap_material_client module docstring) -
+         if so, the first call raises SAPMaterialAuthError and this
+         function stops attempting step 2 for the rest of the run (no
+         point retrying a guaranteed failure on every item), surfaced via
+         result["material_lookup_unauthorized"].
+    Returns {"total", "resolved", "still_missing", "material_lookup_unauthorized"}."""
     target_ids = _get_deep_backfill_targets(db)
     total = len(target_ids)
     if progress_callback:
         progress_callback(0, total)
     if total == 0:
-        return {"total": 0, "resolved": 0, "still_missing": 0}
+        return {"total": 0, "resolved": 0, "still_missing": 0, "material_lookup_unauthorized": False}
 
     bom_cache = db[bom_cache_service.COLLECTION_NAME]
     comp_cache = db["component_master"]
+    already_checked_boms = {
+        doc["_id"]: doc.get("product_uuid")
+        for doc in bom_cache.find({"_id": {"$in": target_ids}}, {"product_uuid": 1})
+    }
     resolved = 0
     processed = 0
+    auth_error_seen = [False]  # list so the closure below can mutate it
 
     def fetch_one(pid):
-        try:
-            raw = bom_cache_service._fetch_live(sap_soap_client, pid)
-        except BomFetchError as e:
-            logger.warning(f"Deep UUID backfill: SAP lookup failed for '{pid}' after retries, leaving unresolved: {e}")
+        if pid in already_checked_boms:
+            # Already resolved for free by a previous BOM Explorer/Purchasing
+            # Plan run or backfill cycle - just reuse it, no lookup needed.
+            if already_checked_boms[pid]:
+                return pid, already_checked_boms[pid]
+        else:
+            try:
+                raw = bom_cache_service._fetch_live(sap_soap_client, pid)
+            except BomFetchError as e:
+                logger.warning(f"Deep UUID backfill: BOM lookup failed for '{pid}' after retries: {e}")
+                raw = None
+            else:
+                bom_cache_service._upsert(bom_cache, pid, raw, changed=True)
+            if raw and raw.get("product_uuid"):
+                return pid, raw["product_uuid"]
+
+        if auth_error_seen[0] or sap_material_client is None:
             return pid, None
-        bom_cache_service._upsert(bom_cache, pid, raw, changed=True)
-        return pid, (raw.get("product_uuid") if raw else None)
+        try:
+            return pid, sap_material_client.resolve_uuid(pid)
+        except SAPMaterialAuthError as e:
+            auth_error_seen[0] = True
+            logger.error(f"Deep UUID backfill: SAP rejected the direct Material lookup (missing authorization) - skipping it for the rest of this run: {e}")
+            return pid, None
+        except SAPMaterialError as e:
+            logger.warning(f"Deep UUID backfill: direct Material lookup failed for '{pid}': {e}")
+            return pid, None
 
     with ThreadPoolExecutor(max_workers=DEEP_BACKFILL_MAX_WORKERS) as executor:
         for pid, product_uuid in executor.map(fetch_one, target_ids):
@@ -228,14 +261,19 @@ def deep_backfill_uuids(db, sap_soap_client, progress_callback=None) -> dict:
             if progress_callback:
                 progress_callback(processed, total)
 
-    return {"total": total, "resolved": resolved, "still_missing": total - resolved}
+    return {
+        "total": total, "resolved": resolved, "still_missing": total - resolved,
+        "material_lookup_unauthorized": auth_error_seen[0],
+    }
 
 
 def _get_deep_backfill_targets(db) -> list:
     """Every product_id sitting in the current inventory snapshot that has
-    no product_uuid anywhere (component_master) AND has never been checked
-    at all (no entry in bom_node_cache, found or not) - i.e. genuinely
-    unresolved, not just "resolved to no cost" for some other reason."""
+    no product_uuid yet in component_master - regardless of whether it was
+    already checked in bom_node_cache before, since a previous "no BOM
+    found" result no longer means "unresolvable" now that the direct
+    Material lookup (step 2 in deep_backfill_uuids) doesn't depend on a BOM
+    relationship at all."""
     cached = get_cached_inventory(db)
     product_ids = [it["product_id"] for it in cached["items"]]
     if not product_ids:
@@ -245,8 +283,4 @@ def _get_deep_backfill_targets(db) -> list:
         doc["_id"]
         for doc in db["component_master"].find({"_id": {"$in": product_ids}, "product_uuid": {"$ne": None}}, {"_id": 1})
     }
-    already_checked = {
-        doc["_id"]
-        for doc in db[bom_cache_service.COLLECTION_NAME].find({"_id": {"$in": product_ids}}, {"_id": 1})
-    }
-    return [pid for pid in product_ids if pid not in has_uuid and pid not in already_checked]
+    return [pid for pid in product_ids if pid not in has_uuid]

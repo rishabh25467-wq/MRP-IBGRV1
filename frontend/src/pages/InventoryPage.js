@@ -486,13 +486,18 @@ export default function InventoryPage() {
                 Resolved <span className="font-bold">{backfillResult.resolved}</span> of{" "}
                 <span className="font-bold">{backfillResult.total}</span> previously-unlinked item(s).
               </p>
-              {backfillResult.still_missing > 0 && (
+              {backfillResult.material_lookup_unauthorized && (
+                <p className="text-xs text-[#B54708] bg-[#FFFAEB] border border-[#FEDF89] rounded-sm p-2" data-testid="inventory-deep-backfill-unauthorized-warning">
+                  SAP rejected the direct Material lookup (missing authorization for "QueryMaterialIn"). Ask your SAP admin to activate the "Query Materials" communication arrangement for our technical user, then run this again to resolve the remaining items.
+                </p>
+              )}
+              {!backfillResult.material_lookup_unauthorized && backfillResult.still_missing > 0 && (
                 <p className="text-xs text-[#98A2B3]">
-                  {backfillResult.still_missing} item(s) genuinely have no BOM/link in SAP (e.g. purchased raw materials never used as an ingredient) - these will keep showing "—" for value.
+                  {backfillResult.still_missing} item(s) still have no match in SAP at all - these will keep showing "—" for value.
                 </p>
               )}
               {backfillResult.total === 0 && (
-                <p className="text-xs text-[#98A2B3]">Every item already has a SAP link or has been checked before - nothing left to resolve.</p>
+                <p className="text-xs text-[#98A2B3]">Every item already has a SAP link - nothing left to resolve.</p>
               )}
               <p className="text-xs text-[#667085] font-sans">Inventory values have been refreshed automatically.</p>
             </div>

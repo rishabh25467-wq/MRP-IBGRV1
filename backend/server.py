@@ -13,6 +13,7 @@ from pymongo import MongoClient
 from starlette.middleware.cors import CORSMiddleware
 
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
+from sap_material_client import SAPMaterialClient, SAPMaterialError, SAPMaterialAuthError
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
@@ -39,6 +40,16 @@ db = mongo_client[os.environ['DB_NAME']]
 
 sap_soap_client = SAPSoapBOMClient(
     endpoint=os.environ['SAP_SOAP_ENDPOINT'],
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
+)
+
+# Direct Material ID -> UUID lookup (no BOM relationship required) - closes
+# the value-coverage gap that bom_node_cache-based resolution structurally
+# cannot (pure raw materials with no BOM anywhere). See sap_material_client
+# module docstring: NOT YET AUTHORIZED on the tenant as of this writing.
+sap_material_client = SAPMaterialClient(
+    endpoint=os.environ['SAP_SOAP_MATERIAL_ENDPOINT'],
     username=os.environ['SAP_SOAP_USERNAME'],
     password=os.environ['SAP_SOAP_PASSWORD'],
 )
@@ -475,6 +486,7 @@ class DeepBackfillResult(BaseModel):
     total: int
     resolved: int
     still_missing: int
+    material_lookup_unauthorized: bool = False
 
 
 class DeepBackfillJobStatus(BaseModel):
@@ -503,7 +515,7 @@ async def start_deep_backfill_uuids():
 
     async def run():
         try:
-            result = await asyncio.to_thread(deep_backfill_uuids, db, sap_soap_client, progress_callback)
+            result = await asyncio.to_thread(deep_backfill_uuids, db, sap_soap_client, sap_material_client, progress_callback)
         except Exception as e:
             logger.error(f"Deep UUID backfill failed: {e}")
             deep_backfill_jobs[job_id] = {
