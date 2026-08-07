@@ -198,6 +198,31 @@
 - P3: SAP Cost Retry Alert banner when the Standard Costs feed is unreachable, so 0.00/"-" isn't mistaken for real data
 - P3: Consider paginating/compressing the `GET /api/inventory` cached response server-side if the catalog grows well beyond ~3,200 items (currently 3-8s over the preview proxy, acceptable at current scale)
 
+## Feature: Direct Material-to-UUID Lookup (QueryMaterialIn) - Built, Pending SAP Authorization (Feb 2026, Session 8 cont'd)
+- User asked to build the direct SAP Material ID -> UUID lookup identified as the fix for the structural ceiling in value coverage (items with no BOM relationship anywhere, ~1,423 of 3,177).
+- Per integration rules, called `integration_playbook_expert_v2` before writing any code - got the exact SOAP request/response shape for SAP's `QueryMaterialIn` service (`MaterialByElementsQuery_sync` operation, namespace `http://sap.com/xi/SAPGlobal20/Global`).
+- **Tested live against the real tenant BEFORE building the full pipeline** (per "test feasibility first" discipline) - confirmed the service exists and is reachable, but the tenant technical user (`_EMERGENTBOM`) is NOT authorized: `Authorization role missing for service "QueryMaterialIn", operation "FindByElements"`. This requires SAP-admin action, not something fixable from code:
+  1. SAP admin: **Application and User Management → Communication Arrangements**
+  2. Activate the **"Query Materials"** communication scenario
+  3. Link it to the same technical user (`_EMERGENTBOM`) and authorize its business role for **QueryMaterialIn / FindByElements**
+- User chose to build the full pipeline now (code + caching) so it's ready to switch on the moment authorization is granted:
+  - New `sap_material_client.py` (`SAPMaterialClient.resolve_uuid()`, distinguishes `SAPMaterialAuthError` from generic `SAPMaterialError` via fault-string matching on "Authorization role missing")
+  - New `.env` var `SAP_SOAP_MATERIAL_ENDPOINT` (same tenant/creds, different SOAP path: `/sap/bc/srt/scs/sap/querymaterialin`)
+  - `inventory_service.deep_backfill_uuids()` extended to a 2-step resolution: step 1 = BOM-based (reuses cached product_uuid for free if already checked before - no re-lookup), step 2 = direct Material lookup for anything step 1 couldn't resolve. On the first `SAPMaterialAuthError`, sets a shared fail-fast flag so all remaining items in the batch skip step 2 immediately (no wasted retries on a guaranteed failure).
+  - `_get_deep_backfill_targets()` now includes previously-checked-but-unresolved items too (they get a second chance via the Material lookup path).
+  - `DeepBackfillResult.material_lookup_unauthorized` (bool) surfaces the auth-block state; `InventoryPage.js` shows a clear amber warning banner with the exact SAP-admin steps when true.
+- Verified live: job correctly processes ~1423 targets in seconds (fail-fast, not a multi-minute hang despite the tenant rejecting every Material lookup attempt), correctly flags `material_lookup_unauthorized: true`, and the free-reuse path works (resolved 1 item without any network call in an earlier verification pass).
+- Tested via testing_agent_v4 (iteration_31): 100% pass, no regressions.
+- **Status: code complete, blocked on SAP admin authorization grant.** Once granted, this should close most/all of the remaining ~23% value gap (toward the user's 99% target) with no further code changes needed - just re-run "Resolve Missing Values" on the Inventory page.
+
+## Backlog / Next Tasks (updated, Session 8 cont'd)
+- P0 (external, user-owned): Get SAP admin to authorize `_EMERGENTBOM` for the QueryMaterialIn/FindByElements operation (steps above) - then re-run "Resolve Missing Values" on the Inventory page to close the value gap
+- P2: Purchase Order Draft - click a Net Purchase Qty row to generate a ready-to-send PO draft for that component
+- P2: SAP Push History Log - audit trail (who/when/what) of every SAP write, stored in Mongo
+- P3: SAP Cost Retry Alert banner when the Standard Costs feed is unreachable, so 0.00/"-" isn't mistaken for real data
+- P3: Entity/company filter on Inventory page (Ray vs Radish - SAP already tags every row with CCO_UUID/company code)
+- P3: Consider paginating/compressing the `GET /api/inventory` cached response server-side if the catalog grows well beyond ~3,200 items
+
 ## Feature: Enhancements Round 2 (Feb 2026, Session 4)
 - Purchasing Plan Excel export (mirrors BOM Explorer's export pattern) - includes a Category column, plus a "Missing BOMs" sheet when applicable.
 - BOM Explorer tree: column sorting (Product ID / Quantity / Std Cost / Ext Cost, click to toggle asc/desc) + text search box that filters to matching branches (with ancestors) and highlights the matched substring.
