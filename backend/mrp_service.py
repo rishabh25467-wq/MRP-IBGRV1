@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 import bom_cache_service
 from bom_cache_service import BomFetchError
 from inventory_service import get_cached_inventory
+from purchasing_plan import get_part_overrides
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,57 @@ def _explode(item_code, sap_soap_client, db):
     except BomFetchError as e:
         logger.warning(f"MRP: BOM explosion failed for open-PO item '{item_code}': {e}")
         return None, True
+
+
+def _resolve_bom_for_item(item_code, sap_soap_client, db, overrides):
+    """Resolves one open-PO item_code to a SAP BOM, trying (1) a manually
+    saved override for this exact item_code, if any - shared with the
+    Purchasing Plan's "Fix Mapping" feature (part_id_overrides collection),
+    (2) the item_code itself directly. Returns (bom_or_none,
+    unresolved_entry_or_none) where unresolved_entry is {item_code, sap_id,
+    confidence, reason}."""
+    override = (overrides.get(item_code) or "").strip() if overrides else ""
+    candidates = ([override] if override else []) + [item_code]
+
+    bom_by_candidate = {}
+    fetch_failed = {}
+    for cid in candidates:
+        if cid not in bom_by_candidate:
+            bom_by_candidate[cid], fetch_failed[cid] = _explode(cid, sap_soap_client, db)
+
+    resolved_id = next((cid for cid in candidates if bom_by_candidate.get(cid)), None)
+    if resolved_id:
+        return bom_by_candidate[resolved_id], None
+
+    confidence = "fetch_error" if any(fetch_failed.get(cid) for cid in candidates) else "not_found"
+    reason = (
+        f"SAP lookup failed (connection issue) for: {', '.join(candidates)} - likely transient, safe to retry"
+        if confidence == "fetch_error"
+        else f"No SAP BOM found (tried: {', '.join(candidates)})"
+    )
+    return None, {"item_code": item_code, "sap_id": override or None, "confidence": confidence, "reason": reason}
+
+
+def retry_unresolved_items(item_codes: list, sap_soap_client, db, overrides: dict = None) -> list:
+    """Re-attempts BOM resolution for a subset of previously-unresolved
+    open-PO item codes (e.g. after a transient SAP timeout, or after the
+    user saved a corrected SAP ID via the MRP Plan's unresolved-items
+    table) without re-running the whole multi-minute MRP pipeline - same
+    pattern as purchasing_plan.retry_missing_boms. Returns [{item_code,
+    sap_id, resolved, confidence, reason}, ...]."""
+    overrides = overrides if overrides is not None else {}
+    results = []
+    for item_code in item_codes:
+        bom, missing = _resolve_bom_for_item(item_code, sap_soap_client, db, overrides)
+        if bom:
+            override = (overrides.get(item_code) or "").strip()
+            results.append({"item_code": item_code, "sap_id": override or None, "resolved": True, "confidence": None, "reason": None})
+        else:
+            results.append({
+                "item_code": item_code, "sap_id": missing.get("sap_id"), "resolved": False,
+                "confidence": missing["confidence"], "reason": missing["reason"],
+            })
+    return results
 
 
 def _offset_date(date_str: str, offset_days: float) -> str:
@@ -103,30 +155,18 @@ def build_mrp_plan(open_po_client, sap_soap_client, db, customer: str = None) ->
     rows = feed.get("rows", [])
 
     item_codes = sorted({r["item_code"] for r in rows if r.get("item_code")})
-
-    bom_by_id = {}
-    fetch_failed = {}
-    for item_code in item_codes:
-        bom_by_id[item_code], fetch_failed[item_code] = _explode(item_code, sap_soap_client, db)
+    overrides = get_part_overrides(db)
 
     leaves_by_item = {}
-    for item_code, bom in bom_by_id.items():
-        if not bom:
-            continue
-        leaves = {}
-        _collect_leaves(bom["tree"], leaves)
-        leaves_by_item[item_code] = leaves
-
     unresolved_items = []
     for item_code in item_codes:
-        if not leaves_by_item.get(item_code):
-            confidence = "fetch_error" if fetch_failed.get(item_code) else "not_found"
-            unresolved_items.append({
-                "item_code": item_code,
-                "confidence": confidence,
-                "reason": "SAP lookup failed - likely transient, safe to retry" if confidence == "fetch_error"
-                else "No SAP BOM found for this item",
-            })
+        bom, unresolved = _resolve_bom_for_item(item_code, sap_soap_client, db, overrides)
+        if bom:
+            leaves = {}
+            _collect_leaves(bom["tree"], leaves)
+            leaves_by_item[item_code] = leaves
+        else:
+            unresolved_items.append(unresolved)
     unresolved_items.sort(key=lambda u: u["item_code"])
 
     # Aggregate demand lines per leaf component.

@@ -726,6 +726,7 @@ class MrpComponent(BaseModel):
 
 class UnresolvedMrpItem(BaseModel):
     item_code: str
+    sap_id: Optional[str] = None
     confidence: str
     reason: str
 
@@ -777,6 +778,67 @@ async def mrp_plan_status(job_id: str):
         job_id=job_id, status=job["status"],
         result=MrpPlanResponse(**job["result"]) if job["result"] else None,
         error=job["error"],
+    )
+
+
+class RetryUnresolvedMrpRequest(BaseModel):
+    item_codes: List[str]
+
+
+class RetryUnresolvedMrpResult(BaseModel):
+    item_code: str
+    sap_id: Optional[str] = None
+    resolved: bool
+    confidence: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class RetryUnresolvedMrpResponse(BaseModel):
+    results: List[RetryUnresolvedMrpResult]
+
+
+@api_router.post("/production-plan/mrp/retry-unresolved", response_model=RetryUnresolvedMrpResponse)
+async def retry_unresolved_mrp_items(payload: RetryUnresolvedMrpRequest):
+    """Instantly re-checks a specific subset of previously-unresolved
+    open-PO item codes against live SAP - same pattern (and same
+    part_id_overrides collection) as the Purchasing Plan's "Retry Failed
+    Lookups"/"Fix Mapping" feature, so a correction saved on either page
+    benefits both."""
+    overrides = await asyncio.to_thread(get_part_overrides, db)
+    results = await asyncio.to_thread(mrp_service.retry_unresolved_items, payload.item_codes, sap_soap_client, db, overrides)
+    return RetryUnresolvedMrpResponse(results=results)
+
+
+class SetMrpPartOverrideRequest(BaseModel):
+    item_code: str
+    sap_id: str
+
+
+class SetMrpPartOverrideResponse(BaseModel):
+    item_code: str
+    sap_id: str
+    resolved: bool
+    confidence: Optional[str] = None
+    reason: Optional[str] = None
+
+
+@api_router.post("/production-plan/mrp/part-overrides", response_model=SetMrpPartOverrideResponse)
+async def set_mrp_part_override(payload: SetMrpPartOverrideRequest):
+    """Saves a manual open-PO-item-code -> SAP-Material-ID correction and
+    immediately retries that one item against live SAP. Shares the same
+    part_id_overrides collection as the Purchasing Plan page - a correction
+    saved here also fixes that item_code on the Purchasing Plan, and
+    vice-versa."""
+    item_code = payload.item_code.strip()
+    sap_id = payload.sap_id.strip()
+    if not item_code or not sap_id:
+        raise HTTPException(status_code=400, detail="item_code and sap_id are both required")
+
+    await asyncio.to_thread(save_part_override, db, item_code, sap_id)
+    result = (await asyncio.to_thread(mrp_service.retry_unresolved_items, [item_code], sap_soap_client, db, {item_code: sap_id}))[0]
+    return SetMrpPartOverrideResponse(
+        item_code=item_code, sap_id=sap_id, resolved=result["resolved"],
+        confidence=result.get("confidence"), reason=result.get("reason"),
     )
 
 

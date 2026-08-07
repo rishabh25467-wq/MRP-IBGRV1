@@ -570,6 +570,10 @@ const MrpPlanTab = () => {
   const [search, setSearch] = useState("");
   const [shortageOnly, setShortageOnly] = useState(false);
   const [sortConfig, setSortConfig] = useState({ field: "total_net_qty", direction: "desc" });
+  const [unresolvedOpen, setUnresolvedOpen] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [overrideInputs, setOverrideInputs] = useState({});
+  const [savingOverride, setSavingOverride] = useState({});
 
   const POLL_INTERVAL_MS = 3000;
   const MAX_POLL_MS = 15 * 60 * 1000;
@@ -653,6 +657,66 @@ const MrpPlanTab = () => {
   });
   const filteredTotalNet = sortedComponents.reduce((s, c) => s + c.total_net_qty, 0);
   const filteredTotalGross = sortedComponents.reduce((s, c) => s + c.total_gross_qty, 0);
+
+  const fetchErrorItemCodes = plan
+    ? plan.unresolved_items.filter((u) => u.confidence === "fetch_error").map((u) => u.item_code)
+    : [];
+
+  const retryFailedLookups = async () => {
+    if (fetchErrorItemCodes.length === 0) return;
+    setRetrying(true);
+    try {
+      const { data } = await axios.post(`${API}/production-plan/mrp/retry-unresolved`, { item_codes: fetchErrorItemCodes });
+      const resolvedNow = new Set(data.results.filter((r) => r.resolved).map((r) => r.item_code));
+      const updatedByItemCode = new Map(data.results.filter((r) => !r.resolved).map((r) => [r.item_code, r]));
+      setPlan((prev) => ({
+        ...prev,
+        unresolved_items: prev.unresolved_items
+          .filter((u) => !resolvedNow.has(u.item_code))
+          .map((u) => {
+            const updated = updatedByItemCode.get(u.item_code);
+            return updated ? { ...u, sap_id: updated.sap_id, confidence: updated.confidence, reason: updated.reason } : u;
+          }),
+      }));
+      if (resolvedNow.size > 0) {
+        toast.success(`${resolvedNow.size} item${resolvedNow.size === 1 ? "" : "s"} now resolved in SAP`, {
+          description: "Regenerate the MRP plan to include them in the totals.",
+        });
+      } else {
+        toast.info("Still unreachable", { description: "Those items couldn't be reached in SAP just now - try again shortly." });
+      }
+    } catch (err) {
+      toast.error("Retry failed", { description: err?.response?.data?.detail || err.message || "Could not reach the server" });
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  const saveOverride = async (itemCode) => {
+    const sapId = (overrideInputs[itemCode] || "").trim();
+    if (!sapId) return;
+    setSavingOverride((prev) => ({ ...prev, [itemCode]: true }));
+    try {
+      const { data } = await axios.post(`${API}/production-plan/mrp/part-overrides`, { item_code: itemCode, sap_id: sapId });
+      if (data.resolved) {
+        setPlan((prev) => ({ ...prev, unresolved_items: prev.unresolved_items.filter((u) => u.item_code !== itemCode) }));
+        toast.success(`${itemCode} resolved to ${sapId} in SAP`, { description: "Regenerate the MRP plan to include it in the totals." });
+      } else {
+        setPlan((prev) => ({
+          ...prev,
+          unresolved_items: prev.unresolved_items.map((u) =>
+            u.item_code === itemCode ? { ...u, sap_id: sapId, confidence: data.confidence, reason: data.reason } : u
+          ),
+        }));
+        toast.error(`${sapId} still not resolvable in SAP`, { description: data.reason });
+      }
+      setOverrideInputs((prev) => ({ ...prev, [itemCode]: "" }));
+    } catch (err) {
+      toast.error("Failed to save override", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setSavingOverride((prev) => ({ ...prev, [itemCode]: false }));
+    }
+  };
 
   const mrpColumns = [
     { label: "Product ID", field: "product_id" },
@@ -754,14 +818,99 @@ const MrpPlanTab = () => {
       )}
 
       {plan && plan.unresolved_items.length > 0 && (
-        <div className="mb-3 bg-[#FFFAEB] border border-[#FEDF89] rounded-sm p-2.5" data-testid="mrp-unresolved-items-section">
-          <span className="inline-flex items-center gap-2 font-heading text-xs font-bold text-[#B54708]">
-            <WarningCircle size={15} weight="fill" />
-            {plan.unresolved_items.length} open-PO item{plan.unresolved_items.length === 1 ? "" : "s"} could not be mapped to a SAP BOM - excluded
-          </span>
-          <div className="mt-1.5 text-xs text-[#7A4504]">
-            {plan.unresolved_items.map((u) => `${u.item_code} (${u.reason})`).join(" · ")}
+        <div className="mb-3 bg-[#FFFAEB] border border-[#FEDF89] rounded-sm" data-testid="mrp-unresolved-items-section">
+          <div className="w-full flex items-center gap-2 p-2.5">
+            <button
+              type="button"
+              onClick={() => setUnresolvedOpen((v) => !v)}
+              className="flex-1 flex items-center gap-2 text-left"
+              data-testid="mrp-unresolved-toggle"
+            >
+              {unresolvedOpen ? (
+                <CaretDown size={13} weight="bold" className="text-[#B54708]" />
+              ) : (
+                <CaretRight size={13} weight="bold" className="text-[#B54708]" />
+              )}
+              <WarningCircle size={15} weight="fill" className="text-[#B54708]" />
+              <span className="font-heading text-xs font-bold text-[#B54708]">
+                {plan.unresolved_items.length} open-PO item{plan.unresolved_items.length === 1 ? "" : "s"} could not be mapped to a SAP BOM - excluded from this plan
+              </span>
+            </button>
+            {fetchErrorItemCodes.length > 0 && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={retryFailedLookups}
+                disabled={retrying}
+                className="h-7 text-xs rounded-sm border-[#B54708]/40 text-[#B54708] hover:bg-[#FEF0C7] shrink-0"
+                data-testid="mrp-retry-failed-lookups-button"
+              >
+                <ArrowClockwise size={12} className={`mr-1.5 ${retrying ? "animate-spin" : ""}`} />
+                {retrying ? "Retrying..." : `Retry Failed Lookups (${fetchErrorItemCodes.length})`}
+              </Button>
+            )}
           </div>
+          {unresolvedOpen && (
+            <div className="border-t border-[#FEDF89] max-h-64 overflow-auto">
+              <table className="w-full text-[13px]" data-testid="mrp-unresolved-table">
+                <thead>
+                  <tr className="bg-[#FFF7E0]">
+                    <th className="text-left px-2.5 py-1 font-heading text-xs font-bold text-[#B54708] uppercase">Status</th>
+                    <th className="text-left px-2.5 py-1 font-heading text-xs font-bold text-[#B54708] uppercase">Item Code</th>
+                    <th className="text-left px-2.5 py-1 font-heading text-xs font-bold text-[#B54708] uppercase">Mapped SAP ID</th>
+                    <th className="text-left px-2.5 py-1 font-heading text-xs font-bold text-[#B54708] uppercase">Reason</th>
+                    <th className="text-left px-2.5 py-1 font-heading text-xs font-bold text-[#B54708] uppercase">Fix Mapping</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {plan.unresolved_items.map((u, i) => (
+                    <tr key={u.item_code} className="border-t border-[#FEDF89]/60" data-testid={`mrp-unresolved-row-${i}`}>
+                      <td className="px-2.5 py-1" data-testid={`mrp-unresolved-confidence-${i}`}>
+                        {u.confidence === "fetch_error" ? (
+                          <span className="inline-flex items-center gap-1 text-[#B54708]" title="SAP was unreachable - likely transient, safe to retry">
+                            <ArrowClockwise size={12} weight="bold" />
+                            Unresolved (retry)
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-[#7A4504]" title="SAP confirmed this item has no BOM">
+                            <XCircle size={12} weight="bold" />
+                            Confirmed no BOM
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-2.5 py-1 text-[#7A4504] font-medium">{u.item_code}</td>
+                      <td className="px-2.5 py-1 text-[#7A4504]">{u.sap_id || "—"}</td>
+                      <td className="px-2.5 py-1 text-[#7A4504]">{u.reason}</td>
+                      <td className="px-2.5 py-1">
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="text"
+                            placeholder="Correct SAP ID..."
+                            value={overrideInputs[u.item_code] || ""}
+                            onChange={(e) => setOverrideInputs((prev) => ({ ...prev, [u.item_code]: e.target.value }))}
+                            onKeyDown={(e) => e.key === "Enter" && saveOverride(u.item_code)}
+                            disabled={savingOverride[u.item_code]}
+                            className="h-7 w-32 px-1.5 text-[12px] rounded-sm border border-[#FEDF89] text-[#101828] focus:outline-none focus:border-[#B54708] focus:ring-1 focus:ring-[#B54708]"
+                            data-testid={`mrp-unresolved-override-input-${i}`}
+                          />
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => saveOverride(u.item_code)}
+                            disabled={savingOverride[u.item_code] || !(overrideInputs[u.item_code] || "").trim()}
+                            className="h-7 text-xs rounded-sm border-[#B54708]/40 text-[#B54708] hover:bg-[#FEF0C7] shrink-0"
+                            data-testid={`mrp-unresolved-override-save-${i}`}
+                          >
+                            {savingOverride[u.item_code] ? "Saving..." : "Save & Retry"}
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
