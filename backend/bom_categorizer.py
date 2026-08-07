@@ -1,14 +1,16 @@
 """AI-based BOM component categorization using GPT-5.4, persisted forever.
 
 Classifies each BOM leaf component (by product ID + description) into a
-broad material/type category (Raw Material, Hardware, Plastic, Packaging,
-Zinc, Copper Alloy, etc.). Every result is written to the `component_master`
-Mongo collection and read back on every subsequent call instead of asking
-the AI again - this is what makes categories CONSISTENT across BOM loads and
-Purchasing Plan runs (previously, every run re-asked the AI fresh, so the
-same borderline item like an RFID tag could land in a different category
-each time depending on non-determinism and which other items it was batched
-with). A human correction saved via the Admin > Component Master page
+broad material/type category, chosen from a taxonomy stored in the
+`category_master` Mongo collection (seeded from DEFAULT_CATEGORIES, growable
+via the Admin > Component Master page's "+ Add Category" - see
+get_categories/add_category). Every classification result is written to the
+`component_master` Mongo collection and read back on every subsequent call
+instead of asking the AI again - this is what makes categories CONSISTENT
+across BOM loads and Purchasing Plan runs (previously, every run re-asked
+the AI fresh, so the same borderline item like an RFID tag could land in a
+different category each time depending on non-determinism and which other
+items it was batched with). A human correction saved via the Admin page
 (category_source="manual") is never overwritten by this module - only the
 Admin page's own "Re-Categorise" action can force a fresh AI pass on an item.
 """
@@ -24,35 +26,67 @@ logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 80
 MODEL = "gpt-5.4"
+CATEGORY_COLLECTION = "category_master"
 
-SUGGESTED_CATEGORIES = [
+DEFAULT_CATEGORIES = [
     "Raw Material", "Hardware", "Plastic", "Sheet Metal",
     "Zinc", "Copper Alloy", "Aluminum", "Steel", "Stainless Steel",
     "Rubber/Elastomer", "Electronics", "Packaging", "Stationery",
     "Adhesive", "Label/Printing", "Sub-Assembly", "Other",
 ]
 
-SYSTEM_MESSAGE = (
-    "You are an expert manufacturing engineer who classifies Bill of Materials (BOM) "
-    "line items into a single, concise material/type category based on their Product ID "
-    "and Description. You MUST choose from EXACTLY this list of categories - do not invent "
-    f"new ones, do not rename them, reuse the exact spelling: {', '.join(SUGGESTED_CATEGORIES)}. "
-    "Only use 'Other' if truly nothing else is a reasonable fit.\n\n"
-    "DISAMBIGUATION RULES (apply these before general judgment):\n"
-    "- Any screw, washer, nut, bolt, rivet, or threaded fastener -> ALWAYS 'Hardware', never a "
-    "separate 'Fastener' category.\n"
-    "- Spacers, standoffs, bushings, and grommets are NOT fasteners even though they sound "
-    "mechanical - classify them by their actual material (usually 'Plastic' unless the "
-    "description explicitly says metal/steel/aluminum/zinc, in which case use that metal "
-    "category). Do NOT default them to 'Hardware'.\n"
-    "- RFID tags, RFID labels, chips, sensors, and any embedded electronic component -> ALWAYS "
-    "'Electronics', even if the item also has a printed label/adhesive component. Do not use "
-    "'Label/Printing' for anything with 'RFID' in its description.\n"
-    "- Plain printed labels, stickers, tags, or barcode labels WITHOUT any electronic component "
-    "-> 'Label/Printing'.\n\n"
-    "Respond with ONLY a valid JSON object mapping each product_id to its category string, "
-    "no markdown, no explanation."
-)
+
+def get_categories(db) -> list[str]:
+    """The current category taxonomy - seeded once from DEFAULT_CATEGORIES,
+    then whatever's been added since via the Admin > Component Master page's
+    "+ Add Category". Every AI categorization call is constrained to
+    EXACTLY this (possibly since-grown) list, so a category added today is
+    available to both manual selection AND future AI classification."""
+    collection = db[CATEGORY_COLLECTION]
+    if collection.count_documents({}) == 0:
+        now = datetime.now(timezone.utc)
+        collection.insert_many([{"_id": cat, "source": "default", "created_at": now} for cat in DEFAULT_CATEGORIES])
+    return [doc["_id"] for doc in collection.find({}).sort("_id", 1)]
+
+
+def add_category(db, name: str) -> list[str]:
+    """Adds a new category to the master taxonomy (case-insensitive
+    duplicate check - if 'plastic' already exists, adding 'Plastic' is a
+    no-op that just returns the existing list unchanged). Returns the full,
+    updated category list."""
+    name = name.strip()
+    if not name:
+        return get_categories(db)
+    collection = db[CATEGORY_COLLECTION]
+    existing = get_categories(db)
+    if name.lower() in {c.lower() for c in existing}:
+        return existing
+    collection.insert_one({"_id": name, "source": "manual", "created_at": datetime.now(timezone.utc)})
+    return get_categories(db)
+
+
+def _build_system_message(categories: list[str]) -> str:
+    return (
+        "You are an expert manufacturing engineer who classifies Bill of Materials (BOM) "
+        "line items into a single, concise material/type category based on their Product ID "
+        "and Description. You MUST choose from EXACTLY this list of categories - do not invent "
+        f"new ones, do not rename them, reuse the exact spelling: {', '.join(categories)}. "
+        "Only use 'Other' if truly nothing else is a reasonable fit.\n\n"
+        "DISAMBIGUATION RULES (apply these before general judgment):\n"
+        "- Any screw, washer, nut, bolt, rivet, or threaded fastener -> ALWAYS 'Hardware', never a "
+        "separate 'Fastener' category.\n"
+        "- Spacers, standoffs, bushings, and grommets are NOT fasteners even though they sound "
+        "mechanical - classify them by their actual material (usually 'Plastic' unless the "
+        "description explicitly says metal/steel/aluminum/zinc, in which case use that metal "
+        "category). Do NOT default them to 'Hardware'.\n"
+        "- RFID tags, RFID labels, chips, sensors, and any embedded electronic component -> ALWAYS "
+        "'Electronics', even if the item also has a printed label/adhesive component. Do not use "
+        "'Label/Printing' for anything with 'RFID' in its description.\n"
+        "- Plain printed labels, stickers, tags, or barcode labels WITHOUT any electronic component "
+        "-> 'Label/Printing'.\n\n"
+        "Respond with ONLY a valid JSON object mapping each product_id to its category string, "
+        "no markdown, no explanation."
+    )
 
 
 def _extract_json(text: str) -> dict:
@@ -67,11 +101,13 @@ class BomCategorizerError(Exception):
     pass
 
 
-async def _ai_categorize(items: list[dict]) -> dict:
+async def _ai_categorize(items: list[dict], categories: list[str]) -> dict:
     """items: [{"product_id": str, "description": str | None}, ...] (already
-    deduplicated by caller). Returns {product_id: category}. Raises
-    BomCategorizerError on any AI/parsing failure."""
+    deduplicated by caller). categories: the current taxonomy (get_categories).
+    Returns {product_id: category}. Raises BomCategorizerError on any
+    AI/parsing failure."""
     api_key = os.environ["EMERGENT_LLM_KEY"]
+    system_message = _build_system_message(categories)
     results = {}
     for i in range(0, len(items), BATCH_SIZE):
         batch = items[i:i + BATCH_SIZE]
@@ -84,7 +120,7 @@ async def _ai_categorize(items: list[dict]) -> dict:
         chat = LlmChat(
             api_key=api_key,
             session_id=f"bom-categorize-{i}",
-            system_message=SYSTEM_MESSAGE,
+            system_message=system_message,
         ).with_model("openai", MODEL)
 
         try:
@@ -139,7 +175,8 @@ async def categorize_items(items: list[dict], db) -> dict:
     if not to_categorize:
         return results
 
-    ai_results = await _ai_categorize(to_categorize)
+    categories = get_categories(db)
+    ai_results = await _ai_categorize(to_categorize, categories)
     now = datetime.now(timezone.utc)
     for product_id, category in ai_results.items():
         collection.update_one(

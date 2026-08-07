@@ -1,4 +1,4 @@
-import { useState, Fragment } from "react";
+import { useState, useEffect, Fragment } from "react";
 import "@/App.css";
 import axios from "axios";
 import * as XLSX from "xlsx";
@@ -17,6 +17,8 @@ import {
   ArrowsInSimple,
   ArrowClockwise,
   XCircle,
+  MagnifyingGlass,
+  ChartBar,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -24,6 +26,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { NavTabs } from "@/components/NavTabs";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -127,6 +130,15 @@ export default function PurchasingPlanPage() {
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [sortConfig, setSortConfig] = useState({ field: null, direction: "asc" });
   const [retrying, setRetrying] = useState(false);
+  const [salesPlanOpen, setSalesPlanOpen] = useState(false);
+  const [salesPlanMonth, setSalesPlanMonth] = useState(getDefaultMonth());
+  const [salesPlanItems, setSalesPlanItems] = useState([]);
+  const [salesPlanLoading, setSalesPlanLoading] = useState(false);
+  const [salesPlanError, setSalesPlanError] = useState(null);
+  const [salesPlanSearch, setSalesPlanSearch] = useState("");
+  const [expandedSalesPlanRows, setExpandedSalesPlanRows] = useState(new Set());
+  const [overrideInputs, setOverrideInputs] = useState({});
+  const [savingOverride, setSavingOverride] = useState({});
 
   const toggleCategoryCollapse = (category) => {
     setCollapsedCategories((prev) => {
@@ -193,6 +205,39 @@ export default function PurchasingPlanPage() {
     }
   };
 
+  const loadSalesPlan = async (month) => {
+    setSalesPlanLoading(true);
+    setSalesPlanError(null);
+    try {
+      const { data } = await axios.get(`${API}/sales-plan`, { params: { month } });
+      setSalesPlanItems(data.items);
+    } catch (err) {
+      setSalesPlanError(err?.response?.data?.detail || err.message || "Failed to load sales plan");
+    } finally {
+      setSalesPlanLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (salesPlanOpen) {
+      loadSalesPlan(salesPlanMonth);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [salesPlanOpen, salesPlanMonth]);
+
+  const toggleSalesPlanRow = (partNo) => {
+    setExpandedSalesPlanRows((prev) => {
+      const next = new Set(prev);
+      next.has(partNo) ? next.delete(partNo) : next.add(partNo);
+      return next;
+    });
+  };
+
+  const filteredSalesPlanItems = salesPlanItems.filter((it) => {
+    const q = salesPlanSearch.trim().toLowerCase();
+    return !q || it.part_no.toLowerCase().includes(q) || (it.description || "").toLowerCase().includes(q);
+  });
+
   const months = plan?.months || [];
   const currency = plan?.components?.find((c) => c.currency)?.currency || "";
   const fetchErrorPartNos = plan
@@ -226,6 +271,39 @@ export default function PurchasingPlanPage() {
       toast.error("Retry failed", { description: err?.response?.data?.detail || err.message || "Could not reach the server" });
     } finally {
       setRetrying(false);
+    }
+  };
+
+  const saveOverride = async (partNo) => {
+    const sapId = (overrideInputs[partNo] || "").trim();
+    if (!sapId) return;
+    setSavingOverride((prev) => ({ ...prev, [partNo]: true }));
+    try {
+      const { data } = await axios.post(`${API}/purchasing-plan/part-overrides`, { part_no: partNo, sap_id: sapId });
+      if (data.resolved) {
+        setPlan((prev) => ({
+          ...prev,
+          missing_boms: prev.missing_boms.filter((mb) => mb.part_no !== partNo),
+        }));
+        toast.success(`${partNo} resolved to ${sapId} in SAP`, {
+          description: "Regenerate the plan to include it in the totals.",
+        });
+      } else {
+        setPlan((prev) => ({
+          ...prev,
+          missing_boms: prev.missing_boms.map((mb) =>
+            mb.part_no === partNo
+              ? { ...mb, sap_id: sapId, confidence: data.confidence, reason: data.reason }
+              : mb
+          ),
+        }));
+        toast.error(`${sapId} still not resolvable in SAP`, { description: data.reason });
+      }
+      setOverrideInputs((prev) => ({ ...prev, [partNo]: "" }));
+    } catch (err) {
+      toast.error("Failed to save override", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setSavingOverride((prev) => ({ ...prev, [partNo]: false }));
     }
   };
 
@@ -338,6 +416,16 @@ export default function PurchasingPlanPage() {
         >
           <ShoppingCartSimple size={14} className="mr-1.5" />
           {loading ? `Generating... (${elapsedSeconds}s)` : plan ? "Regenerate Purchasing Plan" : "Generate Purchasing Plan"}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => setSalesPlanOpen(true)}
+          className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
+          data-testid="sales-plan-lookup-button"
+        >
+          <ChartBar size={14} className="mr-1.5" />
+          Sales Plan Lookup
         </Button>
         {plan && (
           <Badge
@@ -545,6 +633,9 @@ export default function PurchasingPlanPage() {
                       <th className="text-left px-2.5 py-1 font-heading text-xs font-bold text-[#B54708] uppercase">
                         Reason
                       </th>
+                      <th className="text-left px-2.5 py-1 font-heading text-xs font-bold text-[#B54708] uppercase">
+                        Fix Mapping
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -566,6 +657,30 @@ export default function PurchasingPlanPage() {
                         <td className="px-2.5 py-1 text-[#7A4504] font-medium">{mb.part_no}</td>
                         <td className="px-2.5 py-1 text-[#7A4504]">{mb.sap_id || "—"}</td>
                         <td className="px-2.5 py-1 text-[#7A4504]">{mb.reason}</td>
+                        <td className="px-2.5 py-1">
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="text"
+                              placeholder="Correct SAP ID..."
+                              value={overrideInputs[mb.part_no] || ""}
+                              onChange={(e) => setOverrideInputs((prev) => ({ ...prev, [mb.part_no]: e.target.value }))}
+                              onKeyDown={(e) => e.key === "Enter" && saveOverride(mb.part_no)}
+                              disabled={savingOverride[mb.part_no]}
+                              className="h-7 w-32 px-1.5 text-[12px] rounded-sm border border-[#FEDF89] text-[#101828] focus:outline-none focus:border-[#B54708] focus:ring-1 focus:ring-[#B54708]"
+                              data-testid={`missing-bom-override-input-${i}`}
+                            />
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => saveOverride(mb.part_no)}
+                              disabled={savingOverride[mb.part_no] || !(overrideInputs[mb.part_no] || "").trim()}
+                              className="h-7 text-xs rounded-sm border-[#B54708]/40 text-[#B54708] hover:bg-[#FEF0C7] shrink-0"
+                              data-testid={`missing-bom-override-save-${i}`}
+                            >
+                              {savingOverride[mb.part_no] ? "Saving..." : "Save & Retry"}
+                            </Button>
+                          </div>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -888,6 +1003,116 @@ export default function PurchasingPlanPage() {
           </div>
         )}
       </main>
+
+      <Dialog open={salesPlanOpen} onOpenChange={setSalesPlanOpen}>
+        <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col" data-testid="sales-plan-dialog">
+          <DialogHeader>
+            <DialogTitle className="font-heading text-base">Sales Plan Lookup (from OMS)</DialogTitle>
+          </DialogHeader>
+          <div className="flex items-center gap-3 flex-wrap shrink-0">
+            <div className="flex items-center gap-1.5">
+              <label htmlFor="sales-plan-month-picker" className="font-heading text-xs font-bold text-[#475467] uppercase">
+                Month
+              </label>
+              <input
+                id="sales-plan-month-picker"
+                type="month"
+                value={salesPlanMonth}
+                onChange={(e) => setSalesPlanMonth(e.target.value)}
+                className="h-8 px-2 text-[13px] rounded-sm border border-[#D0D5DD] text-[#101828] focus:outline-none focus:border-[#004B87] focus:ring-1 focus:ring-[#004B87]"
+                data-testid="sales-plan-month-picker"
+              />
+            </div>
+            <div className="relative flex-1 min-w-[180px]">
+              <MagnifyingGlass size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
+              <input
+                type="text"
+                placeholder="Search part number or description..."
+                value={salesPlanSearch}
+                onChange={(e) => setSalesPlanSearch(e.target.value)}
+                className="h-8 w-full pl-7 pr-2 text-[13px] rounded-sm border border-[#D0D5DD] text-[#101828] focus:outline-none focus:border-[#004B87] focus:ring-1 focus:ring-[#004B87]"
+                data-testid="sales-plan-search-input"
+              />
+            </div>
+            <span className="text-xs text-[#475467] font-sans" data-testid="sales-plan-item-count">
+              {filteredSalesPlanItems.length} of {salesPlanItems.length} items
+            </span>
+          </div>
+
+          <div className="flex-1 overflow-auto border border-[#D0D5DD] rounded-sm" data-testid="sales-plan-table-container">
+            {salesPlanLoading ? (
+              <div className="flex items-center justify-center py-16 text-[#475467] text-sm">
+                <ArrowClockwise size={16} className="animate-spin mr-2" />
+                Loading sales plan for {formatMonth(salesPlanMonth)}...
+              </div>
+            ) : salesPlanError ? (
+              <div className="flex items-center justify-center py-16 text-[#B54708] text-sm px-4 text-center" data-testid="sales-plan-error">
+                {salesPlanError}
+              </div>
+            ) : (
+              <table className="w-full text-[13px] border-collapse">
+                <thead className="sticky top-0">
+                  <tr>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 w-6"></th>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">
+                      Part No
+                    </th>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">
+                      Description
+                    </th>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase">
+                      Total Planned Qty
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredSalesPlanItems.map((it, i) => {
+                    const isExpanded = expandedSalesPlanRows.has(it.part_no);
+                    return (
+                      <Fragment key={it.part_no}>
+                        <tr
+                          className={`${i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} hover:bg-[#F0F4F8] cursor-pointer transition-colors duration-150`}
+                          onClick={() => toggleSalesPlanRow(it.part_no)}
+                          data-testid={`sales-plan-row-${it.part_no}`}
+                        >
+                          <td className="border border-[#D0D5DD] px-1.5 py-1 text-center text-[#667085]">
+                            {it.customers.length > 0 &&
+                              (isExpanded ? <CaretDown size={11} weight="bold" /> : <CaretRight size={11} weight="bold" />)}
+                          </td>
+                          <td className="border border-[#D0D5DD] px-2 py-1 font-medium text-[#101828]">{it.part_no}</td>
+                          <td className="border border-[#D0D5DD] px-2 py-1 text-[#101828]">{it.description || "—"}</td>
+                          <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums font-bold text-[#101828]" data-testid={`sales-plan-total-qty-${it.part_no}`}>
+                            {formatQty(it.total_qty)}
+                          </td>
+                        </tr>
+                        {isExpanded &&
+                          it.customers.map((cust) => (
+                            <tr key={`${it.part_no}-${cust.customer_name}`} className="bg-[#F5FAFF]" data-testid={`sales-plan-customer-row-${it.part_no}`}>
+                              <td className="border border-[#D0D5DD]"></td>
+                              <td className="border border-[#D0D5DD] px-2 py-1 pl-6 text-[#475467] text-xs" colSpan={2}>
+                                {cust.customer_name}
+                              </td>
+                              <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467] text-xs">
+                                {formatQty(cust.qty)}
+                              </td>
+                            </tr>
+                          ))}
+                      </Fragment>
+                    );
+                  })}
+                  {!salesPlanLoading && filteredSalesPlanItems.length === 0 && (
+                    <tr>
+                      <td colSpan={4} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="sales-plan-no-items">
+                        No sales plan items found for {formatMonth(salesPlanMonth)}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

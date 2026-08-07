@@ -103,3 +103,44 @@ class OMSClient:
                 if part_no:
                     demand[part_no] = demand.get(part_no, 0) + qty
         return demand
+
+    def get_sales_plan(self, month: str) -> list:
+        """Full sales plan for a 'YYYY-MM' month - the same underlying
+        forecast get_monthly_demand() aggregates, but returned per part with
+        a per-customer breakdown instead of collapsed into a single number.
+        Backs the Purchasing Plan page's "Sales Plan Lookup" popup. Returns
+        [{part_no, description, total_qty, customers: [{customer_name, qty}]}]
+        sorted by part_no, each part's customers sorted by qty descending."""
+        customers = self.get_customers(month)
+
+        def fetch(customer_name):
+            try:
+                return customer_name, self.get_parts(month, customer_name)
+            except OMSError as e:
+                logger.warning(f"Failed to fetch OMS parts for '{customer_name}' in {month}: {e}")
+                return customer_name, []
+
+        names = [c["customer_name"] for c in customers if c.get("customer_name")]
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(fetch, names))
+
+        by_part = {}
+        for customer_name, parts in results:
+            for part in parts:
+                part_no = part.get("part_no")
+                qty = part.get("planned_qty") or 0
+                if not part_no:
+                    continue
+                entry = by_part.setdefault(part_no, {
+                    "part_no": part_no,
+                    "description": part.get("name"),
+                    "total_qty": 0.0,
+                    "customers": [],
+                })
+                entry["total_qty"] += qty
+                if qty:
+                    entry["customers"].append({"customer_name": customer_name, "qty": qty})
+
+        for entry in by_part.values():
+            entry["customers"].sort(key=lambda c: -c["qty"])
+        return sorted(by_part.values(), key=lambda e: e["part_no"])

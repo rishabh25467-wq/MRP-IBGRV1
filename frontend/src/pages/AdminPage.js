@@ -8,16 +8,20 @@ import {
   SortAscending,
   SortDescending,
   Sparkle,
+  Plus,
+  Tag,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Toaster, toast } from "@/components/ui/sonner";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectSeparator } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { NavTabs } from "@/components/NavTabs";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+const ADD_NEW_CATEGORY_VALUE = "__add_new_category__";
 
 const formatDate = (iso) => (iso ? new Date(iso).toLocaleString() : "—");
 
@@ -32,6 +36,10 @@ export default function AdminPage() {
   const [mslInputs, setMslInputs] = useState({});
   const [recategorizing, setRecategorizing] = useState(false);
   const [sortConfig, setSortConfig] = useState({ field: "product_id", direction: "asc" });
+  const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
+  const [pendingRowForNewCategory, setPendingRowForNewCategory] = useState(null);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [addingCategory, setAddingCategory] = useState(false);
 
   const loadComponents = async () => {
     setLoading(true);
@@ -68,6 +76,43 @@ export default function AdminPage() {
       toast.error("Could not save category", { description: err?.response?.data?.detail || err.message });
     } finally {
       markSaving(productId, false);
+    }
+  };
+
+  const handleCategorySelect = (productId, value) => {
+    if (value === ADD_NEW_CATEGORY_VALUE) {
+      setPendingRowForNewCategory(productId);
+      setNewCategoryName("");
+      setCategoryDialogOpen(true);
+      return;
+    }
+    updateCategory(productId, value);
+  };
+
+  const openCategoryManager = () => {
+    setPendingRowForNewCategory(null);
+    setNewCategoryName("");
+    setCategoryDialogOpen(true);
+  };
+
+  const submitNewCategory = async () => {
+    const name = newCategoryName.trim();
+    if (!name) return;
+    setAddingCategory(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/categories`, { name });
+      setCategoriesTaxonomy(data.categories);
+      toast.success(`Category "${name}" added`);
+      if (pendingRowForNewCategory) {
+        await updateCategory(pendingRowForNewCategory, name);
+        setCategoryDialogOpen(false);
+      }
+      setNewCategoryName("");
+      setPendingRowForNewCategory(null);
+    } catch (err) {
+      toast.error("Could not add category", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setAddingCategory(false);
     }
   };
 
@@ -228,6 +273,16 @@ export default function AdminPage() {
         </Button>
         <Button
           type="button"
+          variant="outline"
+          onClick={openCategoryManager}
+          className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
+          data-testid="admin-manage-categories-button"
+        >
+          <Tag size={13} className="mr-1.5" />
+          Manage Categories ({categoriesTaxonomy.length})
+        </Button>
+        <Button
+          type="button"
           onClick={recategorizeSelected}
           disabled={selected.size === 0 || recategorizing}
           className="h-8 bg-[#004B87] hover:bg-[#003A6A] text-white text-xs rounded-sm"
@@ -313,7 +368,7 @@ export default function AdminPage() {
                   <td className="border border-[#D0D5DD] px-2 py-1">
                     <Select
                       value={it.category || "__none__"}
-                      onValueChange={(val) => updateCategory(it.product_id, val)}
+                      onValueChange={(val) => handleCategorySelect(it.product_id, val)}
                       disabled={savingIds.has(it.product_id)}
                     >
                       <SelectTrigger className="h-7 text-xs rounded-sm border-[#D0D5DD]" data-testid={`admin-category-select-${it.product_id}`}>
@@ -325,6 +380,13 @@ export default function AdminPage() {
                             {cat}
                           </SelectItem>
                         ))}
+                        <SelectSeparator />
+                        <SelectItem value={ADD_NEW_CATEGORY_VALUE} data-testid={`admin-add-category-option-${it.product_id}`}>
+                          <span className="inline-flex items-center gap-1 text-[#004B87]">
+                            <Plus size={11} weight="bold" />
+                            Add New Category...
+                          </span>
+                        </SelectItem>
                       </SelectContent>
                     </Select>
                   </td>
@@ -374,6 +436,54 @@ export default function AdminPage() {
           </table>
         </div>
       </main>
+
+      <Dialog
+        open={categoryDialogOpen}
+        onOpenChange={(open) => {
+          setCategoryDialogOpen(open);
+          if (!open) setPendingRowForNewCategory(null);
+        }}
+      >
+        <DialogContent className="max-w-md" data-testid="manage-categories-dialog">
+          <DialogHeader>
+            <DialogTitle className="font-heading text-base">
+              {pendingRowForNewCategory ? `Add New Category for ${pendingRowForNewCategory}` : "Manage Categories"}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-wrap gap-1.5 max-h-40 overflow-auto" data-testid="manage-categories-list">
+            {categoriesTaxonomy.map((cat) => (
+              <Badge key={cat} variant="outline" className="bg-[#F9FAFB] text-[#344054] border-[#D0D5DD] rounded text-xs">
+                {cat}
+              </Badge>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              placeholder="New category name..."
+              value={newCategoryName}
+              onChange={(e) => setNewCategoryName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submitNewCategory()}
+              className="h-8 flex-1 px-2 text-[13px] rounded-sm border border-[#D0D5DD] text-[#101828] focus:outline-none focus:border-[#004B87] focus:ring-1 focus:ring-[#004B87]"
+              data-testid="new-category-name-input"
+              autoFocus
+            />
+            <Button
+              type="button"
+              onClick={submitNewCategory}
+              disabled={!newCategoryName.trim() || addingCategory}
+              className="h-8 bg-[#004B87] hover:bg-[#003A6A] text-white text-xs rounded-sm shrink-0"
+              data-testid="submit-new-category-button"
+            >
+              <Plus size={13} className="mr-1" />
+              {addingCategory ? "Adding..." : pendingRowForNewCategory ? "Add & Apply" : "Add Category"}
+            </Button>
+          </div>
+          <p className="text-xs text-[#667085] font-sans">
+            New categories are immediately available for manual selection and future AI categorization.
+          </p>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

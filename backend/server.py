@@ -15,9 +15,12 @@ from starlette.middleware.cors import CORSMiddleware
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
-from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, SUGGESTED_CATEGORIES
-from oms_client import OMSClient
-from purchasing_plan import build_purchasing_plan, retry_missing_boms, get_part_overrides, save_part_override
+from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category
+from oms_client import OMSClient, OMSError
+from purchasing_plan import (
+    build_purchasing_plan, retry_missing_boms, get_part_overrides, save_part_override,
+    _default_month, _validate_month,
+)
 import bom_cache_service
 
 ROOT_DIR = Path(__file__).parent
@@ -313,6 +316,43 @@ async def set_part_override(payload: SetPartOverrideRequest):
     )
 
 
+class SalesPlanCustomerQty(BaseModel):
+    customer_name: str
+    qty: float
+
+
+class SalesPlanItem(BaseModel):
+    part_no: str
+    description: Optional[str] = None
+    total_qty: float
+    customers: List[SalesPlanCustomerQty]
+
+
+class SalesPlanResponse(BaseModel):
+    month: str
+    items: List[SalesPlanItem]
+
+
+@api_router.get("/sales-plan", response_model=SalesPlanResponse)
+async def get_sales_plan(month: Optional[str] = Query(None)):
+    """OMS sales forecast for a given 'YYYY-MM' month (defaults to next
+    calendar month, same default the Purchasing Plan uses) - lets a user
+    look up planned sales qty by item, with a per-customer breakdown,
+    directly from this app instead of switching over to OMS. This is the
+    raw sales-plan-level forecast (finished goods), distinct from the
+    Purchasing Plan's leaf-component purchasing requirements."""
+    try:
+        validated_month = _validate_month(month) if month else _default_month()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        items = await asyncio.to_thread(oms_client.get_sales_plan, validated_month)
+    except OMSError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return SalesPlanResponse(month=validated_month, items=items)
+
+
 class BomCacheStats(BaseModel):
     cached_nodes: int
     oldest_checked_at: Optional[str] = None
@@ -386,7 +426,8 @@ async def list_admin_components():
 
     docs = await asyncio.to_thread(query)
     items = [_to_component_master_item(d) for d in docs]
-    return ComponentMasterListResponse(items=items, categories=SUGGESTED_CATEGORIES)
+    categories = await asyncio.to_thread(get_categories, db)
+    return ComponentMasterListResponse(items=items, categories=categories)
 
 
 class UpdateComponentMasterRequest(BaseModel):
@@ -446,7 +487,8 @@ async def recategorize_components(payload: RecategorizeRequest):
         return RecategorizeResponse(categories={}, skipped_manual=skipped)
 
     try:
-        ai_results = await _ai_categorize(targets)
+        categories = await asyncio.to_thread(get_categories, db)
+        ai_results = await _ai_categorize(targets, categories)
     except BomCategorizerError as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -460,6 +502,27 @@ async def recategorize_components(payload: RecategorizeRequest):
 
     await asyncio.to_thread(persist)
     return RecategorizeResponse(categories=ai_results, skipped_manual=skipped)
+
+
+class AddCategoryRequest(BaseModel):
+    name: str
+
+
+class AddCategoryResponse(BaseModel):
+    categories: List[str]
+
+
+@api_router.post("/admin/categories", response_model=AddCategoryResponse)
+async def add_admin_category(payload: AddCategoryRequest):
+    """Adds a new category to the shared taxonomy (category_master) - shows
+    up immediately in every category dropdown on the Admin page AND is
+    included in the allowed-categories list for all future AI
+    categorization calls (see bom_categorizer.get_categories)."""
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    categories = await asyncio.to_thread(add_category, db, name)
+    return AddCategoryResponse(categories=categories)
 
 
 app.include_router(api_router)
