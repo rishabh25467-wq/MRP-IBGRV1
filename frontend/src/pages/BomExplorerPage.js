@@ -102,10 +102,12 @@ const computeTotalCost = (nodes, costs) => {
   return totals;
 };
 
+const nodeKey = (node, prefix) => (prefix ? `${prefix}>${node.product_id}` : node.product_id);
+
 const collectExpandableKeys = (nodes, prefix = "") => {
   let keys = [];
-  nodes.forEach((node, i) => {
-    const key = prefix ? `${prefix}-${i}` : `${i}`;
+  nodes.forEach((node) => {
+    const key = nodeKey(node, prefix);
     if (node.children && node.children.length > 0) {
       keys.push(key);
       keys = keys.concat(collectExpandableKeys(node.children, key));
@@ -133,10 +135,13 @@ const flattenFullTree = (nodes, depth = 0) => {
   return out;
 };
 
+// Keys are derived from each node's product_id chain (not sibling index) so
+// expand/collapse state stays anchored to the correct node even after
+// sortTree() reorders siblings.
 const flattenVisibleTree = (nodes, expandedKeys, depth = 0, prefix = "") => {
   let out = [];
-  nodes.forEach((node, i) => {
-    const path = prefix ? `${prefix}-${i}` : `${i}`;
+  nodes.forEach((node) => {
+    const path = nodeKey(node, prefix);
     const hasChildren = node.children && node.children.length > 0;
     out.push({ node, path, depth, hasChildren });
     if (hasChildren && expandedKeys.has(path)) {
@@ -300,9 +305,10 @@ export default function BomExplorerPage() {
     }
   };
 
-  const loadCategories = async () => {
-    if (!result) return;
-    const items = collectAllItems(result.tree);
+  const loadCategories = async (treeOverride) => {
+    const tree = treeOverride || result?.tree;
+    if (!tree) return;
+    const items = collectAllItems(tree);
     if (items.length === 0) {
       toast.info("No components found in this BOM");
       return;
@@ -343,6 +349,7 @@ export default function BomExplorerPage() {
       toast.success(`BOM ${response.data.bom_id} loaded`, {
         description: `${response.data.total_components} components across ${response.data.max_level} levels`,
       });
+      loadCategories(response.data.tree);
     } catch (err) {
       const detail = err?.response?.data?.detail || "Failed to fetch BOM from SAP";
       setError(detail);

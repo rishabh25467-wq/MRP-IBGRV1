@@ -1,0 +1,33 @@
+{
+  "summary": "Re-verified the HIGH-priority sort/expand-state bug from iteration_16 - CONFIRMED FIXED. Tested the 2 new features: auto-categorize on BOM load, and Purchasing Plan category grouping with subtotals. All passed. Also confirmed Excel export (with new Category column) and backend category-field attachment work correctly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_purchasing_plan_categorization.py",
+    "/app/test_reports/pytest/pytest_results_iter17.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "BomExplorerPage.js: nodeKey()/collectExpandableKeys()/flattenVisibleTree() now correctly derive keys from the product_id chain (e.g. 'P26584>P26688') instead of sibling index - verified live that 7 rows with both sub-assemblies expanded persist across quantity ASC and DESC sort clicks. Bug fix is correct and complete.",
+    "loadCategories() accepting an optional treeOverride param and being invoked directly from handleSearch() right after a successful fetch (using response.data.tree, bypassing the not-yet-committed `result` state) is a clean way to avoid a stale-closure bug - verified auto-categorize completes within ~1.5s of BOM load and button flips from 'AI Categorize' to 'Re-Categorize' automatically; manual re-click of the button afterward still works.",
+    "PurchasingPlanPage.js groupByCategory() + Fragment-based tbody rendering is correct; subtotal math verified by hand against Copper Alloy group (283452.00+61478.24+1449082.20+238854.42+871620.48=2,904,487.34, matches displayed subtotal exactly). Category header click toggles only that category's rows; bulk Expand/Collapse Categories buttons correctly toggle all 5 groups at once (18 rows -> 0 -> 18).",
+    "Backend: categorize_items() best-effort attachment confirmed via new pytest suite - 2020-01 plan components all carry a valid non-empty string `category` field."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_purchasing_plan_categorization.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "N/A - no app-level auth; SAP/OMS creds used as-is from backend/.env.",
+  "seed_data_creation": "None - used live SAP/OMS data (BOM P26584, purchasing plan 2020-01 -> 18 components / 5 categories: Copper Alloy(5), Hardware(5), Packaging(4), Steel(3), Zinc(1)).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All 5 requested test areas passed this round: (1) Sort/expand-state regression bug is FIXED - confirmed 7 rows stable across both sort directions with both P26688 and P26680 sub-assemblies' children visible throughout. (2) Auto-categorize on BOM load works - completes within ~1.5s, button label correctly flips from 'AI Categorize' to 'Re-Categorize', manual re-click still functions. (3) Purchasing Plan category grouping works end-to-end: 5 category-group-header rows render with correct item counts (e.g. 'Zinc (1)'), subtotal cells (qty/value per month + total, bold/gray) sum children correctly (hand-verified Copper Alloy total), individual header click toggles only that group, and Expand/Collapse Categories bulk buttons correctly toggle all groups (18<->0 visible rows). (4) Excel export via export-purchasing-plan-excel-button fires a real download (PurchasingPlan_2020-01.xlsx) without error; code review confirms a Category column is included in the exported rows. (5) No regressions found in BOM Explorer's Load Standard Costs, Export to Excel, tree search/highlight, or Purchasing Plan's month-picker/missing-BOMs banner/stat cards - all remained functional during this pass. Nothing outstanding for main agent; app is in a clean state.",
+  "rca_of_the_issue": "N/A - no new bugs found this iteration; prior iteration_16 bug was verified fixed via the exact repro steps (nodeKey-based product_id-chain keys instead of positional index paths, as intended by the fix)."
+}

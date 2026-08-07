@@ -105,6 +105,7 @@ class PurchasingPlanComponent(BaseModel):
     product_id: str
     description: Optional[str] = None
     unit_of_measure: Optional[str] = None
+    category: Optional[str] = None
     qty_by_month: dict[str, float]
     unit_cost: Optional[float] = None
     currency: Optional[str] = None
@@ -195,6 +196,18 @@ async def start_purchasing_plan_job(payload: Optional[PurchasingPlanGenerateRequ
             result = await asyncio.to_thread(
                 build_purchasing_plan, oms_client, sap_soap_client, sap_valuation_client, target_month
             )
+            # Classify every leaf component by material/type category (same AI
+            # categorizer the BOM Explorer uses) so the plan can be split/grouped
+            # by category - best-effort, a categorizer hiccup shouldn't fail the plan.
+            items = [{"product_id": c["product_id"], "description": c["description"]} for c in result["components"]]
+            if items:
+                try:
+                    categories = await categorize_items(items)
+                except BomCategorizerError as e:
+                    logger.warning(f"Purchasing plan categorization failed: {e}")
+                    categories = {}
+                for c in result["components"]:
+                    c["category"] = categories.get(c["product_id"])
             purchasing_plan_jobs[job_id] = {"status": "done", "result": result, "error": None}
         except Exception as e:
             logger.error(f"Purchasing plan generation failed: {e}")

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, Fragment } from "react";
 import "@/App.css";
 import axios from "axios";
 import * as XLSX from "xlsx";
@@ -12,6 +12,8 @@ import {
   CaretDown,
   CaretRight,
   FileArrowDown,
+  ArrowsOutSimple,
+  ArrowsInSimple,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -54,6 +56,16 @@ const getDefaultMonth = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 };
 
+const groupByCategory = (components) => {
+  const groups = {};
+  components.forEach((c) => {
+    const cat = c.category || "Uncategorized";
+    if (!groups[cat]) groups[cat] = [];
+    groups[cat].push(c);
+  });
+  return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
+};
+
 export default function PurchasingPlanPage() {
   const [plan, setPlan] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -62,6 +74,19 @@ export default function PurchasingPlanPage() {
   const [warningsOpen, setWarningsOpen] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [selectedMonth, setSelectedMonth] = useState(getDefaultMonth());
+  const [collapsedCategories, setCollapsedCategories] = useState(new Set());
+
+  const toggleCategoryCollapse = (category) => {
+    setCollapsedCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(category)) {
+        next.delete(category);
+      } else {
+        next.add(category);
+      }
+      return next;
+    });
+  };
 
   const POLL_INTERVAL_MS = 3000;
   const MAX_POLL_MS = 15 * 60 * 1000;
@@ -86,6 +111,7 @@ export default function PurchasingPlanPage() {
         if (job.status === "done") {
           setPlan(job.result);
           setLastGenerated(new Date());
+          setCollapsedCategories(new Set());
           toast.success("Purchasing plan generated", {
             description: `${job.result.components.length} components across ${job.result.months.length} months`,
           });
@@ -116,12 +142,17 @@ export default function PurchasingPlanPage() {
   const totalValueOverall = (component) =>
     months.reduce((sum, m) => sum + (component.value_by_month[m] || 0), 0);
 
+  const categoryTotalQty = (items, month) => items.reduce((sum, c) => sum + (c.qty_by_month[month] || 0), 0);
+  const categoryTotalValue = (items, month) => items.reduce((sum, c) => sum + (c.value_by_month[month] || 0), 0);
+  const categoryGrandTotal = (items) => items.reduce((sum, c) => sum + totalValueOverall(c), 0);
+
   const exportToExcel = () => {
     if (!plan) return;
     const rows = plan.components.map((c) => {
       const row = {
         "Product ID": c.product_id,
         Description: c.description || "",
+        Category: c.category || "Uncategorized",
         UOM: c.unit_of_measure || "",
       };
       months.forEach((m) => {
@@ -208,6 +239,28 @@ export default function PurchasingPlanPage() {
         >
           <FileArrowDown size={13} className="mr-1.5" />
           Export to Excel
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => setCollapsedCategories(new Set())}
+          disabled={!plan}
+          className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054] transition-colors"
+          data-testid="expand-all-categories-button"
+        >
+          <ArrowsOutSimple size={13} className="mr-1.5" />
+          Expand Categories
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => plan && setCollapsedCategories(new Set(groupByCategory(plan.components).map(([cat]) => cat)))}
+          disabled={!plan}
+          className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054] transition-colors"
+          data-testid="collapse-all-categories-button"
+        >
+          <ArrowsInSimple size={13} className="mr-1.5" />
+          Collapse Categories
         </Button>
         <div className="flex items-center gap-1.5 text-[#475467] ml-auto" data-testid="purchasing-plan-last-generated">
           <ClockCounterClockwise size={13} weight="bold" />
@@ -361,43 +414,87 @@ export default function PurchasingPlanPage() {
                 </tr>
               </thead>
               <tbody>
-                {plan.components.map((c, i) => (
-                  <tr
-                    key={c.product_id}
-                    className={`${i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} hover:bg-[#F0F4F8] transition-colors duration-150`}
-                    data-testid={`purchasing-plan-row-${i}`}
-                  >
-                    <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828] font-medium">
-                      {c.product_id}
-                    </td>
-                    <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] text-[#101828]">{c.description || "—"}</td>
-                    <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] text-[#101828]">{c.unit_of_measure || "—"}</td>
-                    {months.map((m) => (
-                      <td
-                        key={`${c.product_id}-${m}-qty`}
-                        className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828] text-right"
-                        data-testid={`purchasing-plan-qty-${i}-${m}`}
+                {groupByCategory(plan.components).map(([category, items]) => {
+                  const isCollapsed = collapsedCategories.has(category);
+                  const categoryCurrency = items.find((c) => c.currency)?.currency || currency;
+                  return (
+                    <Fragment key={category}>
+                      <tr
+                        className="bg-[#EAECF0] cursor-pointer hover:bg-[#DDE1E8] transition-colors duration-150"
+                        onClick={() => toggleCategoryCollapse(category)}
+                        data-testid={`category-group-header-${category}`}
                       >
-                        {formatQty(c.qty_by_month[m])}
-                      </td>
-                    ))}
-                    {months.map((m) => (
-                      <td
-                        key={`${c.product_id}-${m}-val`}
-                        className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828] text-right"
-                        data-testid={`purchasing-plan-value-${i}-${m}`}
-                      >
-                        {formatMoney(c.value_by_month[m], c.currency)}
-                      </td>
-                    ))}
-                    <td
-                      className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828] text-right font-bold"
-                      data-testid={`purchasing-plan-total-${i}`}
-                    >
-                      {formatMoney(totalValueOverall(c), c.currency)}
-                    </td>
-                  </tr>
-                ))}
+                        <td colSpan={3} className="border border-[#D0D5DD] px-2 py-1.5 text-[13px] font-bold text-[#344054]">
+                          <span className="inline-flex items-center gap-1.5">
+                            {isCollapsed ? (
+                              <CaretRight size={12} weight="bold" />
+                            ) : (
+                              <CaretDown size={12} weight="bold" />
+                            )}
+                            {category} ({items.length})
+                          </span>
+                        </td>
+                        {months.map((m) => (
+                          <td
+                            key={`${category}-${m}-qty`}
+                            className="border border-[#D0D5DD] px-2 py-1.5 text-[13px] tabular-nums text-right font-bold text-[#344054]"
+                          >
+                            {formatQty(categoryTotalQty(items, m))}
+                          </td>
+                        ))}
+                        {months.map((m) => (
+                          <td
+                            key={`${category}-${m}-val`}
+                            className="border border-[#D0D5DD] px-2 py-1.5 text-[13px] tabular-nums text-right font-bold text-[#344054]"
+                          >
+                            {formatMoney(categoryTotalValue(items, m), categoryCurrency)}
+                          </td>
+                        ))}
+                        <td className="border border-[#D0D5DD] px-2 py-1.5 text-[13px] tabular-nums text-right font-bold text-[#344054]">
+                          {formatMoney(categoryGrandTotal(items), categoryCurrency)}
+                        </td>
+                      </tr>
+                      {!isCollapsed &&
+                        items.map((c, i) => (
+                          <tr
+                            key={c.product_id}
+                            className={`${i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} hover:bg-[#F0F4F8] transition-colors duration-150`}
+                            data-testid={`purchasing-plan-row-${category}-${i}`}
+                          >
+                            <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828] font-medium">
+                              {c.product_id}
+                            </td>
+                            <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] text-[#101828]">{c.description || "—"}</td>
+                            <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] text-[#101828]">{c.unit_of_measure || "—"}</td>
+                            {months.map((m) => (
+                              <td
+                                key={`${c.product_id}-${m}-qty`}
+                                className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828] text-right"
+                                data-testid={`purchasing-plan-qty-${category}-${i}-${m}`}
+                              >
+                                {formatQty(c.qty_by_month[m])}
+                              </td>
+                            ))}
+                            {months.map((m) => (
+                              <td
+                                key={`${c.product_id}-${m}-val`}
+                                className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828] text-right"
+                                data-testid={`purchasing-plan-value-${category}-${i}-${m}`}
+                              >
+                                {formatMoney(c.value_by_month[m], c.currency)}
+                              </td>
+                            ))}
+                            <td
+                              className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828] text-right font-bold"
+                              data-testid={`purchasing-plan-total-${category}-${i}`}
+                            >
+                              {formatMoney(totalValueOverall(c), c.currency)}
+                            </td>
+                          </tr>
+                        ))}
+                    </Fragment>
+                  );
+                })}
                 {plan.components.length === 0 && (
                   <tr>
                     <td colSpan={4 + months.length * 2} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]">
