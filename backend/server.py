@@ -503,15 +503,26 @@ async def start_deep_backfill_uuids():
     async def run():
         try:
             result = await asyncio.to_thread(deep_backfill_uuids, db, sap_soap_client, progress_callback)
-            await asyncio.to_thread(refresh_inventory_cache, db, sap_inventory_client, sap_valuation_client)
-            deep_backfill_jobs[job_id] = {
-                "status": "done", "progress": deep_backfill_jobs[job_id]["progress"], "result": result, "error": None,
-            }
         except Exception as e:
             logger.error(f"Deep UUID backfill failed: {e}")
             deep_backfill_jobs[job_id] = {
                 "status": "failed", "progress": deep_backfill_jobs[job_id]["progress"], "result": None, "error": str(e),
             }
+            return
+
+        # The backfill itself succeeded - report it as done regardless of
+        # whether this best-effort follow-up refresh (a separate, unrelated
+        # SAP OData call) succeeds. A failure here just means valuations
+        # will show up on the next scheduled/manual Refresh instead of
+        # immediately - it must never mask the backfill's own result.
+        try:
+            await asyncio.to_thread(refresh_inventory_cache, db, sap_inventory_client, sap_valuation_client)
+        except Exception as e:
+            logger.warning(f"Deep UUID backfill: post-backfill inventory refresh failed, will show up on next Refresh instead: {e}")
+
+        deep_backfill_jobs[job_id] = {
+            "status": "done", "progress": deep_backfill_jobs[job_id]["progress"], "result": result, "error": None,
+        }
 
     asyncio.create_task(run())
     return {"job_id": job_id}

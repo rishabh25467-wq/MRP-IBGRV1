@@ -223,17 +223,31 @@ export default function InventoryPage() {
               </span>
             )}
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={refreshFromSap}
-            disabled={status === "running"}
-            className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
-            data-testid="inventory-refresh-button"
-          >
-            <ArrowClockwise size={13} className={`mr-1.5 ${status === "running" ? "animate-spin" : ""}`} />
-            {status === "running" ? "Loading from SAP..." : "Refresh"}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={startDeepBackfill}
+              disabled={backfillStatus === "running"}
+              className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
+              data-testid="inventory-deep-backfill-button"
+              title="One-time, throttled live SAP lookup to link any remaining items to their Standard Cost, so more Unit Cost/Total Value cells populate"
+            >
+              <Sparkle size={13} className={`mr-1.5 ${backfillStatus === "running" ? "animate-pulse" : ""}`} />
+              {backfillStatus === "running" ? "Resolving Links..." : "Resolve Missing Values"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={refreshFromSap}
+              disabled={status === "running"}
+              className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
+              data-testid="inventory-refresh-button"
+            >
+              <ArrowClockwise size={13} className={`mr-1.5 ${status === "running" ? "animate-spin" : ""}`} />
+              {status === "running" ? "Loading from SAP..." : "Refresh"}
+            </Button>
+          </div>
         </div>
 
         {status === "cache-loading" && (
@@ -435,6 +449,67 @@ export default function InventoryPage() {
           </>
         )}
       </main>
+
+      <Dialog open={backfillOpen} onOpenChange={(open) => !open && backfillStatus !== "running" && setBackfillOpen(false)}>
+        <DialogContent className="max-w-md" data-testid="inventory-deep-backfill-dialog">
+          <DialogHeader>
+            <DialogTitle className="font-heading text-base">Resolve Missing Values</DialogTitle>
+          </DialogHeader>
+          {backfillStatus === "running" && (
+            <div className="py-4 space-y-3" data-testid="inventory-deep-backfill-running">
+              <div className="flex items-center gap-2 text-sm text-[#475467]">
+                <ArrowClockwise size={14} className="animate-spin" />
+                Checking {backfillProgress.processed} of {backfillProgress.total || "?"} item(s) against SAP...
+              </div>
+              {backfillProgress.total > 0 && (
+                <div className="w-full h-2 bg-[#EAECF0] rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-[#004B87] transition-all duration-300"
+                    style={{ width: `${(backfillProgress.processed / backfillProgress.total) * 100}%` }}
+                  />
+                </div>
+              )}
+              <p className="text-xs text-[#98A2B3]">
+                This is a slow, throttled one-time pass to go easy on the SAP tenant - can take a while for a large batch. Feel free to leave this open.
+              </p>
+            </div>
+          )}
+          {backfillStatus === "done" && backfillResult && (
+            <div className="py-2 space-y-2" data-testid="inventory-deep-backfill-result">
+              <p className="text-sm text-[#101828]">
+                Resolved <span className="font-bold">{backfillResult.resolved}</span> of{" "}
+                <span className="font-bold">{backfillResult.total}</span> previously-unlinked item(s).
+              </p>
+              {backfillResult.still_missing > 0 && (
+                <p className="text-xs text-[#98A2B3]">
+                  {backfillResult.still_missing} item(s) genuinely have no BOM/link in SAP (e.g. purchased raw materials never used as an ingredient) - these will keep showing "—" for value.
+                </p>
+              )}
+              {backfillResult.total === 0 && (
+                <p className="text-xs text-[#98A2B3]">Every item already has a SAP link or has been checked before - nothing left to resolve.</p>
+              )}
+              <p className="text-xs text-[#667085] font-sans">Inventory values have been refreshed automatically.</p>
+            </div>
+          )}
+          {backfillStatus === "failed" && (
+            <div className="py-2 text-sm text-[#B42318]" data-testid="inventory-deep-backfill-error">
+              {backfillError}
+            </div>
+          )}
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setBackfillOpen(false)}
+              disabled={backfillStatus === "running"}
+              className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
+              data-testid="inventory-deep-backfill-close-button"
+            >
+              Close
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

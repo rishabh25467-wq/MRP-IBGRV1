@@ -124,6 +124,16 @@ def build_inventory(db, sap_inventory_client, sap_valuation_client) -> list:
         except (SAPValuationError, requests.exceptions.RequestException) as e:
             logger.warning(f"Standard Costs unavailable for Inventory valuation, showing quantities only: {e}")
 
+    # A single flaky batch in get_standard_costs makes the WHOLE call raise
+    # (no partial results) - on this fragile tenant that happens often
+    # enough that falling back to unit_cost=None across the board would
+    # regularly wipe out valuation data that was already resolved in a
+    # previous, successful refresh cycle. So valuation is "sticky": if this
+    # round's live cost lookup didn't return a price for an item, keep
+    # whatever was cached last time instead of blanking it - a genuinely
+    # new price from SAP still overwrites it normally.
+    previous_by_id = {it["product_id"]: it for it in get_cached_inventory(db)["items"]}
+
     for product_id, entry in by_product.items():
         product_uuid = component_docs.get(product_id, {}).get("product_uuid")
         cost = costs.get(product_uuid.upper()) if product_uuid else None
@@ -132,9 +142,15 @@ def build_inventory(db, sap_inventory_client, sap_valuation_client) -> list:
             entry["currency"] = cost["currency"]
             entry["total_value"] = round(cost["amount"] * entry["total_qty"], 2)
         else:
-            entry["unit_cost"] = None
-            entry["currency"] = None
-            entry["total_value"] = None
+            previous = previous_by_id.get(product_id)
+            if previous and previous.get("unit_cost") is not None:
+                entry["unit_cost"] = previous["unit_cost"]
+                entry["currency"] = previous["currency"]
+                entry["total_value"] = round(previous["unit_cost"] * entry["total_qty"], 2)
+            else:
+                entry["unit_cost"] = None
+                entry["currency"] = None
+                entry["total_value"] = None
         entry["locations"].sort(key=lambda loc: -loc["qty"])
 
     return sorted(by_product.values(), key=lambda e: e["product_id"])
