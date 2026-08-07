@@ -993,7 +993,13 @@ const MrpPlanTab = ({ actorName }) => {
           <Button
             type="button"
             variant="outline"
-            onClick={() => setSaveAsOpen(true)}
+            onClick={() => {
+              if (!actorName.trim()) {
+                toast.error("Enter your name first", { description: "Type your name in the box at the top of the page." });
+                return;
+              }
+              setSaveAsOpen(true);
+            }}
             className="h-8 rounded-sm border-[#D0D5DD] text-[#344054] text-[13px] font-medium"
             data-testid="mrp-save-as-button"
           >
