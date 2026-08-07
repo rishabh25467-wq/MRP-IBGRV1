@@ -16,7 +16,7 @@ from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
-from inventory_service import get_cached_inventory, refresh_inventory_cache
+from inventory_service import get_cached_inventory, refresh_inventory_cache, deep_backfill_uuids
 from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids
 from oms_client import OMSClient, OMSError
 from purchasing_plan import (
@@ -81,6 +81,11 @@ push_all_to_sap_jobs: dict = {}
 # Same pattern again for the Inventory page - the underlying SAP OData
 # on-hand stock report can be slow/heavily paged under tenant load.
 inventory_jobs: dict = {}
+
+# Controlled, throttled one-time live-SAP UUID backfill for inventory items
+# that have never appeared in any BOM Explorer/Purchasing Plan run - see
+# inventory_service.deep_backfill_uuids docstring.
+deep_backfill_jobs: dict = {}
 
 
 class BomNode(BaseModel):
@@ -459,6 +464,65 @@ async def get_inventory_job(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id")
     return InventoryJobStatus(job_id=job_id, **job)
+
+
+class DeepBackfillProgress(BaseModel):
+    processed: int
+    total: int
+
+
+class DeepBackfillResult(BaseModel):
+    total: int
+    resolved: int
+    still_missing: int
+
+
+class DeepBackfillJobStatus(BaseModel):
+    job_id: str
+    status: str  # "running" | "done" | "failed"
+    progress: Optional[DeepBackfillProgress] = None
+    result: Optional[DeepBackfillResult] = None
+    error: Optional[str] = None
+
+
+@api_router.post("/inventory/deep-backfill-uuids")
+async def start_deep_backfill_uuids():
+    """User-requested one-time controlled backfill: live SAP lookup (low
+    concurrency, see inventory_service.deep_backfill_uuids) for every
+    current inventory item still missing a product_uuid, so its Standard
+    Cost can be resolved. Runs as a background job - against 1000+ items
+    on a tenant known to hit connection timeouts, this can take a while.
+    Refreshes the inventory cache at the end so newly-resolved valuations
+    show up immediately without a separate manual Refresh."""
+    job_id = str(uuid.uuid4())
+    deep_backfill_jobs[job_id] = {"status": "running", "progress": {"processed": 0, "total": 0}, "result": None, "error": None}
+
+    def progress_callback(processed, total):
+        deep_backfill_jobs[job_id]["progress"] = {"processed": processed, "total": total}
+
+    async def run():
+        try:
+            result = await asyncio.to_thread(deep_backfill_uuids, db, sap_soap_client, progress_callback)
+            await asyncio.to_thread(refresh_inventory_cache, db, sap_inventory_client, sap_valuation_client)
+            deep_backfill_jobs[job_id] = {
+                "status": "done", "progress": deep_backfill_jobs[job_id]["progress"], "result": result, "error": None,
+            }
+        except Exception as e:
+            logger.error(f"Deep UUID backfill failed: {e}")
+            deep_backfill_jobs[job_id] = {
+                "status": "failed", "progress": deep_backfill_jobs[job_id]["progress"], "result": None, "error": str(e),
+            }
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+@api_router.get("/inventory/deep-backfill-uuids/{job_id}", response_model=DeepBackfillJobStatus)
+async def get_deep_backfill_status(job_id: str):
+    job = deep_backfill_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return DeepBackfillJobStatus(job_id=job_id, **job)
 
 
 class BomCacheStats(BaseModel):

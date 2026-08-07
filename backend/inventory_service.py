@@ -9,17 +9,20 @@ loads instantly from cache instead of always waiting on a live, multi-minute
 SAP pull - a background scheduler (server.py) refreshes this cache every
 couple of hours, and a manual "Refresh" button can force it sooner."""
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import requests
 from sap_valuation_client import SAPValuationError
 
 import bom_cache_service
+from bom_cache_service import BomFetchError
 
 logger = logging.getLogger(__name__)
 
 INVENTORY_CACHE_COLLECTION = "inventory_cache"
 INVENTORY_CACHE_ID = "latest"
+DEEP_BACKFILL_MAX_WORKERS = 3
 
 
 def _resolve_missing_uuids(db, product_ids: list) -> int:
@@ -162,3 +165,72 @@ def refresh_inventory_cache(db, sap_inventory_client, sap_valuation_client) -> d
         upsert=True,
     )
     return {"items": items, "categories": categories, "updated_at": updated_at}
+
+
+def deep_backfill_uuids(db, sap_soap_client, progress_callback=None) -> dict:
+    """User-requested, one-time CONTROLLED live SAP lookup for every
+    inventory item that still has no product_uuid after the free,
+    zero-API-call join in _resolve_missing_uuids (i.e. it's never appeared
+    as a BOM root OR leaf in anything explored so far). Unlike a normal
+    BOM Explorer/Purchasing Plan run, this deliberately throttles
+    concurrency (DEEP_BACKFILL_MAX_WORKERS, well below the 8 used
+    elsewhere) since this SAP tenant is known to hit connection timeouts
+    under load - the user explicitly chose "controlled one-time backfill,
+    accept it'll take a while and add some load" over waiting indefinitely
+    for organic coverage growth. Every result (a resolved UUID OR a
+    confirmed "no BOM at all") is permanently written to bom_node_cache via
+    the exact same _fetch_live/_upsert path BOM Explorer uses, so no ID is
+    ever re-queried by this or any other feature once it's been checked.
+    Returns {"total", "resolved", "still_missing"}."""
+    target_ids = _get_deep_backfill_targets(db)
+    total = len(target_ids)
+    if progress_callback:
+        progress_callback(0, total)
+    if total == 0:
+        return {"total": 0, "resolved": 0, "still_missing": 0}
+
+    bom_cache = db[bom_cache_service.COLLECTION_NAME]
+    comp_cache = db["component_master"]
+    resolved = 0
+    processed = 0
+
+    def fetch_one(pid):
+        try:
+            raw = bom_cache_service._fetch_live(sap_soap_client, pid)
+        except BomFetchError as e:
+            logger.warning(f"Deep UUID backfill: SAP lookup failed for '{pid}' after retries, leaving unresolved: {e}")
+            return pid, None
+        bom_cache_service._upsert(bom_cache, pid, raw, changed=True)
+        return pid, (raw.get("product_uuid") if raw else None)
+
+    with ThreadPoolExecutor(max_workers=DEEP_BACKFILL_MAX_WORKERS) as executor:
+        for pid, product_uuid in executor.map(fetch_one, target_ids):
+            processed += 1
+            if product_uuid:
+                comp_cache.update_one({"_id": pid}, {"$set": {"product_uuid": product_uuid}}, upsert=True)
+                resolved += 1
+            if progress_callback:
+                progress_callback(processed, total)
+
+    return {"total": total, "resolved": resolved, "still_missing": total - resolved}
+
+
+def _get_deep_backfill_targets(db) -> list:
+    """Every product_id sitting in the current inventory snapshot that has
+    no product_uuid anywhere (component_master) AND has never been checked
+    at all (no entry in bom_node_cache, found or not) - i.e. genuinely
+    unresolved, not just "resolved to no cost" for some other reason."""
+    cached = get_cached_inventory(db)
+    product_ids = [it["product_id"] for it in cached["items"]]
+    if not product_ids:
+        return []
+
+    has_uuid = {
+        doc["_id"]
+        for doc in db["component_master"].find({"_id": {"$in": product_ids}, "product_uuid": {"$ne": None}}, {"_id": 1})
+    }
+    already_checked = {
+        doc["_id"]
+        for doc in db[bom_cache_service.COLLECTION_NAME].find({"_id": {"$in": product_ids}}, {"_id": 1})
+    }
+    return [pid for pid in product_ids if pid not in has_uuid and pid not in already_checked]

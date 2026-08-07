@@ -10,10 +10,12 @@ import {
   CurrencyCircleDollar,
   MapPin,
   Database,
+  Sparkle,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { NavTabs } from "@/components/NavTabs";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -64,6 +66,11 @@ export default function InventoryPage() {
   const [siteFilter, setSiteFilter] = useState("all");
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [page, setPage] = useState(1);
+  const [backfillOpen, setBackfillOpen] = useState(false);
+  const [backfillStatus, setBackfillStatus] = useState("idle"); // idle | running | done | failed
+  const [backfillProgress, setBackfillProgress] = useState({ processed: 0, total: 0 });
+  const [backfillResult, setBackfillResult] = useState(null);
+  const [backfillError, setBackfillError] = useState(null);
 
   const refreshFromSap = async () => {
     setStatus("running");
@@ -116,6 +123,36 @@ export default function InventoryPage() {
   useEffect(() => {
     loadFromCache();
   }, []);
+
+  const startDeepBackfill = async () => {
+    setBackfillOpen(true);
+    setBackfillStatus("running");
+    setBackfillProgress({ processed: 0, total: 0 });
+    setBackfillResult(null);
+    setBackfillError(null);
+    try {
+      const { data } = await axios.post(`${API}/inventory/deep-backfill-uuids`);
+      const jobId = data.job_id;
+      const poll = async () => {
+        const { data: job } = await axios.get(`${API}/inventory/deep-backfill-uuids/${jobId}`);
+        if (job.progress) setBackfillProgress(job.progress);
+        if (job.status === "running") {
+          setTimeout(poll, 2000);
+        } else if (job.status === "done") {
+          setBackfillStatus("done");
+          setBackfillResult(job.result);
+          loadFromCache();
+        } else {
+          setBackfillStatus("failed");
+          setBackfillError(job.error);
+        }
+      };
+      poll();
+    } catch (err) {
+      setBackfillStatus("failed");
+      setBackfillError(err?.response?.data?.detail || err.message);
+    }
+  };
 
   const sites = useMemo(() => {
     const set = new Set();
