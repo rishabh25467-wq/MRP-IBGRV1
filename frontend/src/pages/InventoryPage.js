@@ -124,9 +124,12 @@ export default function InventoryPage() {
     loadFromCache();
   }, []);
 
+  const [backfillPhase, setBackfillPhase] = useState("resolving"); // resolving | refreshing_cache
+
   const startDeepBackfill = async () => {
     setBackfillOpen(true);
     setBackfillStatus("running");
+    setBackfillPhase("resolving");
     setBackfillProgress({ processed: 0, total: 0 });
     setBackfillResult(null);
     setBackfillError(null);
@@ -136,6 +139,7 @@ export default function InventoryPage() {
       const poll = async () => {
         const { data: job } = await axios.get(`${API}/inventory/deep-backfill-uuids/${jobId}`);
         if (job.progress) setBackfillProgress(job.progress);
+        if (job.phase) setBackfillPhase(job.phase);
         if (job.status === "running") {
           setTimeout(poll, 2000);
         } else if (job.status === "done") {
@@ -457,11 +461,13 @@ export default function InventoryPage() {
           </DialogHeader>
           {backfillStatus === "running" && (
             <div className="py-4 space-y-3" data-testid="inventory-deep-backfill-running">
-              <div className="flex items-center gap-2 text-sm text-[#475467]">
+              <div className="flex items-center gap-2 text-sm text-[#475467]" data-testid="inventory-deep-backfill-phase-text">
                 <ArrowClockwise size={14} className="animate-spin" />
-                Checking {backfillProgress.processed} of {backfillProgress.total || "?"} item(s) against SAP...
+                {backfillPhase === "refreshing_cache"
+                  ? "Links resolved - refreshing inventory valuations..."
+                  : `Checking ${backfillProgress.processed} of ${backfillProgress.total || "?"} item(s) against SAP...`}
               </div>
-              {backfillProgress.total > 0 && (
+              {backfillPhase === "resolving" && backfillProgress.total > 0 && (
                 <div className="w-full h-2 bg-[#EAECF0] rounded-full overflow-hidden">
                   <div
                     className="h-full bg-[#004B87] transition-all duration-300"

@@ -480,6 +480,7 @@ class DeepBackfillResult(BaseModel):
 class DeepBackfillJobStatus(BaseModel):
     job_id: str
     status: str  # "running" | "done" | "failed"
+    phase: str = "resolving"  # "resolving" | "refreshing_cache" - which step is currently in progress
     progress: Optional[DeepBackfillProgress] = None
     result: Optional[DeepBackfillResult] = None
     error: Optional[str] = None
@@ -495,7 +496,7 @@ async def start_deep_backfill_uuids():
     Refreshes the inventory cache at the end so newly-resolved valuations
     show up immediately without a separate manual Refresh."""
     job_id = str(uuid.uuid4())
-    deep_backfill_jobs[job_id] = {"status": "running", "progress": {"processed": 0, "total": 0}, "result": None, "error": None}
+    deep_backfill_jobs[job_id] = {"status": "running", "phase": "resolving", "progress": {"processed": 0, "total": 0}, "result": None, "error": None}
 
     def progress_callback(processed, total):
         deep_backfill_jobs[job_id]["progress"] = {"processed": processed, "total": total}
@@ -506,7 +507,7 @@ async def start_deep_backfill_uuids():
         except Exception as e:
             logger.error(f"Deep UUID backfill failed: {e}")
             deep_backfill_jobs[job_id] = {
-                "status": "failed", "progress": deep_backfill_jobs[job_id]["progress"], "result": None, "error": str(e),
+                "status": "failed", "phase": "resolving", "progress": deep_backfill_jobs[job_id]["progress"], "result": None, "error": str(e),
             }
             return
 
@@ -515,13 +516,14 @@ async def start_deep_backfill_uuids():
         # SAP OData call) succeeds. A failure here just means valuations
         # will show up on the next scheduled/manual Refresh instead of
         # immediately - it must never mask the backfill's own result.
+        deep_backfill_jobs[job_id]["phase"] = "refreshing_cache"
         try:
             await asyncio.to_thread(refresh_inventory_cache, db, sap_inventory_client, sap_valuation_client)
         except Exception as e:
             logger.warning(f"Deep UUID backfill: post-backfill inventory refresh failed, will show up on next Refresh instead: {e}")
 
         deep_backfill_jobs[job_id] = {
-            "status": "done", "progress": deep_backfill_jobs[job_id]["progress"], "result": result, "error": None,
+            "status": "done", "phase": "refreshing_cache", "progress": deep_backfill_jobs[job_id]["progress"], "result": result, "error": None,
         }
 
     asyncio.create_task(run())
