@@ -96,6 +96,12 @@
 
 ## Backlog / Next Tasks (updated)
 - P2: Persist purchasing plan job history (currently in-memory only, no TTL/cleanup - fine for this single-tenant demo, would need attention for long-lived production use)
+- P2: Live SAP standard-cost lookup has been observed occasionally returning all-zero/null values on a single run (self-resolves on regenerate) - likely transient demo-tenant flakiness; could add a "looks like $0 for everything, retry?" warning banner if it recurs often
+
+## Feature: Enhancements Round 3 (Feb 2026, Session 4 cont.)
+- Purchasing Plan: added a Category quick-filter dropdown (shadcn Select) that narrows the table/stat-cards/Excel-export to a single category at a time ("All Categories" default).
+- Purchasing Plan: added sortable column headers (Product ID, each month's Qty/Value, Total Value) - sorting is scoped WITHIN each category group independently (group order itself stays alphabetically fixed), same click-to-toggle-asc/desc pattern as the BOM Explorer tree.
+- Tested via testing_agent_v4 (iteration_18) - 100% frontend pass, no bugs from this round's changes.
 
 ## Feature: Enhancements Round 2 (Feb 2026, Session 4)
 - Purchasing Plan Excel export (mirrors BOM Explorer's export pattern) - includes a Category column, plus a "Missing BOMs" sheet when applicable.
