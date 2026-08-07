@@ -553,7 +553,7 @@ const MrpPlanTab = () => {
           <table className="border-collapse w-full text-[13px]" data-testid="mrp-table">
             <thead>
               <tr>
-                {["", "Product ID", "Description", "Lead Time (d)", "MSL", "On-Hand", "Total Gross Qty", "Total Net Qty"].map((h) => (
+                {["", "Product ID", "Description", "Lead Time (D)", "MSL", "On-Hand", "Total Gross Qty", "Total Net Qty"].map((h) => (
                   <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
                     {h}
                   </th>
