@@ -2,9 +2,10 @@
 
 Pipeline: OMS monthly sales forecast (for a single target month, either
 user-picked or defaulted to next month) -> resolve each OMS part number to a
-SAP BOM (trying the part number directly first, since SAP recognizes it as a
-valid Product/BOM ID for most parts; the OMS wm-part-map value is only a
-secondary fallback - see build_purchasing_plan for details) -> explode the
+SAP BOM (trying, in order: a manually-saved part_id_overrides correction if
+one exists, then the part number directly since SAP recognizes it as a valid
+Product/BOM ID for most parts, then the OMS wm-part-map value as a last
+resort - see build_purchasing_plan/_resolve_boms for details) -> explode the
 resolved BOM via the persistent, Mongo-backed BOM cache (see
 bom_cache_service.py - avoids re-exploding live from SAP on every single
 regeneration; a background job keeps the cache fresh) -> aggregate required
@@ -79,12 +80,31 @@ def _explode(candidate_id, sap_soap_client, db):
         return None, True
 
 
-def _resolve_boms(part_nos, part_map, sap_soap_client, db):
-    """For each OMS part number, resolves to a SAP BOM - trying the part
-    number directly first (empirically, SAP recognizes it directly as a
-    valid Product/BOM ID for most parts), falling back to the OMS
-    wm-part-map's mapped value only if that fails (avoids doubling SOAP
-    calls for the common case where the direct lookup already succeeds).
+def get_part_overrides(db) -> dict:
+    """Manual OMS-part-number -> SAP-Material-ID corrections a user has
+    saved via the Missing BOMs table's "Fix Mapping" box (e.g. OMS reports
+    'E410' but the real SAP Material ID is 'E410_IN') - persisted in Mongo
+    so they apply automatically to every future plan regeneration, not just
+    a one-off retry check."""
+    return {doc["_id"]: doc["sap_id"] for doc in db["part_id_overrides"].find({})}
+
+
+def save_part_override(db, part_no: str, sap_id: str) -> None:
+    db["part_id_overrides"].update_one(
+        {"_id": part_no},
+        {"$set": {"sap_id": sap_id, "updated_at": datetime.now(timezone.utc)}},
+        upsert=True,
+    )
+
+
+def _resolve_boms(part_nos, part_map, sap_soap_client, db, overrides=None):
+    """For each OMS part number, resolves to a SAP BOM. Tries, in priority
+    order: (1) a manually-saved override for this exact part number, if any
+    (see get_part_overrides - rare, so always attempted), (2) the part
+    number itself directly (empirically, SAP recognizes it directly as a
+    valid Product/BOM ID for most parts), (3) the OMS wm-part-map's mapped
+    value, only as a last-resort fallback (avoids doubling SOAP calls for
+    the common case where an earlier candidate already succeeds).
     Resolution goes through the persistent Mongo-backed cache
     (bom_cache_service) so repeat regenerations for the same/overlapping
     parts are near-instant instead of re-exploding live from SAP every time.
@@ -92,12 +112,23 @@ def _resolve_boms(part_nos, part_map, sap_soap_client, db):
     missing_boms entry carries a `confidence` of "fetch_error" (SAP was
     unreachable even after retries - transient, safe to retry) or
     "not_found" (SAP cleanly confirmed no BOM exists for any candidate tried)."""
+    overrides = overrides or {}
     bom_by_id = {}
     fetch_failed_by_id = {}
-    for part_no in sorted(part_nos):
-        bom_by_id[part_no], fetch_failed_by_id[part_no] = _explode(part_no, sap_soap_client, db)
 
-    unresolved_part_nos = [p for p in part_nos if not bom_by_id.get(p)]
+    override_ids = sorted({overrides[p].strip() for p in part_nos if (overrides.get(p) or "").strip()})
+    for cid in override_ids:
+        bom_by_id[cid], fetch_failed_by_id[cid] = _explode(cid, sap_soap_client, db)
+
+    def already_resolved(part_no):
+        override = (overrides.get(part_no) or "").strip()
+        return bool(override and bom_by_id.get(override))
+
+    for part_no in sorted(part_nos):
+        if not already_resolved(part_no) and part_no not in bom_by_id:
+            bom_by_id[part_no], fetch_failed_by_id[part_no] = _explode(part_no, sap_soap_client, db)
+
+    unresolved_part_nos = [p for p in part_nos if not already_resolved(p) and not bom_by_id.get(p)]
     fallback_ids = sorted({
         (part_map.get(p) or "").strip()
         for p in unresolved_part_nos
@@ -109,8 +140,11 @@ def _resolve_boms(part_nos, part_map, sap_soap_client, db):
     resolved_id_by_part_no = {}
     missing_boms = []
     for part_no in part_nos:
+        override = (overrides.get(part_no) or "").strip()
         mapped = (part_map.get(part_no) or "").strip()
-        candidates = [part_no] + ([mapped] if mapped and mapped != part_no else [])
+        candidates = ([override] if override else []) + [part_no] + (
+            [mapped] if mapped and mapped != part_no and mapped != override else []
+        )
         resolved = next((cid for cid in candidates if bom_by_id.get(cid)), None)
         if resolved:
             resolved_id_by_part_no[part_no] = resolved
@@ -123,7 +157,7 @@ def _resolve_boms(part_nos, part_map, sap_soap_client, db):
             )
             missing_boms.append({
                 "part_no": part_no,
-                "sap_id": mapped if mapped and mapped != part_no else None,
+                "sap_id": override or (mapped if mapped != part_no else None),
                 "confidence": confidence,
                 "reason": reason,
             })
@@ -131,16 +165,17 @@ def _resolve_boms(part_nos, part_map, sap_soap_client, db):
     return bom_by_id, resolved_id_by_part_no, missing_boms
 
 
-def retry_missing_boms(part_nos: list, part_map: dict, sap_soap_client, db) -> list:
+def retry_missing_boms(part_nos: list, part_map: dict, sap_soap_client, db, overrides: dict = None) -> list:
     """Re-attempts BOM resolution for a specific subset of previously-missing
-    OMS part numbers (e.g. after a transient SAP timeout) without re-running
+    OMS part numbers (e.g. after a transient SAP timeout, or after the user
+    saved a corrected SAP ID via the Missing BOMs table), without re-running
     the full Purchasing Plan pipeline - lets a user instantly re-check just
     the failed lookups instead of waiting several minutes to regenerate the
     whole plan. Any part that now resolves gets cached by
     bom_cache_service.build_tree_from_cache the same as a normal run, so a
     subsequent full "Regenerate" also picks it up near-instantly. Returns
     [{part_no, sap_id, resolved, reason}, ...]."""
-    _, resolved_id_by_part_no, missing_boms = _resolve_boms(part_nos, part_map, sap_soap_client, db)
+    _, resolved_id_by_part_no, missing_boms = _resolve_boms(part_nos, part_map, sap_soap_client, db, overrides=overrides)
     missing_by_part_no = {m["part_no"]: m for m in missing_boms}
 
     results = []
@@ -173,6 +208,7 @@ def build_purchasing_plan(
 
     # 1. Pull OMS sales forecast (aggregated per part number) for each month.
     part_map = oms_client.get_part_map()
+    overrides = get_part_overrides(db)
     demand_by_month = {month: oms_client.get_monthly_demand(month) for month in months}
 
     all_part_nos = set()
@@ -180,7 +216,7 @@ def build_purchasing_plan(
         all_part_nos.update(demand.keys())
 
     # 2. Resolve + explode each part's BOM (see _resolve_boms).
-    bom_by_id, resolved_id_by_part_no, missing_boms = _resolve_boms(all_part_nos, part_map, sap_soap_client, db)
+    bom_by_id, resolved_id_by_part_no, missing_boms = _resolve_boms(all_part_nos, part_map, sap_soap_client, db, overrides=overrides)
 
     # 3. Precompute per-unit leaf requirements for each successfully exploded BOM.
     leaves_by_id = {}

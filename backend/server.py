@@ -16,7 +16,7 @@ from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from bom_categorizer import categorize_items, BomCategorizerError
 from oms_client import OMSClient
-from purchasing_plan import build_purchasing_plan, retry_missing_boms
+from purchasing_plan import build_purchasing_plan, retry_missing_boms, get_part_overrides, save_part_override
 import bom_cache_service
 
 ROOT_DIR = Path(__file__).parent
@@ -268,11 +268,47 @@ class RetryMissingBomsResponse(BaseModel):
 @api_router.post("/purchasing-plan/retry-missing", response_model=RetryMissingBomsResponse)
 async def retry_missing_boms_endpoint(payload: RetryMissingBomsRequest):
     """Instantly re-checks a specific subset of previously-missing OMS part
-    numbers against live SAP (e.g. after a transient connection timeout),
-    without re-running the whole multi-minute Purchasing Plan pipeline."""
+    numbers against live SAP (e.g. after a transient connection timeout, or
+    after a manual ID correction was saved via /part-overrides), without
+    re-running the whole multi-minute Purchasing Plan pipeline."""
     part_map = await asyncio.to_thread(oms_client.get_part_map)
-    results = await asyncio.to_thread(retry_missing_boms, payload.part_nos, part_map, sap_soap_client, db)
+    overrides = await asyncio.to_thread(get_part_overrides, db)
+    results = await asyncio.to_thread(retry_missing_boms, payload.part_nos, part_map, sap_soap_client, db, overrides)
     return RetryMissingBomsResponse(results=results)
+
+
+class SetPartOverrideRequest(BaseModel):
+    part_no: str
+    sap_id: str
+
+
+class SetPartOverrideResponse(BaseModel):
+    part_no: str
+    sap_id: str
+    resolved: bool
+    confidence: Optional[str] = None
+    reason: Optional[str] = None
+
+
+@api_router.post("/purchasing-plan/part-overrides", response_model=SetPartOverrideResponse)
+async def set_part_override(payload: SetPartOverrideRequest):
+    """Saves a manual OMS-part-number -> SAP-Material-ID correction (e.g. OMS
+    reports 'E410' but the real SAP Material ID is 'E410_IN') and immediately
+    retries that one part against live SAP. The correction is persisted in
+    Mongo (part_id_overrides) so every future Purchasing Plan regeneration -
+    and the bulk "Retry Failed Lookups" button - also applies it automatically."""
+    part_no = payload.part_no.strip()
+    sap_id = payload.sap_id.strip()
+    if not part_no or not sap_id:
+        raise HTTPException(status_code=400, detail="part_no and sap_id are both required")
+
+    await asyncio.to_thread(save_part_override, db, part_no, sap_id)
+    part_map = await asyncio.to_thread(oms_client.get_part_map)
+    result = (await asyncio.to_thread(retry_missing_boms, [part_no], part_map, sap_soap_client, db, {part_no: sap_id}))[0]
+    return SetPartOverrideResponse(
+        part_no=part_no, sap_id=sap_id, resolved=result["resolved"],
+        confidence=result.get("confidence"), reason=result.get("reason"),
+    )
 
 
 class BomCacheStats(BaseModel):
