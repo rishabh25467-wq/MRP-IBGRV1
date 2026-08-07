@@ -251,6 +251,15 @@ def deep_backfill_uuids(db, sap_soap_client, sap_material_client=None, progress_
         except SAPMaterialError as e:
             logger.warning(f"Deep UUID backfill: direct Material lookup failed for '{pid}': {e}")
             return pid, None
+        except requests.exceptions.RequestException as e:
+            # A transient connection/timeout issue (this tenant is prone to
+            # them under load) - just leave this one item unresolved for
+            # this run rather than letting it crash the entire batch and
+            # lose every already-processed result (that's what happened
+            # before this fix: one mid-batch timeout took down a job that
+            # had already correctly resolved 224 other items).
+            logger.warning(f"Deep UUID backfill: direct Material lookup network error for '{pid}', leaving unresolved this round: {e}")
+            return pid, None
 
     with ThreadPoolExecutor(max_workers=DEEP_BACKFILL_MAX_WORKERS) as executor:
         for pid, product_uuid in executor.map(fetch_one, target_ids):
