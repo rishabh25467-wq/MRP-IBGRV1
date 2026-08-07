@@ -65,7 +65,7 @@ const collectAllItems = (nodes) => {
     list.forEach((node) => {
       const hasChildren = node.children && node.children.length > 0;
       if (node.product_id && !hasChildren && !items.has(node.product_id)) {
-        items.set(node.product_id, { product_id: node.product_id, description: node.description });
+        items.set(node.product_id, { product_id: node.product_id, description: node.description, product_uuid: node.product_uuid });
       }
       if (hasChildren) walk(node.children);
     });

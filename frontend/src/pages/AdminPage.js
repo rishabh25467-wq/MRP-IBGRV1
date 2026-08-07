@@ -11,6 +11,7 @@ import {
   Plus,
   Tag,
   X,
+  CloudArrowUp,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -35,6 +36,11 @@ export default function AdminPage() {
   const [selected, setSelected] = useState(new Set());
   const [savingIds, setSavingIds] = useState(new Set());
   const [mslInputs, setMslInputs] = useState({});
+  const [leadTimeInputs, setLeadTimeInputs] = useState({});
+  const [pushDialogItem, setPushDialogItem] = useState(null);
+  const [pushDialogSapData, setPushDialogSapData] = useState(null);
+  const [pushDialogLoading, setPushDialogLoading] = useState(false);
+  const [pushing, setPushing] = useState(false);
   const [recategorizing, setRecategorizing] = useState(false);
   const [sortConfig, setSortConfig] = useState({ field: "product_id", direction: "asc" });
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
@@ -152,6 +158,64 @@ export default function AdminPage() {
       toast.error("Could not save MSL", { description: err?.response?.data?.detail || err.message });
     } finally {
       markSaving(productId, false);
+    }
+  };
+
+  const saveLeadTime = async (productId) => {
+    const raw = leadTimeInputs[productId];
+    if (raw === undefined) return;
+    const leadTimeDays = raw === "" ? 0 : Number(raw);
+    if (Number.isNaN(leadTimeDays)) {
+      toast.error("Lead Time must be a number");
+      return;
+    }
+    markSaving(productId, true);
+    try {
+      const { data } = await axios.patch(`${API}/admin/components/${encodeURIComponent(productId)}`, { lead_time_days: leadTimeDays });
+      setItems((prev) => prev.map((it) => (it.product_id === productId ? data : it)));
+      setLeadTimeInputs((prev) => {
+        const next = { ...prev };
+        delete next[productId];
+        return next;
+      });
+    } catch (err) {
+      toast.error("Could not save Lead Time", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      markSaving(productId, false);
+    }
+  };
+
+  const openPushDialog = async (item) => {
+    setPushDialogItem(item);
+    setPushDialogSapData(null);
+    setPushDialogLoading(true);
+    try {
+      const { data } = await axios.get(`${API}/admin/components/${encodeURIComponent(item.product_id)}/sap-planning`);
+      setPushDialogSapData(data);
+    } catch (err) {
+      setPushDialogSapData({ error: err?.response?.data?.detail || err.message });
+    } finally {
+      setPushDialogLoading(false);
+    }
+  };
+
+  const confirmPushToSap = async () => {
+    if (!pushDialogItem) return;
+    const productId = pushDialogItem.product_id;
+    setPushing(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/components/${encodeURIComponent(productId)}/push-to-sap`);
+      toast.success(`Pushed to SAP across ${data.planning_areas_updated} planning area${data.planning_areas_updated === 1 ? "" : "s"}`, {
+        description: `${productId}: Safety Stock ${data.safety_stock ?? "—"}, Lead Time ${data.lead_time_days ?? "—"} day(s)`,
+      });
+      setItems((prev) =>
+        prev.map((it) => (it.product_id === productId ? { ...it, sap_pushed_at: new Date().toISOString() } : it))
+      );
+      setPushDialogItem(null);
+    } catch (err) {
+      toast.error("Push to SAP failed", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setPushing(false);
     }
   };
 
@@ -352,6 +416,9 @@ export default function AdminPage() {
                 <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
                   MSL
                 </th>
+                <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
+                  Lead Time (Days)
+                </th>
                 <th
                   onClick={() => toggleSort("updated_at")}
                   className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#DDE1E8] select-none"
@@ -361,6 +428,9 @@ export default function AdminPage() {
                     Updated
                     {sortConfig.field === "updated_at" && <SortIcon size={11} weight="bold" />}
                   </span>
+                </th>
+                <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
+                  SAP Push
                 </th>
               </tr>
             </thead>
@@ -433,12 +503,55 @@ export default function AdminPage() {
                       data-testid={`admin-msl-input-${it.product_id}`}
                     />
                   </td>
+                  <td className="border border-[#D0D5DD] px-2 py-1">
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      placeholder="0"
+                      value={leadTimeInputs[it.product_id] ?? (it.lead_time_days ?? "")}
+                      onChange={(e) => setLeadTimeInputs((prev) => ({ ...prev, [it.product_id]: e.target.value }))}
+                      onBlur={() => saveLeadTime(it.product_id)}
+                      onKeyDown={(e) => e.key === "Enter" && saveLeadTime(it.product_id)}
+                      disabled={savingIds.has(it.product_id)}
+                      className="h-7 w-20 px-1.5 text-xs border border-[#D0D5DD] rounded-sm bg-white text-[#101828] tabular-nums focus:outline-none focus:ring-1 focus:ring-[#004B87]"
+                      data-testid={`admin-lead-time-input-${it.product_id}`}
+                    />
+                  </td>
                   <td className="border border-[#D0D5DD] px-2 py-1 text-xs text-[#667085]">{formatDate(it.updated_at)}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1">
+                    {it.has_sap_link ? (
+                      <div className="flex items-center gap-1.5">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => openPushDialog(it)}
+                          disabled={it.msl == null && it.lead_time_days == null}
+                          className="h-6 text-xs rounded-sm border-[#D0D5DD] text-[#344054] px-2"
+                          data-testid={`push-to-sap-button-${it.product_id}`}
+                        >
+                          <CloudArrowUp size={12} className="mr-1" />
+                          Push to SAP
+                        </Button>
+                        {it.sap_pushed_at && (
+                          <span className="text-xs text-[#667085]" title={formatDate(it.sap_pushed_at)}>
+                            <ArrowClockwise size={10} className="inline mr-0.5" />
+                            {formatDate(it.sap_pushed_at)}
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-[#98A2B3]" title="Open this part in BOM Explorer or a Purchasing Plan run first to capture its SAP link">
+                        No SAP link yet
+                      </span>
+                    )}
+                  </td>
                 </tr>
               ))}
               {filteredSorted.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="admin-no-components">
+                  <td colSpan={9} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="admin-no-components">
                     {loading
                       ? "Loading components..."
                       : items.length === 0
@@ -512,6 +625,64 @@ export default function AdminPage() {
           <p className="text-xs text-[#667085] font-sans">
             New categories are immediately available for manual selection and future AI categorization.
           </p>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!pushDialogItem} onOpenChange={(open) => !open && setPushDialogItem(null)}>
+        <DialogContent className="max-w-md" data-testid="push-to-sap-dialog">
+          <DialogHeader>
+            <DialogTitle className="font-heading text-base">Push to SAP: {pushDialogItem?.product_id}</DialogTitle>
+          </DialogHeader>
+          {pushDialogLoading ? (
+            <div className="flex items-center gap-2 text-sm text-[#475467] py-4" data-testid="push-to-sap-loading">
+              <ArrowClockwise size={14} className="animate-spin" />
+              Pulling current SAP values for comparison...
+            </div>
+          ) : pushDialogSapData?.error ? (
+            <div className="text-sm text-[#B42318] py-2" data-testid="push-to-sap-error">
+              Could not load SAP values: {pushDialogSapData.error}
+            </div>
+          ) : (
+            <div className="grid grid-cols-3 gap-2 text-sm py-2" data-testid="push-to-sap-comparison">
+              <div className="font-heading text-xs font-bold text-[#667085] uppercase">Field</div>
+              <div className="font-heading text-xs font-bold text-[#667085] uppercase">Current SAP</div>
+              <div className="font-heading text-xs font-bold text-[#004B87] uppercase">Pushing</div>
+              <div className="text-[#344054]">Safety Stock</div>
+              <div className="tabular-nums text-[#667085]" data-testid="push-to-sap-current-safety-stock">
+                {pushDialogSapData?.safety_stock ?? "—"} {pushDialogSapData?.unit_code || ""}
+              </div>
+              <div className="tabular-nums font-bold text-[#004B87]">{pushDialogItem?.msl ?? "—"}</div>
+              <div className="text-[#344054]">Lead Time</div>
+              <div className="tabular-nums text-[#667085]" data-testid="push-to-sap-current-lead-time">
+                {pushDialogSapData?.lead_time_days ?? "—"} day(s)
+              </div>
+              <div className="tabular-nums font-bold text-[#004B87]">{pushDialogItem?.lead_time_days ?? "—"} day(s)</div>
+            </div>
+          )}
+          <p className="text-xs text-[#667085] font-sans">
+            Applies identically to all {pushDialogSapData?.planning_area_count || ""} Supply Planning Area(s) for this material in SAP.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setPushDialogItem(null)}
+              className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
+              data-testid="push-to-sap-cancel-button"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={confirmPushToSap}
+              disabled={pushing || pushDialogLoading || !!pushDialogSapData?.error}
+              className="h-8 bg-[#004B87] hover:bg-[#003A6A] text-white text-xs rounded-sm"
+              data-testid="push-to-sap-confirm-button"
+            >
+              <CloudArrowUp size={13} className="mr-1.5" />
+              {pushing ? "Pushing..." : "Confirm Push"}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

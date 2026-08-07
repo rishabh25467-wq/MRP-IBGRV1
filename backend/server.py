@@ -15,6 +15,7 @@ from starlette.middleware.cors import CORSMiddleware
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
+from sap_planning_client import SAPPlanningClient, SAPPlanningError
 from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category
 from oms_client import OMSClient, OMSError
 from purchasing_plan import (
@@ -49,6 +50,12 @@ sap_valuation_client = SAPValuationClient(
 
 sap_inventory_client = SAPInventoryClient(
     report_url=os.environ['SAP_INVENTORY_ODATA_URL'],
+    username=os.environ['SAP_ODATA_USERNAME'],
+    password=os.environ['SAP_ODATA_PASSWORD'],
+)
+
+sap_planning_client = SAPPlanningClient(
+    base_url=os.environ['SAP_PLANNING_ODATA_BASE_URL'],
     username=os.environ['SAP_ODATA_USERNAME'],
     password=os.environ['SAP_ODATA_PASSWORD'],
 )
@@ -223,7 +230,7 @@ async def start_purchasing_plan_job(payload: Optional[PurchasingPlanGenerateRequ
             # Classify every leaf component by material/type category (same AI
             # categorizer the BOM Explorer uses) so the plan can be split/grouped
             # by category - best-effort, a categorizer hiccup shouldn't fail the plan.
-            items = [{"product_id": c["product_id"], "description": c["description"]} for c in result["components"]]
+            items = [{"product_id": c["product_id"], "description": c["description"], "product_uuid": c.get("product_uuid")} for c in result["components"]]
             if items:
                 try:
                     categories = await categorize_items(items, db)
@@ -396,17 +403,24 @@ class ComponentMasterItem(BaseModel):
     category: Optional[str] = None
     category_source: Optional[str] = None
     msl: Optional[float] = None
+    lead_time_days: Optional[float] = None
+    has_sap_link: bool = False
+    sap_pushed_at: Optional[str] = None
     updated_at: Optional[str] = None
 
 
 def _to_component_master_item(doc: dict) -> ComponentMasterItem:
     updated_at = doc.get("categorized_at") or doc.get("created_at")
+    sap_pushed_at = doc.get("sap_pushed_at")
     return ComponentMasterItem(
         product_id=doc["_id"],
         description=doc.get("description"),
         category=doc.get("category"),
         category_source=doc.get("category_source"),
         msl=doc.get("msl"),
+        lead_time_days=doc.get("lead_time_days"),
+        has_sap_link=bool(doc.get("product_uuid")),
+        sap_pushed_at=sap_pushed_at.isoformat() if sap_pushed_at else None,
         updated_at=updated_at.isoformat() if updated_at else None,
     )
 
@@ -433,6 +447,7 @@ async def list_admin_components():
 class UpdateComponentMasterRequest(BaseModel):
     category: Optional[str] = None
     msl: Optional[float] = None
+    lead_time_days: Optional[float] = None
 
 
 @api_router.patch("/admin/components/{product_id}", response_model=ComponentMasterItem)
@@ -440,7 +455,8 @@ async def update_admin_component(product_id: str, payload: UpdateComponentMaster
     """Manually correct a component's category (marks it category_source
     "manual" so it's never overwritten by a bulk Re-Categorise) and/or set
     its Minimum Stock Level, which the Purchasing Plan's netting math reads
-    directly (see purchasing_plan.get_component_msl)."""
+    directly (see purchasing_plan.get_component_msl), and/or its Procurement
+    Lead Time (used only by the SAP Push-to-SAP write-back)."""
     update = {}
     if payload.category is not None:
         update["category"] = payload.category
@@ -448,8 +464,10 @@ async def update_admin_component(product_id: str, payload: UpdateComponentMaster
         update["categorized_at"] = datetime.now(timezone.utc)
     if payload.msl is not None:
         update["msl"] = payload.msl
+    if payload.lead_time_days is not None:
+        update["lead_time_days"] = payload.lead_time_days
     if not update:
-        raise HTTPException(status_code=400, detail="Provide category and/or msl to update")
+        raise HTTPException(status_code=400, detail="Provide category, msl and/or lead_time_days to update")
 
     def apply():
         db["component_master"].update_one({"_id": product_id}, {"$set": update}, upsert=True)
@@ -502,6 +520,83 @@ async def recategorize_components(payload: RecategorizeRequest):
 
     await asyncio.to_thread(persist)
     return RecategorizeResponse(categories=ai_results, skipped_manual=skipped)
+
+
+class SapPlanningDataResponse(BaseModel):
+    safety_stock: Optional[float] = None
+    lead_time_days: Optional[float] = None
+    unit_code: Optional[str] = None
+    planning_area_count: int = 0
+
+
+@api_router.get("/admin/components/{product_id}/sap-planning", response_model=SapPlanningDataResponse)
+async def get_sap_planning_data(product_id: str):
+    """Pulls SAP's current Safety Stock / Procurement Lead Time for this
+    component (representative value across its Supply Planning Areas) so
+    the Admin page can show it side-by-side with the app's MSL/Lead Time
+    before an operator decides to push. Requires the component to have been
+    seen in a BOM Explorer search or Purchasing Plan run at least once
+    (that's what captures its SAP product_uuid)."""
+    doc = await asyncio.to_thread(db["component_master"].find_one, {"_id": product_id})
+    product_uuid = (doc or {}).get("product_uuid")
+    if not product_uuid:
+        raise HTTPException(status_code=404, detail="This component has no known SAP link yet - open it in BOM Explorer or a Purchasing Plan run first")
+
+    try:
+        planning = await asyncio.to_thread(sap_planning_client.get_planning_data, [product_uuid])
+    except SAPPlanningError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    data = planning.get(product_uuid.upper())
+    if not data:
+        raise HTTPException(status_code=404, detail="SAP has no Supply Planning record for this material")
+    return SapPlanningDataResponse(
+        safety_stock=data["safety_stock"], lead_time_days=data["lead_time_days"],
+        unit_code=data["unit_code"], planning_area_count=data["planning_area_count"],
+    )
+
+
+class PushToSapResponse(BaseModel):
+    planning_areas_updated: int
+    safety_stock: Optional[float] = None
+    lead_time_days: Optional[float] = None
+
+
+@api_router.post("/admin/components/{product_id}/push-to-sap", response_model=PushToSapResponse)
+async def push_component_to_sap(product_id: str):
+    """Pushes this component's app-side MSL -> SAP Safety Stock and
+    Lead Time (Days) -> SAP Procurement Lead Time, applied identically to
+    EVERY Supply Planning Area row for this material (the tenant has no
+    single "canonical" site, so all are kept in sync). Requires at least
+    one of msl/lead_time_days to already be set via the PATCH endpoint."""
+    doc = await asyncio.to_thread(db["component_master"].find_one, {"_id": product_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Unknown component")
+    product_uuid = doc.get("product_uuid")
+    if not product_uuid:
+        raise HTTPException(status_code=404, detail="This component has no known SAP link yet - open it in BOM Explorer or a Purchasing Plan run first")
+    msl = doc.get("msl")
+    lead_time_days = doc.get("lead_time_days")
+    if msl is None and lead_time_days is None:
+        raise HTTPException(status_code=400, detail="Set an MSL and/or Lead Time (Days) for this component before pushing")
+
+    try:
+        planning = await asyncio.to_thread(sap_planning_client.get_planning_data, [product_uuid])
+        data = planning.get(product_uuid.upper())
+        if not data:
+            raise HTTPException(status_code=404, detail="SAP has no Supply Planning record for this material")
+        updated = await asyncio.to_thread(
+            sap_planning_client.push_planning_data, product_uuid, data["rows"], msl, lead_time_days
+        )
+    except SAPPlanningError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    await asyncio.to_thread(
+        db["component_master"].update_one,
+        {"_id": product_id},
+        {"$set": {"sap_pushed_at": datetime.now(timezone.utc)}},
+    )
+    return PushToSapResponse(planning_areas_updated=updated, safety_stock=msl, lead_time_days=lead_time_days)
 
 
 class AddCategoryRequest(BaseModel):

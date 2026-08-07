@@ -179,6 +179,11 @@ async def categorize_items(items: list[dict], db) -> dict:
                  "$setOnInsert": {"created_at": datetime.now(timezone.utc)}},
                 upsert=True,
             )
+        # product_uuid is needed for the SAP Safety Stock/Lead Time write-back
+        # (Admin > Push to SAP) - persist it whenever we see it, even for
+        # already-categorized items, since older records may predate this.
+        if item.get("product_uuid"):
+            collection.update_one({"_id": item["product_id"]}, {"$set": {"product_uuid": item["product_uuid"]}})
 
     if not to_categorize:
         return results
