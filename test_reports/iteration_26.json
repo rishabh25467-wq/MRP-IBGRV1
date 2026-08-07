@@ -1,0 +1,32 @@
+{
+  "summary": "Tested Indian number formatting (en-IN locale) rollout and new Sale Price/Sale Value columns in Sales Plan Lookup dialog. Sales Plan Lookup dialog fully verified end-to-end: 58 items loaded from OMS, Sale Price (native currency, e.g. 'USD 4.31') and Sale Value (INR) columns render correctly in Indian comma format (e.g. 'INR 1,57,06,329.60'), row expansion shows correct per-customer sub-rows, and the totals footer (data-testid=sales-plan-totals-row) is mathematically exact - verified via direct API sum: qty 571756 -> displayed '5,71,756', value 266755437.69 -> displayed 'INR 26,67,55,437.69'. Backend GET /api/sales-plan confirmed returning real price/currency/total_sale_value_inr/sale_value_inr fields (curl sanity check passed). BOM Explorer and Purchasing Plan formatMoney/formatQty/toLocaleString code reviewed and confirmed using 'en-IN' locale in both files (BomExplorerPage.js lines 535/680/690, PurchasingPlanPage.js lines 54/57). Quantity columns on Purchasing Plan (e.g. '2,36,68,699.29', '50,894.18') visually confirmed rendering Indian grouping correctly. HOWEVER: could not visually verify the money/Value columns and Gross/Net Value stat cards on Purchasing Plan or Std Cost/Ext Cost on BOM Explorer because the live SAP valuation OData endpoint (materialvaluationdata) is currently timing out/unreachable (ConnectTimeoutError, consistently failing for the entire test session from 03:19 to 10:03 UTC per backend logs) - this caused unit_cost=null for all 959 components in the generated plan and 502s on /api/bom/standard-costs. This is a live third-party SAP connectivity issue, unrelated to the Indian-formatting code change, and not something I can fix. Code review of the formatMoney function confirms it would render correctly once real cost data flows through (same toLocaleString('en-IN') function already proven correct via the Sales Plan dialog and quantity columns). Light regression: Admin page (Category Master, Lead Time column, Push to SAP column) loads correctly with no errors.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "SAP OData materialvaluationdata (via /api/bom/standard-costs and purchasing-plan/generate)", "issue": "Live SAP ByD valuation endpoint (my431827.businessbydesign.cloud.sap) is timing out consistently (ConnectTimeoutError, connect timeout=30) throughout the entire test session. This causes standard-costs to return 502 and all components in a generated purchasing plan to have unit_cost=null / value_by_month=null, making Gross Value/Net Purchase Value stat cards and per-row Value columns show 0.00 regardless of the Indian-formatting fix. This is a live infra/SAP-tenant issue, not a regression from this round of changes - the OMS-sourced Sales Plan Lookup (unaffected by this SAP endpoint) worked perfectly."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": []
+  },
+  "design_issues": [],
+  "test_report_links": [],
+  "action_items": [
+    "No code fix needed for the Indian-formatting feature itself - implementation verified correct via code review + Sales Plan Lookup dialog + quantity columns.",
+    "Investigate/monitor SAP ByD valuation endpoint (materialvaluationdata) connectivity - it has been timing out for the full test session, blocking visual confirmation of money formatting on Purchasing Plan stat cards / table Value columns and BOM Explorer Std Cost/Ext Cost columns. Recommend main agent retry BOM Explorer 'Load Standard Costs' and Purchasing Plan generation once SAP tenant connectivity is stable to get a final visual confirmation, though the underlying code is sound."
+  ],
+  "critical_code_review_comments": [
+    "formatQty/formatMoney in PurchasingPlanPage.js (lines 54-57) and toLocaleString('en-IN',...) calls in BomExplorerPage.js (lines 535, 680, 690) correctly use en-IN locale - verified producing correct Indian grouping (e.g. 5,71,756 and 26,67,55,437.69) via the Sales Plan Lookup dialog which is unaffected by SAP flakiness.",
+    "Sales Plan Lookup totals footer math is exact - manually summed all 58 items' total_qty and total_sale_value_inr via direct API call and it matched the displayed grand totals exactly (571756 and 266755437.69).",
+    "Server.py SalesPlanItem/SalesPlanCustomerQty extension with currency/price/total_sale_value_inr/sale_value_inr fields is working correctly end-to-end from OMS to UI."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (sales-plan endpoint verified)", "frontend": "100% for Sales Plan Lookup dialog; unable to visually confirm money formatting on Purchasing Plan/BOM Explorer due to unrelated live SAP valuation endpoint outage"},
+  "test_credentials": "N/A - no app-level auth",
+  "seed_data_creation": "None - used existing live data (month 2026-09 for sales plan, part 100010102-A for BOM explorer)",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Indian number formatting feature and Sales Plan Lookup Sale Price/Sale Value columns are fully verified and working correctly (both backend and frontend). The only open item is a live SAP ByD valuation endpoint (materialvaluationdata) connectivity timeout that has been ongoing throughout this test session (unrelated to current changes) - it prevents fetching Std Cost/Ext Cost on BOM Explorer and Gross/Net Value on Purchasing Plan (all show 0.00/— because unit_cost comes back null from SAP). If this SAP endpoint recovers, main agent or next tester should do one quick visual pass on Purchasing Plan stat cards and BOM Explorer cost columns to confirm Indian formatting renders with real non-null numbers (code is already correct, just needs live data to render against).",
+  "rca_of_the_issue": "SAP ByD OData valuation endpoint (my431827.businessbydesign.cloud.sap/sap/byd/odata/cust/v1/materialvaluationdata/...) is throwing ConnectTimeoutError (connect timeout=30s) consistently since at least 03:19 UTC through 10:03 UTC in backend logs. This is a live external SAP tenant reachability issue, not caused by the Indian-formatting/Sales-Plan code changes under test. No code fix possible from this side; recommend main agent check SAP tenant status or retry later."
+}

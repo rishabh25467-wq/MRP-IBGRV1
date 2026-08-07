@@ -326,12 +326,17 @@ async def set_part_override(payload: SetPartOverrideRequest):
 class SalesPlanCustomerQty(BaseModel):
     customer_name: str
     qty: float
+    price: Optional[float] = None
+    sale_value_inr: Optional[float] = None
 
 
 class SalesPlanItem(BaseModel):
     part_no: str
     description: Optional[str] = None
+    currency: Optional[str] = None
+    price: Optional[float] = None
     total_qty: float
+    total_sale_value_inr: Optional[float] = None
     customers: List[SalesPlanCustomerQty]
 
 

@@ -532,7 +532,7 @@ export default function BomExplorerPage() {
             value={
               costsLoaded && result
                 ? Object.entries(computeTotalCost(result.tree, costs))
-                    .map(([currency, total]) => `${currency} ${total.toFixed(2)}`)
+                    .map(([currency, total]) => `${currency} ${total.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
                     .join(" + ") || "No cost data"
                 : "—"
             }
@@ -677,7 +677,7 @@ export default function BomExplorerPage() {
                         <span className="text-[#98A2B3]">…</span>
                       ) : costsLoaded ? (
                         costs[(node.product_uuid || "").toUpperCase()] ? (
-                          `${costs[node.product_uuid.toUpperCase()].currency || ""} ${costs[node.product_uuid.toUpperCase()].amount.toFixed(2)}`
+                          `${costs[node.product_uuid.toUpperCase()].currency || ""} ${costs[node.product_uuid.toUpperCase()].amount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                         ) : (
                           <span className="text-[#98A2B3]">No cost</span>
                         )
@@ -687,7 +687,7 @@ export default function BomExplorerPage() {
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828] font-medium" data-testid={`bom-ext-cost-${path}`}>
                       {costsLoaded && costs[(node.product_uuid || "").toUpperCase()] && node.quantity != null
-                        ? `${costs[node.product_uuid.toUpperCase()].currency || ""} ${(costs[node.product_uuid.toUpperCase()].amount * node.quantity).toFixed(2)}`
+                        ? `${costs[node.product_uuid.toUpperCase()].currency || ""} ${(costs[node.product_uuid.toUpperCase()].amount * node.quantity).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                         : <span className="text-[#98A2B3]">—</span>}
                     </td>
                   </tr>

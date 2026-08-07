@@ -51,10 +51,10 @@ const formatMonth = (monthStr) => {
   return new Date(year, month - 1, 1).toLocaleDateString("en-US", { month: "short", year: "numeric" });
 };
 
-const formatQty = (value) => (value == null ? "—" : value.toLocaleString(undefined, { maximumFractionDigits: 2 }));
+const formatQty = (value) => (value == null ? "—" : value.toLocaleString("en-IN", { maximumFractionDigits: 2 }));
 
 const formatMoney = (value, currency) =>
-  value == null ? "—" : `${currency || ""} ${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  value == null ? "—" : `${currency || ""} ${value.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 const FRESHNESS_SLA_HOURS = 12;
 
@@ -1005,7 +1005,7 @@ export default function PurchasingPlanPage() {
       </main>
 
       <Dialog open={salesPlanOpen} onOpenChange={setSalesPlanOpen}>
-        <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col" data-testid="sales-plan-dialog">
+        <DialogContent className="max-w-4xl max-h-[85vh] flex flex-col" data-testid="sales-plan-dialog">
           <DialogHeader>
             <DialogTitle className="font-heading text-base">Sales Plan Lookup (from OMS)</DialogTitle>
           </DialogHeader>
@@ -1063,6 +1063,12 @@ export default function PurchasingPlanPage() {
                     <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase">
                       Total Planned Qty
                     </th>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase">
+                      Sale Price
+                    </th>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase">
+                      Sale Value (INR)
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1084,6 +1090,12 @@ export default function PurchasingPlanPage() {
                           <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums font-bold text-[#101828]" data-testid={`sales-plan-total-qty-${it.part_no}`}>
                             {formatQty(it.total_qty)}
                           </td>
+                          <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]" data-testid={`sales-plan-price-${it.part_no}`}>
+                            {formatMoney(it.price, it.currency)}
+                          </td>
+                          <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums font-bold text-[#101828]" data-testid={`sales-plan-value-${it.part_no}`}>
+                            {formatMoney(it.total_sale_value_inr, "INR")}
+                          </td>
                         </tr>
                         {isExpanded &&
                           it.customers.map((cust) => (
@@ -1095,6 +1107,12 @@ export default function PurchasingPlanPage() {
                               <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467] text-xs">
                                 {formatQty(cust.qty)}
                               </td>
+                              <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467] text-xs">
+                                {formatMoney(cust.price, it.currency)}
+                              </td>
+                              <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467] text-xs">
+                                {formatMoney(cust.sale_value_inr, "INR")}
+                              </td>
                             </tr>
                           ))}
                       </Fragment>
@@ -1102,12 +1120,26 @@ export default function PurchasingPlanPage() {
                   })}
                   {!salesPlanLoading && filteredSalesPlanItems.length === 0 && (
                     <tr>
-                      <td colSpan={4} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="sales-plan-no-items">
+                      <td colSpan={6} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="sales-plan-no-items">
                         No sales plan items found for {formatMonth(salesPlanMonth)}
                       </td>
                     </tr>
                   )}
                 </tbody>
+                {!salesPlanLoading && filteredSalesPlanItems.length > 0 && (
+                  <tfoot>
+                    <tr className="bg-[#EAECF0] sticky bottom-0" data-testid="sales-plan-totals-row">
+                      <td className="border border-[#D0D5DD]" colSpan={3}></td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums font-heading font-bold text-[#101828]" data-testid="sales-plan-total-qty-grand">
+                        {formatQty(filteredSalesPlanItems.reduce((sum, it) => sum + (it.total_qty || 0), 0))}
+                      </td>
+                      <td className="border border-[#D0D5DD]"></td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums font-heading font-bold text-[#101828]" data-testid="sales-plan-total-value-grand">
+                        {formatMoney(filteredSalesPlanItems.reduce((sum, it) => sum + (it.total_sale_value_inr || 0), 0), "INR")}
+                      </td>
+                    </tr>
+                  </tfoot>
+                )}
               </table>
             )}
           </div>

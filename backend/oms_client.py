@@ -108,9 +108,14 @@ class OMSClient:
         """Full sales plan for a 'YYYY-MM' month - the same underlying
         forecast get_monthly_demand() aggregates, but returned per part with
         a per-customer breakdown instead of collapsed into a single number.
+        Also carries unit `price` (native currency) and `sale_value_inr`
+        (price x qty converted to INR) straight from the OMS "parts" payload
+        - the same fields behind OMS's own Insights > Monthly Sales screen.
         Backs the Purchasing Plan page's "Sales Plan Lookup" popup. Returns
-        [{part_no, description, total_qty, customers: [{customer_name, qty}]}]
-        sorted by part_no, each part's customers sorted by qty descending."""
+        [{part_no, description, currency, price, total_qty,
+        total_sale_value_inr, customers: [{customer_name, qty, price,
+        sale_value_inr}]}] sorted by part_no, each part's customers sorted
+        by qty descending."""
         customers = self.get_customers(month)
 
         def fetch(customer_name):
@@ -129,17 +134,25 @@ class OMSClient:
             for part in parts:
                 part_no = part.get("part_no")
                 qty = part.get("planned_qty") or 0
+                sale_value_inr = part.get("planned_inr") or 0
                 if not part_no:
                     continue
                 entry = by_part.setdefault(part_no, {
                     "part_no": part_no,
                     "description": part.get("name"),
+                    "currency": part.get("currency"),
+                    "price": part.get("price"),
                     "total_qty": 0.0,
+                    "total_sale_value_inr": 0.0,
                     "customers": [],
                 })
                 entry["total_qty"] += qty
+                entry["total_sale_value_inr"] += sale_value_inr
                 if qty:
-                    entry["customers"].append({"customer_name": customer_name, "qty": qty})
+                    entry["customers"].append({
+                        "customer_name": customer_name, "qty": qty,
+                        "price": part.get("price"), "sale_value_inr": sale_value_inr,
+                    })
 
         for entry in by_part.values():
             entry["customers"].sort(key=lambda c: -c["qty"])
