@@ -73,11 +73,17 @@ class OMSClient:
     def get_customers(self, month: str) -> list:
         return self._get("/api/ms/sales-monthly/customers", {"month": month}).get("customers", [])
 
-    def get_parts(self, month: str, customer: str) -> list:
-        return self._get(
-            "/api/ms/sales-monthly/parts",
-            {"month": month, "customer": customer, "view": "fulfilment"},
-        ).get("parts", [])
+    def get_parts(self, month: str, customer: str, view: str = "fulfilment") -> list:
+        """view='fulfilment' -> planned_qty/shipped_qty/open_qty fields (used
+        by the Purchasing Plan's demand aggregation). view=None -> the OMS's
+        DEFAULT "Sales" view fields (expected_qty/expected_inr/actual_qty/
+        actual_inr) - this is what OMS's own Insights > Monthly Sales screen
+        shows, and what get_sales_plan() uses for Sale Price/Sale Value so
+        it reflects invoice pricing, not a fulfilment-specific number."""
+        params = {"month": month, "customer": customer}
+        if view:
+            params["view"] = view
+        return self._get("/api/ms/sales-monthly/parts", params).get("parts", [])
 
     def get_monthly_demand(self, month: str) -> dict:
         """Aggregates planned (forecast) quantity per OMS part number, across
@@ -108,9 +114,11 @@ class OMSClient:
         """Full sales plan for a 'YYYY-MM' month - the same underlying
         forecast get_monthly_demand() aggregates, but returned per part with
         a per-customer breakdown instead of collapsed into a single number.
-        Also carries unit `price` (native currency) and `sale_value_inr`
-        (price x qty converted to INR) straight from the OMS "parts" payload
-        - the same fields behind OMS's own Insights > Monthly Sales screen.
+        Also carries unit `price` (native currency) and `sale_value_inr`,
+        pulled from the OMS's DEFAULT "Sales" view (expected_qty/
+        expected_inr - the same fields behind OMS's own Insights > Monthly
+        Sales screen) rather than the fulfilment view, so the price/value
+        shown here always reflects invoice pricing, not a fulfilment number.
         Backs the Purchasing Plan page's "Sales Plan Lookup" popup. Returns
         [{part_no, description, currency, price, total_qty,
         total_sale_value_inr, customers: [{customer_name, qty, price,
@@ -120,7 +128,7 @@ class OMSClient:
 
         def fetch(customer_name):
             try:
-                return customer_name, self.get_parts(month, customer_name)
+                return customer_name, self.get_parts(month, customer_name, view=None)
             except OMSError as e:
                 logger.warning(f"Failed to fetch OMS parts for '{customer_name}' in {month}: {e}")
                 return customer_name, []
@@ -133,8 +141,8 @@ class OMSClient:
         for customer_name, parts in results:
             for part in parts:
                 part_no = part.get("part_no")
-                qty = part.get("planned_qty") or 0
-                sale_value_inr = part.get("planned_inr") or 0
+                qty = part.get("expected_qty") or 0
+                sale_value_inr = part.get("expected_inr") or 0
                 if not part_no:
                     continue
                 entry = by_part.setdefault(part_no, {
