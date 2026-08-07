@@ -253,13 +253,30 @@
 - Dev-environment note (not a code defect): running the MRP job while a `--reload`-triggering file edit lands under `/app/backend` can stall the uvicorn worker (recovers with `supervisorctl restart backend`, no data loss - job state is in-memory only, same as Purchasing Plan's pre-existing pattern).
 - Created reference doc `/app/SAP_INTEGRATION_GUIDE.md` at user's request - summarizes every SAP SOAP/OData service, credential, and empirical gotcha this app discovered, for reuse when connecting another app to the same SAP tenant.
 
+## Feature: Production Plan Tables - Search/Sort/Filter + Sticky Header Removal (Feb 2026, Session 10) - COMPLETE
+- Added a shared `SortableHeader` component + `compareValues` helper (client-side, no new API calls) and applied consistently across all 3 Production Plan tabs:
+  - **Open PO Demand**: free-text search (customer/PO/item/description), a "Ship Basis" dropdown filter (All / Ex-Factory Offset / CFS Must-Ship-By), and every column header is now clickable to sort - default sort is Target Ship Date ascending (surfaces the oldest/most-overdue POs first, which is what flagged the OMS data-accuracy bug below).
+  - **BOM Alternates**: search by Product ID + a Status filter (All / Production Choice Made / Auto-Default Only), sortable Product ID/Status headers.
+  - **MRP Plan**: search by Product ID/Description, a "Shortages only" checkbox, sortable headers on every numeric column (default: Total Net Qty descending, unchanged from before) - footer totals now reflect the filtered/searched subset, not the whole plan.
+- Removed the (non-functional, since the actual scroll container was the page's `<main>`, not the table's own wrapper) `sticky top-0` class from the Open PO Demand table header per user's "reduce stickiness" request.
+- Verified live via Playwright: search "walmart" narrows 976→398 rows correctly, sort/shortage-only toggles all confirmed working, no regression on other pages.
+
+## Data-accuracy bug found + escalated to OMS team (not a code fix - external feed issue)
+- User found specific POs (Walmart customer POs 9528550591 / 1529115718 / 0884026160) that OMS shows as CLOSED but the Open-PO Demand feed still returns as open (`qty_open > 0`).
+- Root cause confirmed: all 3 have `qty_shipped = 0` (nothing ever shipped) - so this is not the feed's own documented "split/blanket PO" caveat, but a separate gap: `qty_open` is computed as `qty_ordered - qty_shipped` only, without checking a PO's Closed/Cancelled status in OMS.
+- Wrote a full escalation report with exact `internal_pono` values (9003458, 9004384, 9005961) + 12 more suspicious rows (same shape: qty_shipped=0, target_ship_date >1 month in the past) at `/app/OMS_OPEN_PO_BUG_REPORT.md` for the user to hand to the OMS team. No code change needed on our side - our app always pulls this feed live and displays it accurately; once OMS fixes their `qty_open` logic, our numbers self-correct on next fetch.
+
+## Other artifacts created this session
+- `/app/SAP_INTEGRATION_GUIDE.md` - full reference of every SAP SOAP/OData service, credential, and empirical integration gotcha this app discovered (requested by user for reuse in another app).
+- `/app/OMS_OPEN_PO_BUG_REPORT.md` - escalation report for the OMS team (see above).
+
 ## Backlog / Next Tasks (updated, Session 10)
 - P2: Purchase Order Draft - click a Net Purchase Qty/Net Qty row (Purchasing Plan or MRP Plan) to generate a ready-to-send PO draft for that component
 - P2: SAP Push History Log - audit trail (who/when/what) of every SAP write, stored in Mongo
 - P3: SAP Cost Retry Alert banner when the Standard Costs feed is unreachable, so 0.00/"-" isn't mistaken for real data
 - P3: Entity/company filter on Inventory page (Ray vs Radish - SAP already tags every row with CCO_UUID/company code)
 - P3: Consider paginating/compressing the `GET /api/inventory` cached response server-side if the catalog grows well beyond ~3,200 items
-- P3 (optional, minor per testing agent): Open PO Demand customer filter is exact-match only (external feed contract) - could add helper text or an autocomplete of known customer names to reduce confusion
+- P3 (optional, minor per testing agent): Open PO Demand customer filter is exact-match only (external feed contract) - could add a Customer autocomplete dropdown sourced from the feed's own distinct `customer` values (discussed with user, not yet built)
 
 ## Feature: Enhancements Round 2 (Feb 2026, Session 4)
 - Purchasing Plan Excel export (mirrors BOM Explorer's export pattern) - includes a Category column, plus a "Missing BOMs" sheet when applicable.

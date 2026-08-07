@@ -8,6 +8,7 @@ import {
   ArrowClockwise,
   CaretDown,
   CaretRight,
+  CaretUp,
   CheckCircle,
   XCircle,
   ClockCounterClockwise,
@@ -16,6 +17,7 @@ import {
   TreeStructure,
   CalendarBlank,
   ListChecks,
+  MagnifyingGlass,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -62,6 +64,34 @@ const isoWeekLabel = (isoDate) => {
   return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, "0")}`;
 };
 
+const compareValues = (a, b) => {
+  if (a == null && b == null) return 0;
+  if (a == null) return -1;
+  if (b == null) return 1;
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+};
+
+const SortableHeader = ({ label, field, sortConfig, onSort, className, testId }) => {
+  const sortable = !!field && !!onSort;
+  const active = sortable && sortConfig?.field === field;
+  return (
+    <th
+      className={`bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide ${
+        sortable ? "cursor-pointer hover:bg-[#DCE0E6] select-none" : ""
+      } ${className || ""}`}
+      onClick={sortable ? () => onSort(field) : undefined}
+      data-testid={testId}
+    >
+      <span className="inline-flex items-center gap-1">
+        {label}
+        {active && (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
+      </span>
+    </th>
+  );
+};
+
 // -------------------- Open PO Demand tab --------------------
 const OpenPoDemandTab = () => {
   const [customer, setCustomer] = useState("");
@@ -71,6 +101,9 @@ const OpenPoDemandTab = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [loaded, setLoaded] = useState(false);
+  const [search, setSearch] = useState("");
+  const [basisFilter, setBasisFilter] = useState("all");
+  const [sortConfig, setSortConfig] = useState({ field: "target_ship_date", direction: "asc" });
 
   const fetchDemand = async () => {
     setLoading(true);
@@ -92,6 +125,47 @@ const OpenPoDemandTab = () => {
       setLoading(false);
     }
   };
+
+  const onSort = (field) => {
+    setSortConfig((prev) => (prev.field === field ? { field, direction: prev.direction === "asc" ? "desc" : "asc" } : { field, direction: "asc" }));
+  };
+
+  const getSortValue = (r, field) => {
+    if (field === "customer") return (r.customer || "").toLowerCase();
+    if (field === "customer_po") return (r.customer_po || "").toLowerCase();
+    if (field === "item_code") return (r.item_code || "").toLowerCase();
+    if (field === "description") return (r.description || "").toLowerCase();
+    return r[field];
+  };
+
+  const q = search.trim().toLowerCase();
+  const filteredRows = rows.filter((r) => {
+    if (basisFilter !== "all" && r.target_ship_basis !== basisFilter) return false;
+    if (!q) return true;
+    return (
+      (r.customer || "").toLowerCase().includes(q) ||
+      (r.customer_po || "").toLowerCase().includes(q) ||
+      (r.item_code || "").toLowerCase().includes(q) ||
+      (r.description || "").toLowerCase().includes(q)
+    );
+  });
+  const sortedRows = [...filteredRows].sort((a, b) => {
+    const cmp = compareValues(getSortValue(a, sortConfig.field), getSortValue(b, sortConfig.field));
+    return sortConfig.direction === "asc" ? cmp : -cmp;
+  });
+
+  const columns = [
+    { label: "Customer", field: "customer" },
+    { label: "Customer PO", field: "customer_po" },
+    { label: "Item Code", field: "item_code" },
+    { label: "Description", field: "description" },
+    { label: "Qty Open", field: "qty_open" },
+    { label: "Due Date", field: "due_date" },
+    { label: "Target Ship Date", field: "target_ship_date" },
+    { label: "Basis", field: "target_ship_basis" },
+    { label: "Lead Time (D)", field: "lead_day" },
+    { label: "Invoice Price", field: "invoice_price" },
+  ];
 
   return (
     <div>
@@ -138,6 +212,35 @@ const OpenPoDemandTab = () => {
         )}
       </div>
 
+      {loaded && (
+        <div className="bg-white border border-[#D0D5DD] rounded-sm p-2.5 flex items-center gap-3 flex-wrap mb-3">
+          <div className="relative">
+            <MagnifyingGlass size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
+            <input
+              type="text"
+              placeholder="Search customer, PO, item, description..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="h-8 w-72 pl-7 pr-2 text-[13px] rounded-sm border border-[#D0D5DD] text-[#101828] focus:outline-none focus:border-[#004B87] focus:ring-1 focus:ring-[#004B87]"
+              data-testid="open-po-search-input"
+            />
+          </div>
+          <Select value={basisFilter} onValueChange={setBasisFilter}>
+            <SelectTrigger className="h-8 w-48 text-[13px] rounded-sm border-[#D0D5DD]" data-testid="open-po-basis-filter">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all" data-testid="open-po-basis-filter-all">All Ship Bases</SelectItem>
+              <SelectItem value="ex_factory_offset" data-testid="open-po-basis-filter-exfactory">Ex-Factory Offset</SelectItem>
+              <SelectItem value="cfs_must_ship_by" data-testid="open-po-basis-filter-cfs">CFS Must-Ship-By</SelectItem>
+            </SelectContent>
+          </Select>
+          <span className="text-xs text-[#475467] ml-auto" data-testid="open-po-result-count">
+            Showing {sortedRows.length} of {rows.length} line(s)
+          </span>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-3">
         <StatCard icon={Package} label="Open PO Lines" value={loaded ? meta.count : "—"} testId="stat-open-po-count" />
         <StatCard
@@ -175,15 +278,20 @@ const OpenPoDemandTab = () => {
           <table className="border-collapse w-full text-[13px]" data-testid="open-po-table">
             <thead>
               <tr>
-                {["Customer", "Customer PO", "Item Code", "Description", "Qty Open", "Due Date", "Target Ship Date", "Basis", "Lead Time (D)", "Invoice Price"].map((h) => (
-                  <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide sticky top-0">
-                    {h}
-                  </th>
+                {columns.map((col) => (
+                  <SortableHeader
+                    key={col.label}
+                    label={col.label}
+                    field={col.field}
+                    sortConfig={sortConfig}
+                    onSort={onSort}
+                    testId={`open-po-sort-${col.field}`}
+                  />
                 ))}
               </tr>
             </thead>
             <tbody>
-              {rows.map((r, i) => (
+              {sortedRows.map((r, i) => (
                 <tr key={`${r.internal_pono}-${r.item_code}-${i}`} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`open-po-row-${i}`}>
                   <td className="border border-[#D0D5DD] px-2 py-1 text-[#101828]">{r.customer || "—"}</td>
                   <td className="border border-[#D0D5DD] px-2 py-1 text-[#101828]">{r.customer_po || "—"}</td>
@@ -201,10 +309,10 @@ const OpenPoDemandTab = () => {
                   <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">{formatMoney(r.invoice_price, r.currency)}</td>
                 </tr>
               ))}
-              {rows.length === 0 && (
+              {sortedRows.length === 0 && (
                 <tr>
                   <td colSpan={10} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="open-po-no-rows">
-                    No open PO demand found for the given filters
+                    No open PO demand matches the current search/filters
                   </td>
                 </tr>
               )}
@@ -231,6 +339,9 @@ const BomAlternatesTab = () => {
   const [selections, setSelections] = useState({});
   const [saving, setSaving] = useState({});
   const [loaded, setLoaded] = useState(false);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [sortConfig, setSortConfig] = useState({ field: "product_id", direction: "asc" });
 
   const load = async () => {
     setLoading(true);
@@ -304,6 +415,24 @@ const BomAlternatesTab = () => {
     );
   }
 
+  const onSort = (field) => {
+    setSortConfig((prev) => (prev.field === field ? { field, direction: prev.direction === "asc" ? "desc" : "asc" } : { field, direction: "asc" }));
+  };
+
+  const q = search.trim().toLowerCase();
+  const filteredItems = items.filter((it) => {
+    if (statusFilter === "resolved" && !it.resolved_bom_id) return false;
+    if (statusFilter === "default" && it.resolved_bom_id) return false;
+    if (!q) return true;
+    return it.product_id.toLowerCase().includes(q);
+  });
+  const sortedItems = [...filteredItems].sort((a, b) => {
+    const va = sortConfig.field === "status" ? (a.resolved_bom_id ? 1 : 0) : a.product_id.toLowerCase();
+    const vb = sortConfig.field === "status" ? (b.resolved_bom_id ? 1 : 0) : b.product_id.toLowerCase();
+    const cmp = compareValues(va, vb);
+    return sortConfig.direction === "asc" ? cmp : -cmp;
+  });
+
   return (
     <div>
       <p className="text-[13px] text-[#475467] mb-3">
@@ -312,6 +441,36 @@ const BomAlternatesTab = () => {
         defaults to the highest revision until production makes a standing choice here - the choice applies
         globally, everywhere this component is used (BOM Explorer, Purchasing Plan, MRP).
       </p>
+
+      {loaded && items.length > 0 && (
+        <div className="bg-white border border-[#D0D5DD] rounded-sm p-2.5 flex items-center gap-3 flex-wrap mb-3">
+          <div className="relative">
+            <MagnifyingGlass size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
+            <input
+              type="text"
+              placeholder="Search product ID..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="h-8 w-60 pl-7 pr-2 text-[13px] rounded-sm border border-[#D0D5DD] text-[#101828] focus:outline-none focus:border-[#004B87] focus:ring-1 focus:ring-[#004B87]"
+              data-testid="bom-alternates-search-input"
+            />
+          </div>
+          <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <SelectTrigger className="h-8 w-52 text-[13px] rounded-sm border-[#D0D5DD]" data-testid="bom-alternates-status-filter">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all" data-testid="bom-alternates-status-filter-all">All Statuses</SelectItem>
+              <SelectItem value="resolved" data-testid="bom-alternates-status-filter-resolved">Production Choice Made</SelectItem>
+              <SelectItem value="default" data-testid="bom-alternates-status-filter-default">Auto-Default Only</SelectItem>
+            </SelectContent>
+          </Select>
+          <span className="text-xs text-[#475467] ml-auto" data-testid="bom-alternates-result-count">
+            Showing {sortedItems.length} of {items.length}
+          </span>
+        </div>
+      )}
+
       {loaded && items.length === 0 ? (
         <div className="border border-dashed border-[#D0D5DD] rounded-sm py-16 flex flex-col items-center gap-3 text-[#98A2B3] bg-white" data-testid="bom-alternates-empty-state">
           <TreeStructure size={28} weight="regular" />
@@ -322,14 +481,14 @@ const BomAlternatesTab = () => {
           <table className="border-collapse w-full text-[13px]" data-testid="bom-alternates-table">
             <thead>
               <tr>
-                <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">Product ID</th>
-                <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">Status</th>
+                <SortableHeader label="Product ID" field="product_id" sortConfig={sortConfig} onSort={onSort} testId="bom-alternates-sort-product-id" />
+                <SortableHeader label="Status" field="status" sortConfig={sortConfig} onSort={onSort} testId="bom-alternates-sort-status" />
                 <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">Choose BOM Revision</th>
                 <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {items.map((it, i) => (
+              {sortedItems.map((it, i) => (
                 <tr key={it.product_id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`bom-alternate-row-${i}`}>
                   <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium text-[#101828]">{it.product_id}</td>
                   <td className="border border-[#D0D5DD] px-2 py-1.5">
@@ -384,6 +543,13 @@ const BomAlternatesTab = () => {
                   </td>
                 </tr>
               ))}
+              {sortedItems.length === 0 && items.length > 0 && (
+                <tr>
+                  <td colSpan={4} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="bom-alternates-no-match">
+                    No components match the current search/filters
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -401,6 +567,9 @@ const MrpPlanTab = () => {
   const [customer, setCustomer] = useState("");
   const [groupBy, setGroupBy] = useState("flat"); // "flat" | "month" | "week"
   const [expanded, setExpanded] = useState(new Set());
+  const [search, setSearch] = useState("");
+  const [shortageOnly, setShortageOnly] = useState(false);
+  const [sortConfig, setSortConfig] = useState({ field: "total_net_qty", direction: "desc" });
 
   const POLL_INTERVAL_MS = 3000;
   const MAX_POLL_MS = 15 * 60 * 1000;
@@ -465,6 +634,36 @@ const MrpPlanTab = () => {
   const totalGross = plan ? plan.components.reduce((s, c) => s + c.total_gross_qty, 0) : 0;
   const shortageCount = plan ? plan.components.filter((c) => c.total_net_qty > 0).length : 0;
 
+  const onSort = (field) => {
+    setSortConfig((prev) => (prev.field === field ? { field, direction: prev.direction === "asc" ? "desc" : "asc" } : { field, direction: "asc" }));
+  };
+
+  const q = search.trim().toLowerCase();
+  const filteredComponents = plan
+    ? plan.components.filter((c) => {
+        if (shortageOnly && !(c.total_net_qty > 0)) return false;
+        if (!q) return true;
+        return c.product_id.toLowerCase().includes(q) || (c.description || "").toLowerCase().includes(q);
+      })
+    : [];
+  const getMrpSortValue = (c, field) => (field === "product_id" ? c.product_id.toLowerCase() : c[field]);
+  const sortedComponents = [...filteredComponents].sort((a, b) => {
+    const cmp = compareValues(getMrpSortValue(a, sortConfig.field), getMrpSortValue(b, sortConfig.field));
+    return sortConfig.direction === "asc" ? cmp : -cmp;
+  });
+  const filteredTotalNet = sortedComponents.reduce((s, c) => s + c.total_net_qty, 0);
+  const filteredTotalGross = sortedComponents.reduce((s, c) => s + c.total_gross_qty, 0);
+
+  const mrpColumns = [
+    { label: "Product ID", field: "product_id" },
+    { label: "Description" },
+    { label: "Lead Time (D)", field: "lead_time_days" },
+    { label: "MSL", field: "msl" },
+    { label: "On-Hand", field: "on_hand_qty" },
+    { label: "Total Gross Qty", field: "total_gross_qty" },
+    { label: "Total Net Qty", field: "total_net_qty" },
+  ];
+
   return (
     <div>
       <div className="bg-white border border-[#D0D5DD] rounded-sm p-2.5 flex items-center gap-3 flex-wrap mb-3">
@@ -510,6 +709,35 @@ const MrpPlanTab = () => {
         )}
       </div>
 
+      {plan && (
+        <div className="bg-white border border-[#D0D5DD] rounded-sm p-2.5 flex items-center gap-3 flex-wrap mb-3">
+          <div className="relative">
+            <MagnifyingGlass size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
+            <input
+              type="text"
+              placeholder="Search product ID or description..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="h-8 w-64 pl-7 pr-2 text-[13px] rounded-sm border border-[#D0D5DD] text-[#101828] focus:outline-none focus:border-[#004B87] focus:ring-1 focus:ring-[#004B87]"
+              data-testid="mrp-search-input"
+            />
+          </div>
+          <label className="flex items-center gap-1.5 text-xs text-[#344054] cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={shortageOnly}
+              onChange={(e) => setShortageOnly(e.target.checked)}
+              className="accent-[#004B87]"
+              data-testid="mrp-shortage-only-toggle"
+            />
+            Shortages only
+          </label>
+          <span className="text-xs text-[#475467] ml-auto" data-testid="mrp-result-count">
+            Showing {sortedComponents.length} of {plan.components.length} component(s)
+          </span>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
         <StatCard icon={Package} label="PO Lines Considered" value={plan ? plan.total_po_lines : "—"} testId="stat-mrp-po-lines" />
         <StatCard icon={Database} label="Components in Demand" value={plan ? plan.components.length : "—"} testId="stat-mrp-components" />
@@ -553,15 +781,21 @@ const MrpPlanTab = () => {
           <table className="border-collapse w-full text-[13px]" data-testid="mrp-table">
             <thead>
               <tr>
-                {["", "Product ID", "Description", "Lead Time (D)", "MSL", "On-Hand", "Total Gross Qty", "Total Net Qty"].map((h) => (
-                  <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
-                    {h}
-                  </th>
+                <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5"></th>
+                {mrpColumns.map((col) => (
+                  <SortableHeader
+                    key={col.label}
+                    label={col.label}
+                    field={col.field}
+                    sortConfig={sortConfig}
+                    onSort={col.field ? onSort : undefined}
+                    testId={col.field ? `mrp-sort-${col.field}` : undefined}
+                  />
                 ))}
               </tr>
             </thead>
             <tbody>
-              {plan.components.map((c, i) => {
+              {sortedComponents.map((c, i) => {
                 const isExpanded = expanded.has(c.product_id);
                 const groups = groupedLines(c.demand_lines);
                 return (
@@ -626,20 +860,22 @@ const MrpPlanTab = () => {
                   </Fragment>
                 );
               })}
-              {plan.components.length === 0 && (
+              {sortedComponents.length === 0 && (
                 <tr>
                   <td colSpan={8} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="mrp-no-components">
-                    No purchasable leaf components found against the current open PO demand
+                    {plan.components.length === 0
+                      ? "No purchasable leaf components found against the current open PO demand"
+                      : "No components match the current search/filters"}
                   </td>
                 </tr>
               )}
             </tbody>
-            {plan.components.length > 0 && (
+            {sortedComponents.length > 0 && (
               <tfoot>
                 <tr className="bg-[#EAECF0]" data-testid="mrp-totals-row">
                   <td className="border border-[#D0D5DD]" colSpan={6}></td>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums font-heading font-bold text-[#101828]">{formatQty(totalGross)}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums font-heading font-bold text-[#B42318]">{formatQty(totalNet)}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums font-heading font-bold text-[#101828]">{formatQty(filteredTotalGross)}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums font-heading font-bold text-[#B42318]">{formatQty(filteredTotalNet)}</td>
                 </tr>
               </tfoot>
             )}
