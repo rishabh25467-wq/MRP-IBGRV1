@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
-mongo_client = MongoClient(os.environ['MONGO_URL'])
+mongo_client = MongoClient(os.environ['MONGO_URL'], tz_aware=True)
 db = mongo_client[os.environ['DB_NAME']]
 
 sap_soap_client = SAPSoapBOMClient(

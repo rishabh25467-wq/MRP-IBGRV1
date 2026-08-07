@@ -24,6 +24,7 @@ responsibilities, cleanly split:
     on a transient error" principle).
 """
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -32,23 +33,37 @@ logger = logging.getLogger(__name__)
 MAX_DEPTH = 6
 MAX_LOOKUPS = 300
 COLLECTION_NAME = "bom_node_cache"
+FETCH_RETRY_ATTEMPTS = 3
 
 
 class _FetchFailed(Exception):
-    """A genuine SAP/network error (timeout, HTTP failure, etc) - distinct
-    from SAP cleanly confirming a product has no BOM. Callers must NOT
-    persist this as a "no BOM" result."""
+    """A genuine SAP/network error (timeout, HTTP failure, etc), even after
+    retries - distinct from SAP cleanly confirming a product has no BOM.
+    Callers must NOT persist this as a "no BOM" result."""
 
 
 def _fetch_live(sap_soap_client, product_id):
     """One lightweight (non-recursive) SAP fetch for a single product's own
     BOM header+items - NOT a full explosion. Returns the raw bom dict, or
-    None if SAP cleanly confirms there is no BOM for this product. Raises
-    _FetchFailed on a network/SAP error."""
-    try:
-        return sap_soap_client._fetch_bom_by_id(product_id) or sap_soap_client._fetch_bom_by_output_product(product_id)
-    except Exception as e:
-        raise _FetchFailed(str(e)) from e
+    None if SAP cleanly confirms there is no BOM for this product. Retries
+    up to FETCH_RETRY_ATTEMPTS times with backoff before raising
+    _FetchFailed - this tenant frequently hits connect-timeouts under the
+    concurrent load a Purchasing Plan run generates, and a single-shot
+    failure was previously indistinguishable from "SAP confirms no BOM",
+    causing materials that genuinely have a BOM in SAP to be misreported as
+    missing (see bug report: dozens of real parts falsely flagged "No SAP
+    BOM found" that resolved fine on a plain retry)."""
+    last_error = None
+    for attempt in range(FETCH_RETRY_ATTEMPTS):
+        try:
+            return sap_soap_client._fetch_bom_by_id(product_id) or sap_soap_client._fetch_bom_by_output_product(product_id)
+        except Exception as e:
+            last_error = e
+            if attempt < FETCH_RETRY_ATTEMPTS - 1:
+                logger.warning(f"BOM fetch attempt {attempt + 1}/{FETCH_RETRY_ATTEMPTS} failed for '{product_id}', retrying: {e}")
+                time.sleep(1.5 * (attempt + 1))
+    raise _FetchFailed(str(last_error)) from last_error
+
 
 
 def _upsert(collection, product_id, raw_bom, changed):
