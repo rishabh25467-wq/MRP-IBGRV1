@@ -96,6 +96,15 @@
 
 ## Backlog / Next Tasks (updated)
 - P2: Persist purchasing plan job history (currently in-memory only, no TTL/cleanup - fine for this single-tenant demo, would need attention for long-lived production use)
+- P1: SAP inventory integration (on-hand stock netted against demand) - AWAITING USER'S SAP TEAM to expose either (a) a Stock Overview report (SCMINVV02) via Analytics OData, or (b) a custom OData service on the Inventory BO (mirroring how MaterialValuationData was exposed for costs). Confirmed design: sum on-hand qty across ALL sites; Net Purchase Qty = max(0, Gross Required Qty - On-Hand Inventory). Blocked until user provides the endpoint/Report ID + credentials.
+
+## Feature: Persistent BOM Cache (Feb 2026, Session 4 cont.)
+- Problem solved: Purchasing Plan generation could take many minutes (re-exploding hundreds of live SAP BOMs on every single click, even for a month generated moments earlier).
+- New `bom_cache_service.py`: MongoDB-backed (`bom_node_cache` collection, one doc per SAP product_id: bom_id/revision, raw groups/items, found flag, last_checked_at/last_changed_at). `build_tree_from_cache()` is the cache-first drop-in replacement for `sap_soap_client.explode_bom()` used by `purchasing_plan.py` - reads from cache (near-instant), lazily fetches+persists any product_id never seen before. `refresh_stale_nodes()` does a lightweight (non-recursive) per-node SAP check and only overwrites the cache entry if the BOM's revision actually changed - a failed/timed-out fetch NEVER erases good cached data, it's just left for retry.
+- Background scheduler in `server.py` (asyncio loop via `@app.on_event("startup")`) runs `refresh_stale_nodes()` every 6 hours (comfortably within the user's 12h freshness requirement). New `GET /api/bom-cache/stats` and `POST /api/bom-cache/refresh` (fire-and-forget - must never block on a live SAP sweep, learned this the hard way mid-implementation after seeing the same ~60s ingress-timeout failure mode as the original purchasing-plan endpoint before it was made async).
+- Verified: cold-cache first run ~30s, warm-cache repeat run ~4-9s for the same month (identical results both times); cache node count grows correctly as new parts are encountered (897->915->933 across test runs) and stabilizes when no new parts appear.
+- Tested via testing_agent_v4 (iteration_19) - 100% backend pass, no bugs. New regression test file `/app/backend/tests/test_bom_cache.py`.
+- NOT YET DONE: SAP inventory netting (see backlog above - blocked on user's SAP team completing setup).
 - P2: Live SAP standard-cost lookup has been observed occasionally returning all-zero/null values on a single run (self-resolves on regenerate) - likely transient demo-tenant flakiness; could add a "looks like $0 for everything, retry?" warning banner if it recurs often
 
 ## Feature: Enhancements Round 3 (Feb 2026, Session 4 cont.)
