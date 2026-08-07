@@ -18,6 +18,7 @@ import {
   CalendarBlank,
   ListChecks,
   MagnifyingGlass,
+  FloppyDisk,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -26,7 +27,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { NavTabs } from "@/components/NavTabs";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -728,6 +730,10 @@ const MrpPlanTab = ({ actorName }) => {
   const [overrideInputs, setOverrideInputs] = useState({});
   const [savingOverride, setSavingOverride] = useState({});
   const [selectedForProductionCount, setSelectedForProductionCount] = useState(null);
+  const [restoredFrom, setRestoredFrom] = useState(null); // {created_at, created_by} when hydrated from autosave
+  const [saveAsOpen, setSaveAsOpen] = useState(false);
+  const [saveAsName, setSaveAsName] = useState("");
+  const [savingPlan, setSavingPlan] = useState(false);
 
   const POLL_INTERVAL_MS = 3000;
   const MAX_POLL_MS = 15 * 60 * 1000;
@@ -743,7 +749,40 @@ const MrpPlanTab = ({ actorName }) => {
 
   useEffect(() => {
     refreshSelectedCount();
+    // Restore the last-generated plan (if any) so a page refresh never
+    // loses it - purely a convenience hydration, "Regenerate" always
+    // available to get a fresh live result.
+    axios
+      .get(`${API}/production-plan/mrp/autosave`)
+      .then(({ data }) => {
+        if (data.found) {
+          setPlan(data.plan);
+          setRestoredFrom({ created_at: data.created_at, created_by: data.created_by });
+        }
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const saveCurrentPlanAs = async () => {
+    if (!actorName.trim()) {
+      toast.error("Enter your name first", { description: "Type your name in the box at the top of the page." });
+      return;
+    }
+    const name = saveAsName.trim();
+    if (!name || !plan) return;
+    setSavingPlan(true);
+    try {
+      await axios.post(`${API}/production-plan/mrp/saved-plans`, { name, actor: actorName.trim(), plan });
+      toast.success(`Saved as "${name}"`, { description: "View it anytime from the Saved Plans tab." });
+      setSaveAsOpen(false);
+      setSaveAsName("");
+    } catch (err) {
+      toast.error("Failed to save plan", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setSavingPlan(false);
+    }
+  };
 
   const generate = async () => {
     setLoading(true);
@@ -751,7 +790,9 @@ const MrpPlanTab = ({ actorName }) => {
     setElapsedSeconds(0);
     const startedAt = Date.now();
     try {
-      const { data } = await axios.post(`${API}/production-plan/mrp/generate`, null, { params: customer.trim() ? { customer: customer.trim() } : {} });
+      const params = customer.trim() ? { customer: customer.trim() } : {};
+      if (actorName.trim()) params.actor = actorName.trim();
+      const { data } = await axios.post(`${API}/production-plan/mrp/generate`, null, { params });
       const jobId = data.job_id;
       // eslint-disable-next-line no-constant-condition
       while (true) {
@@ -761,6 +802,7 @@ const MrpPlanTab = ({ actorName }) => {
         if (job.status === "done") {
           setPlan(job.result);
           setExpanded(new Set());
+          setRestoredFrom(null);
           toast.success("MRP plan generated", {
             description: `${job.result.components.length} component(s) from ${job.result.total_po_lines} selected PO line(s) (of ${job.result.total_open_po_lines} open)`,
           });
@@ -921,6 +963,12 @@ const MrpPlanTab = ({ actorName }) => {
 
   return (
     <div>
+      {restoredFrom && (
+        <div className="mb-3 bg-[#EFF8FF] border border-[#B2DDFF] rounded-sm px-3 py-2 flex items-center gap-2 text-xs text-[#175CD3]" data-testid="mrp-restored-banner">
+          <ClockCounterClockwise size={14} weight="bold" />
+          Restored your last-generated plan (by {restoredFrom.created_by || "unknown"} · {formatDateTime(restoredFrom.created_at)}). Click Regenerate for fresh live numbers.
+        </div>
+      )}
       <div className="bg-white border border-[#D0D5DD] rounded-sm p-2.5 flex items-center gap-3 flex-wrap mb-3">
         <input
           type="text"
@@ -941,6 +989,18 @@ const MrpPlanTab = ({ actorName }) => {
           <ListChecks size={14} className="mr-1.5" />
           {loading ? `Generating... (${elapsedSeconds}s)` : plan ? "Regenerate MRP Plan" : "Generate MRP Plan"}
         </Button>
+        {plan && (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setSaveAsOpen(true)}
+            className="h-8 rounded-sm border-[#D0D5DD] text-[#344054] text-[13px] font-medium"
+            data-testid="mrp-save-as-button"
+          >
+            <FloppyDisk size={14} className="mr-1.5" />
+            Save As...
+          </Button>
+        )}
         {selectedForProductionCount != null && (
           <span className="text-xs text-[#475467]" data-testid="mrp-selected-count-hint">
             {selectedForProductionCount === 0 ? (
@@ -1263,6 +1323,219 @@ const MrpPlanTab = ({ actorName }) => {
           </p>
         </div>
       )}
+
+      <Dialog open={saveAsOpen} onOpenChange={setSaveAsOpen}>
+        <DialogContent className="max-w-sm" data-testid="mrp-save-as-dialog">
+          <DialogHeader>
+            <DialogTitle>Save this MRP Plan</DialogTitle>
+            <DialogDescription>Give it a name so you (or purchasing) can find it later on the Saved Plans tab.</DialogDescription>
+          </DialogHeader>
+          <Input
+            type="text"
+            placeholder="e.g. Week 32 Plan"
+            value={saveAsName}
+            onChange={(e) => setSaveAsName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && saveCurrentPlanAs()}
+            data-testid="mrp-save-as-name-input"
+          />
+          <DialogFooter>
+            <Button
+              type="button"
+              onClick={saveCurrentPlanAs}
+              disabled={savingPlan || !saveAsName.trim()}
+              className="bg-[#004B87] hover:bg-[#003A6A] text-white"
+              data-testid="mrp-save-as-confirm-button"
+            >
+              {savingPlan ? "Saving..." : "Save Plan"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+};
+
+// -------------------- Saved Plans tab --------------------
+const SavedPlansTab = () => {
+  const [plans, setPlans] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [viewing, setViewing] = useState(null); // full MrpPlanResponse being viewed, or null
+  const [viewingMeta, setViewingMeta] = useState(null);
+  const [viewLoading, setViewLoading] = useState(false);
+  const [deleting, setDeleting] = useState({});
+
+  const load = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const { data } = await axios.get(`${API}/production-plan/mrp/saved-plans`);
+      setPlans(data.plans);
+    } catch (err) {
+      setError(err?.response?.data?.detail || err.message || "Failed to load saved plans");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const view = async (meta) => {
+    setViewingMeta(meta);
+    setViewLoading(true);
+    try {
+      const { data } = await axios.get(`${API}/production-plan/mrp/saved-plans/${meta.id}`);
+      setViewing(data);
+    } catch (err) {
+      toast.error("Failed to load saved plan", { description: err?.response?.data?.detail || err.message });
+      setViewingMeta(null);
+    } finally {
+      setViewLoading(false);
+    }
+  };
+
+  const removePlan = async (id) => {
+    setDeleting((prev) => ({ ...prev, [id]: true }));
+    try {
+      await axios.delete(`${API}/production-plan/mrp/saved-plans/${id}`);
+      setPlans((prev) => prev.filter((p) => p.id !== id));
+      toast.success("Saved plan deleted");
+    } catch (err) {
+      toast.error("Failed to delete", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setDeleting((prev) => ({ ...prev, [id]: false }));
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="space-y-1.5" data-testid="saved-plans-loading-skeleton">
+        {[...Array(4)].map((_, i) => (
+          <Skeleton key={i} className="h-10 w-full rounded-sm" />
+        ))}
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <Alert variant="destructive" className="rounded-sm border-[#F04438]/40 bg-[#FEF3F2]" data-testid="saved-plans-error-alert">
+        <WarningCircle size={16} />
+        <AlertTitle className="font-heading text-sm">Could not load saved plans</AlertTitle>
+        <AlertDescription className="font-sans text-[13px]">{error}</AlertDescription>
+      </Alert>
+    );
+  }
+
+  return (
+    <div>
+      <p className="text-[13px] text-[#475467] mb-3">
+        Named snapshots of the MRP Plan, saved via "Save As..." on the MRP Plan tab - each one preserves exactly
+        which PO lines and components it was computed from, so you can compare plans over time or share one with
+        someone.
+      </p>
+      {plans.length === 0 ? (
+        <div className="border border-dashed border-[#D0D5DD] rounded-sm py-16 flex flex-col items-center gap-3 text-[#98A2B3] bg-white" data-testid="saved-plans-empty-state">
+          <FloppyDisk size={28} weight="regular" />
+          <p className="font-sans text-[13px]">No saved plans yet - generate an MRP Plan, then click "Save As..."</p>
+        </div>
+      ) : (
+        <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-x-auto" data-testid="saved-plans-table-container">
+          <table className="border-collapse w-full text-[13px]" data-testid="saved-plans-table">
+            <thead>
+              <tr>
+                {["Name", "Created By", "Created At", "PO Lines", "Components", "Total Net Qty", "Actions"].map((h) => (
+                  <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {plans.map((p, i) => (
+                <tr key={p.id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`saved-plan-row-${i}`}>
+                  <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium text-[#101828]">{p.name}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">{p.created_by || "—"}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">{formatDateTime(p.created_at)}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums text-[#475467]">{p.total_po_lines} / {p.total_open_po_lines}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums text-[#475467]">{p.components_count}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums font-bold text-[#B42318]">{formatQty(p.total_net_qty)}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => view(p)}
+                        className="h-7 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
+                        data-testid={`saved-plan-view-${i}`}
+                      >
+                        View
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => removePlan(p.id)}
+                        disabled={deleting[p.id]}
+                        className="h-7 text-xs rounded-sm border-[#F04438]/40 text-[#B42318] hover:bg-[#FEF3F2]"
+                        data-testid={`saved-plan-delete-${i}`}
+                      >
+                        {deleting[p.id] ? "Deleting..." : "Delete"}
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <Dialog open={!!viewingMeta} onOpenChange={(open) => !open && (setViewingMeta(null), setViewing(null))}>
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-auto" data-testid="saved-plan-view-dialog">
+          <DialogHeader>
+            <DialogTitle>{viewingMeta?.name}</DialogTitle>
+            <DialogDescription>
+              Saved by {viewingMeta?.created_by || "—"} on {viewingMeta ? formatDateTime(viewingMeta.created_at) : ""} · Generated from{" "}
+              {viewing?.total_po_lines} of {viewing?.total_open_po_lines} open PO lines
+            </DialogDescription>
+          </DialogHeader>
+          {viewLoading ? (
+            <Skeleton className="h-64 w-full rounded-sm" />
+          ) : viewing ? (
+            <div className="border border-[#D0D5DD] rounded-sm overflow-auto max-h-[55vh]">
+              <table className="border-collapse w-full text-[13px]" data-testid="saved-plan-view-table">
+                <thead>
+                  <tr>
+                    {["Product ID", "Description", "UOM", "Lead Time (D)", "MSL", "On-Hand", "Gross Qty", "Net Qty"].map((h) => (
+                      <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase sticky top-0">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...viewing.components].sort((a, b) => b.total_net_qty - a.total_net_qty).map((c, i) => (
+                    <tr key={c.product_id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`saved-plan-view-row-${i}`}>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-medium text-[#101828]">{c.product_id}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-[#101828]">{c.description || "—"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-xs text-[#475467]">{c.unit_of_measure || "—"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">{c.lead_time_days ?? "—"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">{formatQty(c.msl)}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">{formatQty(c.on_hand_qty)}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#101828]">{formatQty(c.total_gross_qty)}</td>
+                      <td className={`border border-[#D0D5DD] px-2 py-1 text-right tabular-nums font-bold ${c.total_net_qty > 0 ? "text-[#B42318]" : "text-[#027A48]"}`}>
+                        {formatQty(c.total_net_qty)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
@@ -1308,6 +1581,9 @@ export default function ProductionPlanPage() {
             <TabsTrigger value="mrp" data-testid="production-plan-tab-mrp">
               <ListChecks size={14} className="mr-1.5" /> MRP Plan
             </TabsTrigger>
+            <TabsTrigger value="saved" data-testid="production-plan-tab-saved">
+              <FloppyDisk size={14} className="mr-1.5" /> Saved Plans
+            </TabsTrigger>
           </TabsList>
           <TabsContent value="open-po" data-testid="production-plan-content-open-po">
             <OpenPoDemandTab actorName={actorName} />
@@ -1317,6 +1593,9 @@ export default function ProductionPlanPage() {
           </TabsContent>
           <TabsContent value="mrp" data-testid="production-plan-content-mrp">
             <MrpPlanTab actorName={actorName} />
+          </TabsContent>
+          <TabsContent value="saved" data-testid="production-plan-content-saved">
+            <SavedPlansTab />
           </TabsContent>
         </Tabs>
       </main>

@@ -29,6 +29,7 @@ import bom_cache_service
 import production_plan_service
 import mrp_service
 import po_selection_service
+import mrp_plan_store
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -749,11 +750,13 @@ class MrpPlanJobStatus(BaseModel):
 
 
 @api_router.post("/production-plan/mrp/generate")
-async def start_mrp_plan_job(customer: Optional[str] = None):
+async def start_mrp_plan_job(customer: Optional[str] = None, actor: Optional[str] = None):
     """Kicks off the MRP computation (see mrp_service.build_mrp_plan) as a
     background job - same pattern as Purchasing Plan generation, since
     exploding every open PO line's BOM against live SAP can take a while
-    for item_codes not already warm in the BOM cache."""
+    for item_codes not already warm in the BOM cache. On success, also
+    silently autosaves the result (mrp_plan_store) so a page refresh never
+    loses the last-generated plan."""
     job_id = str(uuid.uuid4())
     mrp_plan_jobs[job_id] = {"status": "running", "result": None, "error": None}
 
@@ -761,6 +764,7 @@ async def start_mrp_plan_job(customer: Optional[str] = None):
         try:
             result = await asyncio.to_thread(mrp_service.build_mrp_plan, open_po_client, sap_soap_client, db, customer)
             mrp_plan_jobs[job_id] = {"status": "done", "result": result, "error": None}
+            await asyncio.to_thread(mrp_plan_store.set_autosave, db, result, actor)
         except OpenPODemandError as e:
             mrp_plan_jobs[job_id] = {"status": "failed", "result": None, "error": str(e)}
         except Exception as e:
@@ -781,6 +785,95 @@ async def mrp_plan_status(job_id: str):
         result=MrpPlanResponse(**job["result"]) if job["result"] else None,
         error=job["error"],
     )
+
+
+class MrpAutosaveResponse(BaseModel):
+    found: bool
+    plan: Optional[MrpPlanResponse] = None
+    created_at: Optional[str] = None
+    created_by: Optional[str] = None
+
+
+@api_router.get("/production-plan/mrp/autosave", response_model=MrpAutosaveResponse)
+async def get_mrp_autosave():
+    """The last plan that finished generating, silently autosaved server-side
+    - lets the MRP Plan tab restore exactly what you last saw after a page
+    refresh, without needing to click Generate again."""
+    doc = await asyncio.to_thread(mrp_plan_store.get_autosave, db)
+    if not doc:
+        return MrpAutosaveResponse(found=False)
+    return MrpAutosaveResponse(
+        found=True, plan=MrpPlanResponse(**doc["plan"]),
+        created_at=doc["created_at"].isoformat(), created_by=doc.get("created_by"),
+    )
+
+
+class SaveMrpPlanRequest(BaseModel):
+    name: str
+    actor: str
+    plan: MrpPlanResponse
+
+
+class SavedMrpPlanMeta(BaseModel):
+    id: str
+    name: str
+    created_by: Optional[str] = None
+    created_at: str
+    total_po_lines: int
+    total_open_po_lines: int = 0
+    components_count: int
+    total_net_qty: float
+
+
+class SavedMrpPlansListResponse(BaseModel):
+    plans: List[SavedMrpPlanMeta]
+
+
+def _saved_plan_meta(doc) -> SavedMrpPlanMeta:
+    plan = doc["plan"]
+    return SavedMrpPlanMeta(
+        id=doc["_id"], name=doc["name"], created_by=doc.get("created_by"),
+        created_at=doc["created_at"].isoformat(),
+        total_po_lines=plan.get("total_po_lines", 0), total_open_po_lines=plan.get("total_open_po_lines", 0),
+        components_count=len(plan.get("components", [])),
+        total_net_qty=round(sum(c.get("total_net_qty", 0) for c in plan.get("components", [])), 2),
+    )
+
+
+@api_router.post("/production-plan/mrp/saved-plans", response_model=SavedMrpPlanMeta)
+async def save_mrp_plan(payload: SaveMrpPlanRequest):
+    """Explicit 'Save As' - snapshots the currently-displayed MRP plan
+    (exactly as generated, including which PO lines/demand lines drove it)
+    under a name, kept forever until deleted. Independent from the silent
+    autosave above."""
+    name = payload.name.strip()
+    actor = payload.actor.strip()
+    if not name or not actor:
+        raise HTTPException(status_code=400, detail="name and actor (your name) are both required")
+    doc = await asyncio.to_thread(mrp_plan_store.save_named_plan, db, name, actor, payload.plan.dict())
+    return _saved_plan_meta(doc)
+
+
+@api_router.get("/production-plan/mrp/saved-plans", response_model=SavedMrpPlansListResponse)
+async def list_saved_mrp_plans():
+    docs = await asyncio.to_thread(mrp_plan_store.list_named_plans, db)
+    return SavedMrpPlansListResponse(plans=[_saved_plan_meta(d) for d in docs])
+
+
+@api_router.get("/production-plan/mrp/saved-plans/{plan_id}", response_model=MrpPlanResponse)
+async def get_saved_mrp_plan(plan_id: str):
+    doc = await asyncio.to_thread(mrp_plan_store.get_plan, db, plan_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Saved plan not found")
+    return MrpPlanResponse(**doc["plan"])
+
+
+@api_router.delete("/production-plan/mrp/saved-plans/{plan_id}")
+async def delete_saved_mrp_plan(plan_id: str):
+    deleted = await asyncio.to_thread(mrp_plan_store.delete_plan, db, plan_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Saved plan not found")
+    return {"deleted": True}
 
 
 class RetryUnresolvedMrpRequest(BaseModel):

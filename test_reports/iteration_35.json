@@ -1,0 +1,28 @@
+{
+  "summary": "Tested new MRP Plan Save/Autosave feature end-to-end (backend API + browser UI) on Production Plan page. All core flows pass: autosave-and-restore-on-reload, Save As (with validation), Saved Plans tab list/View/Delete. Light regression on nav tabs and PO selection toggle also passed. One transient infra issue found and self-resolved (not a code bug).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_mrp_save_autosave.py", "/app/test_reports/pytest/pytest_mrp_save.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "mrp_plan_store.py is clean, well-documented, correctly separates autosave (fixed _id, exempt from delete) vs named snapshots (uuid _id). No issues found.",
+    "server.py new endpoints correctly validate name/actor (400 on blank), return proper 404s for missing/autosave-protected deletes, and use asyncio.to_thread for sync Mongo calls consistently with rest of the file.",
+    "Frontend Save-As flow correctly blocks save (toast: 'Enter your name first') when actor-name-input is empty, matching the PO-selection-toggle validation pattern already used elsewhere in the app - good consistency.",
+    "NOTE (infra, not code): during testing, creating/editing a file under /app/backend/tests triggered uvicorn's --reload (WatchFiles) to shut down the worker process but it did not always respawn cleanly, causing transient 502s until 'supervisorctl restart backend' was run. This is pytest.ini/watchfiles config observation only, not an app bug - documenting for awareness of future testing agents who edit files inside backend/tests while the server is live."
+  ],
+  "updated_files": ["/app/backend/tests/test_mrp_save_autosave.py"],
+  "success_rate": {"backend": "100% (8/8 tests)", "frontend": "100% (all flows verified)"},
+  "test_credentials": "No auth required for this app",
+  "seed_data_creation": "Created and cleaned up TEST_-prefixed saved plans (TEST_Snapshot_Automated, TEST_Snapshot_Lifecycle, TEST_Playwright_Snapshot) via backend tests and Playwright - all deleted after verification. Pre-existing 'Week 32 Test Plan' (main agent's manual test data) left untouched.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Verified in browser: (1) mrp-restored-banner shows correct actor+timestamp text 'Restored your last-generated plan (by TestBot · 07 Aug, 08:06 pm)' and persists across hard page.reload(), plan data (22 components, correct totals) shown without clicking Generate. (2) Save As with empty actor-name-input correctly shows toast 'Enter your name first' and does NOT save (confirmed via Saved Plans table not containing the attempted entry) - dialog itself opens regardless of actor name but the actual save action inside the dialog is what's blocked, which still satisfies the 'does NOT save' requirement. (3) Save As with valid name+actor succeeds with toast 'Saved as \"...\"' and dialog closes. (4) Saved Plans tab table shows Name/Created By/Created At/PO Lines/Components/Total Net Qty correctly for all rows. (5) View dialog shows frozen breakdown table with exact columns (Product ID, Description, UOM, Lead Time, MSL, On-Hand, Gross Qty, Net Qty) matching live data. (6) Delete removes row instantly with 'Saved plan deleted' toast. Regression: PO selection checkboxes (787 loaded fine), nav to BOM Explorer/Purchasing Plan/Inventory/Admin all load correctly. Did not re-generate a fresh MRP plan via Generate button (time-intensive 1-8min) since autosave data from main agent's session was already available and sufficient for restore testing per problem statement's suggestion.",
+  "rca_of_the_issue": "No app-level bugs found. One minor observation: Save-As dialog opens even when actor-name-input is empty (validation only triggers on the Save Plan confirm click inside the dialog, not on the initial Save As... button click). This still meets the functional requirement (no save occurs, error toast shown) but is a slight UX deviation from the literal wording 'clicking Save As... without a name shows an error toast' - the toast appears on the confirm click, not on opening the dialog. Cosmetic, no functional impact; main agent can decide whether to move the validation earlier if desired."
+}
