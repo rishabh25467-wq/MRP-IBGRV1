@@ -9,9 +9,11 @@ resolved BOM via the persistent, Mongo-backed BOM cache (see
 bom_cache_service.py - avoids re-exploding live from SAP on every single
 regeneration; a background job keeps the cache fresh) -> aggregate required
 quantity at LEAF-level components only (sub-assemblies are skipped, only
-their own leaf materials count) -> attach live SAP standard costs -> return
-quantity + value for that month, plus a list of OMS parts that could not be
-resolved/exploded into a SAP BOM (shown as a warning in the UI).
+their own leaf materials count) -> attach live SAP standard costs -> net
+against live SAP on-hand inventory (Net Purchase Qty = max(0, Gross Required
+Qty - On-Hand Qty)) -> return gross + on-hand + net quantity/value for that
+month, plus a list of OMS parts that could not be resolved/exploded into a
+SAP BOM (shown as a warning in the UI).
 """
 import logging
 import re
@@ -63,7 +65,9 @@ def _collect_leaves(nodes: list, leaves: dict):
             entry["product_uuid"] = node["product_uuid"]
 
 
-def build_purchasing_plan(oms_client, sap_soap_client, sap_valuation_client, db, target_month: str = None) -> dict:
+def build_purchasing_plan(
+    oms_client, sap_soap_client, sap_valuation_client, sap_inventory_client, db, target_month: str = None
+) -> dict:
     months = [_validate_month(target_month) if target_month else _default_month()]
 
     # 1. Pull OMS sales forecast (aggregated per part number) for each month.
@@ -164,21 +168,46 @@ def build_purchasing_plan(oms_client, sap_soap_client, sap_valuation_client, db,
         logger.warning(f"Standard cost lookup failed for purchasing plan: {e}")
         costs = {}
 
+    # 7. Net against live SAP on-hand inventory (best-effort - same principle
+    # as standard costs: a hiccup on the inventory report shouldn't take down
+    # the whole plan, it just leaves on-hand/net figures blank for that run).
+    # On-hand stock is a point-in-time snapshot (not per-month), so
+    # Net Purchase Qty = max(0, Gross Required Qty - On-Hand Qty) is applied
+    # independently to each requested month.
+    try:
+        on_hand_by_product = sap_inventory_client.get_on_hand_stock()
+    except Exception as e:
+        logger.warning(f"On-hand inventory lookup failed for purchasing plan: {e}")
+        on_hand_by_product = {}
+
     result_components = []
     for comp in components.values():
         cost = costs.get((comp.get("product_uuid") or "").upper())
         amount = cost["amount"] if cost else None
         currency = cost.get("currency") if cost else None
+        qty_by_month = {m: round(q, 4) for m, q in comp["qty_by_month"].items()}
+        on_hand_qty = on_hand_by_product.get(comp["product_id"])
+        net_qty_by_month = (
+            {m: round(max(0.0, q - on_hand_qty), 4) for m, q in qty_by_month.items()}
+            if on_hand_qty is not None
+            else dict(qty_by_month)
+        )
         result_components.append({
             "product_id": comp["product_id"],
             "description": comp["description"],
             "unit_of_measure": comp["unit_of_measure"],
-            "qty_by_month": {m: round(q, 4) for m, q in comp["qty_by_month"].items()},
+            "qty_by_month": qty_by_month,
+            "on_hand_qty": on_hand_qty,
+            "net_qty_by_month": net_qty_by_month,
             "unit_cost": amount,
             "currency": currency,
             "value_by_month": {
                 m: (round(q * amount, 2) if amount is not None else None)
-                for m, q in comp["qty_by_month"].items()
+                for m, q in qty_by_month.items()
+            },
+            "net_value_by_month": {
+                m: (round(q * amount, 2) if amount is not None else None)
+                for m, q in net_qty_by_month.items()
             },
         })
     result_components.sort(key=lambda c: c["product_id"])

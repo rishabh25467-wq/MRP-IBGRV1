@@ -13,6 +13,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_valuation_client import SAPValuationClient, SAPValuationError
+from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from bom_categorizer import categorize_items, BomCategorizerError
 from oms_client import OMSClient
 from purchasing_plan import build_purchasing_plan
@@ -38,6 +39,12 @@ sap_soap_client = SAPSoapBOMClient(
 
 sap_valuation_client = SAPValuationClient(
     base_url=os.environ['SAP_ODATA_BASE_URL'],
+    username=os.environ['SAP_ODATA_USERNAME'],
+    password=os.environ['SAP_ODATA_PASSWORD'],
+)
+
+sap_inventory_client = SAPInventoryClient(
+    report_url=os.environ['SAP_INVENTORY_ODATA_URL'],
     username=os.environ['SAP_ODATA_USERNAME'],
     password=os.environ['SAP_ODATA_PASSWORD'],
 )
@@ -112,9 +119,12 @@ class PurchasingPlanComponent(BaseModel):
     unit_of_measure: Optional[str] = None
     category: Optional[str] = None
     qty_by_month: dict[str, float]
+    on_hand_qty: Optional[float] = None
+    net_qty_by_month: dict[str, float]
     unit_cost: Optional[float] = None
     currency: Optional[str] = None
     value_by_month: dict[str, Optional[float]]
+    net_value_by_month: dict[str, Optional[float]]
 
 
 class MissingBom(BaseModel):
@@ -200,7 +210,8 @@ async def start_purchasing_plan_job(payload: Optional[PurchasingPlanGenerateRequ
     async def run():
         try:
             result = await asyncio.to_thread(
-                build_purchasing_plan, oms_client, sap_soap_client, sap_valuation_client, db, target_month
+                build_purchasing_plan,
+                oms_client, sap_soap_client, sap_valuation_client, sap_inventory_client, db, target_month
             )
             # Classify every leaf component by material/type category (same AI
             # categorizer the BOM Explorer uses) so the plan can be split/grouped

@@ -1,0 +1,37 @@
+{
+  "summary": "Tested SAP On-Hand Inventory netting feature added to Purchasing Plan (backend pytest against live target_month=2020-01 fast path, plus full browser automation of the frontend flow incl. generate, stat cards, table columns, sorting, category totals, Excel export, category filter regression). All requested behaviors verified working correctly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_purchasing_plan_inventory.py",
+    "/app/test_reports/pytest/pytest_purchasing_plan_inventory.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "purchasing_plan.py: net_qty_by_month correctly falls back to a copy of qty_by_month when on_hand_qty is None (never-stocked component) - verified both in code and visually in UI ('—' On-Hand cell, Net Qty == Gross Qty).",
+    "Netting formula max(0, gross-on_hand) confirmed both via backend pytest (7/7 passed, checked across all components/months with on_hand present) and visually in UI/Excel export, e.g. component 'ING': on_hand=1039.143, gross=1430.5, net=391.357 = round(1430.5-1039.143,4) - exact match.",
+    "sap_inventory_client.py: sensible, well-documented pagination via $top/$skip and deliberate avoidance of $select (documented empirical SAP quirk) - best-effort try/except around get_on_hand_stock() call in purchasing_plan.py prevents a SAP inventory hiccup from failing the whole plan, consistent with existing costs lookup pattern.",
+    "Frontend correctly shows both Gross and Net as separate stat cards/columns/totals (per user's explicit choice, not a replace) - verified 'GROSS VALUE - JAN 2020' and 'NET PURCHASE VALUE - JAN 2020' stat cards both render with correct independent values.",
+    "Net columns are visually distinguished with light blue background/text (#E5F0FA/#004B87 headers, #F5FAFF/#004B87 cells) consistently across headers, data rows, and category group totals - matches spec.",
+    "Column sorting works correctly for new fields: verified Total Net Value header toggles asc/desc (row order changed as expected, caret icon updates), On-Hand and month Net Qty headers clickable without errors.",
+    "Excel export verified via direct xlsx XML inspection (not just headers) - 'Purchasing Plan' sheet contains Product ID/Description/Category/UOM/On-Hand Inventory/{Month} Gross Qty/{Month} Net Purchase Qty/{Month} Gross Value/{Month} Net Value/Total Gross Value/Total Net Value columns, with cell values matching the on-screen table exactly (spot-checked 'ING' row).",
+    "Category group header rows aggregate On-Hand, Net Qty, Net Value, and Net Grand Total consistently with child row sums (spot-checked 'Copper Alloy' category total Net Value = 396,440.73 which equals the single non-zero child row 'ING' 396,440.73, others being 0).",
+    "Regression check passed: category filter dropdown, expand/collapse categories, missing BOMs warning banner, BOM data freshness badge, AI category grouping (category names vary slightly run-to-run due to AI categorization non-determinism e.g. 'Copper' vs 'Copper Alloy' split - this is an existing/known AI-categorizer characteristic from prior sessions, not a regression introduced this session).",
+    "Minor observation (not a bug): live SAP on-hand inventory values changed between consecutive 'Regenerate' clicks within the same test run (some rows had on_hand=null/'—' on one run, populated values on the next) - expected since this queries a live, real-time external SAP tenant snapshot each time, exactly as documented in the review request."
+  ],
+  "updated_files": ["/app/backend/tests/test_purchasing_plan_inventory.py"],
+  "success_rate": {"backend": "100% (7/7 pytest)", "frontend": "100% (all requested scenarios verified via Playwright)"},
+  "test_credentials": "N/A - no app-level auth; SAP/OMS/Mongo creds used as-is from backend/.env per review request.",
+  "seed_data_creation": "None - used live SAP/OMS data via target_month=2020-01 (established fast-path month from prior iterations, ~18 components).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "This session's inventory-netting feature is fully verified end-to-end (backend math + frontend rendering/sorting/export). Backend test file /app/backend/tests/test_purchasing_plan_inventory.py added as a reusable regression asset using target_month=2020-01 (fast, ~18 components, avoids the 3-5min full live run). Note: on-hand inventory values are a live real-time SAP snapshot so exact figures/which components have data will vary run to run - tests are designed to be data-value-agnostic (formula checks, not hardcoded expected numbers) so this is safe for future re-runs.",
+  "rca_of_the_issue": "N/A - no bugs found this session."
+}

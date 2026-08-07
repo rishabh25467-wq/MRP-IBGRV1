@@ -90,9 +90,13 @@ const groupByCategory = (components) => {
 
 const getPlanSortValue = (component, field) => {
   if (field === "product_id") return (component.product_id || "").toLowerCase();
+  if (field === "on_hand") return component.on_hand_qty ?? -Infinity;
   if (field === "total") return component.value_by_month ? Object.values(component.value_by_month).reduce((s, v) => s + (v || 0), 0) : -Infinity;
+  if (field === "net_total") return component.net_value_by_month ? Object.values(component.net_value_by_month).reduce((s, v) => s + (v || 0), 0) : -Infinity;
   if (field.startsWith("qty:")) return component.qty_by_month[field.slice(4)] ?? -Infinity;
+  if (field.startsWith("netqty:")) return component.net_qty_by_month[field.slice(7)] ?? -Infinity;
   if (field.startsWith("value:")) return component.value_by_month[field.slice(6)] ?? -Infinity;
+  if (field.startsWith("netvalue:")) return component.net_value_by_month[field.slice(9)] ?? -Infinity;
   return 0;
 };
 
@@ -199,12 +203,22 @@ export default function PurchasingPlanPage() {
   const totalValueByMonth = (month) =>
     filteredComponents.reduce((sum, c) => sum + (c.value_by_month[month] || 0), 0);
 
+  const totalNetValueByMonth = (month) =>
+    filteredComponents.reduce((sum, c) => sum + (c.net_value_by_month[month] || 0), 0);
+
   const totalValueOverall = (component) =>
     months.reduce((sum, m) => sum + (component.value_by_month[m] || 0), 0);
 
+  const totalNetValueOverall = (component) =>
+    months.reduce((sum, m) => sum + (component.net_value_by_month[m] || 0), 0);
+
   const categoryTotalQty = (items, month) => items.reduce((sum, c) => sum + (c.qty_by_month[month] || 0), 0);
+  const categoryTotalNetQty = (items, month) => items.reduce((sum, c) => sum + (c.net_qty_by_month[month] || 0), 0);
+  const categoryTotalOnHand = (items) => items.reduce((sum, c) => sum + (c.on_hand_qty || 0), 0);
   const categoryTotalValue = (items, month) => items.reduce((sum, c) => sum + (c.value_by_month[month] || 0), 0);
+  const categoryTotalNetValue = (items, month) => items.reduce((sum, c) => sum + (c.net_value_by_month[month] || 0), 0);
   const categoryGrandTotal = (items) => items.reduce((sum, c) => sum + totalValueOverall(c), 0);
+  const categoryGrandTotalNet = (items) => items.reduce((sum, c) => sum + totalNetValueOverall(c), 0);
 
   const exportToExcel = () => {
     if (!plan) return;
@@ -214,12 +228,16 @@ export default function PurchasingPlanPage() {
         Description: c.description || "",
         Category: c.category || "Uncategorized",
         UOM: c.unit_of_measure || "",
+        "On-Hand Inventory": c.on_hand_qty ?? "",
       };
       months.forEach((m) => {
-        row[`${formatMonth(m)} Qty`] = c.qty_by_month[m] ?? "";
-        row[`${formatMonth(m)} Value`] = c.value_by_month[m] ?? "";
+        row[`${formatMonth(m)} Gross Qty`] = c.qty_by_month[m] ?? "";
+        row[`${formatMonth(m)} Net Purchase Qty`] = c.net_qty_by_month[m] ?? "";
+        row[`${formatMonth(m)} Gross Value`] = c.value_by_month[m] ?? "";
+        row[`${formatMonth(m)} Net Value`] = c.net_value_by_month[m] ?? "";
       });
-      row["Total Value"] = totalValueOverall(c);
+      row["Total Gross Value"] = totalValueOverall(c);
+      row["Total Net Value"] = totalNetValueOverall(c);
       return row;
     });
     const workbook = XLSX.utils.book_new();
@@ -381,11 +399,20 @@ export default function PurchasingPlanPage() {
           />
           {months.map((m) => (
             <StatCard
-              key={m}
+              key={`gross-${m}`}
               icon={CurrencyCircleDollar}
-              label={`Value - ${formatMonth(m)}`}
+              label={`Gross Value - ${formatMonth(m)}`}
               value={plan ? formatMoney(totalValueByMonth(m), currency) : "—"}
               testId={`stat-value-${m}`}
+            />
+          ))}
+          {months.map((m) => (
+            <StatCard
+              key={`net-${m}`}
+              icon={CurrencyCircleDollar}
+              label={`Net Purchase Value - ${formatMonth(m)}`}
+              value={plan ? formatMoney(totalNetValueByMonth(m), currency) : "—"}
+              testId={`stat-net-value-${m}`}
             />
           ))}
           <StatCard
@@ -500,6 +527,17 @@ export default function PurchasingPlanPage() {
                   <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
                     UOM
                   </th>
+                  <th
+                    onClick={() => toggleSort("on_hand")}
+                    className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#DDE1E8] select-none"
+                    data-testid="purchasing-plan-sort-header-on-hand"
+                  >
+                    <span className="inline-flex items-center gap-1 justify-end">
+                      On-Hand
+                      {sortConfig.field === "on_hand" &&
+                        (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
+                    </span>
+                  </th>
                   {months.map((m) => (
                     <th
                       key={`${m}-qty`}
@@ -508,8 +546,22 @@ export default function PurchasingPlanPage() {
                       data-testid={`purchasing-plan-sort-header-qty-${m}`}
                     >
                       <span className="inline-flex items-center gap-1 justify-end">
-                        {formatMonth(m)} Qty
+                        {formatMonth(m)} Gross Qty
                         {sortConfig.field === `qty:${m}` &&
+                          (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
+                      </span>
+                    </th>
+                  ))}
+                  {months.map((m) => (
+                    <th
+                      key={`${m}-netqty`}
+                      onClick={() => toggleSort(`netqty:${m}`)}
+                      className="bg-[#E5F0FA] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#004B87] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#D6E7F7] select-none"
+                      data-testid={`purchasing-plan-sort-header-netqty-${m}`}
+                    >
+                      <span className="inline-flex items-center gap-1 justify-end">
+                        {formatMonth(m)} Net Purchase Qty
+                        {sortConfig.field === `netqty:${m}` &&
                           (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
                       </span>
                     </th>
@@ -522,8 +574,22 @@ export default function PurchasingPlanPage() {
                       data-testid={`purchasing-plan-sort-header-value-${m}`}
                     >
                       <span className="inline-flex items-center gap-1 justify-end">
-                        {formatMonth(m)} Value
+                        {formatMonth(m)} Gross Value
                         {sortConfig.field === `value:${m}` &&
+                          (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
+                      </span>
+                    </th>
+                  ))}
+                  {months.map((m) => (
+                    <th
+                      key={`${m}-netval`}
+                      onClick={() => toggleSort(`netvalue:${m}`)}
+                      className="bg-[#E5F0FA] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#004B87] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#D6E7F7] select-none"
+                      data-testid={`purchasing-plan-sort-header-netvalue-${m}`}
+                    >
+                      <span className="inline-flex items-center gap-1 justify-end">
+                        {formatMonth(m)} Net Value
+                        {sortConfig.field === `netvalue:${m}` &&
                           (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
                       </span>
                     </th>
@@ -534,8 +600,19 @@ export default function PurchasingPlanPage() {
                     data-testid="purchasing-plan-sort-header-total"
                   >
                     <span className="inline-flex items-center gap-1 justify-end">
-                      Total Value
+                      Total Gross Value
                       {sortConfig.field === "total" &&
+                        (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
+                    </span>
+                  </th>
+                  <th
+                    onClick={() => toggleSort("net_total")}
+                    className="bg-[#E5F0FA] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#004B87] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#D6E7F7] select-none"
+                    data-testid="purchasing-plan-sort-header-net-total"
+                  >
+                    <span className="inline-flex items-center gap-1 justify-end">
+                      Total Net Value
+                      {sortConfig.field === "net_total" &&
                         (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
                     </span>
                   </th>
@@ -563,6 +640,9 @@ export default function PurchasingPlanPage() {
                             {category} ({items.length})
                           </span>
                         </td>
+                        <td className="border border-[#D0D5DD] px-2 py-1.5 text-[13px] tabular-nums text-right font-bold text-[#344054]">
+                          {formatQty(categoryTotalOnHand(items))}
+                        </td>
                         {months.map((m) => (
                           <td
                             key={`${category}-${m}-qty`}
@@ -573,14 +653,33 @@ export default function PurchasingPlanPage() {
                         ))}
                         {months.map((m) => (
                           <td
+                            key={`${category}-${m}-netqty`}
+                            className="border border-[#D0D5DD] px-2 py-1.5 text-[13px] tabular-nums text-right font-bold text-[#004B87] bg-[#E5F0FA]"
+                          >
+                            {formatQty(categoryTotalNetQty(items, m))}
+                          </td>
+                        ))}
+                        {months.map((m) => (
+                          <td
                             key={`${category}-${m}-val`}
                             className="border border-[#D0D5DD] px-2 py-1.5 text-[13px] tabular-nums text-right font-bold text-[#344054]"
                           >
                             {formatMoney(categoryTotalValue(items, m), categoryCurrency)}
                           </td>
                         ))}
+                        {months.map((m) => (
+                          <td
+                            key={`${category}-${m}-netval`}
+                            className="border border-[#D0D5DD] px-2 py-1.5 text-[13px] tabular-nums text-right font-bold text-[#004B87] bg-[#E5F0FA]"
+                          >
+                            {formatMoney(categoryTotalNetValue(items, m), categoryCurrency)}
+                          </td>
+                        ))}
                         <td className="border border-[#D0D5DD] px-2 py-1.5 text-[13px] tabular-nums text-right font-bold text-[#344054]">
                           {formatMoney(categoryGrandTotal(items), categoryCurrency)}
+                        </td>
+                        <td className="border border-[#D0D5DD] px-2 py-1.5 text-[13px] tabular-nums text-right font-bold text-[#004B87] bg-[#E5F0FA]">
+                          {formatMoney(categoryGrandTotalNet(items), categoryCurrency)}
                         </td>
                       </tr>
                       {!isCollapsed &&
@@ -595,6 +694,12 @@ export default function PurchasingPlanPage() {
                             </td>
                             <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] text-[#101828]">{c.description || "—"}</td>
                             <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] text-[#101828]">{c.unit_of_measure || "—"}</td>
+                            <td
+                              className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828] text-right"
+                              data-testid={`purchasing-plan-on-hand-${category}-${i}`}
+                            >
+                              {formatQty(c.on_hand_qty)}
+                            </td>
                             {months.map((m) => (
                               <td
                                 key={`${c.product_id}-${m}-qty`}
@@ -606,11 +711,29 @@ export default function PurchasingPlanPage() {
                             ))}
                             {months.map((m) => (
                               <td
+                                key={`${c.product_id}-${m}-netqty`}
+                                className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#004B87] text-right bg-[#F5FAFF]"
+                                data-testid={`purchasing-plan-netqty-${category}-${i}-${m}`}
+                              >
+                                {formatQty(c.net_qty_by_month[m])}
+                              </td>
+                            ))}
+                            {months.map((m) => (
+                              <td
                                 key={`${c.product_id}-${m}-val`}
                                 className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828] text-right"
                                 data-testid={`purchasing-plan-value-${category}-${i}-${m}`}
                               >
                                 {formatMoney(c.value_by_month[m], c.currency)}
+                              </td>
+                            ))}
+                            {months.map((m) => (
+                              <td
+                                key={`${c.product_id}-${m}-netval`}
+                                className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#004B87] text-right bg-[#F5FAFF]"
+                                data-testid={`purchasing-plan-netvalue-${category}-${i}-${m}`}
+                              >
+                                {formatMoney(c.net_value_by_month[m], c.currency)}
                               </td>
                             ))}
                             <td
@@ -619,6 +742,12 @@ export default function PurchasingPlanPage() {
                             >
                               {formatMoney(totalValueOverall(c), c.currency)}
                             </td>
+                            <td
+                              className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#004B87] text-right font-bold bg-[#F5FAFF]"
+                              data-testid={`purchasing-plan-net-total-${category}-${i}`}
+                            >
+                              {formatMoney(totalNetValueOverall(c), c.currency)}
+                            </td>
                           </tr>
                         ))}
                     </Fragment>
@@ -626,7 +755,7 @@ export default function PurchasingPlanPage() {
                 })}
                 {filteredComponents.length === 0 && (
                   <tr>
-                    <td colSpan={4 + months.length * 2} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="purchasing-plan-no-components">
+                    <td colSpan={6 + months.length * 4} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="purchasing-plan-no-components">
                       {plan.components.length === 0
                         ? "No purchasable leaf components found in the forecast for these months"
                         : `No components in category "${categoryFilter}"`}
