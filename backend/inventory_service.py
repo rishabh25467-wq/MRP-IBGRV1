@@ -231,7 +231,7 @@ def deep_backfill_uuids(db, sap_soap_client, sap_material_client=None, progress_
                 return pid, already_checked_boms[pid]
         else:
             try:
-                raw = bom_cache_service._fetch_live(sap_soap_client, pid)
+                raw = bom_cache_service._fetch_live(sap_soap_client, pid, db)
             except BomFetchError as e:
                 logger.warning(f"Deep UUID backfill: BOM lookup failed for '{pid}' after retries: {e}")
                 raw = None

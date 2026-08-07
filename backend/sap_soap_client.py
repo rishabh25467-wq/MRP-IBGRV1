@@ -100,34 +100,86 @@ class SAPSoapBOMClient:
 
     @classmethod
     def _parse(cls, xml_text: str):
-        """A SelectionByOutputProductID query can return multiple BOM revisions
-        for the same product (old + current). Only the latest revision (highest
-        numeric suffix) should be used - older ones are superseded/obsolete.
-        A revision's header ConsistencyStatus (SAP code: 1=Check Pending,
-        2=Inconsistent, 3=Consistent) must be checked first - a "Check Pending"
-        or "Inconsistent" revision can carry a higher numeric suffix than the
-        actual current/released one, so it must never be preferred over a
-        Consistent revision."""
+        """A SelectionByOutputProductID query can return multiple BOM
+        revisions for the same product. Two very different situations look
+        identical at first glance (same product, multiple revision
+        suffixes) and must be told apart:
+
+          1. Administrative supersession - an old revision replaced by a
+             newer one using the exact same materials (just a date/metadata
+             change). Auto-resolve to the latest Consistent one, as before.
+          2. GENUINE ALTERNATE BOMs - multiple revisions that are ALL
+             currently Consistent/active, but use DIFFERENT raw materials
+             to make the SAME output (e.g. a bracket makeable in either
+             Cold-Rolled or Hot-Rolled sheet steel, kept as two parallel
+             BOMs because production picks whichever material happens to be
+             in stock/cheaper for a given run). Auto-picking one of these
+             and discarding the other is wrong - it's a genuine business
+             decision that belongs to production planning, not something
+             this app should silently guess. Confirmed empirically against
+             this tenant (e.g. HTBS-SPAIN has 3 Consistent revisions: two
+             share identical materials - a normal revision chain - the
+             third genuinely differs, description "...WITH PALLET").
+
+        Distinguishing them: group Consistent revisions by a "recipe
+        fingerprint" (the set of input product IDs used) - revisions
+        sharing a fingerprint are the SAME recipe (collapse to the latest,
+        as before); revisions with a DIFFERENT fingerprint are true
+        alternates. The chosen default stays exactly what it always was
+        (highest revision among Consistent) - callers/production only need
+        to look at the `alternates` list when it's non-empty and decide."""
         hit_blocks = re.findall(r"<ProductionBillOfMaterials>(.*?)</ProductionBillOfMaterials>", xml_text, re.S)
         if not hit_blocks:
             return None
 
-        best_block, best_id, best_revision, best_consistent = None, None, None, False
+        candidates = []
         for block in hit_blocks:
             id_match = re.search(r"<ProductionBillOfMaterialID>([^<]*)</ProductionBillOfMaterialID>", block)
             if not id_match:
                 continue
+            bom_id = id_match.group(1)
             consistency_match = re.search(r"<ConsistencyStatus>([^<]*)</ConsistencyStatus>", block)
             is_consistent = bool(consistency_match) and consistency_match.group(1).strip() == "3"
-            revision = cls._revision_number(id_match.group(1))
-            # A Consistent revision always outranks a non-Consistent one,
-            # regardless of numeric suffix; ties within the same consistency
-            # tier are broken by the highest revision number.
-            if best_block is None or (is_consistent, revision) > (best_consistent, best_revision):
-                best_block, best_id, best_revision, best_consistent = block, id_match.group(1), revision, is_consistent
 
-        if best_block is None:
+            variant_match = re.search(r"<ProductionBillOfMaterialVariant>(.*?)</ProductionBillOfMaterialVariant>", block, re.S)
+            variant_block = variant_match.group(1) if variant_match else ""
+            desc_match = re.search(r'<VariantDescription[^>]*>([^<]*)</VariantDescription>', variant_block)
+            item_ids = re.findall(r"<InputProductID>.*?<ProductID>([^<]*)</ProductID>", variant_block, re.S)
+            item_desc_match = re.search(r"<InputProductDescription>([^<]*)</InputProductDescription>", variant_block)
+
+            candidates.append({
+                "bom_id": bom_id, "block": block, "revision": cls._revision_number(bom_id),
+                "is_consistent": is_consistent,
+                "description": desc_match.group(1) if desc_match else None,
+                "fingerprint": frozenset(item_ids),
+                "sample_item_id": item_ids[0] if item_ids else None,
+                "sample_item_description": item_desc_match.group(1) if item_desc_match else None,
+            })
+
+        if not candidates:
             return None
+
+        # Same consistency-first tie-break as always: only consider
+        # non-Consistent candidates if NOTHING is Consistent at all.
+        consistent = [c for c in candidates if c["is_consistent"]]
+        pool = consistent if consistent else candidates
+
+        by_fingerprint = {}
+        for c in pool:
+            fp = c["fingerprint"]
+            if fp not in by_fingerprint or c["revision"] > by_fingerprint[fp]["revision"]:
+                by_fingerprint[fp] = c
+        representatives = sorted(by_fingerprint.values(), key=lambda c: -c["revision"])
+
+        best = representatives[0]
+        best_block, best_id = best["block"], best["bom_id"]
+        alternates = [
+            {
+                "bom_id": r["bom_id"], "description": r["description"],
+                "sample_item_id": r["sample_item_id"], "sample_item_description": r["sample_item_description"],
+            }
+            for r in representatives
+        ] if len(representatives) > 1 else []
 
         # The root product's OWN UUID (needed for Standard Costs / SAP
         # Planning lookups on items that are BOM roots themselves, e.g.
@@ -138,7 +190,10 @@ class SAPSoapBOMClient:
         variant_match = re.search(r"<ProductionBillOfMaterialVariant>(.*?)</ProductionBillOfMaterialVariant>", best_block, re.S)
         root_uuid_match = re.search(r"<ProductUUID>([^<]*)</ProductUUID>", variant_match.group(1)) if variant_match else None
 
-        bom = {"bom_id": best_id, "product_uuid": root_uuid_match.group(1) if root_uuid_match else None, "groups": []}
+        bom = {
+            "bom_id": best_id, "product_uuid": root_uuid_match.group(1) if root_uuid_match else None,
+            "groups": [], "alternates": alternates,
+        }
 
         for group_match in re.finditer(r"<ProductionBillOfMaterialItemGroup>(.*?)</ProductionBillOfMaterialItemGroup>", best_block, re.S):
             group_block = group_match.group(1)

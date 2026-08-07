@@ -25,6 +25,7 @@ from purchasing_plan import (
     _default_month, _validate_month,
 )
 import bom_cache_service
+import production_plan_service
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -585,6 +586,62 @@ async def trigger_bom_cache_refresh():
 
     asyncio.create_task(run())
     return {"triggered": True}
+
+
+class BomAlternateOption(BaseModel):
+    bom_id: str
+    description: Optional[str] = None
+    sample_item_id: Optional[str] = None
+    sample_item_description: Optional[str] = None
+
+
+class BomAlternateEntry(BaseModel):
+    product_id: str
+    options: List[BomAlternateOption]
+    default_bom_id: str
+    resolved_bom_id: Optional[str] = None
+
+
+class BomAlternatesResponse(BaseModel):
+    items: List[BomAlternateEntry]
+
+
+class ResolveAlternateRequest(BaseModel):
+    chosen_bom_id: str
+
+
+@api_router.get("/production-plan/alternates", response_model=BomAlternatesResponse)
+async def get_bom_alternates():
+    """Every component known to have genuine BOM alternates (same output,
+    different raw materials - see sap_soap_client._parse) that production
+    needs to pick between, plus whichever choice (if any) is already on
+    file. A component only shows up here once it's been explored at least
+    once via BOM Explorer/Purchasing Plan/the periodic cache refresh."""
+    items = await asyncio.to_thread(production_plan_service.list_alternates, db)
+    return BomAlternatesResponse(items=items)
+
+
+@api_router.post("/production-plan/alternates/{product_id}", response_model=BomAlternateEntry)
+async def resolve_bom_alternate(product_id: str, payload: ResolveAlternateRequest):
+    """Production's standing choice for this component - applies globally,
+    everywhere the component is used, until changed or cleared here."""
+    await asyncio.to_thread(production_plan_service.resolve_alternate, db, product_id, payload.chosen_bom_id)
+    items = await asyncio.to_thread(production_plan_service.list_alternates, db)
+    match = next((i for i in items if i["product_id"] == product_id), None)
+    if match is None:
+        raise HTTPException(status_code=404, detail="Unknown product_id")
+    return BomAlternateEntry(**match)
+
+
+@api_router.delete("/production-plan/alternates/{product_id}", response_model=BomAlternateEntry)
+async def clear_bom_alternate(product_id: str):
+    """Reverts to the default (highest-revision) selection."""
+    await asyncio.to_thread(production_plan_service.clear_alternate_resolution, db, product_id)
+    items = await asyncio.to_thread(production_plan_service.list_alternates, db)
+    match = next((i for i in items if i["product_id"] == product_id), None)
+    if match is None:
+        raise HTTPException(status_code=404, detail="Unknown product_id")
+    return BomAlternateEntry(**match)
 
 
 class ComponentMasterItem(BaseModel):

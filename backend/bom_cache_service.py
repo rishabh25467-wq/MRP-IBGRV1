@@ -36,6 +36,9 @@ COLLECTION_NAME = "bom_node_cache"
 FETCH_RETRY_ATTEMPTS = 3
 
 
+OVERRIDES_COLLECTION_NAME = "bom_variant_overrides"
+
+
 class BomFetchError(Exception):
     """A genuine SAP/network error (timeout, HTTP failure, etc), even after
     retries - distinct from SAP cleanly confirming a product has no BOM.
@@ -47,7 +50,7 @@ class BomFetchError(Exception):
     sub-assembly must not blow up resolving the rest of the tree)."""
 
 
-def _fetch_live(sap_soap_client, product_id):
+def _fetch_live(sap_soap_client, product_id, db=None):
     """One lightweight (non-recursive) SAP fetch for a single product's own
     BOM header+items - NOT a full explosion. Returns the raw bom dict, or
     None if SAP cleanly confirms there is no BOM for this product. Retries
@@ -57,18 +60,40 @@ def _fetch_live(sap_soap_client, product_id):
     failure was previously indistinguishable from "SAP confirms no BOM",
     causing materials that genuinely have a BOM in SAP to be misreported as
     missing (see bug report: dozens of real parts falsely flagged "No SAP
-    BOM found" that resolved fine on a plain retry)."""
+    BOM found" that resolved fine on a plain retry).
+
+    If `db` is given and the fetched BOM has genuine alternates (see
+    sap_soap_client._parse - multiple currently-active revisions using
+    DIFFERENT materials for the same output, not just an admin revision
+    chain), checks `bom_variant_overrides` for a production-made choice and
+    re-fetches that EXACT revision by ID instead of the default (highest
+    revision) - see production_plan_service.py, where production resolves
+    which alternate to use for a given component."""
     last_error = None
     for attempt in range(FETCH_RETRY_ATTEMPTS):
         try:
-            return sap_soap_client._fetch_bom_by_id(product_id) or sap_soap_client._fetch_bom_by_output_product(product_id)
+            raw = sap_soap_client._fetch_bom_by_id(product_id) or sap_soap_client._fetch_bom_by_output_product(product_id)
+            break
         except Exception as e:
             last_error = e
             if attempt < FETCH_RETRY_ATTEMPTS - 1:
                 logger.warning(f"BOM fetch attempt {attempt + 1}/{FETCH_RETRY_ATTEMPTS} failed for '{product_id}', retrying: {e}")
                 time.sleep(1.5 * (attempt + 1))
-    raise BomFetchError(str(last_error)) from last_error
+    else:
+        raise BomFetchError(str(last_error)) from last_error
 
+    if db is not None and raw and raw.get("alternates"):
+        override = db[OVERRIDES_COLLECTION_NAME].find_one({"_id": product_id})
+        if override and override["chosen_bom_id"] != raw["bom_id"]:
+            try:
+                chosen = sap_soap_client._fetch_bom_by_id(override["chosen_bom_id"])
+            except Exception as e:
+                logger.warning(f"BOM variant override lookup failed for '{product_id}' -> '{override['chosen_bom_id']}', using default instead: {e}")
+                chosen = None
+            if chosen:
+                chosen["alternates"] = raw["alternates"]
+                raw = chosen
+    return raw
 
 
 def _upsert(collection, product_id, raw_bom, changed):
@@ -77,6 +102,7 @@ def _upsert(collection, product_id, raw_bom, changed):
         "bom_id": raw_bom["bom_id"] if raw_bom else None,
         "groups": raw_bom["groups"] if raw_bom else [],
         "product_uuid": raw_bom.get("product_uuid") if raw_bom else None,
+        "alternates": raw_bom.get("alternates", []) if raw_bom else [],
         "found": bool(raw_bom and raw_bom.get("groups")),
         "last_checked_at": now,
     }
@@ -120,7 +146,7 @@ def build_tree_from_cache(root_id: str, sap_soap_client, db):
             track(checked_at)
             return raw
         try:
-            raw = _fetch_live(sap_soap_client, product_id)
+            raw = _fetch_live(sap_soap_client, product_id, db)
         except BomFetchError as e:
             logger.warning(f"BOM fetch failed for '{product_id}' (leaving uncached for retry next run): {e}")
             return None
@@ -136,7 +162,7 @@ def build_tree_from_cache(root_id: str, sap_soap_client, db):
         track(checked_at)
         root = raw
     else:
-        root = _fetch_live(sap_soap_client, root_id)
+        root = _fetch_live(sap_soap_client, root_id, db)
         now = datetime.now(timezone.utc)
         _upsert(collection, root_id, root, changed=True)
         track(now)
@@ -177,7 +203,7 @@ def build_tree_from_cache(root_id: str, sap_soap_client, db):
 
             def fetch_and_cache(pid):
                 try:
-                    raw = _fetch_live(sap_soap_client, pid)
+                    raw = _fetch_live(sap_soap_client, pid, db)
                 except BomFetchError as e:
                     logger.warning(f"BOM fetch failed for '{pid}' (leaving uncached for retry next run): {e}")
                     return None, False
@@ -251,7 +277,7 @@ def refresh_stale_nodes(sap_soap_client, db, max_workers: int = 5) -> dict:
     def check_one(product_id):
         existing = collection.find_one({"_id": product_id})
         try:
-            raw = _fetch_live(sap_soap_client, product_id)
+            raw = _fetch_live(sap_soap_client, product_id, db)
         except BomFetchError as e:
             logger.warning(f"Background refresh: fetch failed for '{product_id}', keeping existing cache entry: {e}")
             return "failed"
