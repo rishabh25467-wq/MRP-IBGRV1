@@ -1,0 +1,33 @@
+{
+  "summary": "Tested 2 new Purchasing Plan enhancements added on top of iteration_17 (100%/100% pass): Category quick-filter dropdown and sortable column headers (per-group sorting). All requested scenarios passed. Backend unaffected (no backend changes this round, confirmed via live plan generation working end-to-end).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/purchasing-plan/generate (live SAP cost lookup)", "issue": "One regeneration run returned all value_by_month as null/0 (Value stat showed INR 0.00, all row Value cells showed '—', Total Value 0.00) while qty data was intact. A subsequent regenerate for the same month immediately returned correct values (Hardware total INR 55,524.00). This looks like transient live-SAP cost-service flakiness (consistent with prior iteration notes about SAP responsiveness variance), not a regression caused by this round's filter/sort changes."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "No action required for the new features - all passed as specified. Optionally: main agent may want to add a defensive check/retry or a visible warning banner when SAP cost lookup returns all-zero values, given the observed transient flakiness (low priority, not caused by this round's changes)."
+  ],
+  "critical_code_review_comments": [
+    "PurchasingPlanPage.js: categoryFilter state + filteredComponents derivation is applied consistently before grouping, stats (leaf count, value-by-month totals), and Excel export - verified all three recalculate correctly when filter changes (Hardware: 5 leaf components, INR 55,524.00, single group header visible; reverting to 'all' restores 18/5-groups/INR 3,103,985.55).",
+    "getPlanSortValue()/sortItems() correctly scope sorting to each category group's own `items` array (called per-group inside groupByCategory().map()) rather than globally - verified Hardware group values go 2,100 -> 4,704 -> 7,910 -> 8,785 -> 32,025 ascending and reverse for descending, while group order itself (Copper Alloy, Hardware, Packaging, Steel, Zinc) never changes across sort clicks, exactly as specified.",
+    "toggleSort() correctly toggles asc/desc on repeat clicks of the same field and resets to asc on a new field; CaretUp/CaretDown indicator icons render correctly next to the active sort column header.",
+    "Export button remains disabled-safe and uses filteredComponents (not the full plan.components) for export rows, so exporting while a category filter is active is scoped correctly per code (download fired without error during live test; full file-content diff not verified but code path is correct).",
+    "Regression spot-check: individual category-header collapse/expand toggle, bulk Expand/Collapse Categories buttons, and missing-BOMs banner toggle all still work correctly (18<->0 rows, banner shows 1 missing part with reason)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A - no backend changes this round; live plan generation smoke-tested successfully", "frontend": "100%"},
+  "test_credentials": "N/A - no app-level auth; SAP/OMS creds used as-is from backend/.env.",
+  "seed_data_creation": "None - used live SAP/OMS data (purchasing plan 2020-01 -> 18 components / 5 categories: Copper Alloy(5), Hardware(5), Packaging(4), Steel(3), Zinc(1)).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All 3 requested new-feature test areas passed this round: (1) Category filter dropdown correctly isolates one category's group+rows, updates Leaf Components and Value-Jan-2020 stat cards exactly (Hardware: 5, INR 55,524.00), and reverting to 'All Categories' restores full 18-row/5-group view with original totals. (2) Sortable headers (Total Value, per-month Qty, per-month Value) correctly sort WITHIN each category group only, verified with exact expected value sequences for the Hardware group in both directions; category GROUP ORDER remains alphabetically fixed across all sort interactions. (3) Export to Excel while Hardware filter was active fired without any console/page error (data-content verification of the downloaded xlsx wasn't performed, but code review confirms filteredComponents is what's mapped into export rows, so it is filter-scoped by design). (4) Light regression pass confirmed collapse/expand (single + bulk) and missing-BOMs banner unaffected. One NOTE: encountered a single transient run where live SAP cost lookup returned all-zero/null values (likely SAP service flakiness, self-resolved on immediate regenerate) - not related to this round's UI changes, flagged as minor/informational only.",
+  "rca_of_the_issue": "N/A - no new bugs attributable to this round's category-filter/sort feature. The one observed value=0 anomaly was transient and tied to the live SAP cost-lookup step (external dependency), not the frontend filter/sort logic; resolved itself on a fresh plan generation."
+}

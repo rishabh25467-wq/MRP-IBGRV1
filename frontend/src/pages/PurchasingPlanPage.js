@@ -11,6 +11,7 @@ import {
   ShoppingCartSimple,
   CaretDown,
   CaretRight,
+  CaretUp,
   FileArrowDown,
   ArrowsOutSimple,
   ArrowsInSimple,
@@ -20,6 +21,7 @@ import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Toaster, toast } from "@/components/ui/sonner";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { NavTabs } from "@/components/NavTabs";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -66,6 +68,26 @@ const groupByCategory = (components) => {
   return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
 };
 
+const getPlanSortValue = (component, field) => {
+  if (field === "product_id") return (component.product_id || "").toLowerCase();
+  if (field === "total") return component.value_by_month ? Object.values(component.value_by_month).reduce((s, v) => s + (v || 0), 0) : -Infinity;
+  if (field.startsWith("qty:")) return component.qty_by_month[field.slice(4)] ?? -Infinity;
+  if (field.startsWith("value:")) return component.value_by_month[field.slice(6)] ?? -Infinity;
+  return 0;
+};
+
+const sortItems = (items, sortConfig) => {
+  if (!sortConfig.field) return items;
+  const sorted = [...items].sort((a, b) => {
+    const va = getPlanSortValue(a, sortConfig.field);
+    const vb = getPlanSortValue(b, sortConfig.field);
+    if (va < vb) return sortConfig.direction === "asc" ? -1 : 1;
+    if (va > vb) return sortConfig.direction === "asc" ? 1 : -1;
+    return 0;
+  });
+  return sorted;
+};
+
 export default function PurchasingPlanPage() {
   const [plan, setPlan] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -75,6 +97,8 @@ export default function PurchasingPlanPage() {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [selectedMonth, setSelectedMonth] = useState(getDefaultMonth());
   const [collapsedCategories, setCollapsedCategories] = useState(new Set());
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [sortConfig, setSortConfig] = useState({ field: null, direction: "asc" });
 
   const toggleCategoryCollapse = (category) => {
     setCollapsedCategories((prev) => {
@@ -86,6 +110,12 @@ export default function PurchasingPlanPage() {
       }
       return next;
     });
+  };
+
+  const toggleSort = (field) => {
+    setSortConfig((prev) =>
+      prev.field === field ? { field, direction: prev.direction === "asc" ? "desc" : "asc" } : { field, direction: "asc" }
+    );
   };
 
   const POLL_INTERVAL_MS = 3000;
@@ -112,6 +142,8 @@ export default function PurchasingPlanPage() {
           setPlan(job.result);
           setLastGenerated(new Date());
           setCollapsedCategories(new Set());
+          setCategoryFilter("all");
+          setSortConfig({ field: null, direction: "asc" });
           toast.success("Purchasing plan generated", {
             description: `${job.result.components.length} components across ${job.result.months.length} months`,
           });
@@ -136,8 +168,16 @@ export default function PurchasingPlanPage() {
   const months = plan?.months || [];
   const currency = plan?.components?.find((c) => c.currency)?.currency || "";
 
+  const availableCategories = plan
+    ? Array.from(new Set(plan.components.map((c) => c.category || "Uncategorized"))).sort()
+    : [];
+  const filteredComponents =
+    plan && categoryFilter !== "all"
+      ? plan.components.filter((c) => (c.category || "Uncategorized") === categoryFilter)
+      : plan?.components || [];
+
   const totalValueByMonth = (month) =>
-    (plan?.components || []).reduce((sum, c) => sum + (c.value_by_month[month] || 0), 0);
+    filteredComponents.reduce((sum, c) => sum + (c.value_by_month[month] || 0), 0);
 
   const totalValueOverall = (component) =>
     months.reduce((sum, m) => sum + (component.value_by_month[m] || 0), 0);
@@ -148,7 +188,7 @@ export default function PurchasingPlanPage() {
 
   const exportToExcel = () => {
     if (!plan) return;
-    const rows = plan.components.map((c) => {
+    const rows = filteredComponents.map((c) => {
       const row = {
         "Product ID": c.product_id,
         Description: c.description || "",
@@ -230,6 +270,32 @@ export default function PurchasingPlanPage() {
             {months.map(formatMonth).join(" & ")}
           </Badge>
         )}
+        {plan && (
+          <div className="flex items-center gap-1.5">
+            <label htmlFor="purchasing-plan-category-filter" className="font-heading text-xs font-bold text-[#475467] uppercase">
+              Category
+            </label>
+            <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+              <SelectTrigger
+                id="purchasing-plan-category-filter"
+                className="h-8 w-48 text-[13px] rounded-sm border-[#D0D5DD]"
+                data-testid="purchasing-plan-category-filter"
+              >
+                <SelectValue placeholder="All Categories" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all" data-testid="category-filter-option-all">
+                  All Categories
+                </SelectItem>
+                {availableCategories.map((cat) => (
+                  <SelectItem key={cat} value={cat} data-testid={`category-filter-option-${cat}`}>
+                    {cat}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
         <Button
           type="button"
           onClick={exportToExcel}
@@ -254,7 +320,7 @@ export default function PurchasingPlanPage() {
         <Button
           type="button"
           variant="outline"
-          onClick={() => plan && setCollapsedCategories(new Set(groupByCategory(plan.components).map(([cat]) => cat)))}
+          onClick={() => plan && setCollapsedCategories(new Set(groupByCategory(filteredComponents).map(([cat]) => cat)))}
           disabled={!plan}
           className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054] transition-colors"
           data-testid="collapse-all-categories-button"
@@ -276,7 +342,7 @@ export default function PurchasingPlanPage() {
           <StatCard
             icon={Package}
             label="Leaf Components"
-            value={plan ? plan.components.length : "—"}
+            value={plan ? filteredComponents.length : "—"}
             testId="stat-leaf-components"
           />
           {months.map((m) => (
@@ -383,8 +449,16 @@ export default function PurchasingPlanPage() {
             <table className="border-collapse w-full" data-testid="purchasing-plan-table">
               <thead>
                 <tr>
-                  <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
-                    Product ID
+                  <th
+                    onClick={() => toggleSort("product_id")}
+                    className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#DDE1E8] select-none"
+                    data-testid="purchasing-plan-sort-header-product_id"
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      Product ID
+                      {sortConfig.field === "product_id" &&
+                        (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
+                    </span>
                   </th>
                   <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
                     Description
@@ -395,26 +469,47 @@ export default function PurchasingPlanPage() {
                   {months.map((m) => (
                     <th
                       key={`${m}-qty`}
-                      className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase tracking-wide"
+                      onClick={() => toggleSort(`qty:${m}`)}
+                      className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#DDE1E8] select-none"
+                      data-testid={`purchasing-plan-sort-header-qty-${m}`}
                     >
-                      {formatMonth(m)} Qty
+                      <span className="inline-flex items-center gap-1 justify-end">
+                        {formatMonth(m)} Qty
+                        {sortConfig.field === `qty:${m}` &&
+                          (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
+                      </span>
                     </th>
                   ))}
                   {months.map((m) => (
                     <th
                       key={`${m}-val`}
-                      className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase tracking-wide"
+                      onClick={() => toggleSort(`value:${m}`)}
+                      className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#DDE1E8] select-none"
+                      data-testid={`purchasing-plan-sort-header-value-${m}`}
                     >
-                      {formatMonth(m)} Value
+                      <span className="inline-flex items-center gap-1 justify-end">
+                        {formatMonth(m)} Value
+                        {sortConfig.field === `value:${m}` &&
+                          (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
+                      </span>
                     </th>
                   ))}
-                  <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
-                    Total Value
+                  <th
+                    onClick={() => toggleSort("total")}
+                    className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#DDE1E8] select-none"
+                    data-testid="purchasing-plan-sort-header-total"
+                  >
+                    <span className="inline-flex items-center gap-1 justify-end">
+                      Total Value
+                      {sortConfig.field === "total" &&
+                        (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
+                    </span>
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {groupByCategory(plan.components).map(([category, items]) => {
+                {groupByCategory(filteredComponents).map(([category, rawItems]) => {
+                  const items = sortItems(rawItems, sortConfig);
                   const isCollapsed = collapsedCategories.has(category);
                   const categoryCurrency = items.find((c) => c.currency)?.currency || currency;
                   return (
@@ -495,10 +590,12 @@ export default function PurchasingPlanPage() {
                     </Fragment>
                   );
                 })}
-                {plan.components.length === 0 && (
+                {filteredComponents.length === 0 && (
                   <tr>
-                    <td colSpan={4 + months.length * 2} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]">
-                      No purchasable leaf components found in the forecast for these months
+                    <td colSpan={4 + months.length * 2} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="purchasing-plan-no-components">
+                      {plan.components.length === 0
+                        ? "No purchasable leaf components found in the forecast for these months"
+                        : `No components in category "${categoryFilter}"`}
                     </td>
                   </tr>
                 )}
