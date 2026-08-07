@@ -180,14 +180,21 @@ async def categorize(payload: CategorizeRequest):
     return CategorizeResponse(categories=categories)
 
 
+class PurchasingPlanGenerateRequest(BaseModel):
+    target_month: Optional[str] = None
+
+
 @api_router.post("/purchasing-plan/generate")
-async def start_purchasing_plan_job():
+async def start_purchasing_plan_job(payload: Optional[PurchasingPlanGenerateRequest] = None):
     job_id = str(uuid.uuid4())
     purchasing_plan_jobs[job_id] = {"status": "running", "result": None, "error": None}
+    target_month = payload.target_month if payload else None
 
     async def run():
         try:
-            result = await asyncio.to_thread(build_purchasing_plan, oms_client, sap_soap_client, sap_valuation_client)
+            result = await asyncio.to_thread(
+                build_purchasing_plan, oms_client, sap_soap_client, sap_valuation_client, target_month
+            )
             purchasing_plan_jobs[job_id] = {"status": "done", "result": result, "error": None}
         except Exception as e:
             logger.error(f"Purchasing plan generation failed: {e}")

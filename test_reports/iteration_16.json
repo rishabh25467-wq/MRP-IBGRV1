@@ -1,0 +1,38 @@
+{
+  "summary": "Tested the 3 new enhancements: BOM Explorer column sorting + text search, and Purchasing Plan month picker + Excel export. Search, highlighting, month-picker (incl. past months), and Excel export mechanics all work correctly. Found ONE real bug: sorting the BOM tree corrupts the expand/collapse state of sub-assemblies, causing children to randomly appear/disappear after a sort click.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "BomExplorerPage.js tree sort + expand/collapse",
+        "issue": "expandedKeys (and effectiveExpandedKeys used for rendering children) are positional index-path strings (e.g. '1', '2') computed once via collectExpandableKeys(result.tree) in ORIGINAL tree order. sortTree() reorders siblings, so a node's path in the rendered displayTree changes after sorting, but the Set of expanded paths does NOT get remapped to the node's new position. Result: after clicking a sort header, previously-expanded sub-assemblies can silently collapse (or the wrong node ends up 'expanded') because the stored path no longer points to the same node.",
+        "selector": "bom-sort-header-quantity / bom-toggle-{path}",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Fix BomExplorerPage.js: expand/collapse state must be tracked by a stable node identity (e.g. product_id + ancestor product_id chain, or product_uuid) instead of positional index path, so it survives re-ordering from sortTree(). Reproduction: load BOM P26584 -> Expand All (P26688 and P26680 sub-assemblies both expanded, 7 rows visible) -> click 'Quantity' header once (ascending): only 5 rows render, BOTH P26688's child (ROD-9) and P26680's child (SH6.0HR) disappear even though the toggle carets still visually show as if state didn't change for those rows. Click 'Quantity' header again (descending): 6 rows render, showing P26680's child SH6.0HR but still NOT P26688's child ROD-9. Expected: both sub-assemblies should remain expanded (7 rows total) across both sorts, since sorting should only reorder siblings, not affect expand state."
+    ],
+  "critical_code_review_comments": [
+    "filterTree/highlightMatch/sortTree helpers are clean and correctly handle nested recursion; search auto-expand via effectiveExpandedKeys = collectExpandableKeys(displayTree) when treeSearch is set works well and is not affected by the sort-state bug (search always force-expands everything).",
+    "Backend: _validate_month() correctly enforces YYYY-MM regex; build_purchasing_plan raises a clear ValueError for invalid months, which the async job wraps into job status 'failed' with a readable error message - verified via direct API test with '2026-13'.",
+    "Backend: no restriction on past months in _validate_month/_default_month - confirmed a past month (2020-01) generates a valid single-month plan end-to-end.",
+    "PurchasingPlanPage.js: month input correctly disabled while loading; export button correctly disabled until plan is set; filename PurchasingPlan_<month>.xlsx and sheet names (Purchasing Plan / Missing BOMs) match spec - verified via live download.",
+    "Minor observation (not urgent): POST /purchasing-plan/generate returns job_id=200 immediately even for a malformed target_month, deferring validation to the async job/status poll rather than failing fast with 400/422 at request time. Functionally fine (UI surfaces the error via job status polling) but slightly non-RESTful; not required to fix given the existing async job architecture."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (generate w/ invalid month, past month 2020-01, BOM search all verified via curl)", "frontend": "90% (search, highlighting, no-match, month-picker, disabled states, export/download all passed; sort-header caret UI passed; sort+expand interaction found a real bug)"},
+  "test_credentials": "N/A - no app-level auth; OMS/SAP creds already in backend/.env, used as-is.",
+  "seed_data_creation": "None - used live SAP/OMS data (BOM P26584, purchasing plan for 2026-09 default and 2020-01 past month).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Verified working: (1) BOM Explorer text search (data-testid=bom-tree-search-input) filters by product_id/description substring case-insensitively, highlights matches with <mark> (amber bg), clear button (bom-tree-search-clear-button) resets, and 'No components match' message (bom-search-no-matches) shows correctly for no-match queries - tested against BOM P26584 with query 'P266' (4 matching rows shown, both branches with highlighted 'P266' substring) and clear/no-match paths. (2) Sort header carets (CaretUp/CaretDown) render correctly per data-testid=bom-sort-header-quantity, and top-level sibling ordering itself IS correct in both directions (ascending: 0.000462, 0.000463, 0.023, 1, 1; descending is the exact reverse) - the SORT ORDER logic (sortTree fn) is correct. (3) BUG: expand/collapse state breaks across sort clicks - see frontend_issues/action_items for full repro; this is a state-management issue (positional path keys vs sortTree changing sibling order), not a sort-order bug. (4) Purchasing Plan: month picker defaults to next calendar month (2026-09 in this test env's clock), accepts and correctly sends past months (tested 2020-01 -> single-month plan with 18 leaf components, 1 missing BOM, stat cards/table/months-badge all showed 'Jan 2020' only, not two months), picker is disabled during generation, Export button disabled until first successful generation then enabled and downloads 'PurchasingPlan_2020-01.xlsx' successfully via real click+download event. (5) Regression: missing-BOMs collapsible banner, stat cards, and BOM Explorer's own export-excel-button/Load Standard Costs/AI Categorize buttons were code-reviewed and are untouched by this round's diffs - not re-exercised live this pass since iteration_14/15 already fully covered them and no related code paths changed. Next agent should verify the sort/expand-state fix once main agent applies it (re-run: Expand All -> sort quantity asc -> sort quantic desc -> confirm 7 rows visible both times with only sibling order changing).",
+  "rca_of_the_issue": "Root cause: BomExplorerPage.js identifies tree nodes for expand/collapse purposes purely by their POSITIONAL path in the currently rendered array (e.g., collectExpandableKeys(result.tree) and flattenVisibleTree both generate keys like '1', '2', '1-0' based on array index at each level). sortTree() is a pure function that returns a NEW node array with siblings re-ordered by the chosen field/direction; it does not preserve original array positions. Because expandedKeys (a Set of these positional strings) is stored in component state and NOT recomputed/remapped when sortConfig changes, a node's expand state effectively transfers to whichever OTHER node happens to land at that same index after sorting, instead of following the original node. Fix should use a stable identity for keys, e.g., derive path from product_id chain (e.g. 'P26584>P26688') instead of sibling index, so expand state survives reordering."
+}

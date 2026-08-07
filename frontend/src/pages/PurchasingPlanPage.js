@@ -1,6 +1,7 @@
 import { useState } from "react";
 import "@/App.css";
 import axios from "axios";
+import * as XLSX from "xlsx";
 import {
   Package,
   ClockCounterClockwise,
@@ -10,6 +11,7 @@ import {
   ShoppingCartSimple,
   CaretDown,
   CaretRight,
+  FileArrowDown,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -45,6 +47,13 @@ const formatQty = (value) => (value == null ? "—" : value.toLocaleString(undef
 const formatMoney = (value, currency) =>
   value == null ? "—" : `${currency || ""} ${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+const getDefaultMonth = () => {
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() + 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+};
+
 export default function PurchasingPlanPage() {
   const [plan, setPlan] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -52,6 +61,7 @@ export default function PurchasingPlanPage() {
   const [lastGenerated, setLastGenerated] = useState(null);
   const [warningsOpen, setWarningsOpen] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [selectedMonth, setSelectedMonth] = useState(getDefaultMonth());
 
   const POLL_INTERVAL_MS = 3000;
   const MAX_POLL_MS = 15 * 60 * 1000;
@@ -62,7 +72,7 @@ export default function PurchasingPlanPage() {
     setElapsedSeconds(0);
     const startedAt = Date.now();
     try {
-      const { data } = await axios.post(`${API}/purchasing-plan/generate`);
+      const { data } = await axios.post(`${API}/purchasing-plan/generate`, { target_month: selectedMonth });
       const jobId = data.job_id;
 
       // Long-running live OMS+SAP pipeline (can take 1-3+ minutes) - poll a
@@ -106,6 +116,38 @@ export default function PurchasingPlanPage() {
   const totalValueOverall = (component) =>
     months.reduce((sum, m) => sum + (component.value_by_month[m] || 0), 0);
 
+  const exportToExcel = () => {
+    if (!plan) return;
+    const rows = plan.components.map((c) => {
+      const row = {
+        "Product ID": c.product_id,
+        Description: c.description || "",
+        UOM: c.unit_of_measure || "",
+      };
+      months.forEach((m) => {
+        row[`${formatMonth(m)} Qty`] = c.qty_by_month[m] ?? "";
+        row[`${formatMonth(m)} Value`] = c.value_by_month[m] ?? "";
+      });
+      row["Total Value"] = totalValueOverall(c);
+      return row;
+    });
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), "Purchasing Plan");
+
+    if (plan.missing_boms.length > 0) {
+      const missingRows = plan.missing_boms.map((mb) => ({
+        "OMS Part No": mb.part_no,
+        "Mapped SAP ID": mb.sap_id || "",
+        Reason: mb.reason,
+      }));
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(missingRows), "Missing BOMs");
+    }
+
+    const filename = `PurchasingPlan_${months.join("_")}.xlsx`;
+    XLSX.writeFile(workbook, filename);
+    toast.success("Excel file downloaded", { description: filename });
+  };
+
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]">
       <Toaster position="top-right" />
@@ -124,6 +166,20 @@ export default function PurchasingPlanPage() {
 
       {/* Toolbar */}
       <div className="bg-white border-b border-[#D0D5DD] p-2 flex items-center gap-3 shrink-0 flex-wrap">
+        <div className="flex items-center gap-1.5">
+          <label htmlFor="purchasing-plan-month-picker" className="font-heading text-xs font-bold text-[#475467] uppercase">
+            Target Month
+          </label>
+          <input
+            id="purchasing-plan-month-picker"
+            type="month"
+            value={selectedMonth}
+            onChange={(e) => setSelectedMonth(e.target.value)}
+            disabled={loading}
+            className="h-8 px-2 text-[13px] rounded-sm border border-[#D0D5DD] text-[#101828] focus:outline-none focus:border-[#004B87] focus:ring-1 focus:ring-[#004B87]"
+            data-testid="purchasing-plan-month-picker"
+          />
+        </div>
         <Button
           type="button"
           onClick={generatePlan}
@@ -143,6 +199,16 @@ export default function PurchasingPlanPage() {
             {months.map(formatMonth).join(" & ")}
           </Badge>
         )}
+        <Button
+          type="button"
+          onClick={exportToExcel}
+          disabled={!plan}
+          className="h-8 bg-[#027A48] hover:bg-[#02623A] text-white text-xs rounded-sm transition-colors"
+          data-testid="export-purchasing-plan-excel-button"
+        >
+          <FileArrowDown size={13} className="mr-1.5" />
+          Export to Excel
+        </Button>
         <div className="flex items-center gap-1.5 text-[#475467] ml-auto" data-testid="purchasing-plan-last-generated">
           <ClockCounterClockwise size={13} weight="bold" />
           <span className="font-sans text-xs">
@@ -351,8 +417,8 @@ export default function PurchasingPlanPage() {
           >
             <ShoppingCartSimple size={28} weight="regular" />
             <p className="font-sans text-[13px]">
-              Click "Generate Purchasing Plan" to pull the next 2 months' sales forecast from OMS and explode it
-              against live SAP BOMs and standard costs
+              Pick a target month above, then click "Generate Purchasing Plan" to pull that month's sales forecast
+              from OMS and explode it against live SAP BOMs and standard costs
             </p>
           </div>
         )}

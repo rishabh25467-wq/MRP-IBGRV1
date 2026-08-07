@@ -7,6 +7,7 @@ import {
   Circle,
   CheckCircle,
   XCircle,
+  X,
   Package,
   Stack,
   CheckSquare,
@@ -14,6 +15,7 @@ import {
   WarningCircle,
   CaretRight,
   CaretDown,
+  CaretUp,
   ArrowsOutSimple,
   ArrowsInSimple,
   FileArrowDown,
@@ -144,6 +146,70 @@ const flattenVisibleTree = (nodes, expandedKeys, depth = 0, prefix = "") => {
   return out;
 };
 
+const filterTree = (nodes, query) => {
+  if (!query) return nodes;
+  const q = query.toLowerCase();
+  const result = [];
+  nodes.forEach((node) => {
+    const selfMatch =
+      (node.product_id || "").toLowerCase().includes(q) || (node.description || "").toLowerCase().includes(q);
+    if (selfMatch) {
+      result.push(node);
+      return;
+    }
+    if (node.children && node.children.length > 0) {
+      const filteredChildren = filterTree(node.children, query);
+      if (filteredChildren.length > 0) {
+        result.push({ ...node, children: filteredChildren });
+      }
+    }
+  });
+  return result;
+};
+
+const SORT_FIELD_GETTERS = {
+  product_id: (node) => (node.product_id || "").toLowerCase(),
+  quantity: (node) => (node.quantity != null ? node.quantity : -Infinity),
+  std_cost: (node, costs) => {
+    const cost = node.product_uuid ? costs[node.product_uuid.toUpperCase()] : null;
+    return cost ? cost.amount : -Infinity;
+  },
+  ext_cost: (node, costs) => {
+    const cost = node.product_uuid ? costs[node.product_uuid.toUpperCase()] : null;
+    return cost && node.quantity != null ? cost.amount * node.quantity : -Infinity;
+  },
+};
+
+const sortTree = (nodes, sortConfig, costs) => {
+  const { field, direction } = sortConfig;
+  if (!field) return nodes;
+  const getValue = SORT_FIELD_GETTERS[field];
+  const sorted = [...nodes].sort((a, b) => {
+    const va = getValue(a, costs);
+    const vb = getValue(b, costs);
+    if (va < vb) return direction === "asc" ? -1 : 1;
+    if (va > vb) return direction === "asc" ? 1 : -1;
+    return 0;
+  });
+  return sorted.map((node) => ({
+    ...node,
+    children: node.children && node.children.length > 0 ? sortTree(node.children, sortConfig, costs) : node.children,
+  }));
+};
+
+const highlightMatch = (text, query) => {
+  if (!query || !text) return text;
+  const idx = text.toLowerCase().indexOf(query.toLowerCase());
+  if (idx === -1) return text;
+  return (
+    <>
+      {text.slice(0, idx)}
+      <mark className="bg-[#FEF0C7] text-[#B54708] rounded-sm px-0.5">{text.slice(idx, idx + query.length)}</mark>
+      {text.slice(idx + query.length)}
+    </>
+  );
+};
+
 export default function BomExplorerPage() {
   const [bomId, setBomId] = useState("");
   const [loading, setLoading] = useState(false);
@@ -158,6 +224,14 @@ export default function BomExplorerPage() {
   const [categories, setCategories] = useState({});
   const [loadingCategories, setLoadingCategories] = useState(false);
   const [categoriesLoaded, setCategoriesLoaded] = useState(false);
+  const [treeSearch, setTreeSearch] = useState("");
+  const [sortConfig, setSortConfig] = useState({ field: null, direction: "asc" });
+
+  const toggleSort = (field) => {
+    setSortConfig((prev) =>
+      prev.field === field ? { field, direction: prev.direction === "asc" ? "desc" : "asc" } : { field, direction: "asc" }
+    );
+  };
 
   const checkConnection = useCallback(async () => {
     try {
@@ -259,6 +333,8 @@ export default function BomExplorerPage() {
     setCostsLoaded(false);
     setCategories({});
     setCategoriesLoaded(false);
+    setTreeSearch("");
+    setSortConfig({ field: null, direction: "asc" });
 
     try {
       const response = await axios.get(`${API}/bom/search`, { params: { bom_id: bomId.trim() } });
@@ -277,6 +353,9 @@ export default function BomExplorerPage() {
   };
 
   const activeCount = result ? result.total_components : 0;
+  const displayTree = result ? sortTree(filterTree(result.tree, treeSearch), sortConfig, costs) : [];
+  const effectiveExpandedKeys = treeSearch ? new Set(collectExpandableKeys(displayTree)) : expandedKeys;
+  const visibleRows = flattenVisibleTree(displayTree, effectiveExpandedKeys);
 
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]">
@@ -348,6 +427,27 @@ export default function BomExplorerPage() {
         )}
 
         <div className="flex items-center gap-2 ml-auto">
+          <div className="relative">
+            <MagnifyingGlass size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
+            <Input
+              value={treeSearch}
+              onChange={(e) => setTreeSearch(e.target.value)}
+              placeholder="Filter tree by ID or description"
+              disabled={!result}
+              className="h-8 pl-7 pr-7 w-56 text-[13px] rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]"
+              data-testid="bom-tree-search-input"
+            />
+            {treeSearch && (
+              <button
+                type="button"
+                onClick={() => setTreeSearch("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-[#98A2B3] hover:text-[#344054]"
+                data-testid="bom-tree-search-clear-button"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
           <Button
             type="button"
             variant="outline"
@@ -460,18 +560,42 @@ export default function BomExplorerPage() {
             <table className="border-collapse w-full" data-testid="bom-tree-table">
               <thead>
                 <tr>
-                  {["Level", "Product ID", "Description", "Category", "Quantity", "UOM", "ECO", "Active", "Std Cost", "Ext Cost"].map((h) => (
+                  {[
+                    { label: "Level", field: null },
+                    { label: "Product ID", field: "product_id" },
+                    { label: "Description", field: null },
+                    { label: "Category", field: null },
+                    { label: "Quantity", field: "quantity" },
+                    { label: "UOM", field: null },
+                    { label: "ECO", field: null },
+                    { label: "Active", field: null },
+                    { label: "Std Cost", field: "std_cost" },
+                    { label: "Ext Cost", field: "ext_cost" },
+                  ].map(({ label, field }) => (
                     <th
-                      key={h}
-                      className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide"
+                      key={label}
+                      onClick={field ? () => toggleSort(field) : undefined}
+                      className={`bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide ${
+                        field ? "cursor-pointer hover:bg-[#DDE1E8] select-none" : ""
+                      }`}
+                      data-testid={field ? `bom-sort-header-${field}` : undefined}
                     >
-                      {h}
+                      <span className="inline-flex items-center gap-1">
+                        {label}
+                        {field &&
+                          sortConfig.field === field &&
+                          (sortConfig.direction === "asc" ? (
+                            <CaretUp size={10} weight="bold" />
+                          ) : (
+                            <CaretDown size={10} weight="bold" />
+                          ))}
+                      </span>
                     </th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {flattenVisibleTree(result.tree, expandedKeys).map(({ node, path, depth, hasChildren }, i) => (
+                {visibleRows.map(({ node, path, depth, hasChildren }, i) => (
                   <tr
                     key={path}
                     className={`${i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} hover:bg-[#F0F4F8] transition-colors duration-150`}
@@ -489,7 +613,7 @@ export default function BomExplorerPage() {
                       <span className="inline-flex items-center gap-1.5">
                         {hasChildren ? (
                           <span className="text-[#004B87]">
-                            {expandedKeys.has(path) ? (
+                            {effectiveExpandedKeys.has(path) ? (
                               <CaretDown size={12} weight="bold" />
                             ) : (
                               <CaretRight size={12} weight="bold" />
@@ -498,10 +622,12 @@ export default function BomExplorerPage() {
                         ) : (
                           <span className="w-3" />
                         )}
-                        {node.product_id}
+                        {highlightMatch(node.product_id, treeSearch)}
                       </span>
                     </td>
-                    <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] text-[#101828]">{node.description || "—"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] text-[#101828]">
+                      {highlightMatch(node.description || "—", treeSearch)}
+                    </td>
                     <td className="border border-[#D0D5DD] px-2 py-1 text-[13px]" data-testid={`bom-category-${path}`}>
                       {hasChildren ? (
                         <span className="text-[#98A2B3] italic">Sub-Assembly</span>
@@ -563,6 +689,17 @@ export default function BomExplorerPage() {
                   <tr>
                     <td colSpan={10} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]">
                       No components found for this BOM
+                    </td>
+                  </tr>
+                )}
+                {result.total_components > 0 && visibleRows.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={10}
+                      className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]"
+                      data-testid="bom-search-no-matches"
+                    >
+                      No components match "{treeSearch}"
                     </td>
                   </tr>
                 )}

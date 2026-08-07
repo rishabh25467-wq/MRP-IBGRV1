@@ -1,35 +1,37 @@
 """Purchasing Plan orchestration.
 
-Pipeline: OMS monthly sales forecast -> resolve each OMS part number to a SAP
-BOM (trying the part number directly first, since SAP recognizes it as a
+Pipeline: OMS monthly sales forecast (for a single target month, either
+user-picked or defaulted to next month) -> resolve each OMS part number to a
+SAP BOM (trying the part number directly first, since SAP recognizes it as a
 valid Product/BOM ID for most parts; the OMS wm-part-map value is only a
 secondary fallback - see build_purchasing_plan for details) -> explode the
 resolved BOM (reusing the existing SOAP client) -> aggregate required
 quantity at LEAF-level components only (sub-assemblies are skipped, only
 their own leaf materials count) -> attach live SAP standard costs -> return
-quantity + value broken down by month, for the next 2 months (relative to
-today), plus a list of OMS parts that could not be resolved/exploded into a
-SAP BOM (shown as a warning in the UI).
+quantity + value for that month, plus a list of OMS parts that could not be
+resolved/exploded into a SAP BOM (shown as a warning in the UI).
 """
 import logging
+import re
 from datetime import date
 
 logger = logging.getLogger(__name__)
 
-MONTHS_AHEAD = 2
 
-
-def _next_n_months(n: int) -> list:
+def _default_month() -> str:
+    """Next calendar month relative to today, as 'YYYY-MM'."""
     today = date.today()
-    months = []
-    year, month = today.year, today.month
-    for _ in range(n):
-        month += 1
-        if month > 12:
-            month = 1
-            year += 1
-        months.append(f"{year:04d}-{month:02d}")
-    return months
+    year, month = today.year, today.month + 1
+    if month > 12:
+        month = 1
+        year += 1
+    return f"{year:04d}-{month:02d}"
+
+
+def _validate_month(month_str: str) -> str:
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month_str or ""):
+        raise ValueError(f"Invalid month '{month_str}' - expected format 'YYYY-MM'")
+    return month_str
 
 
 def _collect_leaves(nodes: list, leaves: dict):
@@ -57,8 +59,8 @@ def _collect_leaves(nodes: list, leaves: dict):
             entry["product_uuid"] = node["product_uuid"]
 
 
-def build_purchasing_plan(oms_client, sap_soap_client, sap_valuation_client) -> dict:
-    months = _next_n_months(MONTHS_AHEAD)
+def build_purchasing_plan(oms_client, sap_soap_client, sap_valuation_client, target_month: str = None) -> dict:
+    months = [_validate_month(target_month) if target_month else _default_month()]
 
     # 1. Pull OMS sales forecast (aggregated per part number) for each month.
     part_map = oms_client.get_part_map()
