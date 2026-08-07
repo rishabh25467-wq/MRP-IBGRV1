@@ -51,6 +51,26 @@ const formatQty = (value) => (value == null ? "—" : value.toLocaleString(undef
 const formatMoney = (value, currency) =>
   value == null ? "—" : `${currency || ""} ${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+const FRESHNESS_SLA_HOURS = 12;
+
+const formatRelativeTime = (isoString) => {
+  if (!isoString) return null;
+  const diffMs = Date.now() - new Date(isoString).getTime();
+  const diffMin = Math.round(diffMs / 60000);
+  if (diffMin < 1) return "just now";
+  if (diffMin < 60) return `${diffMin} min ago`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `${diffHr} hr${diffHr === 1 ? "" : "s"} ago`;
+  const diffDay = Math.round(diffHr / 24);
+  return `${diffDay} day${diffDay === 1 ? "" : "s"} ago`;
+};
+
+const isStale = (isoString) => {
+  if (!isoString) return false;
+  const diffHrs = (Date.now() - new Date(isoString).getTime()) / 3600000;
+  return diffHrs > FRESHNESS_SLA_HOURS;
+};
+
 const getDefaultMonth = () => {
   const d = new Date();
   d.setDate(1);
@@ -328,6 +348,20 @@ export default function PurchasingPlanPage() {
           <ArrowsInSimple size={13} className="mr-1.5" />
           Collapse Categories
         </Button>
+        {plan && plan.bom_data_as_of && (
+          <div
+            className={`flex items-center gap-1.5 text-xs ${isStale(plan.bom_data_as_of) ? "text-[#B54708]" : "text-[#475467]"}`}
+            title={new Date(plan.bom_data_as_of).toLocaleString()}
+            data-testid="bom-data-freshness-badge"
+          >
+            {isStale(plan.bom_data_as_of) ? (
+              <WarningCircle size={13} weight="bold" />
+            ) : (
+              <Database size={13} weight="bold" />
+            )}
+            <span className="font-sans">BOM data as of {formatRelativeTime(plan.bom_data_as_of)}</span>
+          </div>
+        )}
         <div className="flex items-center gap-1.5 text-[#475467] ml-auto" data-testid="purchasing-plan-last-generated">
           <ClockCounterClockwise size={13} weight="bold" />
           <span className="font-sans text-xs">

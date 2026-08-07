@@ -127,6 +127,16 @@ def build_purchasing_plan(oms_client, sap_soap_client, sap_valuation_client, db,
         _collect_leaves(bom["tree"], leaves)
         leaves_by_id[candidate_id] = leaves
 
+    # Overall freshness of the BOM data actually used in this plan - the
+    # oldest last_checked_at among every resolved BOM (see
+    # bom_cache_service.build_tree_from_cache), so the UI can show
+    # "BOM data as of ..." rather than silently trusting a possibly-stale cache.
+    used_bom_ids = {rid for rid in resolved_id_by_part_no.values()}
+    checked_timestamps = [
+        bom_by_id[rid]["min_checked_at"] for rid in used_bom_ids if bom_by_id.get(rid) and bom_by_id[rid].get("min_checked_at")
+    ]
+    bom_data_as_of = min(checked_timestamps) if checked_timestamps else None
+
     # 5. Aggregate required leaf-component quantity, per month.
     components = {}
     for month, demand in demand_by_month.items():
@@ -179,4 +189,5 @@ def build_purchasing_plan(oms_client, sap_soap_client, sap_valuation_client, db,
         "months": months,
         "components": result_components,
         "missing_boms": missing_boms,
+        "bom_data_as_of": bom_data_as_of.isoformat() if bom_data_as_of else None,
     }

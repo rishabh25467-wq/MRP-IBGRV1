@@ -66,29 +66,41 @@ def _upsert(collection, product_id, raw_bom, changed):
 
 def build_tree_from_cache(root_id: str, sap_soap_client, db):
     """Cache-first equivalent of sap_soap_client.explode_bom() - same output
-    shape ({bom_id, total_components, max_level, tree}), sourced from the
-    local Mongo cache wherever possible, falling back to a live SAP fetch
-    (and caching the result) only for product_ids never seen before."""
+    shape ({bom_id, total_components, max_level, tree}), plus a
+    `min_checked_at` timestamp (the oldest last_checked_at among every node
+    actually used, so callers can show how fresh the underlying BOM data
+    is), sourced from the local Mongo cache wherever possible, falling back
+    to a live SAP fetch (and caching the result) only for product_ids never
+    seen before."""
     collection = db[COLLECTION_NAME]
+    min_checked_at = None
+
+    def track(checked_at):
+        nonlocal min_checked_at
+        if checked_at and (min_checked_at is None or checked_at < min_checked_at):
+            min_checked_at = checked_at
 
     def get_cached(product_id):
-        """Returns (raw_bom_or_None, was_already_cached)."""
+        """Returns (raw_bom_or_None, was_already_cached, checked_at)."""
         doc = collection.find_one({"_id": product_id})
         if doc is None:
-            return None, False
+            return None, False, None
         raw = {"bom_id": doc.get("bom_id"), "groups": doc.get("groups", [])} if doc.get("found") else None
-        return raw, True
+        return raw, True, doc.get("last_checked_at")
 
     def get_or_fetch(product_id):
-        raw, was_cached = get_cached(product_id)
+        raw, was_cached, checked_at = get_cached(product_id)
         if was_cached:
+            track(checked_at)
             return raw
         try:
             raw = _fetch_live(sap_soap_client, product_id)
         except _FetchFailed as e:
             logger.warning(f"BOM fetch failed for '{product_id}' (leaving uncached for retry next run): {e}")
             return None
+        now = datetime.now(timezone.utc)
         _upsert(collection, product_id, raw, changed=True)
+        track(now)
         return raw
 
     root = get_or_fetch(root_id)
@@ -116,26 +128,31 @@ def build_tree_from_cache(root_id: str, sap_soap_client, db):
         resolved = {}
         uncached_ids = []
         for pid in to_resolve:
-            raw, was_cached = get_cached(pid)
+            raw, was_cached, checked_at = get_cached(pid)
             if was_cached:
+                track(checked_at)
                 resolved[pid] = raw
             else:
                 uncached_ids.append(pid)
 
         if uncached_ids:
+            now = datetime.now(timezone.utc)
+
             def fetch_and_cache(pid):
                 try:
                     raw = _fetch_live(sap_soap_client, pid)
                 except _FetchFailed as e:
                     logger.warning(f"BOM fetch failed for '{pid}' (leaving uncached for retry next run): {e}")
-                    return None
+                    return None, False
                 _upsert(collection, pid, raw, changed=True)
-                return raw
+                return raw, True
 
             with ThreadPoolExecutor(max_workers=8) as executor:
                 fetched = list(executor.map(fetch_and_cache, uncached_ids))
-            for pid, raw in zip(uncached_ids, fetched):
+            for pid, (raw, was_persisted) in zip(uncached_ids, fetched):
                 resolved[pid] = raw
+                if was_persisted:
+                    track(now)
 
         lookups_done += len(to_resolve)
 
@@ -179,6 +196,7 @@ def build_tree_from_cache(root_id: str, sap_soap_client, db):
         "total_components": total_components,
         "max_level": max_level_seen,
         "tree": root_children,
+        "min_checked_at": min_checked_at,
     }
 
 

@@ -127,6 +127,7 @@ class PurchasingPlanResponse(BaseModel):
     months: List[str]
     components: List[PurchasingPlanComponent]
     missing_boms: List[MissingBom]
+    bom_data_as_of: Optional[str] = None
 
 
 class PurchasingPlanJobStatus(BaseModel):
@@ -293,6 +294,9 @@ BOM_CACHE_REFRESH_INTERVAL_SECONDS = 6 * 60 * 60
 @app.on_event("startup")
 async def start_bom_cache_refresh_loop():
     async def loop():
+        # Small delay before the first sweep so a server restart doesn't
+        # immediately hammer SAP with a full refresh cycle.
+        await asyncio.sleep(30)
         while True:
             try:
                 stats = await asyncio.to_thread(bom_cache_service.refresh_stale_nodes, sap_soap_client, db)
