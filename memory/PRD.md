@@ -96,7 +96,6 @@
 
 ## Backlog / Next Tasks (updated)
 - P2: Persist purchasing plan job history (currently in-memory only, no TTL/cleanup - fine for this single-tenant demo, would need attention for long-lived production use)
-- P1: SAP inventory integration (on-hand stock netted against demand) - AWAITING USER'S SAP TEAM to expose either (a) a Stock Overview report (SCMINVV02) via Analytics OData, or (b) a custom OData service on the Inventory BO (mirroring how MaterialValuationData was exposed for costs). Confirmed design: sum on-hand qty across ALL sites; Net Purchase Qty = max(0, Gross Required Qty - On-Hand Inventory). Blocked until user provides the endpoint/Report ID + credentials.
 
 ## Feature: Persistent BOM Cache (Feb 2026, Session 4 cont.)
 - Problem solved: Purchasing Plan generation could take many minutes (re-exploding hundreds of live SAP BOMs on every single click, even for a month generated moments earlier).
@@ -106,6 +105,13 @@
 - Tested via testing_agent_v4 (iteration_19) - 100% backend pass, no bugs. New regression test file `/app/backend/tests/test_bom_cache.py`.
 - NOT YET DONE: SAP inventory netting (see backlog above - blocked on user's SAP team completing setup).
 - P2: Live SAP standard-cost lookup has been observed occasionally returning all-zero/null values on a single run (self-resolves on regenerate) - likely transient demo-tenant flakiness; could add a "looks like $0 for everything, retry?" warning banner if it recurs often
+
+## Feature: SAP On-Hand Inventory Netting (Feb 2026, Session 5)
+- Solved the previously-blocked P1 backlog item: user's SAP team exposed a custom Analytics OData report on the "On-Hand Inventory" (SCMINVV02) data source (`SAP_INVENTORY_ODATA_URL` in backend/.env).
+- CRITICAL empirical finding (would silently corrupt data if missed): this report's `$select` parameter changes which characteristics the SAP OLAP engine aggregates by. Requesting only a subset of fields (e.g. `CMATERIAL_UUID,KCON_HAND_STOCK`) makes `CMATERIAL_UUID` return an internal numeric surrogate key (e.g. `'430'`) instead of the real Material ID. Fetching the FULL, un-`$select`'d row shape (all ~35 default characteristics) always returns the correct business Material ID (e.g. `'SI-0038C-2'`) - confirmed by cross-referencing against known cached BOM leaf `product_id`s. New `sap_inventory_client.py` deliberately never uses `$select`, paginates via `$top=5000`/`$skip` (report has ~5,746 rows / ~3,165 distinct materials in this tenant), and sums `KCON_HAND_STOCK` per material across every other implicit dimension (site/logistics area/stock status) to get one company-wide on-hand total. Despite its name, `CMATERIAL_UUID` is the Material ID (`product_id`), NOT the GUID (`product_uuid`) used for standard costs.
+- `purchasing_plan.py`: `build_purchasing_plan()` now takes a `sap_inventory_client` param; for every leaf component computes `on_hand_qty` (best-effort, same "hiccup shouldn't fail the whole plan" pattern as standard costs), `net_qty_by_month = max(0, gross - on_hand)` per month, and `net_value_by_month = net_qty * unit_cost`. If a component has no inventory-report row (never stocked), `on_hand_qty` is `None` and `net_qty` falls back to equal gross (assume zero stock).
+- Per user's explicit choice, Gross and Net are shown as separate, equally-prominent figures (not a replace): new `on_hand_qty`/`net_qty_by_month`/`net_value_by_month` fields added alongside the existing gross fields on `PurchasingPlanComponent`. Frontend (`PurchasingPlanPage.js`) adds an On-Hand column, per-month Net Qty/Net Value columns (light-blue styled to visually separate from gross), a second "Net Purchase Value" stat card per month, category-level Net subtotals, Net-column sorting, and Excel export columns.
+- Verified end-to-end against the live SAP tenant (695 components, 679 with on-hand data, netting math spot-checked correct) + tested via testing_agent_v4 (iteration_20) - 100% backend (7/7 pytest, new `/app/backend/tests/test_purchasing_plan_inventory.py`) and 100% frontend pass, zero bugs found.
 
 ## Feature: Enhancements Round 3 (Feb 2026, Session 4 cont.)
 - Purchasing Plan: added a Category quick-filter dropdown (shadcn Select) that narrows the table/stat-cards/Excel-export to a single category at a time ("All Categories" default).
