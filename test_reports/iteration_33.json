@@ -1,0 +1,36 @@
+{
+  "summary": "Tested new Production Plan feature (3 tabs: Open PO Demand, BOM Alternates, MRP Plan) end-to-end via pytest + Playwright. All core flows verified working with real live data: Open PO Demand feed loaded 976 rows, BOM Alternates select/save/clear cycle verified, MRP Plan generation completed successfully with 1228 components from 976 PO lines and math spot-check for SPC5WM matched exactly (on_hand=805909, gross=6049876, net=5244467, order_by_date=target_ship_date-lead_time). Nav regression across all 5 pages (BOM Explorer, Purchasing Plan, Production Plan, Inventory, Admin) passed with no breakage.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/production-plan/open-po-demand?customer=", "issue": "Customer filter requires an EXACT match against the external feed's customer field (e.g. 'WALMART' returns 0 rows, only 'WALMART INC' full string returns 398). Given the frontend placeholder says 'Filter by customer...' which reads like a fuzzy/partial search box, users may be confused when partial names return nothing. This is an external-feed contract limitation, not a bug in the wrapper code, but worth a UX note (e.g. helper text 'exact customer name required') or a datalist/autocomplete of known customer names."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "MrpPlanTab table header", "issue": "Column header renders 'Lead Time (d)' (lowercase d) instead of 'Lead Time (D)' (uppercase D) as specified/used everywhere else (Open PO Demand tab correctly uses 'Lead Time (D)'). Source: ProductionPlanPage.js line ~556 header array.", "selector": "[data-testid='mrp-table'] thead th", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_production_plan.py", "/app/test_reports/pytest/pytest_results_pp.xml"],
+  "action_items": [
+    "Fix casing typo: 'Lead Time (d)' -> 'Lead Time (D)' in MRP table header (ProductionPlanPage.js MrpPlanTab headers array).",
+    "Optional: clarify/soften the Open PO Demand customer filter's exact-match requirement (helper text or autocomplete) since the input looks like free-text partial search.",
+    "Operational note: during testing, running MRP generation jobs concurrently with backend hot-reload (triggered by file edits under /app/backend, e.g. pytest __pycache__/test file writes) caused the uvicorn worker to become fully unresponsive (both via public URL and localhost) for ~15 min until a manual `supervisorctl restart backend`. This looks like uvicorn --reload getting stuck trying to gracefully shut down while a long-running asyncio.to_thread background job (BOM explosion) was still occupying a thread pool worker. Not exercised by a real user flow (reload only happens in dev), but worth being aware of if iterating on mrp_service.py/open_po_client.py while a live MRP job might be running - a plain `supervisorctl restart backend` recovers it fine, no data loss since job state is in-memory anyway."
+  ],
+  "critical_code_review_comments": [
+    "mrp_service.build_mrp_plan: netting math verified correct via live data (SPC5WM: on_hand=805909, msl=500, gross=6049876, net=5244467; order_by_date = target_ship_date - lead_time_days verified e.g. 2021-07-16 - 7d = 2021-07-09). Components correctly sorted descending by total_net_qty.",
+    "production_plan_service.list_alternates: works correctly for select/save (POST)/clear (DELETE) round-trip, persists via bom_cache_service.OVERRIDES_COLLECTION_NAME, immediately reflected in subsequent GET. Alternates count grew from ~11 (main agent's initial baseline) to 184 over this session purely because more BOMs got explored/cached during MRP + BOM Explorer testing - list_alternates returns 'every product currently known to have alternates in the explored catalog', so this growth is expected behavior, not a bug.",
+    "open_po_client.py / server.py open-po-demand endpoint: no caching (live call every time) as documented; 502 is correctly surfaced on upstream failure (OpenPODemandError -> HTTPException 502).",
+    "In-memory job dicts (mrp_plan_jobs, purchasing_plan_jobs, etc.) mean job state is lost on any backend restart/reload - acceptable for a background job pattern in this app's dev-cycle context, just flagging as a known limitation (same as pre-existing Purchasing Plan pattern)."
+  ],
+  "updated_files": ["/app/backend/tests/test_production_plan.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "N/A - no auth on this app",
+  "seed_data_creation": "None - all tests ran against live SAP/OMS/Open-PO-Demand feed data",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Production Plan feature (Open PO Demand, BOM Alternates, MRP Plan tabs) fully verified working: 976 open PO lines, 1228 MRP components computed correctly (spot-checked math confirmed accurate), BOM alternate select/save/clear round-trip confirmed. Only 2 minor issues found: (1) MRP table header casing 'Lead Time (d)' should be 'Lead Time (D)', (2) Open PO customer filter is exact-match only (external feed limitation). Regression check of BOM Explorer/Purchasing Plan/Inventory/Admin nav passed clean. Note: avoid running pytest that touches files under /app/backend while an MRP generation job is in-flight - it can trigger a uvicorn --reload hang requiring a manual backend restart (observed during this session, recovered cleanly with no data/functionality loss).",
+  "rca_of_the_issue": "Backend hang RCA: uvicorn --reload watches /app/backend; pytest execution from cwd=/app writes __pycache__ under backend/tests which is inside the watched tree, triggering a reload mid-way through a long-running MRP generation background job (asyncio.create_task + asyncio.to_thread doing a slow multi-minute live SAP BOM explosion). The reload's graceful-shutdown wait appears to have gotten stuck waiting on that thread, leaving the new worker never fully started and the old one already torn down - net result: all requests (even trivial localhost DB reads) timed out with connection-level failures (curl HTTP:000) for ~15 minutes until `sudo supervisorctl restart backend` was run, after which everything (including a fresh MRP job) worked normally. This is a dev-environment/hot-reload interaction, not a production code defect - flagging for awareness only."
+}

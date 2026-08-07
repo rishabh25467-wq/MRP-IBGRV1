@@ -20,12 +20,14 @@ from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_t
 from inventory_service import get_cached_inventory, refresh_inventory_cache, deep_backfill_uuids
 from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids
 from oms_client import OMSClient, OMSError
+from open_po_client import OpenPODemandClient, OpenPODemandError
 from purchasing_plan import (
     build_purchasing_plan, retry_missing_boms, get_part_overrides, save_part_override,
     _default_month, _validate_month,
 )
 import bom_cache_service
 import production_plan_service
+import mrp_service
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -79,11 +81,23 @@ oms_client = OMSClient(
     password=os.environ['OMS_PASSWORD'],
 )
 
+# Open-PO Demand feed - separate integration from oms_client (different base
+# URL, X-API-Key auth instead of a login flow). Backs the Production Plan
+# page's MRP computation - see mrp_service.py / open_po_client.py.
+open_po_client = OpenPODemandClient(
+    base_url=os.environ['OPEN_PO_DEMAND_BASE_URL'],
+    api_key=os.environ['OPEN_PO_DEMAND_API_KEY'],
+)
+
 # In-memory job store for the long-running (multi-minute, live OMS+SAP)
 # Purchasing Plan generation - kept out-of-request so the client never has to
 # hold a single HTTP connection open longer than the ingress/proxy timeout;
 # the frontend polls /purchasing-plan/status/{job_id} instead.
 purchasing_plan_jobs: dict = {}
+
+# Same out-of-request pattern for the Production Plan page's MRP computation
+# (potentially many live SAP BOM explosions, same as Purchasing Plan).
+mrp_plan_jobs: dict = {}
 
 # Same out-of-request pattern for the Admin page's bulk "Push All to SAP" -
 # can touch hundreds of materials, each needing a CSRF handshake + several
@@ -642,6 +656,128 @@ async def clear_bom_alternate(product_id: str):
     if match is None:
         raise HTTPException(status_code=404, detail="Unknown product_id")
     return BomAlternateEntry(**match)
+
+
+class OpenPoRow(BaseModel):
+    customer: Optional[str] = None
+    customer_pcode: Optional[str] = None
+    customer_po: Optional[str] = None
+    end_customer_po: Optional[str] = None
+    internal_pono: Optional[float] = None
+    item_code: str
+    description: Optional[str] = None
+    qty_ordered: Optional[float] = None
+    qty_shipped: Optional[float] = None
+    qty_open: Optional[float] = None
+    due_date: Optional[str] = None
+    target_ship_date: Optional[str] = None
+    target_ship_basis: Optional[str] = None
+    po_date: Optional[str] = None
+    currency: Optional[str] = None
+    lead_day: Optional[int] = None
+    po_price: Optional[float] = None
+    invoice_price: Optional[float] = None
+    changed_at: Optional[str] = None
+
+
+class OpenPoDemandResponse(BaseModel):
+    count: int
+    max_changed_at: Optional[str] = None
+    truncated: bool = False
+    rows: List[OpenPoRow]
+
+
+@api_router.get("/production-plan/open-po-demand", response_model=OpenPoDemandResponse)
+async def get_open_po_demand(customer: Optional[str] = Query(None), plant: Optional[str] = Query(None)):
+    """Browsable view of the raw external Open-PO Demand feed (see
+    open_po_client.py) - backs the Production Plan page's "Open PO Demand"
+    tab. Live call every time (no caching) since this feed is the
+    up-to-the-minute source of truth for target ship dates."""
+    try:
+        feed = await asyncio.to_thread(open_po_client.get_open_po_demand, customer, plant)
+    except OpenPODemandError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return OpenPoDemandResponse(count=feed.get("count", 0), max_changed_at=feed.get("max_changed_at"), truncated=feed.get("truncated", False), rows=feed.get("rows", []))
+
+
+class MrpDemandLine(BaseModel):
+    internal_pono: Optional[float] = None
+    customer_po: Optional[str] = None
+    customer: Optional[str] = None
+    item_code: str
+    target_ship_date: Optional[str] = None
+    order_by_date: Optional[str] = None
+    lead_time_missing: bool = False
+    gross_qty: float
+    net_qty: float
+
+
+class MrpComponent(BaseModel):
+    product_id: str
+    description: Optional[str] = None
+    unit_of_measure: Optional[str] = None
+    lead_time_days: Optional[float] = None
+    msl: Optional[float] = None
+    on_hand_qty: Optional[float] = None
+    total_gross_qty: float
+    total_net_qty: float
+    demand_lines: List[MrpDemandLine]
+
+
+class UnresolvedMrpItem(BaseModel):
+    item_code: str
+    confidence: str
+    reason: str
+
+
+class MrpPlanResponse(BaseModel):
+    generated_at: str
+    po_data_as_of: Optional[str] = None
+    total_po_lines: int
+    unresolved_items: List[UnresolvedMrpItem]
+    components: List[MrpComponent]
+
+
+class MrpPlanJobStatus(BaseModel):
+    job_id: str
+    status: str  # "running" | "done" | "failed"
+    result: Optional[MrpPlanResponse] = None
+    error: Optional[str] = None
+
+
+@api_router.post("/production-plan/mrp/generate")
+async def start_mrp_plan_job(customer: Optional[str] = None):
+    """Kicks off the MRP computation (see mrp_service.build_mrp_plan) as a
+    background job - same pattern as Purchasing Plan generation, since
+    exploding every open PO line's BOM against live SAP can take a while
+    for item_codes not already warm in the BOM cache."""
+    job_id = str(uuid.uuid4())
+    mrp_plan_jobs[job_id] = {"status": "running", "result": None, "error": None}
+
+    async def run():
+        try:
+            result = await asyncio.to_thread(mrp_service.build_mrp_plan, open_po_client, sap_soap_client, db, customer)
+            mrp_plan_jobs[job_id] = {"status": "done", "result": result, "error": None}
+        except OpenPODemandError as e:
+            mrp_plan_jobs[job_id] = {"status": "failed", "result": None, "error": str(e)}
+        except Exception as e:
+            logger.error(f"MRP plan generation failed: {e}")
+            mrp_plan_jobs[job_id] = {"status": "failed", "result": None, "error": str(e)}
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+@api_router.get("/production-plan/mrp/status/{job_id}", response_model=MrpPlanJobStatus)
+async def mrp_plan_status(job_id: str):
+    job = mrp_plan_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return MrpPlanJobStatus(
+        job_id=job_id, status=job["status"],
+        result=MrpPlanResponse(**job["result"]) if job["result"] else None,
+        error=job["error"],
+    )
 
 
 class ComponentMasterItem(BaseModel):
