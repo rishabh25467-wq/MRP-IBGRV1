@@ -1069,6 +1069,9 @@ export default function PurchasingPlanPage() {
                     <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase">
                       Sale Value (INR)
                     </th>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase" title="Customer-requested selling lead time, from OMS - use to back-calculate when procurement needs to start">
+                      Lead Time (Days)
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1096,6 +1099,9 @@ export default function PurchasingPlanPage() {
                           <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums font-bold text-[#101828]" data-testid={`sales-plan-value-${it.part_no}`}>
                             {formatMoney(it.total_sale_value_inr, "INR")}
                           </td>
+                          <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]" data-testid={`sales-plan-lead-day-${it.part_no}`}>
+                            {it.lead_day ?? "—"}
+                          </td>
                         </tr>
                         {isExpanded &&
                           it.customers.map((cust) => (
@@ -1113,6 +1119,9 @@ export default function PurchasingPlanPage() {
                               <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467] text-xs">
                                 {formatMoney(cust.sale_value_inr, "INR")}
                               </td>
+                              <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467] text-xs">
+                                {cust.lead_day ?? "—"}
+                              </td>
                             </tr>
                           ))}
                       </Fragment>
@@ -1120,7 +1129,7 @@ export default function PurchasingPlanPage() {
                   })}
                   {!salesPlanLoading && filteredSalesPlanItems.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="sales-plan-no-items">
+                      <td colSpan={7} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="sales-plan-no-items">
                         No sales plan items found for {formatMonth(salesPlanMonth)}
                       </td>
                     </tr>
@@ -1137,6 +1146,7 @@ export default function PurchasingPlanPage() {
                       <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums font-heading font-bold text-[#101828]" data-testid="sales-plan-total-value-grand">
                         {formatMoney(filteredSalesPlanItems.reduce((sum, it) => sum + (it.total_sale_value_inr || 0), 0), "INR")}
                       </td>
+                      <td className="border border-[#D0D5DD]"></td>
                     </tr>
                   </tfoot>
                 )}

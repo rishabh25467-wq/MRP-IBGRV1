@@ -16,6 +16,7 @@ from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
+from inventory_service import build_inventory
 from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids
 from oms_client import OMSClient, OMSError
 from purchasing_plan import (
@@ -76,6 +77,10 @@ purchasing_plan_jobs: dict = {}
 # can touch hundreds of materials, each needing a CSRF handshake + several
 # PATCHes, so it must run as a background job too.
 push_all_to_sap_jobs: dict = {}
+
+# Same pattern again for the Inventory page - the underlying SAP OData
+# on-hand stock report can be slow/heavily paged under tenant load.
+inventory_jobs: dict = {}
 
 
 class BomNode(BaseModel):
@@ -333,6 +338,7 @@ class SalesPlanCustomerQty(BaseModel):
     qty: float
     price: Optional[float] = None
     sale_value_inr: Optional[float] = None
+    lead_day: Optional[int] = None
 
 
 class SalesPlanItem(BaseModel):
@@ -340,6 +346,7 @@ class SalesPlanItem(BaseModel):
     description: Optional[str] = None
     currency: Optional[str] = None
     price: Optional[float] = None
+    lead_day: Optional[int] = None
     total_qty: float
     total_sale_value_inr: Optional[float] = None
     customers: List[SalesPlanCustomerQty]
@@ -368,6 +375,73 @@ async def get_sales_plan(month: Optional[str] = Query(None)):
     except OMSError as e:
         raise HTTPException(status_code=502, detail=str(e))
     return SalesPlanResponse(month=validated_month, items=items)
+
+
+class InventoryLocation(BaseModel):
+    site: Optional[str] = None
+    logistics_area: Optional[str] = None
+    stock_status: Optional[str] = None
+    qty: float
+
+
+class InventoryItem(BaseModel):
+    product_id: str
+    description: Optional[str] = None
+    category: Optional[str] = None
+    total_qty: float
+    uom: Optional[str] = None
+    unit_cost: Optional[float] = None
+    currency: Optional[str] = None
+    total_value: Optional[float] = None
+    locations: List[InventoryLocation]
+
+
+class InventoryResponse(BaseModel):
+    items: List[InventoryItem]
+    categories: List[str]
+
+
+class InventoryJobStatus(BaseModel):
+    job_id: str
+    status: str  # "running" | "done" | "failed"
+    result: Optional[InventoryResponse] = None
+    error: Optional[str] = None
+
+
+@api_router.post("/inventory")
+async def start_inventory_job():
+    """Live SAP On-Hand Inventory by item, with a per-location breakdown
+    (Site / Logistics Area / Stock Status) and valuation (qty x SAP
+    Standard Cost) - see inventory_service.build_inventory. Runs as a
+    background job (same pattern as Purchasing Plan generation) since the
+    underlying SAP OData report can be slow/paged and would otherwise risk
+    a proxy timeout on a plain synchronous request."""
+    job_id = str(uuid.uuid4())
+    inventory_jobs[job_id] = {"status": "running", "result": None, "error": None}
+
+    async def run():
+        try:
+            items = await asyncio.to_thread(build_inventory, db, sap_inventory_client, sap_valuation_client)
+            categories = sorted({it["category"] for it in items if it.get("category")})
+            inventory_jobs[job_id] = {
+                "status": "done", "result": {"items": items, "categories": categories}, "error": None,
+            }
+        except (SAPInventoryError, SAPValuationError) as e:
+            inventory_jobs[job_id] = {"status": "failed", "result": None, "error": str(e)}
+        except Exception as e:
+            logger.error(f"Inventory job failed: {e}")
+            inventory_jobs[job_id] = {"status": "failed", "result": None, "error": str(e)}
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+@api_router.get("/inventory/{job_id}", response_model=InventoryJobStatus)
+async def get_inventory_job(job_id: str):
+    job = inventory_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return InventoryJobStatus(job_id=job_id, **job)
 
 
 class BomCacheStats(BaseModel):

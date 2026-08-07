@@ -114,16 +114,18 @@ class OMSClient:
         """Full sales plan for a 'YYYY-MM' month - the same underlying
         forecast get_monthly_demand() aggregates, but returned per part with
         a per-customer breakdown instead of collapsed into a single number.
-        Also carries unit `price` (native currency) and `sale_value_inr`,
-        pulled from the OMS's DEFAULT "Sales" view (expected_qty/
+        Also carries unit `price` (native currency, invoice-priced per the
+        OMS's `price_basis: "invoice"` confirmation) and `sale_value_inr`,
+        plus `lead_day` - the customer's requested/selling lead time in days
+        for that part, used to back-calculate when procurement needs to
+        start. All pulled from the OMS's DEFAULT "Sales" view (expected_qty/
         expected_inr - the same fields behind OMS's own Insights > Monthly
-        Sales screen) rather than the fulfilment view, so the price/value
-        shown here always reflects invoice pricing, not a fulfilment number.
+        Sales screen) rather than the fulfilment view.
         Backs the Purchasing Plan page's "Sales Plan Lookup" popup. Returns
-        [{part_no, description, currency, price, total_qty,
+        [{part_no, description, currency, price, lead_day, total_qty,
         total_sale_value_inr, customers: [{customer_name, qty, price,
-        sale_value_inr}]}] sorted by part_no, each part's customers sorted
-        by qty descending."""
+        sale_value_inr, lead_day}]}] sorted by part_no, each part's
+        customers sorted by qty descending."""
         customers = self.get_customers(month)
 
         def fetch(customer_name):
@@ -150,6 +152,7 @@ class OMSClient:
                     "description": part.get("name"),
                     "currency": part.get("currency"),
                     "price": part.get("price"),
+                    "lead_day": part.get("lead_day"),
                     "total_qty": 0.0,
                     "total_sale_value_inr": 0.0,
                     "customers": [],
@@ -160,6 +163,7 @@ class OMSClient:
                     entry["customers"].append({
                         "customer_name": customer_name, "qty": qty,
                         "price": part.get("price"), "sale_value_inr": sale_value_inr,
+                        "lead_day": part.get("lead_day"),
                     })
 
         for entry in by_part.values():

@@ -1,0 +1,348 @@
+import { useState, useEffect, useMemo, Fragment } from "react";
+import "@/App.css";
+import axios from "axios";
+import {
+  Package,
+  MagnifyingGlass,
+  ArrowClockwise,
+  CaretDown,
+  CaretRight,
+  CurrencyCircleDollar,
+  MapPin,
+  Database,
+} from "@phosphor-icons/react";
+import { Button } from "@/components/ui/button";
+import { Toaster, toast } from "@/components/ui/sonner";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { NavTabs } from "@/components/NavTabs";
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const API = `${BACKEND_URL}/api`;
+const PAGE_SIZE = 50;
+
+const formatQty = (value) => (value == null ? "—" : value.toLocaleString("en-IN", { maximumFractionDigits: 2 }));
+
+const formatMoney = (value, currency) =>
+  value == null ? "—" : `${currency || ""} ${value.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const StatCard = ({ icon: Icon, label, value, testId }) => (
+  <div
+    className="bg-white border border-[#D0D5DD] rounded-sm p-3 shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] flex flex-col gap-1.5"
+    data-testid={testId}
+  >
+    <div className="flex items-center gap-1.5 text-[#475467]">
+      <Icon size={14} weight="bold" />
+      <span className="font-heading text-xs font-bold uppercase tracking-wider">{label}</span>
+    </div>
+    <span className="font-sans text-2xl font-bold tabular-nums text-[#1D2939]">{value}</span>
+  </div>
+);
+
+export default function InventoryPage() {
+  const [status, setStatus] = useState("idle"); // idle | running | done | failed
+  const [items, setItems] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [error, setError] = useState(null);
+  const [search, setSearch] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [siteFilter, setSiteFilter] = useState("all");
+  const [expandedRows, setExpandedRows] = useState(new Set());
+  const [page, setPage] = useState(1);
+
+  const loadInventory = async () => {
+    setStatus("running");
+    setError(null);
+    try {
+      const { data } = await axios.post(`${API}/inventory`);
+      const jobId = data.job_id;
+      const poll = async () => {
+        const { data: job } = await axios.get(`${API}/inventory/${jobId}`);
+        if (job.status === "running") {
+          setTimeout(poll, 2000);
+        } else if (job.status === "done") {
+          setItems(job.result.items);
+          setCategories(job.result.categories);
+          setStatus("done");
+        } else {
+          setStatus("failed");
+          setError(job.error);
+        }
+      };
+      poll();
+    } catch (err) {
+      setStatus("failed");
+      setError(err?.response?.data?.detail || err.message);
+    }
+  };
+
+  useEffect(() => {
+    loadInventory();
+  }, []);
+
+  const sites = useMemo(() => {
+    const set = new Set();
+    items.forEach((it) => it.locations.forEach((loc) => loc.site && set.add(loc.site)));
+    return [...set].sort();
+  }, [items]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return items.filter((it) => {
+      const matchesSearch =
+        !q || it.product_id.toLowerCase().includes(q) || (it.description || "").toLowerCase().includes(q);
+      const matchesCategory =
+        categoryFilter === "all" || (categoryFilter === "uncategorized" ? !it.category : it.category === categoryFilter);
+      const matchesSite = siteFilter === "all" || it.locations.some((loc) => loc.site === siteFilter);
+      return matchesSearch && matchesCategory && matchesSite;
+    });
+  }, [items, search, categoryFilter, siteFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const pagedItems = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, categoryFilter, siteFilter]);
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [totalPages, page]);
+
+  const toggleRow = (productId) => {
+    setExpandedRows((prev) => {
+      const next = new Set(prev);
+      next.has(productId) ? next.delete(productId) : next.add(productId);
+      return next;
+    });
+  };
+
+  const totalQty = filtered.reduce((sum, it) => sum + (it.total_qty || 0), 0);
+  const totalValue = filtered.reduce((sum, it) => sum + (it.total_value || 0), 0);
+  const valuedCurrency = filtered.find((it) => it.currency)?.currency;
+
+  return (
+    <div className="h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]" data-testid="inventory-page">
+      <Toaster position="top-right" richColors />
+
+      <header className="h-12 bg-[#004B87] shadow-[0_1px_3px_0_rgba(16,24,40,0.1)] flex items-center justify-between px-4 shrink-0 z-10">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2.5" data-testid="app-title">
+            <Database size={18} weight="bold" className="text-white" />
+            <span className="font-heading text-sm font-bold text-white tracking-tight">SAP BOM Explorer</span>
+            <span className="font-sans text-xs text-white/60 hidden sm:inline">| Inventory</span>
+          </div>
+          <NavTabs />
+        </div>
+      </header>
+
+      <main className="flex-1 overflow-auto max-w-[1600px] w-full mx-auto px-6 py-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <h1 className="font-heading text-xl font-bold text-[#1D2939]">Inventory</h1>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={loadInventory}
+            disabled={status === "running"}
+            className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
+            data-testid="inventory-refresh-button"
+          >
+            <ArrowClockwise size={13} className={`mr-1.5 ${status === "running" ? "animate-spin" : ""}`} />
+            {status === "running" ? "Loading from SAP..." : "Refresh"}
+          </Button>
+        </div>
+
+        {status === "running" && items.length === 0 && (
+          <div className="bg-white border border-[#D0D5DD] rounded-sm p-8 text-center text-sm text-[#475467]" data-testid="inventory-loading">
+            <ArrowClockwise size={20} className="animate-spin inline-block mb-2" />
+            <p>Pulling live On-Hand Inventory and Standard Costs from SAP - this can take a minute or two.</p>
+          </div>
+        )}
+
+        {status === "failed" && (
+          <div className="bg-[#FEF3F2] border border-[#FDA29B] rounded-sm p-4 text-sm text-[#912018]" data-testid="inventory-error">
+            Could not load inventory: {error}
+          </div>
+        )}
+
+        {items.length > 0 && (
+          <>
+            <div className="grid grid-cols-3 gap-3">
+              <StatCard icon={Package} label="Items in Stock" value={filtered.length.toLocaleString("en-IN")} testId="inventory-stat-items" />
+              <StatCard icon={Package} label="Total On-Hand Qty" value={formatQty(totalQty)} testId="inventory-stat-qty" />
+              <StatCard
+                icon={CurrencyCircleDollar}
+                label="Total Inventory Value"
+                value={formatMoney(totalValue, valuedCurrency)}
+                testId="inventory-stat-value"
+              />
+            </div>
+
+            <div className="bg-white border border-[#D0D5DD] rounded-sm p-3 flex items-center gap-2 flex-wrap">
+              <div className="relative flex-1 min-w-[220px] max-w-sm">
+                <MagnifyingGlass size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
+                <input
+                  type="text"
+                  placeholder="Search product ID or description..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="h-8 w-full pl-8 pr-3 text-sm border border-[#D0D5DD] rounded-sm focus:outline-none focus:ring-1 focus:ring-[#004B87]"
+                  data-testid="inventory-search-input"
+                />
+              </div>
+              <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+                <SelectTrigger className="h-8 w-44 text-xs rounded-sm border-[#D0D5DD]" data-testid="inventory-category-filter">
+                  <SelectValue placeholder="Category" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Categories</SelectItem>
+                  <SelectItem value="uncategorized">Uncategorized</SelectItem>
+                  {categories.map((cat) => (
+                    <SelectItem key={cat} value={cat}>
+                      {cat}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={siteFilter} onValueChange={setSiteFilter}>
+                <SelectTrigger className="h-8 w-44 text-xs rounded-sm border-[#D0D5DD]" data-testid="inventory-site-filter">
+                  <SelectValue placeholder="Site" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Sites</SelectItem>
+                  {sites.map((site) => (
+                    <SelectItem key={site} value={site}>
+                      {site}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="text-xs text-[#475467] ml-auto font-sans" data-testid="inventory-item-count">
+                {filtered.length} of {items.length} items
+              </span>
+            </div>
+
+            <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-auto max-h-[65vh]">
+              <table className="w-full text-[13px] border-collapse">
+                <thead className="sticky top-0 z-[1]">
+                  <tr>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 w-8"></th>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">
+                      Product ID
+                    </th>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">
+                      Description
+                    </th>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">
+                      Category
+                    </th>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase">
+                      On-Hand Qty
+                    </th>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">
+                      UOM
+                    </th>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase">
+                      Unit Cost
+                    </th>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase">
+                      Total Value
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pagedItems.map((it, i) => {
+                    const isExpanded = expandedRows.has(it.product_id);
+                    return (
+                      <Fragment key={it.product_id}>
+                        <tr
+                          className={`${i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} hover:bg-[#F0F4F8] cursor-pointer transition-colors duration-150`}
+                          onClick={() => toggleRow(it.product_id)}
+                          data-testid={`inventory-row-${it.product_id}`}
+                        >
+                          <td className="border border-[#D0D5DD] px-1.5 py-1 text-center text-[#667085]">
+                            {it.locations.length > 0 &&
+                              (isExpanded ? <CaretDown size={11} weight="bold" /> : <CaretRight size={11} weight="bold" />)}
+                          </td>
+                          <td className="border border-[#D0D5DD] px-2 py-1 font-medium text-[#101828]">{it.product_id}</td>
+                          <td className="border border-[#D0D5DD] px-2 py-1 text-[#101828]">{it.description || "—"}</td>
+                          <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]">{it.category || "Uncategorized"}</td>
+                          <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums font-bold text-[#101828]" data-testid={`inventory-qty-${it.product_id}`}>
+                            {formatQty(it.total_qty)}
+                          </td>
+                          <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]">{it.uom || "—"}</td>
+                          <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]" data-testid={`inventory-unit-cost-${it.product_id}`}>
+                            {formatMoney(it.unit_cost, it.currency)}
+                          </td>
+                          <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums font-bold text-[#101828]" data-testid={`inventory-value-${it.product_id}`}>
+                            {formatMoney(it.total_value, it.currency)}
+                          </td>
+                        </tr>
+                        {isExpanded &&
+                          it.locations.map((loc, li) => (
+                            <tr key={`${it.product_id}-${li}`} className="bg-[#F5FAFF]" data-testid={`inventory-location-row-${it.product_id}`}>
+                              <td className="border border-[#D0D5DD]"></td>
+                              <td className="border border-[#D0D5DD] px-2 py-1 pl-6 text-[#475467] text-xs" colSpan={2}>
+                                <MapPin size={10} className="inline mr-1 text-[#98A2B3]" />
+                                {loc.site || "—"} / {loc.logistics_area || "—"}
+                              </td>
+                              <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467] text-xs">{loc.stock_status || "—"}</td>
+                              <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467] text-xs">
+                                {formatQty(loc.qty)}
+                              </td>
+                              <td className="border border-[#D0D5DD]" colSpan={3}></td>
+                            </tr>
+                          ))}
+                      </Fragment>
+                    );
+                  })}
+                  {pagedItems.length === 0 && (
+                    <tr>
+                      <td colSpan={8} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="inventory-no-items">
+                        No inventory items match your filters
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {filtered.length > 0 && (
+              <div className="flex items-center justify-between px-1" data-testid="inventory-pagination">
+                <span className="text-xs text-[#475467] font-sans">
+                  Showing {(page - 1) * PAGE_SIZE + 1}-{Math.min(page * PAGE_SIZE, filtered.length)} of {filtered.length}
+                </span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    disabled={page <= 1}
+                    className="h-7 text-xs rounded-sm border-[#D0D5DD] text-[#344054] px-2"
+                    data-testid="inventory-pagination-prev"
+                  >
+                    Previous
+                  </Button>
+                  <span className="text-xs text-[#475467] font-sans tabular-nums">
+                    Page {page} of {totalPages}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    disabled={page >= totalPages}
+                    className="h-7 text-xs rounded-sm border-[#D0D5DD] text-[#344054] px-2"
+                    data-testid="inventory-pagination-next"
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </main>
+    </div>
+  );
+}

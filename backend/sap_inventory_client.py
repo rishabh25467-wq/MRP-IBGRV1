@@ -12,9 +12,11 @@ selected, CMATERIAL_UUID stops resolving to its business ID (e.g.
 (e.g. '430') that cannot be joined back to anything. Requesting the FULL,
 un-$select'd row shape avoids this and always returns the real Material ID.
 So this client deliberately fetches full rows (paging via $top/$skip) and
-just picks out the 3 fields it needs, ignoring the rest (Site, Logistics
-Area, Owner, Stock Status, etc.), then sums KCON_HAND_STOCK per material
-across all of those to get one company-wide on-hand total per material.
+picks out the fields it needs. get_on_hand_stock() sums KCON_HAND_STOCK per
+material across every row to get one company-wide total (used for
+Purchasing Plan netting); get_inventory_detail() keeps each row separate
+(Site, Logistics Area, Stock Status) for the Inventory page's location
+breakdown.
 
 Despite the field's technical name, CMATERIAL_UUID is SAP's business
 Material/Product ID - the same value used elsewhere in this app as
@@ -54,23 +56,56 @@ class SAPInventoryClient:
             raise SAPInventoryError(data["error"].get("message", {}).get("value", "Unknown OData error"))
         return data.get("d", {}).get("results", [])
 
+    def _fetch_all_rows(self) -> list:
+        rows = []
+        skip = 0
+        while True:
+            page = self._fetch_page(skip)
+            rows.extend(page)
+            if len(page) < PAGE_SIZE:
+                break
+            skip += PAGE_SIZE
+        return rows
+
     def get_on_hand_stock(self) -> dict:
         """Returns {product_id: on_hand_qty}, summed across every
         site/logistics-area/stock-status row reported for that material."""
         stock = {}
-        skip = 0
-        while True:
-            page = self._fetch_page(skip)
-            for row in page:
-                product_id = row.get("CMATERIAL_UUID")
-                if not product_id:
-                    continue
-                try:
-                    qty = float(row.get("KCON_HAND_STOCK") or 0)
-                except (TypeError, ValueError):
-                    qty = 0.0
-                stock[product_id] = stock.get(product_id, 0.0) + qty
-            if len(page) < PAGE_SIZE:
-                break
-            skip += PAGE_SIZE
+        for row in self._fetch_all_rows():
+            product_id = row.get("CMATERIAL_UUID")
+            if not product_id:
+                continue
+            try:
+                qty = float(row.get("KCON_HAND_STOCK") or 0)
+            except (TypeError, ValueError):
+                qty = 0.0
+            stock[product_id] = stock.get(product_id, 0.0) + qty
         return stock
+
+    def get_inventory_detail(self) -> list:
+        """Returns one row per material x site x logistics-area x stock
+        status - the un-aggregated counterpart to get_on_hand_stock(), for
+        the Inventory page's location breakdown. Each row:
+        {product_id, description, site, logistics_area, stock_status,
+        qty, uom}. `description`/`site`/`logistics_area`/`stock_status` use
+        the report's human-readable T* fields (e.g. TMATERIAL_UUID,
+        TSITE_UUID, TLOG_AREA_UUID, TINV_STOCK_STATUS_CODE)."""
+        detail = []
+        for row in self._fetch_all_rows():
+            product_id = row.get("CMATERIAL_UUID")
+            if not product_id:
+                continue
+            try:
+                qty = float(row.get("KCON_HAND_STOCK") or 0)
+            except (TypeError, ValueError):
+                qty = 0.0
+            detail.append({
+                "product_id": product_id,
+                "description": row.get("TMATERIAL_UUID"),
+                "site": row.get("TSITE_UUID"),
+                "logistics_area": row.get("TLOG_AREA_UUID"),
+                "stock_status": row.get("TINV_STOCK_STATUS_CODE"),
+                "qty": qty,
+                "uom": row.get("CON_HAND_STOCK_UOM"),
+            })
+        return detail
