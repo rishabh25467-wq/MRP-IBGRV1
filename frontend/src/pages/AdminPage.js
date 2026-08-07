@@ -37,11 +37,14 @@ export default function AdminPage() {
   const [savingIds, setSavingIds] = useState(new Set());
   const [mslInputs, setMslInputs] = useState({});
   const [leadTimeInputs, setLeadTimeInputs] = useState({});
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 50;
   const [pushDialogItem, setPushDialogItem] = useState(null);
   const [pushDialogSapData, setPushDialogSapData] = useState(null);
   const [pushDialogLoading, setPushDialogLoading] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [recategorizing, setRecategorizing] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
   const [sortConfig, setSortConfig] = useState({ field: "product_id", direction: "asc" });
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
   const [pendingRowForNewCategory, setPendingRowForNewCategory] = useState(null);
@@ -229,7 +232,7 @@ export default function AdminPage() {
 
   const toggleSelectAllVisible = () => {
     setSelected((prev) => {
-      const allVisible = filteredSorted.map((it) => it.product_id);
+      const allVisible = pagedItems.map((it) => it.product_id);
       const allSelected = allVisible.every((id) => prev.has(id));
       const next = new Set(prev);
       allVisible.forEach((id) => (allSelected ? next.delete(id) : next.add(id)));
@@ -271,6 +274,25 @@ export default function AdminPage() {
     );
   };
 
+  const backfillSapLinks = async () => {
+    setBackfilling(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/components/backfill-sap-links`);
+      if (data.updated > 0) {
+        toast.success(`Linked ${data.updated} component${data.updated === 1 ? "" : "s"} to SAP`, {
+          description: "Push to SAP is now available for them. Refreshing list...",
+        });
+        loadComponents();
+      } else {
+        toast.info("Nothing to backfill", { description: "Every component already has a SAP link or none exist in the cache yet." });
+      }
+    } catch (err) {
+      toast.error("Backfill failed", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setBackfilling(false);
+    }
+  };
+
   const filteredSorted = useMemo(() => {
     const q = search.trim().toLowerCase();
     let result = items.filter((it) => {
@@ -290,7 +312,18 @@ export default function AdminPage() {
     return result;
   }, [items, search, categoryFilter, sortConfig]);
 
-  const allVisibleSelected = filteredSorted.length > 0 && filteredSorted.every((it) => selected.has(it.product_id));
+  const totalPages = Math.max(1, Math.ceil(filteredSorted.length / PAGE_SIZE));
+  const pagedItems = filteredSorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, categoryFilter, sortConfig]);
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [totalPages, page]);
+
+  const allVisibleSelected = pagedItems.length > 0 && pagedItems.every((it) => selected.has(it.product_id));
   const SortIcon = sortConfig.direction === "asc" ? SortAscending : SortDescending;
 
   return (
@@ -370,6 +403,18 @@ export default function AdminPage() {
           <Sparkle size={13} className={`mr-1.5 ${recategorizing ? "animate-pulse" : ""}`} />
           {recategorizing ? "Re-Categorising..." : `Re-Categorise Selected (${selected.size})`}
         </Button>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={backfillSapLinks}
+          disabled={backfilling}
+          className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
+          data-testid="admin-backfill-sap-links-button"
+          title="Fill in SAP links for components already sitting in the BOM cache from a past explosion, so Push to SAP becomes available for them"
+        >
+          <CloudArrowUp size={13} className={`mr-1.5 ${backfilling ? "animate-pulse" : ""}`} />
+          {backfilling ? "Backfilling..." : "Backfill SAP Links"}
+        </Button>
         <span className="text-xs text-[#475467] ml-auto font-sans" data-testid="admin-item-count">
           {filteredSorted.length} of {items.length} components
         </span>
@@ -435,7 +480,7 @@ export default function AdminPage() {
               </tr>
             </thead>
             <tbody>
-              {filteredSorted.map((it, i) => (
+              {pagedItems.map((it, i) => (
                 <tr
                   key={it.product_id}
                   className={`${i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} hover:bg-[#F0F4F8] transition-colors duration-150 ${savingIds.has(it.product_id) ? "opacity-60" : ""}`}
@@ -563,6 +608,40 @@ export default function AdminPage() {
             </tbody>
           </table>
         </div>
+        {filteredSorted.length > 0 && (
+          <div className="flex items-center justify-between mt-2 px-1" data-testid="admin-pagination">
+            <span className="text-xs text-[#475467] font-sans">
+              Showing {(page - 1) * PAGE_SIZE + 1}-{Math.min(page * PAGE_SIZE, filteredSorted.length)} of {filteredSorted.length}
+            </span>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className="h-7 text-xs rounded-sm border-[#D0D5DD] text-[#344054] px-2"
+                data-testid="admin-pagination-prev"
+              >
+                Previous
+              </Button>
+              <span className="text-xs text-[#475467] font-sans tabular-nums" data-testid="admin-pagination-page-indicator">
+                Page {page} of {totalPages}
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+                className="h-7 text-xs rounded-sm border-[#D0D5DD] text-[#344054] px-2"
+                data-testid="admin-pagination-next"
+              >
+                Next
+              </Button>
+            </div>
+          </div>
+        )}
       </main>
 
       <Dialog

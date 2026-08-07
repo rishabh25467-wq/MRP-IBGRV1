@@ -16,7 +16,7 @@ from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError
-from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category
+from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids
 from oms_client import OMSClient, OMSError
 from purchasing_plan import (
     build_purchasing_plan, retry_missing_boms, get_part_overrides, save_part_override,
@@ -631,6 +631,19 @@ async def delete_admin_category(name: str):
     assigned to it are left untouched (see bom_categorizer.delete_category)."""
     categories = await asyncio.to_thread(delete_category, db, name)
     return AddCategoryResponse(categories=categories)
+
+
+class BackfillSapLinksResponse(BaseModel):
+    updated: int
+
+
+@api_router.post("/admin/components/backfill-sap-links", response_model=BackfillSapLinksResponse)
+async def backfill_sap_links():
+    """Fills in product_uuid (needed for Push to SAP) for any component
+    that predates this feature but already has its UUID sitting in the BOM
+    cache from a past explosion - see bom_categorizer.backfill_product_uuids."""
+    updated = await asyncio.to_thread(backfill_product_uuids, db)
+    return BackfillSapLinksResponse(updated=updated)
 
 
 app.include_router(api_router)

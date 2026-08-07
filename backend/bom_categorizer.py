@@ -73,6 +73,44 @@ def delete_category(db, name: str) -> list[str]:
     return get_categories(db)
 
 
+def backfill_product_uuids(db) -> int:
+    """One-time/repeatable maintenance job: `component_master` only started
+    capturing `product_uuid` (needed for the SAP Push-to-SAP write-back)
+    from this feature's introduction onward, so every component seen in a
+    BOM Explorer search or Purchasing Plan run BEFORE that has no SAP link.
+    Most of them are still recoverable "for free" though - they already
+    exist as a leaf/child entry somewhere inside the cached BOM trees in
+    `bom_node_cache`, which has always carried product_uuid per item. This
+    scans that cache once and fills in any missing product_uuid it finds.
+    Returns the number of components backfilled."""
+    uuid_by_product_id = {}
+    for doc in db["bom_node_cache"].find({}, {"groups.items.product_id": 1, "groups.items.product_uuid": 1}):
+        for group in doc.get("groups", []):
+            for item in group.get("items", []):
+                product_id = item.get("product_id")
+                product_uuid = item.get("product_uuid")
+                if product_id and product_uuid and product_id not in uuid_by_product_id:
+                    uuid_by_product_id[product_id] = product_uuid
+
+    missing_ids = [
+        doc["_id"] for doc in db["component_master"].find(
+            {"product_uuid": {"$in": [None]}, "_id": {"$in": list(uuid_by_product_id.keys())}}, {"_id": 1}
+        )
+    ] + [
+        doc["_id"] for doc in db["component_master"].find(
+            {"product_uuid": {"$exists": False}, "_id": {"$in": list(uuid_by_product_id.keys())}}, {"_id": 1}
+        )
+    ]
+
+    updated = 0
+    for product_id in set(missing_ids):
+        db["component_master"].update_one(
+            {"_id": product_id}, {"$set": {"product_uuid": uuid_by_product_id[product_id]}}
+        )
+        updated += 1
+    return updated
+
+
 def _build_system_message(categories: list[str]) -> str:
     return (
         "You are an expert manufacturing engineer who classifies Bill of Materials (BOM) "
