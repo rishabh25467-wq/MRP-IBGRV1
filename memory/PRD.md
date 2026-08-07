@@ -95,5 +95,13 @@
 - Tested via testing_agent_v4 (iteration_14, iteration_15) - both passed, no bugs found. Bug fix independently re-verified via live run in iteration_15 (793 components/9 missing vs main agent's 803/8 - minor run-to-run variance expected/normal given the live, sequential, occasionally-flaky SAP tenant).
 
 ## Backlog / Next Tasks (updated)
-- P2: Column sorting & search in the BOM Explorer tree view
 - P2: Persist purchasing plan job history (currently in-memory only, no TTL/cleanup - fine for this single-tenant demo, would need attention for long-lived production use)
+
+## Feature: Enhancements Round 2 (Feb 2026, Session 4)
+- Purchasing Plan Excel export (mirrors BOM Explorer's export pattern) - includes a Category column, plus a "Missing BOMs" sheet when applicable.
+- BOM Explorer tree: column sorting (Product ID / Quantity / Std Cost / Ext Cost, click to toggle asc/desc) + text search box that filters to matching branches (with ancestors) and highlights the matched substring.
+- Purchasing Plan month picker: replaced the fixed "next 2 months" with a single target-month picker (past or future months allowed); `build_purchasing_plan()` now takes an optional `target_month` and always returns a single-item `months` list.
+- Bug found & fixed by testing agent (iteration_16) after the sort feature shipped: sort-clicking corrupted tree expand/collapse state (sub-assembly children randomly appearing/disappearing) because expand keys were positional sibling-index paths that broke once `sortTree()` reordered siblings. Fixed by keying expand state off a stable `product_id` ancestor-chain instead of index (iteration_17 re-verified fixed).
+- AI categorization is now automatic on BOM load (no button press needed) - `loadCategories()` is invoked right after a successful `/api/bom/search` fetch; the manual button still exists (now defaults to "Re-Categorize" after the auto-run) for re-running if desired.
+- Purchasing Plan components are now AI-categorized too (same categorizer, called server-side after `build_purchasing_plan()` completes) and the table groups components into collapsible category sections with per-category subtotal rows (qty/value per month + total), plus bulk Expand/Collapse Categories buttons.
+- All tested via testing_agent_v4 (iterations 16 & 17) - iteration_16 found the sort/expand bug (fixed same session), iteration_17 re-verified the fix and confirmed all new features with 100%/100% pass rate, no regressions.
