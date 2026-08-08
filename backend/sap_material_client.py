@@ -7,16 +7,9 @@ join on the Inventory page) for items that are neither a BOM root nor ever
 appear as anyone's ingredient, e.g. purchased raw materials with no BOM
 anywhere in the explored catalog.
 
-IMPORTANT: as of Feb 2026 the tenant's technical user is NOT yet authorized
-for this service - a live test call returned:
-  "Authorization role missing for service QueryMaterialIn, operation
-  FindByElements"
-This client is fully built and ready; calls will raise SAPMaterialAuthError
-until SAP admin grants access. See PRD.md for the exact steps (Application
-and User Management -> Communication Arrangements -> activate the "Query
-Materials" scenario for the same technical user used for BOM queries, and
-authorize its business role for the QueryMaterialIn/FindByElements
-operation)."""
+Authorized and working as of 08 Aug 2026 (the "materialquery" Communication
+Scenario / QueryMaterialIn service was activated for the _EMERGENTBOM
+business user)."""
 import re
 
 import requests
