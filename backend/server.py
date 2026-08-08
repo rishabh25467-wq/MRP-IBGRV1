@@ -1512,38 +1512,72 @@ def _supplier_to_response(doc: dict) -> Supplier:
     )
 
 
-class SyncSuppliersFromSapResponse(BaseModel):
+class SyncSuppliersFromSapResult(BaseModel):
     created: int
     updated: int
 
 
-@api_router.post("/suppliers/sync-from-sap", response_model=SyncSuppliersFromSapResponse)
+class SyncSuppliersFromSapJobStatus(BaseModel):
+    job_id: str
+    status: str  # "running" | "done" | "failed"
+    result: Optional[SyncSuppliersFromSapResult] = None
+    error: Optional[str] = None
+
+
+def _run_sap_supplier_sync(db):
+    """Runs in a worker thread - raises SAPSupplierAuthError/
+    SAPSupplierNotConfiguredError/SAPSupplierError on failure, letting the
+    async wrapper turn that into a clear job error message."""
+    sap_suppliers = sap_supplier_client.list_suppliers()
+    return supplier_service.sync_suppliers_from_sap(db, sap_suppliers)
+
+
+@api_router.post("/suppliers/sync-from-sap")
 async def sync_suppliers_from_sap():
-    """Pulls the Supplier master list live from SAP (QuerySupplierIn) and
-    upserts into the local suppliers collection, matched by sap_internal_id.
-    Purely-local suppliers (no SAP link) are left untouched. See
+    """Pulls the full Supplier master list live from SAP (QuerySupplierIn -
+    ~3000 suppliers in this tenant, takes ~60-90s) and upserts into the
+    local suppliers collection, matched by sap_internal_id. Purely-local
+    suppliers (no SAP link) are left untouched. Runs as a background job
+    (same pattern as Purchasing Plan/MRP/Push-All-to-SAP) since a single
+    HTTP request would exceed the platform's ingress timeout. See
     /app/SAP_SUPPLIER_SYNC_AUTHORIZATION_REQUEST.md if this fails - it means
     the SAP admin needs to activate/authorize the Query Supplier service."""
-    try:
-        sap_suppliers = await asyncio.to_thread(sap_supplier_client.list_suppliers)
-    except SAPSupplierAuthError:
-        raise HTTPException(
-            status_code=424,
-            detail="SAP rejected this call due to a missing authorization role for Query Supplier. "
-                   "Ask your SAP admin to authorize the _EMERGENTBOM technical user for QuerySupplierIn "
-                   "on its existing Communication Arrangement.",
-        )
-    except SAPSupplierNotConfiguredError:
-        raise HTTPException(
-            status_code=424,
-            detail="SAP has no active Communication Arrangement for Query Supplier yet. "
-                   "See /app/SAP_SUPPLIER_SYNC_AUTHORIZATION_REQUEST.md for exact setup steps - "
-                   "this is a one-time SAP admin action, same as the earlier BOM/Material Query setups.",
-        )
-    except SAPSupplierError as e:
-        raise HTTPException(status_code=502, detail=f"SAP error: {e}")
-    result = await asyncio.to_thread(supplier_service.sync_suppliers_from_sap, db, sap_suppliers)
-    return SyncSuppliersFromSapResponse(**result)
+    job_id = str(uuid.uuid4())
+    job_store.create_job(db, job_id, {"status": "running", "result": None, "error": None})
+
+    async def run():
+        try:
+            result = await asyncio.to_thread(_run_sap_supplier_sync, db)
+            job_store.update_job(db, job_id, {"status": "done", "result": result, "error": None})
+        except SAPSupplierAuthError:
+            job_store.update_job(db, job_id, {
+                "status": "failed", "result": None,
+                "error": "SAP rejected this call due to a missing authorization role for Query Supplier. "
+                         "Ask your SAP admin to authorize the _EMERGENTBOM technical user for QuerySupplierIn "
+                         "on its existing Communication Arrangement.",
+            })
+        except SAPSupplierNotConfiguredError:
+            job_store.update_job(db, job_id, {
+                "status": "failed", "result": None,
+                "error": "SAP has no active Communication Arrangement for Query Supplier yet. "
+                         "See /app/SAP_SUPPLIER_SYNC_AUTHORIZATION_REQUEST.md for exact setup steps.",
+            })
+        except SAPSupplierError as e:
+            job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": f"SAP error: {e}"})
+        except Exception as e:
+            logger.error(f"Supplier sync from SAP failed: {e}")
+            job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+@api_router.get("/suppliers/sync-from-sap/status/{job_id}", response_model=SyncSuppliersFromSapJobStatus)
+async def get_sync_suppliers_from_sap_status(job_id: str):
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return SyncSuppliersFromSapJobStatus(job_id=job_id, **job)
 
 
 @api_router.get("/suppliers", response_model=List[Supplier])

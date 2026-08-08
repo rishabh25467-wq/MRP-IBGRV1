@@ -42,6 +42,8 @@ export default function SuppliersPage() {
   const [suppliers, setSuppliers] = useState([]);
   const [suppliersLoading, setSuppliersLoading] = useState(true);
   const [supplierSearch, setSupplierSearch] = useState("");
+  const [supplierPage, setSupplierPage] = useState(1);
+  const SUPPLIER_PAGE_SIZE = 50;
   const [syncing, setSyncing] = useState(false);
   const [syncBanner, setSyncBanner] = useState(null);
 
@@ -81,8 +83,26 @@ export default function SuppliersPage() {
     setSyncBanner(null);
     try {
       const { data } = await axios.post(`${API}/suppliers/sync-from-sap`);
-      toast.success("Synced from SAP", { description: `${data.created} new, ${data.updated} updated` });
-      loadSuppliers();
+      const jobId = data.job_id;
+      const startedAt = Date.now();
+      // Pulling ~3000 suppliers from SAP takes ~60-90s - poll instead of
+      // holding one HTTP request open past the platform's ingress timeout.
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        const { data: job } = await axios.get(`${API}/suppliers/sync-from-sap/status/${jobId}`);
+        if (job.status === "done") {
+          toast.success("Synced from SAP", { description: `${job.result.created} new, ${job.result.updated} updated` });
+          loadSuppliers();
+          break;
+        }
+        if (job.status === "failed") {
+          throw new Error(job.error || "Sync failed");
+        }
+        if (Date.now() - startedAt > 5 * 60 * 1000) {
+          throw new Error("SAP sync is taking too long. Please try again.");
+        }
+      }
     } catch (err) {
       const detail = err?.response?.data?.detail || err.message || "Sync failed";
       setSyncBanner(detail);
@@ -242,6 +262,15 @@ export default function SuppliersPage() {
       (s.email || "").toLowerCase().includes(q)
     );
   });
+  const supplierTotalPages = Math.max(1, Math.ceil(filteredSuppliers.length / SUPPLIER_PAGE_SIZE));
+  const pagedSuppliers = filteredSuppliers.slice(
+    (supplierPage - 1) * SUPPLIER_PAGE_SIZE,
+    supplierPage * SUPPLIER_PAGE_SIZE
+  );
+
+  useEffect(() => {
+    setSupplierPage(1);
+  }, [supplierSearch]);
 
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]">
@@ -334,7 +363,7 @@ export default function SuppliersPage() {
                     </td>
                   </tr>
                 ) : (
-                  filteredSuppliers.map((s, i) => (
+                  pagedSuppliers.map((s, i) => (
                     <tr key={s.id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`supplier-row-${i}`}>
                       <td className="border border-[#D0D5DD] px-2 py-1 font-medium text-[#101828]">{s.name}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]">{s.contact_person || "—"}</td>
@@ -374,6 +403,39 @@ export default function SuppliersPage() {
               </tbody>
             </table>
           </div>
+          {filteredSuppliers.length > 0 && (
+            <div className="flex items-center justify-between px-2.5 py-1.5 border-t border-[#D0D5DD] text-xs text-[#475467]" data-testid="supplier-pagination-bar">
+              <span>
+                Showing {(supplierPage - 1) * SUPPLIER_PAGE_SIZE + 1}-
+                {Math.min(supplierPage * SUPPLIER_PAGE_SIZE, filteredSuppliers.length)} of {filteredSuppliers.length}
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setSupplierPage((p) => Math.max(1, p - 1))}
+                  disabled={supplierPage <= 1}
+                  className="h-7 text-xs rounded-sm border-[#D0D5DD]"
+                  data-testid="supplier-page-prev-button"
+                >
+                  Previous
+                </Button>
+                <span data-testid="supplier-page-indicator">Page {supplierPage} of {supplierTotalPages}</span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setSupplierPage((p) => Math.min(supplierTotalPages, p + 1))}
+                  disabled={supplierPage >= supplierTotalPages}
+                  className="h-7 text-xs rounded-sm border-[#D0D5DD]"
+                  data-testid="supplier-page-next-button"
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
         </section>
 
         {/* Part <-> Supplier Assignments */}

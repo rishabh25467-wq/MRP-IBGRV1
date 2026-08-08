@@ -3,15 +3,15 @@ master list (Internal ID, UUID, formatted name, contact person, email,
 phone) so the local Suppliers page can be populated from real SAP data
 instead of manual typing.
 
-Status as of this session: the exact Communication Arrangement/Scenario for
-"Query Supplier" has NOT been confirmed active in this tenant - a live probe
-against the guessed endpoint returned a generic SOAP processing fault (not
-the specific "Authorization role missing" fault seen previously with
-QueryMaterialIn before ITS arrangement was set up), which most likely means
-no inbound service is currently routed at this path at all. See
-/app/SAP_SUPPLIER_SYNC_AUTHORIZATION_REQUEST.md for the exact setup steps
-needed from the SAP admin - the user has self-resolved two similar setups
-before (Production BOM Query, materialquery) without SAP support access."""
+Working as of 08 Aug 2026 - the "BusinessPartnerEmergent" Communication
+Scenario/Arrangement (QuerySupplierIn / Find Suppliers operation) was
+activated for the _EMERGENTBOM business user. Empirically confirmed: the
+`SelectionByLifeCycleStatusCode` selection criterion must use the full
+interval-boundary structure (InclusionExclusionCode/IntervalBoundaryTypeCode/
+LowerBoundaryLifeCycleStatusCode) - a bare value tag causes SAP to reject
+the whole request with a generic, unhelpful "Web service processing error"
+fault (easy to mistake for "service not configured" - it isn't)."""
+import html
 import re
 
 import requests
@@ -42,7 +42,7 @@ def _tag_re(tag: str):
 
 def _first_tag(xml: str, tag: str):
     m = _tag_re(tag).search(xml)
-    return re.sub(r"<[^>]+>", "", m.group(1)).strip() if m else None
+    return html.unescape(re.sub(r"<[^>]+>", "", m.group(1)).strip()) if m else None
 
 
 def _all_blocks(xml: str, tag: str):
@@ -62,7 +62,11 @@ class SAPSupplierClient:
  <soapenv:Header/><soapenv:Body>
   <glob:SupplierByElementsQuery_sync>
    <SupplierSelectionByElements>
-    <SelectionByLifeCycleStatusCode>2</SelectionByLifeCycleStatusCode>
+    <SelectionByLifeCycleStatusCode>
+     <InclusionExclusionCode>I</InclusionExclusionCode>
+     <IntervalBoundaryTypeCode>1</IntervalBoundaryTypeCode>
+     <LowerBoundaryLifeCycleStatusCode>2</LowerBoundaryLifeCycleStatusCode>
+    </SelectionByLifeCycleStatusCode>
    </SupplierSelectionByElements>
    <ProcessingConditions>
     <QueryHitsMaximumNumberValue>{max_hits}</QueryHitsMaximumNumberValue>
@@ -71,7 +75,7 @@ class SAPSupplierClient:
   </glob:SupplierByElementsQuery_sync>
  </soapenv:Body></soapenv:Envelope>"""
 
-    def list_suppliers(self, max_hits: int = 500) -> list:
+    def list_suppliers(self, max_hits: int = 6000) -> list:
         """Returns a list of dicts: internal_id, uuid, name, email, phone.
         Raises SAPSupplierAuthError / SAPSupplierNotConfiguredError /
         SAPSupplierError on failure - callers should surface these as an
@@ -82,7 +86,7 @@ class SAPSupplierClient:
                 data=self._request_xml(max_hits).encode("utf-8"),
                 auth=self.auth,
                 headers={"Content-Type": "text/xml; charset=utf-8", "Accept": "text/xml", "SOAPAction": '""'},
-                timeout=45,
+                timeout=120,
             )
         except requests.exceptions.RequestException as e:
             raise SAPSupplierError(f"Could not reach SAP: {e}")
@@ -104,8 +108,9 @@ class SAPSupplierClient:
             results.append({
                 "internal_id": internal_id,
                 "uuid": _first_tag(block, "UUID"),
-                "name": _first_tag(block, "BusinessPartnerFormattedName") or _first_tag(block, "FormattedName") or internal_id,
-                "email": _first_tag(block, "URI") or _first_tag(block, "EMailURI"),
+                "name": _first_tag(block, "BusinessPartnerFormattedName") or _first_tag(block, "FirstLineName") or internal_id,
+                "email": _first_tag(block, "EMailURI"),
                 "phone": _first_tag(block, "CompleteNumberDescription") or _first_tag(block, "NormalisedNumberDescription"),
             })
         return results
+
