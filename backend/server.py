@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+import requests
 from dotenv import load_dotenv
 from fastapi import APIRouter, FastAPI, HTTPException, Query
 from pydantic import BaseModel
@@ -114,11 +115,25 @@ class BomNode(BaseModel):
 BomNode.model_rebuild()
 
 
+class ItemLookupInfo(BaseModel):
+    product_id: str
+    description: Optional[str] = None
+    category: Optional[str] = None
+    uom: Optional[str] = None
+    on_hand_qty: Optional[float] = None
+    unit_cost: Optional[float] = None
+    currency: Optional[str] = None
+    cost_source: str  # "live" | "unavailable"
+    note: str
+
+
 class BomSearchResponse(BaseModel):
     bom_id: str
     total_components: int
     max_level: int
     tree: List[BomNode] = []
+    has_bom: bool = True
+    item_info: Optional[ItemLookupInfo] = None
 
 
 class ConnectionStatus(BaseModel):
@@ -200,19 +215,75 @@ async def connection_status():
 
 @api_router.get("/bom/search", response_model=BomSearchResponse)
 async def search_bom(bom_id: str = Query(..., min_length=1)):
+    product_id = bom_id.strip()
     try:
-        result = await asyncio.to_thread(sap_soap_client.explode_bom, bom_id.strip())
+        result = await asyncio.to_thread(sap_soap_client.explode_bom, product_id)
     except SAPSoapError as e:
         raise HTTPException(status_code=502, detail=str(e))
 
     if result is None:
-        raise HTTPException(status_code=404, detail=f"BOM '{bom_id}' not found in SAP")
+        item_info = await asyncio.to_thread(_lookup_item_without_bom, product_id)
+        if item_info is None:
+            raise HTTPException(status_code=404, detail=f"BOM '{product_id}' not found in SAP")
+        return BomSearchResponse(bom_id=product_id, total_components=0, max_level=0, tree=[], has_bom=False, item_info=item_info)
 
     return BomSearchResponse(
         bom_id=result["bom_id"],
         total_components=result["total_components"],
         max_level=result["max_level"] or 1,
         tree=result["tree"],
+    )
+
+
+def _lookup_item_without_bom(product_id: str) -> Optional[ItemLookupInfo]:
+    """Fallback for /bom/search when SAP has no BOM for this ID: confirm the
+    material genuinely EXISTS in SAP at all (live QueryMaterialIn lookup -
+    this is the only way to tell "no BOM, but it's a real purchased/raw
+    item" apart from "not found in SAP at all", since explode_bom returning
+    None means the same thing for both). If it exists, try a live Standard
+    Cost lookup, and fill in description/category/UOM/on-hand qty from
+    whatever we already have cached (Inventory/Admin) - those aren't
+    available from QueryMaterialIn itself. Returns None if the material
+    doesn't exist in SAP either, so the caller can fall back to the
+    original 404."""
+    try:
+        product_uuid = sap_material_client.resolve_uuid(product_id)
+    except (SAPMaterialError,):
+        # The material-lookup service itself hiccuped - we genuinely don't
+        # know if the item exists, so don't claim it doesn't (fall back to
+        # the plain "not found" 404 instead of asserting a wrong negative).
+        return None
+    if not product_uuid:
+        return None
+
+    unit_cost, currency, cost_source = None, None, "unavailable"
+    try:
+        costs = sap_valuation_client.get_standard_costs([product_uuid])
+        cost = costs.get(product_uuid.upper())
+        if cost:
+            unit_cost, currency, cost_source = cost.get("amount"), cost.get("currency"), "live"
+    except (SAPValuationError, requests.exceptions.RequestException):
+        pass
+
+    comp_doc = db["component_master"].find_one({"_id": product_id})
+    on_hand_qty, uom = None, None
+    cached_inv = db["inventory_cache"].find_one({"_id": "latest"}, {"items": 1})
+    if cached_inv:
+        for it in cached_inv.get("items", []):
+            if it.get("product_id") == product_id:
+                on_hand_qty, uom = it.get("total_qty"), it.get("uom")
+                break
+
+    return ItemLookupInfo(
+        product_id=product_id,
+        description=comp_doc.get("description") if comp_doc else None,
+        category=comp_doc.get("category") if comp_doc else None,
+        uom=uom,
+        on_hand_qty=on_hand_qty,
+        unit_cost=unit_cost,
+        currency=currency,
+        cost_source=cost_source,
+        note="This item exists in SAP but has no Bill of Materials defined - it's a raw material or purchased part, not a manufactured assembly.",
     )
 
 

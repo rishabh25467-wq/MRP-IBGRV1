@@ -220,6 +220,7 @@ export default function BomExplorerPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
+  const [itemInfo, setItemInfo] = useState(null);
   const [lastSynced, setLastSynced] = useState(null);
   const [connection, setConnection] = useState({ connected: null, message: "Checking connection..." });
   const [expandedKeys, setExpandedKeys] = useState(new Set());
@@ -334,6 +335,7 @@ export default function BomExplorerPage() {
     setLoading(true);
     setError(null);
     setResult(null);
+    setItemInfo(null);
     setExpandedKeys(new Set());
     setCosts({});
     setCostsLoaded(false);
@@ -344,6 +346,13 @@ export default function BomExplorerPage() {
 
     try {
       const response = await axios.get(`${API}/bom/search`, { params: { bom_id: bomId.trim() } });
+      if (response.data.has_bom === false) {
+        setItemInfo(response.data.item_info);
+        toast.info(`${response.data.item_info.product_id} has no BOM`, {
+          description: response.data.item_info.note,
+        });
+        return;
+      }
       setResult(response.data);
       setLastSynced(new Date());
       toast.success(`BOM ${response.data.bom_id} loaded`, {
@@ -715,7 +724,51 @@ export default function BomExplorerPage() {
           </div>
         )}
 
-        {!loading && !result && !error && (
+        {!loading && itemInfo && (
+          <div
+            className="border border-[#D0D5DD] rounded-sm bg-white p-5 flex flex-col gap-3"
+            data-testid="bom-item-lookup-card"
+          >
+            <div className="flex items-center gap-2">
+              <Package size={18} weight="bold" className="text-[#B54708]" />
+              <span className="font-heading text-sm font-bold text-[#101828]">{itemInfo.product_id}</span>
+              <Badge className="bg-[#FFFAEB] text-[#B54708] border-[#FEDF89] rounded" variant="outline">
+                No Bill of Materials
+              </Badge>
+            </div>
+            <p className="font-sans text-[13px] text-[#475467]">{itemInfo.note}</p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 pt-2 border-t border-[#EAECF0]">
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-[#98A2B3] font-heading">Description</p>
+                <p className="text-[13px] text-[#101828]" data-testid="bom-item-lookup-description">{itemInfo.description || "—"}</p>
+              </div>
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-[#98A2B3] font-heading">Category</p>
+                <p className="text-[13px] text-[#101828]" data-testid="bom-item-lookup-category">{itemInfo.category || "Uncategorized"}</p>
+              </div>
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-[#98A2B3] font-heading">On-Hand Qty</p>
+                <p className="text-[13px] text-[#101828] tabular-nums" data-testid="bom-item-lookup-qty">
+                  {itemInfo.on_hand_qty != null ? `${itemInfo.on_hand_qty.toLocaleString()} ${itemInfo.uom || ""}` : "—"}
+                </p>
+              </div>
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-[#98A2B3] font-heading">Unit Cost</p>
+                <p className="text-[13px] text-[#101828] tabular-nums" data-testid="bom-item-lookup-cost">
+                  {itemInfo.unit_cost != null ? `${itemInfo.currency || ""} ${itemInfo.unit_cost.toLocaleString()}` : "—"}
+                </p>
+              </div>
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-[#98A2B3] font-heading">Data Source</p>
+                <p className="text-[13px] text-[#101828]">
+                  {itemInfo.cost_source === "live" ? "Cost: live SAP" : "Cost: unavailable"} · Other fields: cached
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!loading && !result && !error && !itemInfo && (
           <div
             className="border border-dashed border-[#D0D5DD] rounded-sm py-16 flex flex-col items-center gap-3 text-[#98A2B3] bg-white"
             data-testid="bom-empty-state"
