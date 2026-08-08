@@ -30,6 +30,7 @@ import production_plan_service
 import mrp_service
 import po_selection_service
 import mrp_plan_store
+import job_store
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -42,6 +43,7 @@ api_router = APIRouter(prefix="/api")
 
 mongo_client = MongoClient(os.environ['MONGO_URL'], tz_aware=True)
 db = mongo_client[os.environ['DB_NAME']]
+job_store.ensure_indexes(db)
 
 sap_soap_client = SAPSoapBOMClient(
     endpoint=os.environ['SAP_SOAP_ENDPOINT'],
@@ -91,29 +93,7 @@ open_po_client = OpenPODemandClient(
     api_key=os.environ['OPEN_PO_DEMAND_API_KEY'],
 )
 
-# In-memory job store for the long-running (multi-minute, live OMS+SAP)
-# Purchasing Plan generation - kept out-of-request so the client never has to
-# hold a single HTTP connection open longer than the ingress/proxy timeout;
-# the frontend polls /purchasing-plan/status/{job_id} instead.
-purchasing_plan_jobs: dict = {}
 
-# Same out-of-request pattern for the Production Plan page's MRP computation
-# (potentially many live SAP BOM explosions, same as Purchasing Plan).
-mrp_plan_jobs: dict = {}
-
-# Same out-of-request pattern for the Admin page's bulk "Push All to SAP" -
-# can touch hundreds of materials, each needing a CSRF handshake + several
-# PATCHes, so it must run as a background job too.
-push_all_to_sap_jobs: dict = {}
-
-# Same pattern again for the Inventory page - the underlying SAP OData
-# on-hand stock report can be slow/heavily paged under tenant load.
-inventory_jobs: dict = {}
-
-# Controlled, throttled one-time live-SAP UUID backfill for inventory items
-# that have never appeared in any BOM Explorer/Purchasing Plan run - see
-# inventory_service.deep_backfill_uuids docstring.
-deep_backfill_jobs: dict = {}
 
 
 class BomNode(BaseModel):
@@ -261,7 +241,7 @@ class PurchasingPlanGenerateRequest(BaseModel):
 @api_router.post("/purchasing-plan/generate")
 async def start_purchasing_plan_job(payload: Optional[PurchasingPlanGenerateRequest] = None):
     job_id = str(uuid.uuid4())
-    purchasing_plan_jobs[job_id] = {"status": "running", "result": None, "error": None}
+    job_store.create_job(db, job_id, {"status": "running", "result": None, "error": None})
     target_month = payload.target_month if payload else None
 
     async def run():
@@ -282,10 +262,10 @@ async def start_purchasing_plan_job(payload: Optional[PurchasingPlanGenerateRequ
                     categories = {}
                 for c in result["components"]:
                     c["category"] = categories.get(c["product_id"])
-            purchasing_plan_jobs[job_id] = {"status": "done", "result": result, "error": None}
+            job_store.update_job(db, job_id, {"status": "done", "result": result, "error": None})
         except Exception as e:
             logger.error(f"Purchasing plan generation failed: {e}")
-            purchasing_plan_jobs[job_id] = {"status": "failed", "result": None, "error": str(e)}
+            job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
 
     asyncio.create_task(run())
     return {"job_id": job_id}
@@ -293,7 +273,7 @@ async def start_purchasing_plan_job(payload: Optional[PurchasingPlanGenerateRequ
 
 @api_router.get("/purchasing-plan/status/{job_id}", response_model=PurchasingPlanJobStatus)
 async def purchasing_plan_status(job_id: str):
-    job = purchasing_plan_jobs.get(job_id)
+    job = job_store.get_job(db, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id")
     return PurchasingPlanJobStatus(
@@ -466,21 +446,21 @@ async def start_inventory_job():
     be slow/paged and would otherwise risk a proxy timeout on a plain
     synchronous request."""
     job_id = str(uuid.uuid4())
-    inventory_jobs[job_id] = {"status": "running", "result": None, "error": None}
+    job_store.create_job(db, job_id, {"status": "running", "result": None, "error": None})
 
     async def run():
         try:
             cached = await asyncio.to_thread(refresh_inventory_cache, db, sap_inventory_client, sap_valuation_client)
-            inventory_jobs[job_id] = {
+            job_store.update_job(db, job_id, {
                 "status": "done",
                 "result": {"items": cached["items"], "categories": cached["categories"], "updated_at": cached["updated_at"].isoformat()},
                 "error": None,
-            }
+            })
         except (SAPInventoryError, SAPValuationError) as e:
-            inventory_jobs[job_id] = {"status": "failed", "result": None, "error": str(e)}
+            job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
         except Exception as e:
             logger.error(f"Inventory job failed: {e}")
-            inventory_jobs[job_id] = {"status": "failed", "result": None, "error": str(e)}
+            job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
 
     asyncio.create_task(run())
     return {"job_id": job_id}
@@ -488,7 +468,7 @@ async def start_inventory_job():
 
 @api_router.get("/inventory/{job_id}", response_model=InventoryJobStatus)
 async def get_inventory_job(job_id: str):
-    job = inventory_jobs.get(job_id)
+    job = job_store.get_job(db, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id")
     return InventoryJobStatus(job_id=job_id, **job)
@@ -528,19 +508,23 @@ async def start_deep_backfill_uuids():
     Refreshes the inventory cache at the end so newly-resolved valuations
     show up immediately without a separate manual Refresh."""
     job_id = str(uuid.uuid4())
-    deep_backfill_jobs[job_id] = {"status": "running", "phase": "resolving", "progress": {"processed": 0, "total": 0}, "result": None, "error": None}
+    job_store.create_job(db, job_id, {"status": "running", "phase": "resolving", "progress": {"processed": 0, "total": 0}, "result": None, "error": None})
+
+    last_progress = {"processed": 0, "total": 0}
 
     def progress_callback(processed, total):
-        deep_backfill_jobs[job_id]["progress"] = {"processed": processed, "total": total}
+        nonlocal last_progress
+        last_progress = {"processed": processed, "total": total}
+        job_store.update_job(db, job_id, {"progress": last_progress})
 
     async def run():
         try:
             result = await asyncio.to_thread(deep_backfill_uuids, db, sap_soap_client, sap_material_client, progress_callback)
         except Exception as e:
             logger.error(f"Deep UUID backfill failed: {e}")
-            deep_backfill_jobs[job_id] = {
-                "status": "failed", "phase": "resolving", "progress": deep_backfill_jobs[job_id]["progress"], "result": None, "error": str(e),
-            }
+            job_store.update_job(db, job_id, {
+                "status": "failed", "phase": "resolving", "progress": last_progress, "result": None, "error": str(e),
+            })
             return
 
         # The backfill itself succeeded - report it as done regardless of
@@ -548,15 +532,15 @@ async def start_deep_backfill_uuids():
         # SAP OData call) succeeds. A failure here just means valuations
         # will show up on the next scheduled/manual Refresh instead of
         # immediately - it must never mask the backfill's own result.
-        deep_backfill_jobs[job_id]["phase"] = "refreshing_cache"
+        job_store.update_job(db, job_id, {"phase": "refreshing_cache"})
         try:
             await asyncio.to_thread(refresh_inventory_cache, db, sap_inventory_client, sap_valuation_client)
         except Exception as e:
             logger.warning(f"Deep UUID backfill: post-backfill inventory refresh failed, will show up on next Refresh instead: {e}")
 
-        deep_backfill_jobs[job_id] = {
-            "status": "done", "phase": "refreshing_cache", "progress": deep_backfill_jobs[job_id]["progress"], "result": result, "error": None,
-        }
+        job_store.update_job(db, job_id, {
+            "status": "done", "phase": "refreshing_cache", "progress": last_progress, "result": result, "error": None,
+        })
 
     asyncio.create_task(run())
     return {"job_id": job_id}
@@ -564,7 +548,7 @@ async def start_deep_backfill_uuids():
 
 @api_router.get("/inventory/deep-backfill-uuids/{job_id}", response_model=DeepBackfillJobStatus)
 async def get_deep_backfill_status(job_id: str):
-    job = deep_backfill_jobs.get(job_id)
+    job = job_store.get_job(db, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id")
     return DeepBackfillJobStatus(job_id=job_id, **job)
@@ -761,18 +745,18 @@ async def start_mrp_plan_job(customer: Optional[str] = None, actor: Optional[str
     silently autosaves the result (mrp_plan_store) so a page refresh never
     loses the last-generated plan."""
     job_id = str(uuid.uuid4())
-    mrp_plan_jobs[job_id] = {"status": "running", "result": None, "error": None}
+    job_store.create_job(db, job_id, {"status": "running", "result": None, "error": None})
 
     async def run():
         try:
             result = await asyncio.to_thread(mrp_service.build_mrp_plan, open_po_client, sap_soap_client, db, customer)
-            mrp_plan_jobs[job_id] = {"status": "done", "result": result, "error": None}
+            job_store.update_job(db, job_id, {"status": "done", "result": result, "error": None})
             await asyncio.to_thread(mrp_plan_store.set_autosave, db, result, actor)
         except OpenPODemandError as e:
-            mrp_plan_jobs[job_id] = {"status": "failed", "result": None, "error": str(e)}
+            job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
         except Exception as e:
             logger.error(f"MRP plan generation failed: {e}")
-            mrp_plan_jobs[job_id] = {"status": "failed", "result": None, "error": str(e)}
+            job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
 
     asyncio.create_task(run())
     return {"job_id": job_id}
@@ -780,7 +764,7 @@ async def start_mrp_plan_job(customer: Optional[str] = None, actor: Optional[str
 
 @api_router.get("/production-plan/mrp/status/{job_id}", response_model=MrpPlanJobStatus)
 async def mrp_plan_status(job_id: str):
-    job = mrp_plan_jobs.get(job_id)
+    job = job_store.get_job(db, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id")
     return MrpPlanJobStatus(
@@ -1266,25 +1250,29 @@ class PushAllToSapJobStatus(BaseModel):
 async def start_push_all_to_sap():
     """Bulk counterpart to the per-row Push to SAP - pushes MSL/Lead Time
     for EVERY component that has a SAP link and at least one value set.
-    Runs as a background job (see purchasing_plan_jobs for the same
+    Runs as a background job (see the Purchasing Plan endpoint for the same
     pattern) since it can take a while against the live SAP tenant."""
     job_id = str(uuid.uuid4())
-    push_all_to_sap_jobs[job_id] = {"status": "running", "progress": {"processed": 0, "total": 0}, "result": None, "error": None}
+    job_store.create_job(db, job_id, {"status": "running", "progress": {"processed": 0, "total": 0}, "result": None, "error": None})
+
+    last_progress = {"processed": 0, "total": 0}
 
     def progress_callback(processed, total):
-        push_all_to_sap_jobs[job_id]["progress"] = {"processed": processed, "total": total}
+        nonlocal last_progress
+        last_progress = {"processed": processed, "total": total}
+        job_store.update_job(db, job_id, {"progress": last_progress})
 
     async def run():
         try:
             result = await asyncio.to_thread(bulk_push_to_sap, db, sap_planning_client, progress_callback)
-            push_all_to_sap_jobs[job_id] = {
-                "status": "done", "progress": push_all_to_sap_jobs[job_id]["progress"], "result": result, "error": None,
-            }
+            job_store.update_job(db, job_id, {
+                "status": "done", "progress": last_progress, "result": result, "error": None,
+            })
         except Exception as e:
             logger.error(f"Bulk push-to-SAP failed: {e}")
-            push_all_to_sap_jobs[job_id] = {
-                "status": "failed", "progress": push_all_to_sap_jobs[job_id]["progress"], "result": None, "error": str(e),
-            }
+            job_store.update_job(db, job_id, {
+                "status": "failed", "progress": last_progress, "result": None, "error": str(e),
+            })
 
     asyncio.create_task(run())
     return {"job_id": job_id}
@@ -1292,7 +1280,7 @@ async def start_push_all_to_sap():
 
 @api_router.get("/admin/components/push-all-to-sap/{job_id}", response_model=PushAllToSapJobStatus)
 async def get_push_all_to_sap_status(job_id: str):
-    job = push_all_to_sap_jobs.get(job_id)
+    job = job_store.get_job(db, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id")
     return PushAllToSapJobStatus(job_id=job_id, **job)

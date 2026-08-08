@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="6" skipped="0" tests="7" time="181.566" timestamp="2026-08-08T04:51:33.231618+00:00" hostname="agent-env-025980c2-0ecc-461b-b2ad-6d583c87f706"><testcase classname="tests.test_job_store_migration.TestPurchasingPlanJob" name="test_generate_and_poll" time="60.116"><failure message="assert 502 == 200&#10; +  where 502 = &lt;Response [502]&gt;.status_code">backend/tests/test_job_store_migration.py:55: in test_generate_and_poll
+    assert r.status_code == 200
+E   assert 502 == 200
+E    +  where 502 = &lt;Response [502]&gt;.status_code</failure></testcase><testcase classname="tests.test_job_store_migration.TestBackgroundJobsCollection" name="test_ttl_index_on_created_at" time="0.005" /><testcase classname="tests.test_job_store_migration.TestBackgroundJobsCollection" name="test_unknown_job_id_returns_404" time="60.118"><failure message="assert 502 == 404&#10; +  where 502 = &lt;Response [502]&gt;.status_code">backend/tests/test_job_store_migration.py:48: in test_unknown_job_id_returns_404
+    assert r.status_code == 404
+E   assert 502 == 404
+E    +  where 502 = &lt;Response [502]&gt;.status_code</failure></testcase><testcase classname="tests.test_job_store_migration.TestDeepBackfillJob" name="test_generate_and_poll" time="60.244"><failure message="assert 502 == 200&#10; +  where 502 = &lt;Response [502]&gt;.status_code">backend/tests/test_job_store_migration.py:92: in test_generate_and_poll
+    assert r.status_code == 200
+E   assert 502 == 200
+E    +  where 502 = &lt;Response [502]&gt;.status_code</failure></testcase><testcase classname="tests.test_job_store_migration.TestInventoryRefreshJob" name="test_generate_and_poll" time="60.246"><failure message="assert 502 == 200&#10; +  where 502 = &lt;Response [502]&gt;.status_code">backend/tests/test_job_store_migration.py:75: in test_generate_and_poll
+    assert r.status_code == 200
+E   assert 502 == 200
+E    +  where 502 = &lt;Response [502]&gt;.status_code</failure></testcase><testcase classname="tests.test_job_store_migration.TestPushAllToSapJob" name="test_generate_and_poll" time="60.237"><failure message="assert 502 == 200&#10; +  where 502 = &lt;Response [502]&gt;.status_code">backend/tests/test_job_store_migration.py:132: in test_generate_and_poll
+    assert r.status_code == 200
+E   assert 502 == 200
+E    +  where 502 = &lt;Response [502]&gt;.status_code</failure></testcase><testcase classname="tests.test_job_store_migration.TestMrpPlanJob" name="test_generate_and_poll" time="60.264"><failure message="assert 502 == 200&#10; +  where 502 = &lt;Response [502]&gt;.status_code">backend/tests/test_job_store_migration.py:114: in test_generate_and_poll
+    assert r.status_code == 200
+E   assert 502 == 200
+E    +  where 502 = &lt;Response [502]&gt;.status_code</failure></testcase></testsuite></testsuites>
