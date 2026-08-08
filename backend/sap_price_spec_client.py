@@ -7,7 +7,11 @@ price" as it already exists in SAP, instead of requiring manual re-entry.
 Read-only by design (this session): the underlying data is a generic
 condition-technique/EAV model (Product ID and Supplier are stored as
 `PriceSpecificationElementPropertyValuation` rows keyed by a property code
-like `CND_PRODUCT_ID`, not plain fields), and the standard SOAP write
+like `CND_PRODUCT_ID`/`CND_SUPPL_ID`, not plain fields on the Root entity -
+`BusinessPartnerUUID` on the Root is NOT the supplier, empirically confirmed
+it doesn't match any Supplier in QuerySupplierIn under any lifecycle status;
+the real supplier internal ID + readable name live on the `CND_SUPPL_ID`
+PropertyValuation row's value/Description). The standard SOAP write
 service (`ManageProcurementPriceSpecificIn`) risks creating incomplete
 records without confirming all fields SAP's purchasing team actually
 requires - so writing new price specs back into SAP is deliberately NOT
@@ -18,6 +22,7 @@ from requests.auth import HTTPBasicAuth
 PROPERTY_VALUATION_COLLECTION = "ProcurementPriceSpecificationPropertyValuationCollection"
 PRICE_SPEC_COLLECTION = "ProcurementPriceSpecificationCollection"
 PRODUCT_PROPERTY_CODE = "CND_PRODUCT_ID"
+SUPPLIER_PROPERTY_CODE = "CND_SUPPL_ID"
 
 
 class SAPPriceSpecError(Exception):
@@ -56,9 +61,9 @@ class SAPPriceSpecClient:
 
     def get_price_specs_for_product(self, product_id: str) -> list:
         """Returns real SAP purchasing price records for a Product ID:
-        [{sap_id, supplier_uuid, price, currency, unit, start_date,
-        end_date, release_status_code}, ...]. Empty list if SAP has none -
-        that's a normal outcome, not an error."""
+        [{sap_id, supplier_internal_id, supplier_name, price, currency,
+        unit, start_date, end_date, release_status_code}, ...]. Empty list
+        if SAP has none - that's a normal outcome, not an error."""
         escaped = product_id.replace("'", "''")
         rows = self._get(PROPERTY_VALUATION_COLLECTION, {
             "$filter": f"PriceSpecificationElementPropertyRefe eq '{PRODUCT_PROPERTY_CODE}' "
@@ -72,9 +77,19 @@ class SAPPriceSpecClient:
             if not spec:
                 continue
             s = spec[0]
+
+            supplier_internal_id, supplier_name = None, None
+            props = self._get(PROPERTY_VALUATION_COLLECTION, {"$filter": f"ParentObjectID eq '{object_id}'"})
+            for p in props:
+                if p.get("PriceSpecificationElementPropertyRefe") == SUPPLIER_PROPERTY_CODE:
+                    supplier_internal_id = p.get("PriceSpecificationElementPropertyValu") or None
+                    supplier_name = p.get("Description") or None
+                    break
+
             results.append({
                 "sap_id": s.get("ObjectID"),
-                "supplier_uuid": (s.get("BusinessPartnerUUID") or "").lower() or None,
+                "supplier_internal_id": supplier_internal_id,
+                "supplier_name": supplier_name,
                 "price": float(s["Amount"]) if s.get("Amount") not in (None, "") else None,
                 "currency": s.get("currencyCode"),
                 "unit": s.get("unitCode"),
@@ -83,3 +98,4 @@ class SAPPriceSpecClient:
                 "release_status_code": s.get("ReleaseStatusCode"),
             })
         return results
+

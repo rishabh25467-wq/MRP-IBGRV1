@@ -536,7 +536,7 @@ export default function SuppliersPage() {
                         {sapPriceSpecs.map((p, i) => (
                           <tr key={p.sap_id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`sap-price-spec-row-${i}`}>
                             <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#101828]">
-                              {p.supplier_name || `Unknown SAP Supplier (${(p.supplier_uuid || "").slice(0, 8)}...)`}
+                              {p.supplier_name || (p.supplier_internal_id ? `SAP Supplier ${p.supplier_internal_id}` : "Unknown Supplier")}
                             </td>
                             <td className={`border border-[#D0D5DD] px-1.5 py-1 text-right tabular-nums ${p.price ? "text-[#101828]" : "text-[#98A2B3]"}`}>
                               {p.price != null ? `${p.currency || ""} ${p.price}` : "—"}

@@ -1716,7 +1716,7 @@ async def remove_part_supplier(assignment_id: str):
 class SapPriceSpec(BaseModel):
     sap_id: str
     supplier_name: Optional[str] = None
-    supplier_uuid: Optional[str] = None
+    supplier_internal_id: Optional[str] = None
     price: Optional[float] = None
     currency: Optional[str] = None
     unit: Optional[str] = None
@@ -1735,19 +1735,7 @@ async def get_sap_price_specs(product_id: str):
         specs = await asyncio.to_thread(sap_price_spec_client.get_price_specs_for_product, product_id)
     except SAPPriceSpecError as e:
         raise HTTPException(status_code=502, detail=f"SAP error: {e}")
-    suppliers_by_uuid = {
-        s["sap_uuid"]: s["name"]
-        for s in db[supplier_service.SUPPLIERS_COLLECTION].find({"sap_uuid": {"$ne": None}}, {"sap_uuid": 1, "name": 1})
-    }
-    return [
-        SapPriceSpec(
-            sap_id=s["sap_id"], supplier_uuid=s["supplier_uuid"],
-            supplier_name=suppliers_by_uuid.get(s["supplier_uuid"]) if s["supplier_uuid"] else None,
-            price=s["price"], currency=s["currency"], unit=s["unit"],
-            start_date=s["start_date"], end_date=s["end_date"], release_status_code=s["release_status_code"],
-        )
-        for s in specs
-    ]
+    return [SapPriceSpec(**s) for s in specs]
 
 
 app.include_router(api_router)
