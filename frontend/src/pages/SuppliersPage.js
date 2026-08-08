@@ -63,6 +63,9 @@ export default function SuppliersPage() {
   const [erpPrices, setErpPrices] = useState([]);
   const [erpPricesLoading, setErpPricesLoading] = useState(false);
   const [erpPricesError, setErpPricesError] = useState(null);
+  const [sapPurchaseHistory, setSapPurchaseHistory] = useState([]);
+  const [sapPurchaseHistoryLoading, setSapPurchaseHistoryLoading] = useState(false);
+  const [sapPurchaseHistoryError, setSapPurchaseHistoryError] = useState(null);
   const productLoadRequestRef = useRef(null);
 
   const [productSuggestions, setProductSuggestions] = useState([]);
@@ -224,6 +227,22 @@ export default function SuppliersPage() {
     }
   };
 
+  const loadSapPurchaseHistory = async (productId) => {
+    setSapPurchaseHistoryLoading(true);
+    setSapPurchaseHistoryError(null);
+    try {
+      const { data } = await axios.get(`${API}/suppliers/sap-purchase-history/${encodeURIComponent(productId)}`);
+      if (productLoadRequestRef.current !== productId) return;
+      setSapPurchaseHistory(data);
+    } catch (err) {
+      if (productLoadRequestRef.current !== productId) return;
+      setSapPurchaseHistory([]);
+      setSapPurchaseHistoryError(err?.response?.data?.detail || err.message || "Could not read SAP Supplier Invoice history");
+    } finally {
+      if (productLoadRequestRef.current === productId) setSapPurchaseHistoryLoading(false);
+    }
+  };
+
   const searchProduct = (pidOverride) => {
     const pid = (pidOverride ?? productIdInput).trim();
     if (!pid) return;
@@ -234,6 +253,7 @@ export default function SuppliersPage() {
     loadAssignments(pid);
     loadSapPriceSpecs(pid);
     loadErpPrices(pid);
+    loadSapPurchaseHistory(pid);
   };
 
   useEffect(() => {
@@ -734,6 +754,56 @@ export default function SuppliersPage() {
                             </td>
                             <td className="border border-[#D0D5DD] px-1.5 py-1 text-right tabular-nums text-[#101828]">
                               {item.average ? `₹${item.average.rate} (${item.average.bill_count} bills)` : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Real SAP-native Supplier Invoice history - authoritative cross-check */}
+              <div className="p-2.5 bg-[#F9FAFB] border-b border-[#D0D5DD]" data-testid="sap-purchase-history-panel">
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <Badge variant="outline" className="bg-[#EFF4FF] text-[#004B87] border-[#B8D4ED] text-xs">SAP</Badge>
+                  <span className="font-heading text-xs font-bold text-[#344054] uppercase tracking-wide">
+                    Purchase History from SAP (real posted Supplier Invoices)
+                  </span>
+                </div>
+                {sapPurchaseHistoryLoading ? (
+                  <div className="text-[13px] text-[#475467] py-2">Reading from SAP...</div>
+                ) : sapPurchaseHistoryError ? (
+                  <div className="text-[13px] text-[#B54708] py-1" data-testid="sap-purchase-history-error">{sapPurchaseHistoryError}</div>
+                ) : sapPurchaseHistory.length === 0 ? (
+                  <div className="text-[13px] text-[#98A2B3] py-1" data-testid="sap-purchase-history-empty">
+                    No posted Supplier Invoices found in SAP for "{activeProductId}"
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[13px] border-collapse" data-testid="sap-purchase-history-table">
+                      <thead>
+                        <tr>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Invoice</th>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Date</th>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Supplier</th>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-right text-xs font-bold text-[#344054] font-heading uppercase">Qty</th>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-right text-xs font-bold text-[#344054] font-heading uppercase">Price</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sapPurchaseHistory.map((row, i) => (
+                          <tr key={`${row.invoice_id}-${i}`} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`sap-purchase-history-row-${i}`}>
+                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#101828]">{row.invoice_id || "—"}</td>
+                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#475467]">{row.date || "—"}</td>
+                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#101828]">
+                              {row.supplier_name || row.supplier_internal_id || "—"}
+                            </td>
+                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-right tabular-nums text-[#475467]">
+                              {row.quantity != null ? `${row.quantity.toLocaleString()} ${row.unit_of_measure || ""}` : "—"}
+                            </td>
+                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-right tabular-nums text-[#101828]">
+                              {row.price != null ? `${row.currency || ""} ${row.price}` : "—"}
                             </td>
                           </tr>
                         ))}

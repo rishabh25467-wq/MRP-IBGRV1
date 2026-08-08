@@ -18,6 +18,7 @@ from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_material_client import SAPMaterialClient, SAPMaterialError, SAPMaterialAuthError
 from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplierAuthError, SAPSupplierNotConfiguredError
 from sap_price_spec_client import SAPPriceSpecClient, SAPPriceSpecError, bulk_push_erp_prices_to_sap
+from sap_supplier_invoice_client import SAPSupplierInvoiceClient, SAPSupplierInvoiceError
 from price_explorer_client import PriceExplorerClient, PriceExplorerError
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
@@ -103,6 +104,12 @@ sap_price_spec_client = SAPPriceSpecClient(
 price_explorer_client = PriceExplorerClient(
     base_url=os.environ['PRICE_EXPLORER_BASE_URL'],
     api_key=os.environ['PRICE_EXPLORER_API_KEY'],
+)
+
+sap_supplier_invoice_client = SAPSupplierInvoiceClient(
+    endpoint=os.environ['SAP_SOAP_SUPPLIER_INVOICE_ENDPOINT'],
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
 )
 
 oms_client = OMSClient(
@@ -1829,6 +1836,32 @@ async def get_erp_prices(product_id: str, lookback_days: int = 180):
     except PriceExplorerError as e:
         raise HTTPException(status_code=502, detail=f"Price Explorer error: {e}")
     return [ErpPriceItem(**i) for i in items]
+
+
+class SapSupplierInvoiceLine(BaseModel):
+    invoice_id: Optional[str] = None
+    date: Optional[str] = None
+    supplier_name: Optional[str] = None
+    supplier_internal_id: Optional[str] = None
+    quantity: Optional[float] = None
+    unit_of_measure: Optional[str] = None
+    price: Optional[float] = None
+    currency: Optional[str] = None
+
+
+@api_router.get("/suppliers/sap-purchase-history/{product_id}", response_model=List[SapSupplierInvoiceLine])
+async def get_sap_purchase_history(product_id: str, limit: int = 20):
+    """Reads REAL, posted Supplier Invoice line items for this Product ID
+    straight from SAP itself (QuerySupplierInvoiceQueryIn) - supplier name,
+    price, quantity, invoice date. Authoritative SAP-native proof of
+    purchase, independent of the external ERP Price Explorer and of SAP's
+    (often unpopulated) Price Specification records - see
+    sap_supplier_invoice_client.py."""
+    try:
+        rows = await asyncio.to_thread(sap_supplier_invoice_client.get_invoices_for_product, product_id, limit)
+    except SAPSupplierInvoiceError as e:
+        raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+    return [SapSupplierInvoiceLine(**r) for r in rows]
 
 
 class BulkPushErpProgress(BaseModel):
