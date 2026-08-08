@@ -17,18 +17,55 @@ def _now():
 
 # ---- Supplier master list ----
 
-def create_supplier(db, name, contact_person=None, email=None, phone=None) -> dict:
+def create_supplier(db, name, contact_person=None, email=None, phone=None,
+                     sap_internal_id=None, sap_uuid=None) -> dict:
     doc = {
         "_id": str(uuid.uuid4()),
         "name": name,
         "contact_person": contact_person,
         "email": email,
         "phone": phone,
+        "sap_internal_id": sap_internal_id,
+        "sap_uuid": sap_uuid,
+        "source": "sap" if sap_internal_id else "local",
         "created_at": _now(),
         "updated_at": _now(),
     }
     db[SUPPLIERS_COLLECTION].insert_one(doc)
     return doc
+
+
+def sync_suppliers_from_sap(db, sap_suppliers: list) -> dict:
+    """Upserts SAP-sourced suppliers by sap_internal_id (never duplicates a
+    supplier already synced before, and never touches a purely local one
+    with no SAP link). Returns {created, updated}."""
+    created, updated = 0, 0
+    for s in sap_suppliers:
+        existing = db[SUPPLIERS_COLLECTION].find_one({"sap_internal_id": s["internal_id"]})
+        if existing:
+            db[SUPPLIERS_COLLECTION].update_one(
+                {"_id": existing["_id"]},
+                {"$set": {
+                    "name": s["name"], "email": s.get("email"), "phone": s.get("phone"),
+                    "sap_uuid": s.get("uuid"), "updated_at": _now(),
+                }},
+            )
+            updated += 1
+        else:
+            db[SUPPLIERS_COLLECTION].insert_one({
+                "_id": str(uuid.uuid4()),
+                "name": s["name"],
+                "contact_person": None,
+                "email": s.get("email"),
+                "phone": s.get("phone"),
+                "sap_internal_id": s["internal_id"],
+                "sap_uuid": s.get("uuid"),
+                "source": "sap",
+                "created_at": _now(),
+                "updated_at": _now(),
+            })
+            created += 1
+    return {"created": created, "updated": updated}
 
 
 def list_suppliers(db) -> list:

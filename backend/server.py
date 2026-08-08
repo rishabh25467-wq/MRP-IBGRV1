@@ -15,6 +15,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_material_client import SAPMaterialClient, SAPMaterialError, SAPMaterialAuthError
+from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplierAuthError, SAPSupplierNotConfiguredError
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
@@ -59,6 +60,12 @@ sap_soap_client = SAPSoapBOMClient(
 # module docstring: NOT YET AUTHORIZED on the tenant as of this writing.
 sap_material_client = SAPMaterialClient(
     endpoint=os.environ['SAP_SOAP_MATERIAL_ENDPOINT'],
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
+)
+
+sap_supplier_client = SAPSupplierClient(
+    endpoint=os.environ['SAP_SOAP_SUPPLIER_ENDPOINT'],
     username=os.environ['SAP_SOAP_USERNAME'],
     password=os.environ['SAP_SOAP_PASSWORD'],
 )
@@ -1490,6 +1497,8 @@ class Supplier(BaseModel):
     contact_person: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
+    sap_internal_id: Optional[str] = None
+    source: str = "local"
     created_at: str
     updated_at: str
 
@@ -1498,8 +1507,43 @@ def _supplier_to_response(doc: dict) -> Supplier:
     return Supplier(
         id=doc["_id"], name=doc["name"], contact_person=doc.get("contact_person"),
         email=doc.get("email"), phone=doc.get("phone"),
+        sap_internal_id=doc.get("sap_internal_id"), source=doc.get("source", "local"),
         created_at=doc["created_at"].isoformat(), updated_at=doc["updated_at"].isoformat(),
     )
+
+
+class SyncSuppliersFromSapResponse(BaseModel):
+    created: int
+    updated: int
+
+
+@api_router.post("/suppliers/sync-from-sap", response_model=SyncSuppliersFromSapResponse)
+async def sync_suppliers_from_sap():
+    """Pulls the Supplier master list live from SAP (QuerySupplierIn) and
+    upserts into the local suppliers collection, matched by sap_internal_id.
+    Purely-local suppliers (no SAP link) are left untouched. See
+    /app/SAP_SUPPLIER_SYNC_AUTHORIZATION_REQUEST.md if this fails - it means
+    the SAP admin needs to activate/authorize the Query Supplier service."""
+    try:
+        sap_suppliers = await asyncio.to_thread(sap_supplier_client.list_suppliers)
+    except SAPSupplierAuthError:
+        raise HTTPException(
+            status_code=424,
+            detail="SAP rejected this call due to a missing authorization role for Query Supplier. "
+                   "Ask your SAP admin to authorize the _EMERGENTBOM technical user for QuerySupplierIn "
+                   "on its existing Communication Arrangement.",
+        )
+    except SAPSupplierNotConfiguredError:
+        raise HTTPException(
+            status_code=424,
+            detail="SAP has no active Communication Arrangement for Query Supplier yet. "
+                   "See /app/SAP_SUPPLIER_SYNC_AUTHORIZATION_REQUEST.md for exact setup steps - "
+                   "this is a one-time SAP admin action, same as the earlier BOM/Material Query setups.",
+        )
+    except SAPSupplierError as e:
+        raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+    result = await asyncio.to_thread(supplier_service.sync_suppliers_from_sap, db, sap_suppliers)
+    return SyncSuppliersFromSapResponse(**result)
 
 
 @api_router.get("/suppliers", response_model=List[Supplier])
