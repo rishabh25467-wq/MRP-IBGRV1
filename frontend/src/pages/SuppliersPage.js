@@ -20,8 +20,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Toaster, toast } from "@/components/ui/sonner";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command";
 import { NavTabs } from "@/components/NavTabs";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -92,7 +93,6 @@ export default function SuppliersPage() {
   const [quotaSaving, setQuotaSaving] = useState(false);
   const [showQuotaHistory, setShowQuotaHistory] = useState(false);
   const [addSupplierPickerOpen, setAddSupplierPickerOpen] = useState(false);
-  const [addSupplierPickerValue, setAddSupplierPickerValue] = useState("");
 
   const loadSuppliers = async () => {
     setSuppliersLoading(true);
@@ -339,8 +339,9 @@ export default function SuppliersPage() {
 
   // Suppliers with a Released SAP price or real ERP purchase history for the
   // currently-loaded product are surfaced first in the "+ Add Supplier"
-  // picker, since those are far more likely to be the right pick than
-  // scrolling through all ~2984 synced suppliers.
+  // picker, since those are far more likely to be the right pick. "others"
+  // is the full remaining supplier list (searchable via the picker's search
+  // box, so no need to cap it - buyers can type to find any of them).
   const getRecommendedSuppliers = () => {
     const releasedSapIds = new Set(
       sapPriceSpecs.filter((s) => s.release_status_code === "3" && s.supplier_internal_id).map((s) => s.supplier_internal_id)
@@ -353,7 +354,7 @@ export default function SuppliersPage() {
       (s) => !alreadyIn.has(s.id) && s.sap_internal_id && (releasedSapIds.has(s.sap_internal_id) || erpIds.has(s.sap_internal_id))
     );
     const recommendedIds = new Set(recommended.map((s) => s.id));
-    const others = suppliers.filter((s) => !alreadyIn.has(s.id) && !recommendedIds.has(s.id)).slice(0, 150);
+    const others = suppliers.filter((s) => !alreadyIn.has(s.id) && !recommendedIds.has(s.id));
     return { recommended, others };
   };
 
@@ -376,7 +377,6 @@ export default function SuppliersPage() {
     ]);
     setQuotaSource("user");
     setAddSupplierPickerOpen(false);
-    setAddSupplierPickerValue("");
   };
 
   const quotaTotal = quotaAllocations.reduce((sum, a) => sum + (Number(a.quota_percent) || 0), 0);
@@ -994,38 +994,67 @@ export default function SuppliersPage() {
                       <div className={`text-xs font-bold ${quotaTotalValid ? "text-[#027A48]" : "text-[#B42318]"}`} data-testid="quota-total-indicator">
                         Total: {quotaTotal.toFixed(1)}% {!quotaTotalValid && "(must equal 100%)"}
                       </div>
-                      {addSupplierPickerOpen ? (
-                        <div className="flex items-center gap-1.5">
-                          <Select value={addSupplierPickerValue} onValueChange={setAddSupplierPickerValue}>
-                            <SelectTrigger className="h-7 w-56 text-xs rounded-sm border-[#D0D5DD]" data-testid="add-quota-supplier-select">
-                              <SelectValue placeholder="Pick a supplier..." />
-                            </SelectTrigger>
-                            <SelectContent>
+                      <Popover open={addSupplierPickerOpen} onOpenChange={setAddSupplierPickerOpen}>
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            className="text-xs text-[#004B87] hover:underline inline-flex items-center gap-1"
+                            data-testid="open-add-quota-supplier-button"
+                          >
+                            <Plus size={12} /> Add Supplier
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent align="end" className="w-72 p-0" data-testid="add-quota-supplier-popover">
+                          <Command shouldFilter={true}>
+                            <CommandInput
+                              placeholder="Search suppliers by name..."
+                              className="text-[13px]"
+                              data-testid="add-quota-supplier-search-input"
+                              autoFocus
+                            />
+                            <CommandList>
+                              <CommandEmpty className="text-[13px] text-[#98A2B3] py-4 text-center">No supplier found.</CommandEmpty>
                               {(() => {
                                 const { recommended, others } = getRecommendedSuppliers();
                                 return (
                                   <>
-                                    {recommended.map((s) => (
-                                      <SelectItem key={s.id} value={s.id}>{s.name} (known price/history)</SelectItem>
-                                    ))}
-                                    {others.map((s) => (
-                                      <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
-                                    ))}
+                                    {recommended.length > 0 && (
+                                      <CommandGroup heading="Recommended (SAP/ERP price on file)">
+                                        {recommended.map((s) => (
+                                          <CommandItem
+                                            key={s.id}
+                                            value={s.name}
+                                            onSelect={() => addAllocationRow(s.id)}
+                                            className="text-[13px] cursor-pointer"
+                                            data-testid={`add-quota-supplier-option-${s.id}`}
+                                          >
+                                            {s.name}
+                                          </CommandItem>
+                                        ))}
+                                      </CommandGroup>
+                                    )}
+                                    {others.length > 0 && (
+                                      <CommandGroup heading={recommended.length > 0 ? "All Suppliers" : undefined}>
+                                        {others.map((s) => (
+                                          <CommandItem
+                                            key={s.id}
+                                            value={s.name}
+                                            onSelect={() => addAllocationRow(s.id)}
+                                            className="text-[13px] cursor-pointer"
+                                            data-testid={`add-quota-supplier-option-${s.id}`}
+                                          >
+                                            {s.name}
+                                          </CommandItem>
+                                        ))}
+                                      </CommandGroup>
+                                    )}
                                   </>
                                 );
                               })()}
-                            </SelectContent>
-                          </Select>
-                          <Button type="button" size="sm" className="h-7 text-xs bg-[#004B87] hover:bg-[#003A6A]" disabled={!addSupplierPickerValue} onClick={() => addAllocationRow(addSupplierPickerValue)} data-testid="confirm-add-quota-supplier-button">
-                            Add
-                          </Button>
-                          <Button type="button" size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setAddSupplierPickerOpen(false)}>Cancel</Button>
-                        </div>
-                      ) : (
-                        <button type="button" onClick={() => setAddSupplierPickerOpen(true)} className="text-xs text-[#004B87] hover:underline inline-flex items-center gap-1" data-testid="open-add-quota-supplier-button">
-                          <Plus size={12} /> Add Supplier
-                        </button>
-                      )}
+                            </CommandList>
+                          </Command>
+                        </PopoverContent>
+                      </Popover>
                     </div>
 
                     {quotaOverallRationale && (
