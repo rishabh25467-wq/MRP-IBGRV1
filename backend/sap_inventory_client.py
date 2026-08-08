@@ -87,9 +87,13 @@ class SAPInventoryClient:
         status - the un-aggregated counterpart to get_on_hand_stock(), for
         the Inventory page's location breakdown. Each row:
         {product_id, description, site, logistics_area, stock_status,
-        qty, uom}. `description`/`site`/`logistics_area`/`stock_status` use
-        the report's human-readable T* fields (e.g. TMATERIAL_UUID,
-        TSITE_UUID, TLOG_AREA_UUID, TINV_STOCK_STATUS_CODE)."""
+        qty, uom, company_code, company_name}. `description`/`site`/
+        `logistics_area`/`stock_status` use the report's human-readable T*
+        fields (e.g. TMATERIAL_UUID, TSITE_UUID, TLOG_AREA_UUID,
+        TINV_STOCK_STATUS_CODE). `company_code`/`company_name` come from
+        CCO_UUID/TCO_UUID (e.g. 'RI'/'RAY INTERNATIONAL') - this report
+        tags every single row with which SAP company code it belongs to,
+        used by the Inventory page's Entity filter (Ray vs Radish)."""
         detail = []
         for row in self._fetch_all_rows():
             product_id = row.get("CMATERIAL_UUID")
@@ -107,5 +111,7 @@ class SAPInventoryClient:
                 "stock_status": row.get("TINV_STOCK_STATUS_CODE"),
                 "qty": qty,
                 "uom": row.get("CON_HAND_STOCK_UOM"),
+                "company_code": row.get("CCO_UUID"),
+                "company_name": row.get("TCO_UUID"),
             })
         return detail

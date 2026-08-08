@@ -139,6 +139,7 @@ export default function PurchasingPlanPage() {
   const [expandedSalesPlanRows, setExpandedSalesPlanRows] = useState(new Set());
   const [overrideInputs, setOverrideInputs] = useState({});
   const [savingOverride, setSavingOverride] = useState({});
+  const [supplierSummaries, setSupplierSummaries] = useState({});
 
   const toggleCategoryCollapse = (category) => {
     setCollapsedCategories((prev) => {
@@ -217,6 +218,42 @@ export default function PurchasingPlanPage() {
       setSalesPlanLoading(false);
     }
   };
+
+  // Bulk-fetch app-managed supplier/quota assignments for every component in
+  // the plan, so a "Suppliers" badge can be shown inline per row (chunked -
+  // a full plan can have 800+ leaf components, too many product_ids for one
+  // query string).
+  const loadSupplierSummaries = async (productIds) => {
+    if (!productIds.length) {
+      setSupplierSummaries({});
+      return;
+    }
+    const CHUNK_SIZE = 200;
+    const chunks = [];
+    for (let i = 0; i < productIds.length; i += CHUNK_SIZE) {
+      chunks.push(productIds.slice(i, i + CHUNK_SIZE));
+    }
+    try {
+      const results = await Promise.all(
+        chunks.map((chunk) => axios.get(`${API}/part-suppliers/bulk`, { params: { product_ids: chunk.join(",") } }))
+      );
+      const merged = {};
+      results.forEach(({ data }) => Object.assign(merged, data));
+      setSupplierSummaries(merged);
+    } catch (err) {
+      // Non-critical enrichment - the plan itself is still usable without it.
+      console.warn("Could not load supplier assignments for plan components", err);
+    }
+  };
+
+  useEffect(() => {
+    if (plan?.components?.length) {
+      loadSupplierSummaries(plan.components.map((c) => c.product_id));
+    } else {
+      setSupplierSummaries({});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan]);
 
   useEffect(() => {
     if (salesPlanOpen) {
@@ -729,6 +766,9 @@ export default function PurchasingPlanPage() {
                   <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
                     UOM
                   </th>
+                  <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
+                    Suppliers
+                  </th>
                   <th
                     onClick={() => toggleSort("on_hand")}
                     className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#DDE1E8] select-none"
@@ -844,7 +884,7 @@ export default function PurchasingPlanPage() {
                         onClick={() => toggleCategoryCollapse(category)}
                         data-testid={`category-group-header-${category}`}
                       >
-                        <td colSpan={3} className="border border-[#D0D5DD] px-2 py-1.5 text-[13px] font-bold text-[#344054]">
+                        <td colSpan={4} className="border border-[#D0D5DD] px-2 py-1.5 text-[13px] font-bold text-[#344054]">
                           <span className="inline-flex items-center gap-1.5">
                             {isCollapsed ? (
                               <CaretRight size={12} weight="bold" />
@@ -912,6 +952,31 @@ export default function PurchasingPlanPage() {
                             <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] text-[#101828]">{c.description || "—"}</td>
                             <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] text-[#101828]">{c.unit_of_measure || "—"}</td>
                             <td
+                              className="border border-[#D0D5DD] px-2 py-1 text-[13px]"
+                              data-testid={`purchasing-plan-suppliers-${category}-${i}`}
+                            >
+                              {(supplierSummaries[c.product_id] || []).length === 0 ? (
+                                <span className="text-[#98A2B3]">No supplier assigned</span>
+                              ) : (
+                                <div className="flex flex-wrap gap-1">
+                                  {supplierSummaries[c.product_id].map((a) => (
+                                    <Badge
+                                      key={a.id}
+                                      variant="outline"
+                                      className={
+                                        a.preference === "Preferred"
+                                          ? "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6] text-xs whitespace-nowrap"
+                                          : "bg-[#F2F4F7] text-[#475467] border-[#D0D5DD] text-xs whitespace-nowrap"
+                                      }
+                                    >
+                                      {a.supplier_name || a.supplier_id}
+                                      {a.quota_percent != null ? ` ${a.quota_percent}%` : ""}
+                                    </Badge>
+                                  ))}
+                                </div>
+                              )}
+                            </td>
+                            <td
                               className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828] text-right"
                               data-testid={`purchasing-plan-on-hand-${category}-${i}`}
                             >
@@ -978,7 +1043,7 @@ export default function PurchasingPlanPage() {
                 })}
                 {filteredComponents.length === 0 && (
                   <tr>
-                    <td colSpan={7 + months.length * 4} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="purchasing-plan-no-components">
+                    <td colSpan={8 + months.length * 4} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="purchasing-plan-no-components">
                       {plan.components.length === 0
                         ? "No purchasable leaf components found in the forecast for these months"
                         : `No components in category "${categoryFilter}"`}

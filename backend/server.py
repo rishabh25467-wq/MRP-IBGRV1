@@ -16,7 +16,7 @@ from starlette.middleware.cors import CORSMiddleware
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_material_client import SAPMaterialClient, SAPMaterialError, SAPMaterialAuthError
 from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplierAuthError, SAPSupplierNotConfiguredError
-from sap_price_spec_client import SAPPriceSpecClient, SAPPriceSpecError
+from sap_price_spec_client import SAPPriceSpecClient, SAPPriceSpecError, bulk_push_erp_prices_to_sap
 from price_explorer_client import PriceExplorerClient, PriceExplorerError
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
@@ -94,6 +94,9 @@ sap_price_spec_client = SAPPriceSpecClient(
     base_url=os.environ['SAP_PRICE_SPEC_ODATA_BASE_URL'],
     username=os.environ['SAP_ODATA_USERNAME'],
     password=os.environ['SAP_ODATA_PASSWORD'],
+    soap_endpoint=os.environ['SAP_SOAP_PRICE_SPEC_ENDPOINT'],
+    soap_username=os.environ['SAP_SOAP_USERNAME'],
+    soap_password=os.environ['SAP_SOAP_PASSWORD'],
 )
 
 price_explorer_client = PriceExplorerClient(
@@ -1776,6 +1779,94 @@ async def get_erp_prices(product_id: str, lookback_days: int = 180):
     except PriceExplorerError as e:
         raise HTTPException(status_code=502, detail=f"Price Explorer error: {e}")
     return [ErpPriceItem(**i) for i in items]
+
+
+class BulkPushErpProgress(BaseModel):
+    processed: int
+    total: int
+
+
+class BulkPushErpPushedItem(BaseModel):
+    product_id: str
+    supplier: str
+    price: float
+    currency: str
+    bill_date: Optional[str] = None
+
+
+class BulkPushErpResult(BaseModel):
+    total: int
+    pushed: int
+    skipped_already_released: int
+    skipped_no_erp_data: int
+    skipped_unknown_supplier: int
+    failed: List[dict]
+    pushed_items: List[BulkPushErpPushedItem] = []
+    cancelled: bool = False
+
+
+class BulkPushErpJobStatus(BaseModel):
+    job_id: str
+    status: str  # "running" | "done" | "failed"
+    progress: Optional[BulkPushErpProgress] = None
+    result: Optional[BulkPushErpResult] = None
+    error: Optional[str] = None
+
+
+@api_router.post("/suppliers/bulk-push-erp-to-sap")
+async def start_bulk_push_erp_to_sap():
+    """For every known component, pushes the ERP's most recent real billed
+    price+supplier into SAP as a new Procurement Price Specification -
+    ONLY for parts that don't already have a Released price in SAP (see
+    bulk_push_erp_prices_to_sap docstring). Runs as a background job since
+    it iterates ~3000+ parts against two live external services."""
+    job_id = str(uuid.uuid4())
+    job_store.create_job(db, job_id, {"status": "running", "progress": {"processed": 0, "total": 0}, "result": None, "error": None, "cancel_requested": False})
+
+    last_progress = {"processed": 0, "total": 0}
+
+    def progress_callback(processed, total):
+        nonlocal last_progress
+        last_progress = {"processed": processed, "total": total}
+        job_store.update_job(db, job_id, {"progress": last_progress})
+
+    def is_cancelled():
+        job = job_store.get_job(db, job_id)
+        return bool(job and job.get("cancel_requested"))
+
+    async def run():
+        try:
+            result = await asyncio.to_thread(
+                bulk_push_erp_prices_to_sap, db, sap_price_spec_client, price_explorer_client, progress_callback, is_cancelled
+            )
+            job_store.update_job(db, job_id, {"status": "done", "progress": last_progress, "result": result, "error": None})
+        except Exception as e:
+            logger.error(f"Bulk push ERP prices to SAP failed: {e}")
+            job_store.update_job(db, job_id, {"status": "failed", "progress": last_progress, "result": None, "error": str(e)})
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+@api_router.post("/suppliers/bulk-push-erp-to-sap/{job_id}/stop")
+async def stop_bulk_push_erp_to_sap(job_id: str):
+    """Requests a cooperative stop of a running bulk-push job - already
+    in-flight part pushes finish, but no new ones start. The job still
+    completes normally (status='done') with a partial result and
+    `cancelled: true`, rather than the request itself blocking on it."""
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    job_store.update_job(db, job_id, {"cancel_requested": True})
+    return {"stopping": True}
+
+
+@api_router.get("/suppliers/bulk-push-erp-to-sap/{job_id}", response_model=BulkPushErpJobStatus)
+async def get_bulk_push_erp_to_sap_status(job_id: str):
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return BulkPushErpJobStatus(job_id=job_id, **job)
 
 
 app.include_router(api_router)

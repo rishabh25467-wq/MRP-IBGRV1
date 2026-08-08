@@ -96,6 +96,8 @@ def build_inventory(db, sap_inventory_client, sap_valuation_client) -> list:
             "logistics_area": row.get("logistics_area"),
             "stock_status": row.get("stock_status"),
             "qty": row["qty"],
+            "company_code": row.get("company_code"),
+            "company_name": row.get("company_name"),
         })
 
     component_docs = {

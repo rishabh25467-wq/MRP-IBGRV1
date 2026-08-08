@@ -16,7 +16,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Toaster, toast } from "@/components/ui/sonner";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectGroup, SelectLabel, SelectSeparator } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { NavTabs } from "@/components/NavTabs";
 
@@ -234,8 +234,29 @@ export default function SuppliersPage() {
       return;
     }
     setEditingAssignment(null);
-    setAssignmentForm({ ...emptyAssignmentForm, supplier_id: suppliers[0].id });
+    const { recommended } = getRecommendedSuppliers();
+    setAssignmentForm({ ...emptyAssignmentForm, supplier_id: (recommended[0] || suppliers[0]).id });
     setAssignmentDialogOpen(true);
+  };
+
+  // Suppliers with a Released SAP price or real ERP purchase history for the
+  // currently-loaded product are surfaced first in the Assign Supplier
+  // dropdown, since those are far more likely to be the right pick than
+  // scrolling through all ~2984 synced suppliers.
+  const getRecommendedSuppliers = () => {
+    const releasedSapIds = new Set(
+      sapPriceSpecs.filter((s) => s.release_status_code === "3" && s.supplier_internal_id).map((s) => s.supplier_internal_id)
+    );
+    const erpIds = new Set(
+      erpPrices.flatMap((item) => [item.lowest?.pcode, item.last?.pcode]).filter(Boolean)
+    );
+    const recommended = suppliers.filter((s) => s.sap_internal_id && (releasedSapIds.has(s.sap_internal_id) || erpIds.has(s.sap_internal_id)));
+    const recommendedIds = new Set(recommended.map((s) => s.id));
+    // Cap the fallback list - rendering all ~2984 suppliers in one dropdown
+    // would lag the UI (same reason the master list table is paginated).
+    // Use the Supplier Master List's search box to find anyone not listed here.
+    const others = suppliers.filter((s) => !recommendedIds.has(s.id)).slice(0, 150);
+    return { recommended, others };
   };
 
   const openEditAssignment = (a) => {
@@ -822,13 +843,39 @@ export default function SuppliersPage() {
                   <SelectValue placeholder="Pick a supplier" />
                 </SelectTrigger>
                 <SelectContent>
-                  {suppliers.map((s) => (
-                    <SelectItem key={s.id} value={s.id} data-testid={`assignment-supplier-option-${s.id}`}>
-                      {s.name}
-                    </SelectItem>
-                  ))}
+                  {(() => {
+                    const { recommended, others } = getRecommendedSuppliers();
+                    return (
+                      <>
+                        {recommended.length > 0 && (
+                          <SelectGroup>
+                            <SelectLabel>Recommended (SAP/ERP price on file)</SelectLabel>
+                            {recommended.map((s) => (
+                              <SelectItem key={s.id} value={s.id} data-testid={`assignment-supplier-option-${s.id}`}>
+                                {s.name}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        )}
+                        {recommended.length > 0 && others.length > 0 && <SelectSeparator />}
+                        {others.length > 0 && (
+                          <SelectGroup>
+                            {recommended.length > 0 && <SelectLabel>All Suppliers</SelectLabel>}
+                            {others.map((s) => (
+                              <SelectItem key={s.id} value={s.id} data-testid={`assignment-supplier-option-${s.id}`}>
+                                {s.name}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        )}
+                      </>
+                    );
+                  })()}
                 </SelectContent>
               </Select>
+              <p className="text-xs text-[#98A2B3] mt-1">
+                Showing suppliers with SAP/ERP price history first, plus up to 150 more. Can't find who you need? Add/search them on the Supplier Master List above.
+              </p>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>

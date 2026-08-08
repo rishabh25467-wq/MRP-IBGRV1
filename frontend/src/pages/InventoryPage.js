@@ -66,6 +66,7 @@ export default function InventoryPage() {
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [siteFilter, setSiteFilter] = useState("all");
+  const [entityFilter, setEntityFilter] = useState("all");
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [page, setPage] = useState(1);
   const [backfillOpen, setBackfillOpen] = useState(false);
@@ -236,6 +237,16 @@ export default function InventoryPage() {
     return [...set].sort();
   }, [items]);
 
+  const entities = useMemo(() => {
+    const map = new Map();
+    items.forEach((it) =>
+      it.locations.forEach((loc) => {
+        if (loc.company_code) map.set(loc.company_code, loc.company_name || loc.company_code);
+      })
+    );
+    return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [items]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return items.filter((it) => {
@@ -244,9 +255,10 @@ export default function InventoryPage() {
       const matchesCategory =
         categoryFilter === "all" || (categoryFilter === "uncategorized" ? !it.category : it.category === categoryFilter);
       const matchesSite = siteFilter === "all" || it.locations.some((loc) => loc.site === siteFilter);
-      return matchesSearch && matchesCategory && matchesSite;
+      const matchesEntity = entityFilter === "all" || it.locations.some((loc) => loc.company_code === entityFilter);
+      return matchesSearch && matchesCategory && matchesSite && matchesEntity;
     });
-  }, [items, search, categoryFilter, siteFilter]);
+  }, [items, search, categoryFilter, siteFilter, entityFilter]);
 
   const [sortConfig, setSortConfig] = useState({ field: "product_id", direction: "asc" });
   const numericSortFields = ["total_qty", "unit_cost", "total_value"];
@@ -280,7 +292,7 @@ export default function InventoryPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [search, categoryFilter, siteFilter]);
+  }, [search, categoryFilter, siteFilter, entityFilter]);
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -437,6 +449,19 @@ export default function InventoryPage() {
                   ))}
                 </SelectContent>
               </Select>
+              <Select value={entityFilter} onValueChange={setEntityFilter}>
+                <SelectTrigger className="h-8 w-44 text-xs rounded-sm border-[#D0D5DD]" data-testid="inventory-entity-filter">
+                  <SelectValue placeholder="Entity" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Entities</SelectItem>
+                  {entities.map(([code, name]) => (
+                    <SelectItem key={code} value={code} data-testid={`inventory-entity-option-${code}`}>
+                      {name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <span className="text-xs text-[#475467] ml-auto font-sans" data-testid="inventory-item-count">
                 {filtered.length} of {items.length} items
               </span>
@@ -563,10 +588,13 @@ export default function InventoryPage() {
                                 {loc.site || "—"} / {loc.logistics_area || "—"}
                               </td>
                               <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467] text-xs">{loc.stock_status || "—"}</td>
+                              <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467] text-xs" data-testid={`inventory-location-entity-${it.product_id}`}>
+                                {loc.company_name || loc.company_code || "—"}
+                              </td>
                               <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467] text-xs">
                                 {formatQty(loc.qty)}
                               </td>
-                              <td className="border border-[#D0D5DD]" colSpan={3}></td>
+                              <td className="border border-[#D0D5DD]" colSpan={2}></td>
                             </tr>
                           ))}
                       </Fragment>

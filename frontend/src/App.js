@@ -5,6 +5,7 @@ import ProductionPlanPage from "@/pages/ProductionPlanPage";
 import AdminPage from "@/pages/AdminPage";
 import InventoryPage from "@/pages/InventoryPage";
 import SuppliersPage from "@/pages/SuppliersPage";
+import SapWritePage from "@/pages/SapWritePage";
 
 function App() {
   return (
@@ -16,6 +17,7 @@ function App() {
         <Route path="/inventory" element={<InventoryPage />} />
         <Route path="/suppliers" element={<SuppliersPage />} />
         <Route path="/admin" element={<AdminPage />} />
+        <Route path="/admin/sap-write" element={<SapWritePage />} />
       </Routes>
     </BrowserRouter>
   );
