@@ -28,6 +28,7 @@ const inputCls =
 const labelCls = "font-heading text-xs font-bold text-[#475467] uppercase tracking-wide";
 
 const emptySupplierForm = { name: "", contact_person: "", email: "", phone: "" };
+const RELEASE_STATUS_LABELS = { "1": "Not Released", "2": "Partially Released", "3": "Released", "5": "Release Canceled" };
 const emptyAssignmentForm = {
   supplier_id: "",
   quota_percent: "",
@@ -527,44 +528,64 @@ export default function SuppliersPage() {
                     No purchasing price records found in SAP for "{activeProductId}"
                   </div>
                 ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-[13px] border-collapse" data-testid="sap-price-specs-table">
-                      <thead>
-                        <tr>
-                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Supplier</th>
-                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-right text-xs font-bold text-[#344054] font-heading uppercase">Price</th>
-                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Valid From</th>
-                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Valid To</th>
-                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sapPriceSpecs.map((p, i) => (
-                          <tr key={p.sap_id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`sap-price-spec-row-${i}`}>
-                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#101828]">
-                              {p.supplier_name || (p.supplier_internal_id ? `SAP Supplier ${p.supplier_internal_id}` : "Unknown Supplier")}
-                            </td>
-                            <td className={`border border-[#D0D5DD] px-1.5 py-1 text-right tabular-nums ${p.price ? "text-[#101828]" : "text-[#98A2B3]"}`}>
-                              {p.price != null ? `${p.currency || ""} ${p.price}` : "—"}
-                            </td>
-                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#475467]">{p.start_date || "—"}</td>
-                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#475467]">{p.end_date === "9999-12-31" ? "Open" : p.end_date || "—"}</td>
-                            <td className="border border-[#D0D5DD] px-1.5 py-1">
-                              <Badge
-                                variant="outline"
-                                className={
-                                  p.release_status_code === "3"
-                                    ? "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6] text-xs"
-                                    : "bg-[#F2F4F7] text-[#475467] border-[#D0D5DD] text-xs"
-                                }
-                              >
-                                {p.release_status_code === "3" ? "Released" : `Code ${p.release_status_code || "—"}`}
-                              </Badge>
-                            </td>
+                  <div>
+                    {!sapPriceSpecs.some((p) => p.release_status_code === "3") && (
+                      <div
+                        className="mb-1.5 flex items-start gap-1.5 bg-[#FFFAEB] border border-[#FEDF89] rounded-sm p-2"
+                        data-testid="sap-price-specs-no-released-warning"
+                      >
+                        <WarningCircle size={14} weight="fill" className="text-[#B54708] mt-0.5 shrink-0" />
+                        <span className="text-[13px] text-[#7A4504]">
+                          No <span className="font-bold">Released</span> purchasing price is on file in SAP for this part.
+                          The record(s) below are still drafts/not released and should NOT be relied on for sourcing decisions.
+                        </span>
+                      </div>
+                    )}
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-[13px] border-collapse" data-testid="sap-price-specs-table">
+                        <thead>
+                          <tr>
+                            <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Supplier</th>
+                            <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-right text-xs font-bold text-[#344054] font-heading uppercase">Price</th>
+                            <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Valid From</th>
+                            <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Valid To</th>
+                            <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Status</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          {[...sapPriceSpecs]
+                            .sort((a, b) => (a.release_status_code === "3" ? -1 : 1) - (b.release_status_code === "3" ? -1 : 1))
+                            .map((p, i) => {
+                              const isReleased = p.release_status_code === "3";
+                              const statusLabel = RELEASE_STATUS_LABELS[p.release_status_code] || `Code ${p.release_status_code || "—"}`;
+                              return (
+                                <tr key={p.sap_id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`sap-price-spec-row-${i}`}>
+                                  <td className={`border border-[#D0D5DD] px-1.5 py-1 ${isReleased ? "text-[#101828]" : "text-[#98A2B3]"}`}>
+                                    {p.supplier_name || (p.supplier_internal_id ? `SAP Supplier ${p.supplier_internal_id}` : "Unknown Supplier")}
+                                  </td>
+                                  <td className={`border border-[#D0D5DD] px-1.5 py-1 text-right tabular-nums ${isReleased && p.price ? "text-[#101828]" : "text-[#98A2B3]"}`}>
+                                    {p.price != null ? `${p.currency || ""} ${p.price}` : "—"}
+                                  </td>
+                                  <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#475467]">{p.start_date || "—"}</td>
+                                  <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#475467]">{p.end_date === "9999-12-31" ? "Open" : p.end_date || "—"}</td>
+                                  <td className="border border-[#D0D5DD] px-1.5 py-1">
+                                    <Badge
+                                      variant="outline"
+                                      className={
+                                        isReleased
+                                          ? "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6] text-xs"
+                                          : "bg-[#FEF3F2] text-[#B42318] border-[#FECDCA] text-xs"
+                                      }
+                                    >
+                                      {statusLabel}
+                                    </Badge>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 )}
               </div>
