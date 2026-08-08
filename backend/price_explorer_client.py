@@ -8,11 +8,9 @@ than SAP's "List Prices" (Procurement Price Specification) object, which
 was found to be mostly unpopulated placeholder data for most parts - this
 ERP data comes from actual billed purchase invoices.
 
-Auth: POST /api/auth/login with {username, password} -> {token} (JWT valid
-30 days). Token is cached in-memory and refreshed on 401."""
-import threading
-import time
-
+Auth: static scoped API key sent as `X-Api-Key` header on every request
+(no login/token flow - simpler and avoids using a human's personal
+username/password, which is what this originally did before Session 13)."""
 import requests
 
 
@@ -21,59 +19,21 @@ class PriceExplorerError(Exception):
 
 
 class PriceExplorerClient:
-    def __init__(self, base_url: str, username: str, password: str):
+    def __init__(self, base_url: str, api_key: str):
         self.base_url = base_url.rstrip("/")
-        self.username = username
-        self.password = password
-        self._token = None
-        self._token_fetched_at = 0
-        self._lock = threading.Lock()
-
-    def _login(self) -> str:
-        try:
-            resp = requests.post(
-                f"{self.base_url}/api/auth/login",
-                json={"username": self.username, "password": self.password},
-                timeout=20,
-            )
-        except requests.exceptions.RequestException as e:
-            raise PriceExplorerError(f"Could not reach Price Explorer service: {e}")
-        if resp.status_code != 200:
-            raise PriceExplorerError(f"Price Explorer login failed (HTTP {resp.status_code}): {resp.text[:200]}")
-        token = resp.json().get("token")
-        if not token:
-            raise PriceExplorerError("Price Explorer login did not return a token")
-        return token
-
-    def _get_token(self, force_refresh: bool = False) -> str:
-        with self._lock:
-            # Refresh a day early to avoid edge-of-expiry failures (token valid 30 days).
-            if force_refresh or self._token is None or (time.time() - self._token_fetched_at) > 29 * 24 * 3600:
-                self._token = self._login()
-                self._token_fetched_at = time.time()
-            return self._token
+        self.api_key = api_key
 
     def search(self, query: str, lookback_days: int = 180, limit: int = 25) -> list:
         """Returns items: [{icode, iname, lowest, last, average}, ...] where
         lowest/last are {rate, supplier, pcode, bill_date} and average is
         {rate, bill_count}. Empty list if nothing matches - normal outcome."""
-        token = self._get_token()
         try:
             resp = requests.get(
                 f"{self.base_url}/api/price-explorer/search",
                 params={"q": query, "lookback_days": lookback_days, "limit": limit},
-                headers={"Authorization": f"Bearer {token}"},
+                headers={"X-Api-Key": self.api_key},
                 timeout=20,
             )
-            if resp.status_code == 401:
-                # token expired/invalid - refresh once and retry
-                token = self._get_token(force_refresh=True)
-                resp = requests.get(
-                    f"{self.base_url}/api/price-explorer/search",
-                    params={"q": query, "lookback_days": lookback_days, "limit": limit},
-                    headers={"Authorization": f"Bearer {token}"},
-                    timeout=20,
-                )
         except requests.exceptions.RequestException as e:
             raise PriceExplorerError(f"Could not reach Price Explorer service: {e}")
         if resp.status_code != 200:
