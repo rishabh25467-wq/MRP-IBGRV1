@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import "@/App.css";
 import axios from "axios";
 import {
@@ -59,6 +59,7 @@ export default function SuppliersPage() {
   const [sapPriceSpecs, setSapPriceSpecs] = useState([]);
   const [sapPriceSpecsLoading, setSapPriceSpecsLoading] = useState(false);
   const [sapPriceSpecsError, setSapPriceSpecsError] = useState(null);
+  const productLoadRequestRef = useRef(null);
 
   const [assignmentDialogOpen, setAssignmentDialogOpen] = useState(false);
   const [editingAssignment, setEditingAssignment] = useState(null);
@@ -171,11 +172,13 @@ export default function SuppliersPage() {
     setAssignmentsLoading(true);
     try {
       const { data } = await axios.get(`${API}/part-suppliers`, { params: { product_id: productId } });
+      if (productLoadRequestRef.current !== productId) return; // a newer Load click superseded this one
       setAssignments(data);
     } catch (err) {
+      if (productLoadRequestRef.current !== productId) return;
       toast.error("Could not load supplier assignments", { description: err?.response?.data?.detail || err.message });
     } finally {
-      setAssignmentsLoading(false);
+      if (productLoadRequestRef.current === productId) setAssignmentsLoading(false);
     }
   };
 
@@ -184,18 +187,21 @@ export default function SuppliersPage() {
     setSapPriceSpecsError(null);
     try {
       const { data } = await axios.get(`${API}/suppliers/sap-price-specs/${encodeURIComponent(productId)}`);
+      if (productLoadRequestRef.current !== productId) return;
       setSapPriceSpecs(data);
     } catch (err) {
+      if (productLoadRequestRef.current !== productId) return;
       setSapPriceSpecs([]);
       setSapPriceSpecsError(err?.response?.data?.detail || err.message || "Could not read SAP purchasing prices");
     } finally {
-      setSapPriceSpecsLoading(false);
+      if (productLoadRequestRef.current === productId) setSapPriceSpecsLoading(false);
     }
   };
 
   const searchProduct = () => {
     const pid = productIdInput.trim();
     if (!pid) return;
+    productLoadRequestRef.current = pid;
     setActiveProductId(pid);
     loadAssignments(pid);
     loadSapPriceSpecs(pid);
