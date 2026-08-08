@@ -322,6 +322,11 @@
 - Fix: `inventory_service.get_cached_inventory(db)` now re-joins the LIVE `category` value from `component_master` on every single read (one batched `$in` query, no live SAP calls) instead of trusting whatever was baked into the snapshot at the last refresh - this is a universal fix at the single read path, so ANY current or future category-mutating code path is automatically reflected without needing special-case cache-patching logic. Removed the now-redundant manual cache-patch-in-place code from the "Categorize All" endpoint added earlier this session, since this covers it universally.
 - Verified: curl round-trip (PATCH category -> immediate GET /api/inventory reflects it, zero refresh) + testing_agent_v4 (iteration_40): 100%/100%, full end-to-end Admin-edit-to-Inventory-page flow confirmed, no regressions on filters/search/pagination/stats/Categorize All.
 
+## Feature: Column sorting on Inventory table (Feb 2026, Session 11 cont'd) - COMPLETE
+- User asked for sorting on "Inventory table and all tables." Admin, BOM Explorer, and Purchasing Plan already had column sorting - only the Inventory page's main table was missing it.
+- Added clickable sortable headers (Product ID, Description, Category, On-Hand Qty, UOM, Unit Cost, Total Value) to the Inventory table, matching the existing CaretUp/CaretDown pattern used elsewhere in the app. Client-side sort applied after the existing search/category/site filters and before pagination - null/missing numeric values sort to the bottom.
+- testing_agent_v4 (iteration_41): 100% pass - all 7 columns sortable asc/desc, works correctly combined with filters/search/pagination/row-expand; Admin and BOM Explorer sort regression confirmed unaffected.
+
 ## Backlog / Next Tasks (updated, Session 10)
 - P2: Purchase Order Draft - click a Net Purchase Qty/Net Qty row (Purchasing Plan or MRP Plan) to generate a ready-to-send PO draft for that component
 - P2: SAP Push History Log - audit trail (who/when/what) of every SAP write, stored in Mongo
