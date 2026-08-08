@@ -20,7 +20,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Toaster, toast } from "@/components/ui/sonner";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectGroup, SelectLabel, SelectSeparator } from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { NavTabs } from "@/components/NavTabs";
 
@@ -33,6 +33,16 @@ const labelCls = "font-heading text-xs font-bold text-[#475467] uppercase tracki
 
 const emptySupplierForm = { name: "", contact_person: "", email: "", phone: "" };
 const RELEASE_STATUS_LABELS = { "1": "Not Released", "2": "Partially Released", "3": "Released", "5": "Release Canceled" };
+
+// Raw ERP source data occasionally has bill-date typos (e.g. year 2027)
+// which would otherwise look like a valid, very recent price. Flag them
+// instead of trusting them at face value.
+const isFutureBillDate = (dateStr) => {
+  if (!dateStr) return false;
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return false;
+  return d.getTime() > Date.now();
+};
 
 export default function SuppliersPage() {
   const [suppliers, setSuppliers] = useState([]);
@@ -757,10 +767,28 @@ export default function SuppliersPage() {
                           <tr key={item.icode} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`erp-price-row-${i}`}>
                             <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#101828]">{item.iname || item.icode}</td>
                             <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#101828]">
-                              {item.last ? `${item.last.supplier} @ ₹${item.last.rate} (${item.last.bill_date})` : "—"}
+                              {item.last ? (
+                                isFutureBillDate(item.last.bill_date) ? (
+                                  <span className="text-[#98A2B3] inline-flex items-center gap-1" data-testid={`erp-price-row-${i}-last-future-flag`} title="This bill date is in the future - likely a data entry error in the source ERP. Not a reliable 'most recent' price.">
+                                    <WarningCircle size={12} weight="fill" className="text-[#B54708] shrink-0" />
+                                    {item.last.supplier} @ ₹{item.last.rate} ({item.last.bill_date})
+                                  </span>
+                                ) : (
+                                  `${item.last.supplier} @ ₹${item.last.rate} (${item.last.bill_date})`
+                                )
+                              ) : "—"}
                             </td>
                             <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#475467]">
-                              {item.lowest ? `${item.lowest.supplier} @ ₹${item.lowest.rate} (${item.lowest.bill_date})` : "—"}
+                              {item.lowest ? (
+                                isFutureBillDate(item.lowest.bill_date) ? (
+                                  <span className="text-[#98A2B3] inline-flex items-center gap-1" data-testid={`erp-price-row-${i}-lowest-future-flag`} title="This bill date is in the future - likely a data entry error in the source ERP. Not a reliable 'lowest seen' price.">
+                                    <WarningCircle size={12} weight="fill" className="text-[#B54708] shrink-0" />
+                                    {item.lowest.supplier} @ ₹{item.lowest.rate} ({item.lowest.bill_date})
+                                  </span>
+                                ) : (
+                                  `${item.lowest.supplier} @ ₹${item.lowest.rate} (${item.lowest.bill_date})`
+                                )
+                              ) : "—"}
                             </td>
                             <td className="border border-[#D0D5DD] px-1.5 py-1 text-right tabular-nums text-[#101828]">
                               {item.average ? `₹${item.average.rate} (${item.average.bill_count} bills)` : "—"}
@@ -1113,147 +1141,6 @@ export default function SuppliersPage() {
               data-testid="supplier-form-save-button"
             >
               {savingSupplier ? "Saving..." : editingSupplier ? "Save Changes" : "Add Supplier"}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Assignment Add/Edit Dialog */}
-      <Dialog open={assignmentDialogOpen} onOpenChange={setAssignmentDialogOpen}>
-        <DialogContent className="max-w-md" data-testid="part-supplier-dialog">
-          <DialogHeader>
-            <DialogTitle className="font-heading text-base">
-              {editingAssignment ? "Edit Assignment" : `Assign Supplier to ${activeProductId}`}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div>
-              <label className={labelCls}>Supplier *</label>
-              <Select
-                value={assignmentForm.supplier_id}
-                onValueChange={(v) => setAssignmentForm((f) => ({ ...f, supplier_id: v }))}
-                disabled={!!editingAssignment}
-              >
-                <SelectTrigger className="h-8 mt-1 text-[13px] rounded-sm border-[#D0D5DD]" data-testid="assignment-form-supplier-select">
-                  <SelectValue placeholder="Pick a supplier" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(() => {
-                    const { recommended, others } = getRecommendedSuppliers();
-                    return (
-                      <>
-                        {recommended.length > 0 && (
-                          <SelectGroup>
-                            <SelectLabel>Recommended (SAP/ERP price on file)</SelectLabel>
-                            {recommended.map((s) => (
-                              <SelectItem key={s.id} value={s.id} data-testid={`assignment-supplier-option-${s.id}`}>
-                                {s.name}
-                              </SelectItem>
-                            ))}
-                          </SelectGroup>
-                        )}
-                        {recommended.length > 0 && others.length > 0 && <SelectSeparator />}
-                        {others.length > 0 && (
-                          <SelectGroup>
-                            {recommended.length > 0 && <SelectLabel>All Suppliers</SelectLabel>}
-                            {others.map((s) => (
-                              <SelectItem key={s.id} value={s.id} data-testid={`assignment-supplier-option-${s.id}`}>
-                                {s.name}
-                              </SelectItem>
-                            ))}
-                          </SelectGroup>
-                        )}
-                      </>
-                    );
-                  })()}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-[#98A2B3] mt-1">
-                Showing suppliers with SAP/ERP price history first, plus up to 150 more. Can't find who you need? Add/search them on the Supplier Master List above.
-              </p>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className={labelCls}>Quota %</label>
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  value={assignmentForm.quota_percent}
-                  onChange={(e) => setAssignmentForm((f) => ({ ...f, quota_percent: e.target.value }))}
-                  className={`${inputCls} mt-1`}
-                  data-testid="assignment-form-quota-input"
-                />
-              </div>
-              <div>
-                <label className={labelCls}>Lead Time (Days)</label>
-                <input
-                  type="number"
-                  min="0"
-                  value={assignmentForm.lead_time_days}
-                  onChange={(e) => setAssignmentForm((f) => ({ ...f, lead_time_days: e.target.value }))}
-                  className={`${inputCls} mt-1`}
-                  data-testid="assignment-form-lead-time-input"
-                />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className={labelCls}>Unit Price</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={assignmentForm.unit_price}
-                  onChange={(e) => setAssignmentForm((f) => ({ ...f, unit_price: e.target.value }))}
-                  className={`${inputCls} mt-1`}
-                  data-testid="assignment-form-unit-price-input"
-                />
-              </div>
-              <div>
-                <label className={labelCls}>Currency</label>
-                <input
-                  type="text"
-                  value={assignmentForm.currency}
-                  onChange={(e) => setAssignmentForm((f) => ({ ...f, currency: e.target.value }))}
-                  className={`${inputCls} mt-1`}
-                  data-testid="assignment-form-currency-input"
-                />
-              </div>
-            </div>
-            <div>
-              <label className={labelCls}>Preference</label>
-              <Select
-                value={assignmentForm.preference}
-                onValueChange={(v) => setAssignmentForm((f) => ({ ...f, preference: v }))}
-              >
-                <SelectTrigger className="h-8 mt-1 text-[13px] rounded-sm border-[#D0D5DD]" data-testid="assignment-form-preference-select">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Preferred" data-testid="assignment-preference-option-preferred">Preferred</SelectItem>
-                  <SelectItem value="Backup" data-testid="assignment-preference-option-backup">Backup</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <label className={labelCls}>Notes</label>
-              <input
-                type="text"
-                value={assignmentForm.notes}
-                onChange={(e) => setAssignmentForm((f) => ({ ...f, notes: e.target.value }))}
-                className={`${inputCls} mt-1`}
-                data-testid="assignment-form-notes-input"
-              />
-            </div>
-            <Button
-              type="button"
-              onClick={saveAssignment}
-              disabled={savingAssignment}
-              className="h-9 w-full bg-[#004B87] hover:bg-[#003A6A] text-white text-sm rounded-sm"
-              data-testid="assignment-form-save-button"
-            >
-              {savingAssignment ? "Saving..." : editingAssignment ? "Save Changes" : "Assign Supplier"}
             </Button>
           </div>
         </DialogContent>
