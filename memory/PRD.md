@@ -282,6 +282,14 @@
 - `/app/SAP_INTEGRATION_GUIDE.md` - full reference of every SAP SOAP/OData service, credential, and empirical integration gotcha this app discovered (requested by user for reuse in another app).
 - `/app/OMS_OPEN_PO_BUG_REPORT.md` - escalation report for the OMS team (see above).
 
+## Bug Fix: Deep Backfill "stuck / too slow" on Inventory page (Feb 2026, Session 11) - COMPLETE
+- User reported "Resolve Missing Values" (Deep Backfill, links SAP Material IDs to UUIDs for Standard Cost valuation) appeared stuck/too slow in production.
+- Root cause 1 (frontend): both job-polling loops (`refreshFromSap`, `startDeepBackfill` in `InventoryPage.js`) had zero error handling - a single transient poll failure (network blip, backend restart) silently killed the recursive `setTimeout(poll, ...)` loop, leaving the dialog frozen on "running" forever with no error shown, even if the backend job had actually finished.
+- Root cause 2 (backend): `deep_backfill_uuids()` in `inventory_service.py` ran unbounded via `executor.map()` with only 3 concurrent workers over every never-before-seen inventory item, each costing up to 2 live SAP SOAP calls x 3 retries x 30s timeout - on a large catalog (3,177+ items in this tenant) this could realistically take hours with no way to stop.
+- Fix: (1) both frontend polling loops now retry up to 5 consecutive failures before surfacing a real error instead of dying silently; (2) backend raised `DEEP_BACKFILL_MAX_WORKERS` 3→6 and switched to a time-boxed `ThreadPoolExecutor`+`as_completed` loop capped at `DEEP_BACKFILL_MAX_RUNTIME_SECONDS=360` (6 min) - already-resolved items persist immediately so a run that hits the cap just reports `stopped_early: true` and the user re-clicks the button to continue where it left off (no data lost, no re-checking of already-resolved items).
+- New response field `stopped_early` (bool) on `DeepBackfillResult`; new UI banner (`data-testid="inventory-deep-backfill-stopped-early-warning"`) explaining a follow-up click is needed when this happens.
+- Verified via direct unit test (mocked slow SAP client, forced 2s deadline over a 60-item/10s-full-runtime batch: confirmed it stops at ~3s with `stopped_early: true`, not the full 10s) and via testing_agent_v4 (iteration_36): 100%/100% pass, no regressions on Inventory filters/search/Refresh or other pages (BOM Explorer, Purchasing Plan, Production Plan, Admin).
+
 ## Backlog / Next Tasks (updated, Session 10)
 - P2: Purchase Order Draft - click a Net Purchase Qty/Net Qty row (Purchasing Plan or MRP Plan) to generate a ready-to-send PO draft for that component
 - P2: SAP Push History Log - audit trail (who/when/what) of every SAP write, stored in Mongo
