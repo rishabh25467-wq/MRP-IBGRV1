@@ -44,13 +44,16 @@ class SAPPriceSpecClient:
         self.auth = HTTPBasicAuth(username, password)
 
     def _get(self, collection: str, params: dict) -> list:
-        resp = requests.get(
-            f"{self.base_url}/{collection}",
-            auth=self.auth,
-            timeout=30,
-            headers={"Accept": "application/json"},
-            params={**params, "$format": "json"},
-        )
+        try:
+            resp = requests.get(
+                f"{self.base_url}/{collection}",
+                auth=self.auth,
+                timeout=30,
+                headers={"Accept": "application/json"},
+                params={**params, "$format": "json"},
+            )
+        except requests.exceptions.RequestException as e:
+            raise SAPPriceSpecError(f"Could not reach SAP: {e}")
         if resp.status_code != 200:
             raise SAPPriceSpecError(f"SAP price specification service returned HTTP {resp.status_code}: {resp.text[:300]}")
         data = resp.json()
