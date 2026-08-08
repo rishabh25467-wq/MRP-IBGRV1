@@ -6,6 +6,7 @@ import {
   MagnifyingGlass,
   ArrowClockwise,
   CaretDown,
+  CaretUp,
   CaretRight,
   CurrencyCircleDollar,
   MapPin,
@@ -247,8 +248,35 @@ export default function InventoryPage() {
     });
   }, [items, search, categoryFilter, siteFilter]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const pagedItems = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const [sortConfig, setSortConfig] = useState({ field: "product_id", direction: "asc" });
+  const numericSortFields = ["total_qty", "unit_cost", "total_value"];
+
+  const handleSort = (field) => {
+    setSortConfig((prev) =>
+      prev.field === field ? { field, direction: prev.direction === "asc" ? "desc" : "asc" } : { field, direction: "asc" }
+    );
+  };
+
+  const sorted = useMemo(() => {
+    const { field, direction } = sortConfig;
+    if (!field) return filtered;
+    const dir = direction === "asc" ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      if (numericSortFields.includes(field)) {
+        const av = a[field] ?? -Infinity;
+        const bv = b[field] ?? -Infinity;
+        return (av - bv) * dir;
+      }
+      const av = (a[field] || "").toString().toLowerCase();
+      const bv = (b[field] || "").toString().toLowerCase();
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return 0;
+    });
+  }, [filtered, sortConfig]);
+
+  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  const pagedItems = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   useEffect(() => {
     setPage(1);
@@ -419,26 +447,82 @@ export default function InventoryPage() {
                 <thead className="sticky top-0 z-[1]">
                   <tr>
                     <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 w-8"></th>
-                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">
-                      Product ID
+                    <th
+                      className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase cursor-pointer select-none hover:bg-[#E4E7EC]"
+                      onClick={() => handleSort("product_id")}
+                      data-testid="inventory-sort-product-id"
+                    >
+                      <span className="inline-flex items-center gap-1">
+                        Product ID
+                        {sortConfig.field === "product_id" &&
+                          (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
+                      </span>
                     </th>
-                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">
-                      Description
+                    <th
+                      className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase cursor-pointer select-none hover:bg-[#E4E7EC]"
+                      onClick={() => handleSort("description")}
+                      data-testid="inventory-sort-description"
+                    >
+                      <span className="inline-flex items-center gap-1">
+                        Description
+                        {sortConfig.field === "description" &&
+                          (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
+                      </span>
                     </th>
-                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">
-                      Category
+                    <th
+                      className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase cursor-pointer select-none hover:bg-[#E4E7EC]"
+                      onClick={() => handleSort("category")}
+                      data-testid="inventory-sort-category"
+                    >
+                      <span className="inline-flex items-center gap-1">
+                        Category
+                        {sortConfig.field === "category" &&
+                          (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
+                      </span>
                     </th>
-                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase">
-                      On-Hand Qty
+                    <th
+                      className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase cursor-pointer select-none hover:bg-[#E4E7EC]"
+                      onClick={() => handleSort("total_qty")}
+                      data-testid="inventory-sort-qty"
+                    >
+                      <span className="inline-flex items-center gap-1 justify-end">
+                        On-Hand Qty
+                        {sortConfig.field === "total_qty" &&
+                          (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
+                      </span>
                     </th>
-                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">
-                      UOM
+                    <th
+                      className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase cursor-pointer select-none hover:bg-[#E4E7EC]"
+                      onClick={() => handleSort("uom")}
+                      data-testid="inventory-sort-uom"
+                    >
+                      <span className="inline-flex items-center gap-1">
+                        UOM
+                        {sortConfig.field === "uom" &&
+                          (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
+                      </span>
                     </th>
-                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase">
-                      Unit Cost
+                    <th
+                      className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase cursor-pointer select-none hover:bg-[#E4E7EC]"
+                      onClick={() => handleSort("unit_cost")}
+                      data-testid="inventory-sort-unit-cost"
+                    >
+                      <span className="inline-flex items-center gap-1 justify-end">
+                        Unit Cost
+                        {sortConfig.field === "unit_cost" &&
+                          (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
+                      </span>
                     </th>
-                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase">
-                      Total Value
+                    <th
+                      className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase cursor-pointer select-none hover:bg-[#E4E7EC]"
+                      onClick={() => handleSort("total_value")}
+                      data-testid="inventory-sort-total-value"
+                    >
+                      <span className="inline-flex items-center gap-1 justify-end">
+                        Total Value
+                        {sortConfig.field === "total_value" &&
+                          (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
+                      </span>
                     </th>
                   </tr>
                 </thead>
