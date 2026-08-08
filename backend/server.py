@@ -17,7 +17,7 @@ from sap_material_client import SAPMaterialClient, SAPMaterialError, SAPMaterial
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
-from inventory_service import get_cached_inventory, refresh_inventory_cache, deep_backfill_uuids, INVENTORY_CACHE_COLLECTION, INVENTORY_CACHE_ID
+from inventory_service import get_cached_inventory, refresh_inventory_cache, deep_backfill_uuids
 from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids, categorize_full_inventory
 from oms_client import OMSClient, OMSError
 from open_po_client import OpenPODemandClient, OpenPODemandError
@@ -590,21 +590,6 @@ async def start_categorize_all_inventory():
                 for doc in db["component_master"].find({"_id": {"$in": [i["product_id"] for i in items]}}, {"category": 1})
             }
             categories = await categorize_full_inventory(db, items)
-
-            # Patch the already-cached Inventory items in place so the
-            # Category column updates immediately - without this, the page
-            # would keep showing the OLD category (frozen at the last live
-            # SAP refresh) until the next full SAP pull, even though
-            # component_master now has the right answer.
-            for it in cached["items"]:
-                new_cat = categories.get(it["product_id"])
-                if new_cat:
-                    it["category"] = new_cat
-            new_category_list = sorted({it["category"] for it in cached["items"] if it.get("category")})
-            db[INVENTORY_CACHE_COLLECTION].update_one(
-                {"_id": INVENTORY_CACHE_ID},
-                {"$set": {"items": cached["items"], "categories": new_category_list}},
-            )
 
             finished_goods = sum(1 for c in categories.values() if c == "Finished Goods")
             newly_ai = sum(1 for pid, c in categories.items() if c != "Finished Goods" and before.get(pid) != c)

@@ -173,11 +173,28 @@ def get_cached_inventory(db):
     Inventory page loads on every visit. Returns
     {"items": [...], "categories": [...], "updated_at": datetime | None}
     with empty items/None updated_at if no refresh has ever completed yet
-    (first-ever startup, before the background scheduler's first cycle)."""
+    (first-ever startup, before the background scheduler's first cycle).
+
+    Category is re-joined from component_master on every read (not just
+    trusted from whatever was baked into the snapshot at the last live SAP
+    refresh) - a manual edit, AI re-categorize, or bulk Categorize All can
+    happen at any time independently of the next SAP refresh, and must show
+    up immediately here without needing one."""
     doc = db[INVENTORY_CACHE_COLLECTION].find_one({"_id": INVENTORY_CACHE_ID})
     if not doc:
         return {"items": [], "categories": [], "updated_at": None}
-    return {"items": doc.get("items", []), "categories": doc.get("categories", []), "updated_at": doc.get("updated_at")}
+    items = doc.get("items", [])
+    if items:
+        current_categories = {
+            c["_id"]: c.get("category")
+            for c in db["component_master"].find(
+                {"_id": {"$in": [it["product_id"] for it in items]}}, {"category": 1}
+            )
+        }
+        for it in items:
+            it["category"] = current_categories.get(it["product_id"])
+    categories = sorted({it["category"] for it in items if it.get("category")})
+    return {"items": items, "categories": categories, "updated_at": doc.get("updated_at")}
 
 
 def refresh_inventory_cache(db, sap_inventory_client, sap_valuation_client) -> dict:
