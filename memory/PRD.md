@@ -327,6 +327,14 @@
 - Added clickable sortable headers (Product ID, Description, Category, On-Hand Qty, UOM, Unit Cost, Total Value) to the Inventory table, matching the existing CaretUp/CaretDown pattern used elsewhere in the app. Client-side sort applied after the existing search/category/site filters and before pagination - null/missing numeric values sort to the bottom.
 - testing_agent_v4 (iteration_41): 100% pass - all 7 columns sortable asc/desc, works correctly combined with filters/search/pagination/row-expand; Admin and BOM Explorer sort regression confirmed unaffected.
 
+## Feature: BOM Explorer live item lookup for materials with no BOM (Feb 2026, Session 11 cont'd) - COMPLETE
+- User asked: "can this also work like an item lookup?" for items that have no BOM (previously showed a plain "not found in SAP" error even though the item genuinely exists as a purchased/raw material).
+- Prerequisite resolved: SAP's `QueryMaterialIn` service was previously unauthorized for the `_EMERGENTBOM` technical user (documented gap). User's SAP admin activated the "materialquery" Communication Scenario + granted the role on 08 Aug 2026 - confirmed working via direct test (`sap_material_client.resolve_uuid()` now returns real UUIDs instead of `SAPMaterialAuthError`). This also automatically improves Deep Backfill coverage on the Inventory page (no code change needed there - it already had the fallback logic waiting for this authorization).
+- New: `GET /api/bom/search` - when SAP has no BOM for the ID, instead of immediately 404ing, does a **live** Material lookup to confirm existence, a live Standard Cost lookup, and combines it with cached description/category/UOM/on-hand qty (Inventory/Admin) into a `has_bom: false` + `item_info` response. Only genuinely non-existent IDs (or if the lookup itself errors) still 404 as before.
+- Frontend: new info card (`bom-item-lookup-card`) shown instead of the tree/error when this happens - clearly labeled "No Bill of Materials" with a data-provenance note ("Cost: live SAP · Other fields: cached").
+- Verified via curl + testing_agent_v4 (iteration_42): 100%/100%, all 3 scenarios (no-BOM item / genuinely-not-found / normal BOM) plus state-clearing between them, no regressions.
+- Created `/app/SAP_MATERIAL_LOOKUP_AUTHORIZATION_REQUEST.md` (now resolved) documenting the exact SAP config steps taken.
+
 ## Backlog / Next Tasks (updated, Session 10)
 - P2: Purchase Order Draft - click a Net Purchase Qty/Net Qty row (Purchasing Plan or MRP Plan) to generate a ready-to-send PO draft for that component
 - P2: SAP Push History Log - audit trail (who/when/what) of every SAP write, stored in Mongo
