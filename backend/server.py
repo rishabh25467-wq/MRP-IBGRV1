@@ -504,6 +504,7 @@ class DeepBackfillResult(BaseModel):
     resolved: int
     still_missing: int
     material_lookup_unauthorized: bool = False
+    stopped_early: bool = False
 
 
 class DeepBackfillJobStatus(BaseModel):
@@ -520,8 +521,10 @@ async def start_deep_backfill_uuids():
     """User-requested one-time controlled backfill: live SAP lookup (low
     concurrency, see inventory_service.deep_backfill_uuids) for every
     current inventory item still missing a product_uuid, so its Standard
-    Cost can be resolved. Runs as a background job - against 1000+ items
-    on a tenant known to hit connection timeouts, this can take a while.
+    Cost can be resolved. Runs as a background job, bounded to a few
+    minutes per click on a tenant known to hit connection timeouts -
+    resolved items persist immediately, so if the run stops early
+    (result.stopped_early) the user just clicks it again to continue.
     Refreshes the inventory cache at the end so newly-resolved valuations
     show up immediately without a separate manual Refresh."""
     job_id = str(uuid.uuid4())

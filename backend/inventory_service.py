@@ -9,7 +9,8 @@ loads instantly from cache instead of always waiting on a live, multi-minute
 SAP pull - a background scheduler (server.py) refreshes this cache every
 couple of hours, and a manual "Refresh" button can force it sooner."""
 import logging
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import requests
@@ -23,7 +24,17 @@ logger = logging.getLogger(__name__)
 
 INVENTORY_CACHE_COLLECTION = "inventory_cache"
 INVENTORY_CACHE_ID = "latest"
-DEEP_BACKFILL_MAX_WORKERS = 3
+DEEP_BACKFILL_MAX_WORKERS = 6
+# Bounds how long a single "Resolve Missing Values" click can run for. On a
+# large catalog, checking every never-before-seen item live against SAP (2
+# calls x up to 3 retries x up to 30s each - see bom_cache_service._fetch_live)
+# can otherwise take hours with no visible progress, which is exactly what
+# looked like "stuck" in production. Each item's result is persisted to
+# component_master as soon as it resolves (see the executor loop below), so
+# stopping early loses nothing - the user just clicks the button again and
+# the next run picks up where this one left off (already-resolved ids are
+# excluded by _get_deep_backfill_targets).
+DEEP_BACKFILL_MAX_RUNTIME_SECONDS = 360
 
 
 def _resolve_missing_uuids(db, product_ids: list) -> int:
@@ -188,10 +199,9 @@ def deep_backfill_uuids(db, sap_soap_client, sap_material_client=None, progress_
     """User-requested, one-time CONTROLLED live SAP lookup for every
     inventory item that still has no product_uuid after the free,
     zero-API-call join in _resolve_missing_uuids. Two-step resolution per
-    item, deliberately throttled (DEEP_BACKFILL_MAX_WORKERS, well below the
-    8 used elsewhere) since this SAP tenant is known to hit connection
-    timeouts under load - the user explicitly chose "controlled one-time
-    backfill, accept it'll take a while and add some load" over waiting
+    item, throttled (DEEP_BACKFILL_MAX_WORKERS) since this SAP tenant is
+    known to hit connection timeouts under load - the user explicitly chose
+    "controlled backfill, accept it'll add some load" over waiting
     indefinitely for organic coverage growth:
       1. BOM-based (same as before): is this product a BOM root, or has it
          already been checked before? Free/cheap, reuses bom_node_cache.
@@ -205,13 +215,17 @@ def deep_backfill_uuids(db, sap_soap_client, sap_material_client=None, progress_
          function stops attempting step 2 for the rest of the run (no
          point retrying a guaranteed failure on every item), surfaced via
          result["material_lookup_unauthorized"].
-    Returns {"total", "resolved", "still_missing", "material_lookup_unauthorized"}."""
+    Bounded to DEEP_BACKFILL_MAX_RUNTIME_SECONDS of wall-clock time - on a
+    large backlog this stops early rather than running for hours, reporting
+    "stopped_early" so the caller can tell the user to just run it again to
+    pick up the rest (nothing already resolved is lost or re-checked).
+    Returns {"total", "resolved", "still_missing", "material_lookup_unauthorized", "stopped_early"}."""
     target_ids = _get_deep_backfill_targets(db)
     total = len(target_ids)
     if progress_callback:
         progress_callback(0, total)
     if total == 0:
-        return {"total": 0, "resolved": 0, "still_missing": 0, "material_lookup_unauthorized": False}
+        return {"total": 0, "resolved": 0, "still_missing": 0, "material_lookup_unauthorized": False, "stopped_early": False}
 
     bom_cache = db[bom_cache_service.COLLECTION_NAME]
     comp_cache = db["component_master"]
@@ -261,18 +275,40 @@ def deep_backfill_uuids(db, sap_soap_client, sap_material_client=None, progress_
             logger.warning(f"Deep UUID backfill: direct Material lookup network error for '{pid}', leaving unresolved this round: {e}")
             return pid, None
 
-    with ThreadPoolExecutor(max_workers=DEEP_BACKFILL_MAX_WORKERS) as executor:
-        for pid, product_uuid in executor.map(fetch_one, target_ids):
+    deadline = time.monotonic() + DEEP_BACKFILL_MAX_RUNTIME_SECONDS
+    stopped_early = False
+    executor = ThreadPoolExecutor(max_workers=DEEP_BACKFILL_MAX_WORKERS)
+    try:
+        futures = {executor.submit(fetch_one, pid): pid for pid in target_ids}
+        for future in as_completed(futures):
+            if future.cancelled():
+                # Never started (cancelled after the time budget ran out
+                # below) - don't count it, it did no work.
+                continue
+            _, product_uuid = future.result()
             processed += 1
             if product_uuid:
-                comp_cache.update_one({"_id": pid}, {"$set": {"product_uuid": product_uuid}}, upsert=True)
+                comp_cache.update_one({"_id": futures[future]}, {"$set": {"product_uuid": product_uuid}}, upsert=True)
                 resolved += 1
             if progress_callback:
                 progress_callback(processed, total)
+            if not stopped_early and time.monotonic() > deadline:
+                # Time budget used up - stop handing out new work. Futures
+                # already submitted but not yet started get cancelled;
+                # ones already in-flight are left to finish in the
+                # background (their bom_node_cache/component_master writes
+                # still land, they're just no longer counted here) rather
+                # than blocking this call waiting on a possibly-hung SAP
+                # request.
+                stopped_early = True
+                for f in futures:
+                    f.cancel()
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
     return {
         "total": total, "resolved": resolved, "still_missing": total - resolved,
-        "material_lookup_unauthorized": auth_error_seen[0],
+        "material_lookup_unauthorized": auth_error_seen[0], "stopped_early": stopped_early,
     }
 
 

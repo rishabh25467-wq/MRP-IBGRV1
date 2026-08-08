@@ -78,18 +78,33 @@ export default function InventoryPage() {
     try {
       const { data } = await axios.post(`${API}/inventory`);
       const jobId = data.job_id;
+      let consecutiveFailures = 0;
       const poll = async () => {
-        const { data: job } = await axios.get(`${API}/inventory/${jobId}`);
-        if (job.status === "running") {
-          setTimeout(poll, 2000);
-        } else if (job.status === "done") {
-          setItems(job.result.items);
-          setCategories(job.result.categories);
-          setUpdatedAt(job.result.updated_at);
-          setStatus("done");
-        } else {
-          setStatus("failed");
-          setError(job.error);
+        try {
+          const { data: job } = await axios.get(`${API}/inventory/${jobId}`);
+          consecutiveFailures = 0;
+          if (job.status === "running") {
+            setTimeout(poll, 2000);
+          } else if (job.status === "done") {
+            setItems(job.result.items);
+            setCategories(job.result.categories);
+            setUpdatedAt(job.result.updated_at);
+            setStatus("done");
+          } else {
+            setStatus("failed");
+            setError(job.error);
+          }
+        } catch (err) {
+          // A transient network blip (or the job briefly not found yet)
+          // must never silently freeze the UI on "running" forever - retry
+          // a few times before actually giving up and surfacing an error.
+          consecutiveFailures += 1;
+          if (consecutiveFailures <= 5) {
+            setTimeout(poll, 2000);
+          } else {
+            setStatus("failed");
+            setError(err?.response?.data?.detail || err.message);
+          }
         }
       };
       poll();
@@ -136,19 +151,34 @@ export default function InventoryPage() {
     try {
       const { data } = await axios.post(`${API}/inventory/deep-backfill-uuids`);
       const jobId = data.job_id;
+      let consecutiveFailures = 0;
       const poll = async () => {
-        const { data: job } = await axios.get(`${API}/inventory/deep-backfill-uuids/${jobId}`);
-        if (job.progress) setBackfillProgress(job.progress);
-        if (job.phase) setBackfillPhase(job.phase);
-        if (job.status === "running") {
-          setTimeout(poll, 2000);
-        } else if (job.status === "done") {
-          setBackfillStatus("done");
-          setBackfillResult(job.result);
-          loadFromCache();
-        } else {
-          setBackfillStatus("failed");
-          setBackfillError(job.error);
+        try {
+          const { data: job } = await axios.get(`${API}/inventory/deep-backfill-uuids/${jobId}`);
+          consecutiveFailures = 0;
+          if (job.progress) setBackfillProgress(job.progress);
+          if (job.phase) setBackfillPhase(job.phase);
+          if (job.status === "running") {
+            setTimeout(poll, 2000);
+          } else if (job.status === "done") {
+            setBackfillStatus("done");
+            setBackfillResult(job.result);
+            loadFromCache();
+          } else {
+            setBackfillStatus("failed");
+            setBackfillError(job.error);
+          }
+        } catch (err) {
+          // Don't let one flaky poll (network blip, backend hiccup) leave
+          // the dialog spinning on "Checking..." forever with no way out -
+          // retry a few times, then surface a real error.
+          consecutiveFailures += 1;
+          if (consecutiveFailures <= 5) {
+            setTimeout(poll, 2000);
+          } else {
+            setBackfillStatus("failed");
+            setBackfillError(err?.response?.data?.detail || err.message);
+          }
         }
       };
       poll();
@@ -476,7 +506,7 @@ export default function InventoryPage() {
                 </div>
               )}
               <p className="text-xs text-[#98A2B3]">
-                This is a slow, throttled one-time pass to go easy on the SAP tenant - can take a while for a large batch. Feel free to leave this open.
+                A throttled pass against SAP to go easy on the tenant - each run is time-boxed to a few minutes; if there's a large backlog, just click again afterwards to continue.
               </p>
             </div>
           )}
@@ -486,12 +516,17 @@ export default function InventoryPage() {
                 Resolved <span className="font-bold">{backfillResult.resolved}</span> of{" "}
                 <span className="font-bold">{backfillResult.total}</span> previously-unlinked item(s).
               </p>
+              {backfillResult.stopped_early && (
+                <p className="text-xs text-[#175CD3] bg-[#EFF8FF] border border-[#B2DDFF] rounded-sm p-2" data-testid="inventory-deep-backfill-stopped-early-warning">
+                  Time limit reached for this run - {backfillResult.still_missing} item(s) still need checking. Click "Resolve Missing Values" again to continue where this left off.
+                </p>
+              )}
               {backfillResult.material_lookup_unauthorized && (
                 <p className="text-xs text-[#B54708] bg-[#FFFAEB] border border-[#FEDF89] rounded-sm p-2" data-testid="inventory-deep-backfill-unauthorized-warning">
                   SAP rejected the direct Material lookup (missing authorization for "QueryMaterialIn"). Ask your SAP admin to activate the "Query Materials" communication arrangement for our technical user, then run this again to resolve the remaining items.
                 </p>
               )}
-              {!backfillResult.material_lookup_unauthorized && backfillResult.still_missing > 0 && (
+              {!backfillResult.stopped_early && !backfillResult.material_lookup_unauthorized && backfillResult.still_missing > 0 && (
                 <p className="text-xs text-[#98A2B3]">
                   {backfillResult.still_missing} item(s) still have no match in SAP at all - these will keep showing "—" for value.
                 </p>
