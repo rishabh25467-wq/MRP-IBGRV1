@@ -311,6 +311,11 @@
 - New "Categorize All" button on the Inventory page (`POST/GET /api/inventory/categorize-all`, background job via job_store) - patches the cached inventory items' categories in place so the table updates immediately without a live SAP re-pull.
 - Verified: 3,174 items processed, 826 correctly tagged "Finished Goods" (e.g. "Fixed Wall Mount ... Assy" items), 1,385 newly AI-categorized, leaf items' prior categories preserved. testing_agent_v4 (iteration_38): 100%/100%, no regressions on Inventory filters/search/pagination or BOM Explorer/Purchasing Plan.
 
+## Bug Fix: Sub-Assemblies wrongly tagged "Finished Goods" (Feb 2026, Session 11 cont'd) - COMPLETE
+- User flagged after the Categorize All feature above: "Make sure sub assemblies are not marked as FG." Correct - the initial rule only checked "has its own BOM" (found=True), which is also true for intermediate sub-assemblies (e.g. "Fixed Wall Mount ... Arm Assy" is built from smaller parts AND consumed inside the final mount's BOM). Confirmed via direct query: 524 of the original 826 "Finished Goods" tags were actually sub-assemblies.
+- Fixed `categorize_full_inventory()`: now also cross-references whether an item appears as a CHILD inside some OTHER product's bom_node_cache tree - if so, it's `Sub-Assembly` (added to taxonomy), not `Finished Goods`, regardless of it having its own BOM. Also added a global sweep that re-checks any item already tagged "Finished Goods" anywhere in `component_master` (even ones that dropped out of the current Inventory snapshot between runs) to catch stale mis-tags from the earlier buggy pass.
+- Re-ran and verified: 305 correctly-tagged Finished Goods, ~530 correctly-tagged Sub-Assembly, 0 leaked items (i.e. 0 "Finished Goods" items that also appear as a child anywhere). testing_agent_v4 (iteration_39): 100%/100%, no regressions.
+
 ## Backlog / Next Tasks (updated, Session 10)
 - P2: Purchase Order Draft - click a Net Purchase Qty/Net Qty row (Purchasing Plan or MRP Plan) to generate a ready-to-send PO draft for that component
 - P2: SAP Push History Log - audit trail (who/when/what) of every SAP write, stored in Mongo
