@@ -32,6 +32,7 @@ import mrp_service
 import po_selection_service
 import mrp_plan_store
 import job_store
+import supplier_service
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -1459,6 +1460,172 @@ async def backfill_sap_links():
     cache from a past explosion - see bom_categorizer.backfill_product_uuids."""
     updated = await asyncio.to_thread(backfill_product_uuids, db)
     return BackfillSapLinksResponse(updated=updated)
+
+
+# ---------------------------------------------------------------------------
+# Suppliers - fully self-managed (not synced with SAP; the tenant has no
+# Source List / Approved Supplier List). Lets the user record which
+# supplier(s) can provide a part, at what quota split, lead time, and price,
+# to inform how a purchase requisition's quantity should be divided when
+# generating one from the Purchasing Plan.
+# ---------------------------------------------------------------------------
+
+class SupplierCreate(BaseModel):
+    name: str
+    contact_person: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+
+
+class SupplierUpdate(BaseModel):
+    name: Optional[str] = None
+    contact_person: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+
+
+class Supplier(BaseModel):
+    id: str
+    name: str
+    contact_person: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+def _supplier_to_response(doc: dict) -> Supplier:
+    return Supplier(
+        id=doc["_id"], name=doc["name"], contact_person=doc.get("contact_person"),
+        email=doc.get("email"), phone=doc.get("phone"),
+        created_at=doc["created_at"].isoformat(), updated_at=doc["updated_at"].isoformat(),
+    )
+
+
+@api_router.get("/suppliers", response_model=List[Supplier])
+async def get_suppliers():
+    docs = await asyncio.to_thread(supplier_service.list_suppliers, db)
+    return [_supplier_to_response(d) for d in docs]
+
+
+@api_router.post("/suppliers", response_model=Supplier)
+async def add_supplier(payload: SupplierCreate):
+    doc = await asyncio.to_thread(
+        supplier_service.create_supplier, db, payload.name, payload.contact_person, payload.email, payload.phone
+    )
+    return _supplier_to_response(doc)
+
+
+@api_router.patch("/suppliers/{supplier_id}", response_model=Supplier)
+async def patch_supplier(supplier_id: str, payload: SupplierUpdate):
+    if not supplier_service.get_supplier(db, supplier_id):
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    updates = {k: v for k, v in payload.dict().items() if v is not None}
+    doc = await asyncio.to_thread(supplier_service.update_supplier, db, supplier_id, updates)
+    return _supplier_to_response(doc)
+
+
+@api_router.delete("/suppliers/{supplier_id}")
+async def remove_supplier(supplier_id: str):
+    ok = await asyncio.to_thread(supplier_service.delete_supplier, db, supplier_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    return {"deleted": True}
+
+
+class PartSupplierCreate(BaseModel):
+    product_id: str
+    supplier_id: str
+    quota_percent: Optional[float] = None
+    lead_time_days: Optional[float] = None
+    unit_price: Optional[float] = None
+    currency: Optional[str] = "INR"
+    preference: str = "Preferred"  # "Preferred" | "Backup"
+    notes: Optional[str] = None
+
+
+class PartSupplierUpdate(BaseModel):
+    quota_percent: Optional[float] = None
+    lead_time_days: Optional[float] = None
+    unit_price: Optional[float] = None
+    currency: Optional[str] = None
+    preference: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class PartSupplierAssignment(BaseModel):
+    id: str
+    product_id: str
+    supplier_id: str
+    supplier_name: Optional[str] = None
+    quota_percent: Optional[float] = None
+    lead_time_days: Optional[float] = None
+    unit_price: Optional[float] = None
+    currency: Optional[str] = None
+    preference: str
+    notes: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+def _assignment_to_response(doc: dict, supplier_name: Optional[str] = None) -> PartSupplierAssignment:
+    return PartSupplierAssignment(
+        id=doc["_id"], product_id=doc["product_id"], supplier_id=doc["supplier_id"],
+        supplier_name=supplier_name, quota_percent=doc.get("quota_percent"),
+        lead_time_days=doc.get("lead_time_days"), unit_price=doc.get("unit_price"),
+        currency=doc.get("currency"), preference=doc.get("preference", "Preferred"),
+        notes=doc.get("notes"), created_at=doc["created_at"].isoformat(), updated_at=doc["updated_at"].isoformat(),
+    )
+
+
+@api_router.get("/part-suppliers", response_model=List[PartSupplierAssignment])
+async def get_part_suppliers(product_id: str = Query(...)):
+    docs = await asyncio.to_thread(supplier_service.list_suppliers_for_part, db, product_id)
+    suppliers = {s["_id"]: s["name"] for s in db[supplier_service.SUPPLIERS_COLLECTION].find({}, {"name": 1})}
+    return [_assignment_to_response(d, suppliers.get(d["supplier_id"])) for d in docs]
+
+
+@api_router.get("/part-suppliers/bulk")
+async def get_part_suppliers_bulk(product_ids: str = Query(..., description="Comma-separated product IDs")):
+    ids = [p.strip() for p in product_ids.split(",") if p.strip()]
+    grouped = await asyncio.to_thread(supplier_service.list_suppliers_for_parts, db, ids)
+    suppliers = {s["_id"]: s["name"] for s in db[supplier_service.SUPPLIERS_COLLECTION].find({}, {"name": 1})}
+    return {
+        pid: [_assignment_to_response(d, suppliers.get(d["supplier_id"])) for d in assignments]
+        for pid, assignments in grouped.items()
+    }
+
+
+@api_router.post("/part-suppliers", response_model=PartSupplierAssignment)
+async def add_part_supplier(payload: PartSupplierCreate):
+    supplier = supplier_service.get_supplier(db, payload.supplier_id)
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    doc = await asyncio.to_thread(
+        supplier_service.assign_supplier_to_part, db, payload.product_id, payload.supplier_id,
+        payload.quota_percent, payload.lead_time_days, payload.unit_price, payload.currency,
+        payload.preference, payload.notes,
+    )
+    return _assignment_to_response(doc, supplier["name"])
+
+
+@api_router.patch("/part-suppliers/{assignment_id}", response_model=PartSupplierAssignment)
+async def patch_part_supplier(assignment_id: str, payload: PartSupplierUpdate):
+    existing = supplier_service.get_part_supplier(db, assignment_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    updates = {k: v for k, v in payload.dict().items() if v is not None}
+    doc = await asyncio.to_thread(supplier_service.update_part_supplier, db, assignment_id, updates)
+    supplier = supplier_service.get_supplier(db, doc["supplier_id"])
+    return _assignment_to_response(doc, supplier["name"] if supplier else None)
+
+
+@api_router.delete("/part-suppliers/{assignment_id}")
+async def remove_part_supplier(assignment_id: str):
+    ok = await asyncio.to_thread(supplier_service.delete_part_supplier, db, assignment_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    return {"deleted": True}
 
 
 app.include_router(api_router)

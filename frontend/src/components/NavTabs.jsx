@@ -5,6 +5,7 @@ const TABS = [
   { to: "/purchasing-plan", label: "Purchasing Plan", testId: "nav-purchasing-plan" },
   { to: "/production-plan", label: "Production Plan", testId: "nav-production-plan" },
   { to: "/inventory", label: "Inventory", testId: "nav-inventory" },
+  { to: "/suppliers", label: "Suppliers", testId: "nav-suppliers" },
   { to: "/admin", label: "Admin", testId: "nav-admin" },
 ];
 
