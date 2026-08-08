@@ -16,6 +16,7 @@ from starlette.middleware.cors import CORSMiddleware
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_material_client import SAPMaterialClient, SAPMaterialError, SAPMaterialAuthError
 from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplierAuthError, SAPSupplierNotConfiguredError
+from sap_price_spec_client import SAPPriceSpecClient, SAPPriceSpecError
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
@@ -84,6 +85,12 @@ sap_inventory_client = SAPInventoryClient(
 
 sap_planning_client = SAPPlanningClient(
     base_url=os.environ['SAP_PLANNING_ODATA_BASE_URL'],
+    username=os.environ['SAP_ODATA_USERNAME'],
+    password=os.environ['SAP_ODATA_PASSWORD'],
+)
+
+sap_price_spec_client = SAPPriceSpecClient(
+    base_url=os.environ['SAP_PRICE_SPEC_ODATA_BASE_URL'],
     username=os.environ['SAP_ODATA_USERNAME'],
     password=os.environ['SAP_ODATA_PASSWORD'],
 )
@@ -1704,6 +1711,43 @@ async def remove_part_supplier(assignment_id: str):
     if not ok:
         raise HTTPException(status_code=404, detail="Assignment not found")
     return {"deleted": True}
+
+
+class SapPriceSpec(BaseModel):
+    sap_id: str
+    supplier_name: Optional[str] = None
+    supplier_uuid: Optional[str] = None
+    price: Optional[float] = None
+    currency: Optional[str] = None
+    unit: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    release_status_code: Optional[str] = None
+
+
+@api_router.get("/suppliers/sap-price-specs/{product_id}", response_model=List[SapPriceSpec])
+async def get_sap_price_specs(product_id: str):
+    """Reads real purchasing prices already maintained in SAP for this
+    Product ID (via the custom `pricespecificationemergent` OData service -
+    SAP's own condition-technique price records, distinct from our local
+    part_suppliers assignments). Read-only - see sap_price_spec_client.py."""
+    try:
+        specs = await asyncio.to_thread(sap_price_spec_client.get_price_specs_for_product, product_id)
+    except SAPPriceSpecError as e:
+        raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+    suppliers_by_uuid = {
+        s["sap_uuid"]: s["name"]
+        for s in db[supplier_service.SUPPLIERS_COLLECTION].find({"sap_uuid": {"$ne": None}}, {"sap_uuid": 1, "name": 1})
+    }
+    return [
+        SapPriceSpec(
+            sap_id=s["sap_id"], supplier_uuid=s["supplier_uuid"],
+            supplier_name=suppliers_by_uuid.get(s["supplier_uuid"]) if s["supplier_uuid"] else None,
+            price=s["price"], currency=s["currency"], unit=s["unit"],
+            start_date=s["start_date"], end_date=s["end_date"], release_status_code=s["release_status_code"],
+        )
+        for s in specs
+    ]
 
 
 app.include_router(api_router)

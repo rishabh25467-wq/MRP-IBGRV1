@@ -56,6 +56,9 @@ export default function SuppliersPage() {
   const [activeProductId, setActiveProductId] = useState(null);
   const [assignments, setAssignments] = useState([]);
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
+  const [sapPriceSpecs, setSapPriceSpecs] = useState([]);
+  const [sapPriceSpecsLoading, setSapPriceSpecsLoading] = useState(false);
+  const [sapPriceSpecsError, setSapPriceSpecsError] = useState(null);
 
   const [assignmentDialogOpen, setAssignmentDialogOpen] = useState(false);
   const [editingAssignment, setEditingAssignment] = useState(null);
@@ -176,11 +179,26 @@ export default function SuppliersPage() {
     }
   };
 
+  const loadSapPriceSpecs = async (productId) => {
+    setSapPriceSpecsLoading(true);
+    setSapPriceSpecsError(null);
+    try {
+      const { data } = await axios.get(`${API}/suppliers/sap-price-specs/${encodeURIComponent(productId)}`);
+      setSapPriceSpecs(data);
+    } catch (err) {
+      setSapPriceSpecs([]);
+      setSapPriceSpecsError(err?.response?.data?.detail || err.message || "Could not read SAP purchasing prices");
+    } finally {
+      setSapPriceSpecsLoading(false);
+    }
+  };
+
   const searchProduct = () => {
     const pid = productIdInput.trim();
     if (!pid) return;
     setActiveProductId(pid);
     loadAssignments(pid);
+    loadSapPriceSpecs(pid);
   };
 
   const openAddAssignment = () => {
@@ -485,7 +503,73 @@ export default function SuppliersPage() {
               Enter a Product ID above and click "Load" to view/manage its supplier assignments
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div>
+              {/* Real SAP purchasing data - read-only */}
+              <div className="p-2.5 bg-[#F9FAFB] border-b border-[#D0D5DD]" data-testid="sap-price-specs-panel">
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <Badge variant="outline" className="bg-[#E5F0FA] text-[#004B87] border-[#B8D4ED] text-xs">SAP</Badge>
+                  <span className="font-heading text-xs font-bold text-[#344054] uppercase tracking-wide">
+                    Existing Purchasing Prices in SAP (read-only)
+                  </span>
+                </div>
+                {sapPriceSpecsLoading ? (
+                  <div className="text-[13px] text-[#475467] py-2">Reading from SAP...</div>
+                ) : sapPriceSpecsError ? (
+                  <div className="text-[13px] text-[#B54708] py-1" data-testid="sap-price-specs-error">{sapPriceSpecsError}</div>
+                ) : sapPriceSpecs.length === 0 ? (
+                  <div className="text-[13px] text-[#98A2B3] py-1" data-testid="sap-price-specs-empty">
+                    No purchasing price records found in SAP for "{activeProductId}"
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[13px] border-collapse" data-testid="sap-price-specs-table">
+                      <thead>
+                        <tr>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Supplier</th>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-right text-xs font-bold text-[#344054] font-heading uppercase">Price</th>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Valid From</th>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Valid To</th>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sapPriceSpecs.map((p, i) => (
+                          <tr key={p.sap_id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`sap-price-spec-row-${i}`}>
+                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#101828]">
+                              {p.supplier_name || `Unknown SAP Supplier (${(p.supplier_uuid || "").slice(0, 8)}...)`}
+                            </td>
+                            <td className={`border border-[#D0D5DD] px-1.5 py-1 text-right tabular-nums ${p.price ? "text-[#101828]" : "text-[#98A2B3]"}`}>
+                              {p.price != null ? `${p.currency || ""} ${p.price}` : "—"}
+                            </td>
+                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#475467]">{p.start_date || "—"}</td>
+                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#475467]">{p.end_date === "9999-12-31" ? "Open" : p.end_date || "—"}</td>
+                            <td className="border border-[#D0D5DD] px-1.5 py-1">
+                              <Badge
+                                variant="outline"
+                                className={
+                                  p.release_status_code === "3"
+                                    ? "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6] text-xs"
+                                    : "bg-[#F2F4F7] text-[#475467] border-[#D0D5DD] text-xs"
+                                }
+                              >
+                                {p.release_status_code === "3" ? "Released" : `Code ${p.release_status_code || "—"}`}
+                              </Badge>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              <div className="px-2.5 pt-2.5 pb-1 flex items-center gap-1.5">
+                <Badge variant="outline" className="bg-[#F2F4F7] text-[#475467] border-[#D0D5DD] text-xs">Local</Badge>
+                <span className="font-heading text-xs font-bold text-[#344054] uppercase tracking-wide">
+                  App-Managed Assignments (editable - for splitting purchase requisitions)
+                </span>
+              </div>
+              <div className="overflow-x-auto">
               <table className="w-full text-[13px] border-collapse" data-testid="part-supplier-table">
                 <thead>
                   <tr>
@@ -557,6 +641,7 @@ export default function SuppliersPage() {
                   )}
                 </tbody>
               </table>
+              </div>
             </div>
           )}
         </section>
