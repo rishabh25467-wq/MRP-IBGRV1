@@ -130,11 +130,12 @@ def _build_system_message(categories: list[str]) -> str:
         "'Label/Printing' for anything with 'RFID' in its description.\n"
         "- Plain printed labels, stickers, tags, or barcode labels WITHOUT any electronic component "
         "-> 'Label/Printing'.\n"
-        "- An item that is itself a top-level assembled/manufactured product with its own Bill of "
-        "Materials (i.e., other components are built INTO it, rather than it being a raw material or "
-        "a single purchased part) -> 'Finished Goods', not a raw-material category. This includes "
-        "fully assembled mounts, kits, and multi-part units described as an '...Assy' or a complete "
-        "product.\n\n"
+        "- An item whose description clearly names it as a final saleable product/kit (a complete "
+        "device, mount, or unit customers buy or ship as-is) -> 'Finished Goods'. An item described "
+        "as an '...Assy' or sub-unit that reads like it gets built INTO something bigger (e.g. an "
+        "arm, bracket, or wall-plate assembly that is part of a larger mount) -> 'Sub-Assembly' "
+        "instead, even though it is also an assembled multi-part item. When genuinely unsure which "
+        "of the two, prefer 'Sub-Assembly'.\n\n"
         "Respond with ONLY a valid JSON object mapping each product_id to its category string, "
         "no markdown, no explanation."
     )
@@ -251,40 +252,78 @@ async def categorize_full_inventory(db, items: list[dict]) -> dict:
     those flows at all. Cross-references the already-cached bom_node_cache
     (no live SAP calls - same "never trigger fresh SAP lookups from this
     page" rule as the rest of inventory_service.py) to find which of these
-    product_ids has its OWN BOM (found=True) and force-categorizes those
-    as 'Finished Goods' - a deterministic, more reliable signal than asking
-    the AI to guess "is this an assembly?" from a bare description alone -
-    overwriting any previous AI/rule guess (never a manual one) so a
-    previously-mis-AI-categorized root gets corrected too. Everything else
-    still goes through the normal AI categorizer. Returns
+    product_ids has its OWN BOM (found=True), then splits those into:
+    - Consumed as a CHILD inside some OTHER product's BOM tree -> it's an
+      intermediate 'Sub-Assembly', not the final saleable item, even though
+      it also happens to have its own BOM.
+    - Never appears as a child anywhere else -> a genuine top-level
+      'Finished Goods' item.
+    Both are deterministic, more reliable signals than asking the AI to
+    guess "is this an assembly, and is it the TOP of the tree?" from a bare
+    description alone - overwriting any previous AI/rule guess (never a
+    manual one) so a previously-mis-categorized item gets corrected too.
+    Everything else still goes through the normal AI categorizer. Returns
     {product_id: category} for every item that has (or gets) one."""
     add_category(db, "Finished Goods")
+    add_category(db, "Sub-Assembly")
     collection = db["component_master"]
     ids = [item["product_id"] for item in items if item.get("product_id")]
     if not ids:
         return {}
 
-    bom_root_ids = {
+    has_own_bom_ids = {
         doc["_id"] for doc in db["bom_node_cache"].find({"_id": {"$in": ids}, "found": True}, {"_id": 1})
     }
-    manual_ids = {
+
+    # Also re-check any item ALREADY tagged 'Finished Goods' elsewhere in
+    # component_master (even one that has since dropped out of the current
+    # Inventory snapshot, e.g. its on-hand qty briefly hit zero between
+    # runs) - a stale mis-tag from before this rule existed must not be
+    # left uncorrected just because it's temporarily outside today's
+    # inventory list.
+    existing_fg_ids = {
         doc["_id"] for doc in collection.find(
-            {"_id": {"$in": list(bom_root_ids)}, "category_source": "manual"}, {"_id": 1}
+            {"category": "Finished Goods", "category_source": {"$ne": "manual"}}, {"_id": 1}
         )
     }
-    to_force = bom_root_ids - manual_ids
+    check_ids = has_own_bom_ids | existing_fg_ids
+
+    used_as_component_ids = set()
+    if check_ids:
+        cursor = db["bom_node_cache"].find(
+            {"groups.items.product_id": {"$in": list(check_ids)}},
+            {"groups.items.product_id": 1},
+        )
+        for doc in cursor:
+            for group in doc.get("groups", []):
+                for child in group.get("items", []):
+                    child_id = child.get("product_id")
+                    if child_id in check_ids:
+                        used_as_component_ids.add(child_id)
+
+    finished_goods_ids = has_own_bom_ids - used_as_component_ids
+    sub_assembly_ids = (has_own_bom_ids | existing_fg_ids) & used_as_component_ids
+
+    manual_ids = {
+        doc["_id"] for doc in collection.find(
+            {"_id": {"$in": list(check_ids)}, "category_source": "manual"}, {"_id": 1}
+        )
+    }
 
     now = datetime.now(timezone.utc)
     results = {}
-    for product_id in to_force:
+    for product_id, category in [(pid, "Finished Goods") for pid in finished_goods_ids] + \
+                                  [(pid, "Sub-Assembly") for pid in sub_assembly_ids]:
+        if product_id in manual_ids:
+            continue
         collection.update_one(
             {"_id": product_id},
-            {"$set": {"category": "Finished Goods", "category_source": "rule", "categorized_at": now}},
+            {"$set": {"category": category, "category_source": "rule", "categorized_at": now}},
             upsert=True,
         )
-        results[product_id] = "Finished Goods"
+        results[product_id] = category
 
-    remaining_items = [item for item in items if item.get("product_id") not in to_force]
+    remaining_items = [item for item in items if item.get("product_id") not in results]
     ai_results = await categorize_items(remaining_items, db)
     results.update(ai_results)
     return results
