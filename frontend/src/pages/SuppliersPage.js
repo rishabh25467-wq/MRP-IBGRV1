@@ -65,6 +65,12 @@ export default function SuppliersPage() {
   const [erpPricesError, setErpPricesError] = useState(null);
   const productLoadRequestRef = useRef(null);
 
+  const [productSuggestions, setProductSuggestions] = useState([]);
+  const [showProductSuggestions, setShowProductSuggestions] = useState(false);
+  const suggestionRequestRef = useRef(null);
+  const suggestionDebounceRef = useRef(null);
+  const productInputWrapperRef = useRef(null);
+
   const [assignmentDialogOpen, setAssignmentDialogOpen] = useState(false);
   const [editingAssignment, setEditingAssignment] = useState(null);
   const [assignmentForm, setAssignmentForm] = useState(emptyAssignmentForm);
@@ -218,15 +224,47 @@ export default function SuppliersPage() {
     }
   };
 
-  const searchProduct = () => {
-    const pid = productIdInput.trim();
+  const searchProduct = (pidOverride) => {
+    const pid = (pidOverride ?? productIdInput).trim();
     if (!pid) return;
+    setProductIdInput(pid);
+    setShowProductSuggestions(false);
     productLoadRequestRef.current = pid;
     setActiveProductId(pid);
     loadAssignments(pid);
     loadSapPriceSpecs(pid);
     loadErpPrices(pid);
   };
+
+  useEffect(() => {
+    if (suggestionDebounceRef.current) clearTimeout(suggestionDebounceRef.current);
+    const q = productIdInput.trim();
+    if (q.length < 2) {
+      setProductSuggestions([]);
+      return;
+    }
+    suggestionDebounceRef.current = setTimeout(async () => {
+      const requestId = q;
+      suggestionRequestRef.current = requestId;
+      try {
+        const { data } = await axios.get(`${API}/products/search`, { params: { q, limit: 10 } });
+        if (suggestionRequestRef.current === requestId) setProductSuggestions(data);
+      } catch {
+        if (suggestionRequestRef.current === requestId) setProductSuggestions([]);
+      }
+    }, 250);
+    return () => clearTimeout(suggestionDebounceRef.current);
+  }, [productIdInput]);
+
+  useEffect(() => {
+    const onClickOutside = (e) => {
+      if (productInputWrapperRef.current && !productInputWrapperRef.current.contains(e.target)) {
+        setShowProductSuggestions(false);
+      }
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, []);
 
   const openAddAssignment = () => {
     if (suppliers.length === 0) {
@@ -511,20 +549,46 @@ export default function SuppliersPage() {
             <h2 className="font-heading text-sm font-bold text-[#1D2939]">Part ↔ Supplier Assignments</h2>
             <div className="flex items-center gap-1.5 ml-2">
               <label htmlFor="part-supplier-product-id-input" className={labelCls}>Product ID</label>
-              <input
-                id="part-supplier-product-id-input"
-                type="text"
-                placeholder="e.g. SPC5WM"
-                value={productIdInput}
-                onChange={(e) => setProductIdInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && searchProduct()}
-                className={`${inputCls} w-40`}
-                data-testid="part-supplier-product-id-input"
-              />
+              <div className="relative" ref={productInputWrapperRef}>
+                <input
+                  id="part-supplier-product-id-input"
+                  type="text"
+                  placeholder="e.g. SPC5WM"
+                  value={productIdInput}
+                  onChange={(e) => {
+                    setProductIdInput(e.target.value);
+                    setShowProductSuggestions(true);
+                  }}
+                  onFocus={() => setShowProductSuggestions(true)}
+                  onKeyDown={(e) => e.key === "Enter" && searchProduct()}
+                  autoComplete="off"
+                  className={`${inputCls} w-40`}
+                  data-testid="part-supplier-product-id-input"
+                />
+                {showProductSuggestions && productSuggestions.length > 0 && (
+                  <div
+                    className="absolute z-20 top-full left-0 mt-1 w-72 bg-white border border-[#D0D5DD] rounded-sm shadow-lg max-h-64 overflow-y-auto"
+                    data-testid="product-id-suggestions"
+                  >
+                    {productSuggestions.map((s) => (
+                      <button
+                        type="button"
+                        key={s.product_id}
+                        onClick={() => searchProduct(s.product_id)}
+                        className="w-full text-left px-2.5 py-1.5 hover:bg-[#F2F4F7] border-b border-[#F2F4F7] last:border-b-0"
+                        data-testid={`product-id-suggestion-${s.product_id}`}
+                      >
+                        <div className="text-[13px] font-bold text-[#101828]">{s.product_id}</div>
+                        {s.description && <div className="text-xs text-[#667085] truncate">{s.description}</div>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               <Button
                 type="button"
                 variant="outline"
-                onClick={searchProduct}
+                onClick={() => searchProduct()}
                 disabled={!productIdInput.trim()}
                 className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
                 data-testid="part-supplier-search-button"

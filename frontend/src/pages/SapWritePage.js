@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import "@/App.css";
 import axios from "axios";
-import { Database, LockSimple, CloudArrowUp, WarningCircle, CheckCircle, Stop } from "@phosphor-icons/react";
+import { Database, LockSimple, CloudArrowUp, WarningCircle, CheckCircle, Stop, PencilSimple } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Toaster, toast } from "@/components/ui/sonner";
@@ -31,6 +31,57 @@ export default function SapWritePage() {
   const [error, setError] = useState(null);
   const [currentJobId, setCurrentJobId] = useState(null);
   const [stopping, setStopping] = useState(false);
+
+  const [manualForm, setManualForm] = useState({ product_id: "", supplier_internal_id: "", price: "", currency: "INR" });
+  const [manualWriting, setManualWriting] = useState(false);
+  const [manualError, setManualError] = useState(null);
+
+  const [readProductId, setReadProductId] = useState("");
+  const [readSpecs, setReadSpecs] = useState(null);
+  const [readLoading, setReadLoading] = useState(false);
+  const [readError, setReadError] = useState(null);
+
+  const readFromSap = async (productId) => {
+    const pid = productId.trim();
+    if (!pid) return;
+    setReadLoading(true);
+    setReadError(null);
+    try {
+      const { data } = await axios.get(`${API}/suppliers/sap-price-specs/${pid}`);
+      setReadSpecs(data);
+    } catch (err) {
+      setReadError(err?.response?.data?.detail || err.message || "Failed to read from SAP");
+      setReadSpecs(null);
+    } finally {
+      setReadLoading(false);
+    }
+  };
+
+  const writeManualPriceSpec = async (e) => {
+    e.preventDefault();
+    setManualWriting(true);
+    setManualError(null);
+    try {
+      const { data } = await axios.post(`${API}/suppliers/sap-price-specs`, {
+        product_id: manualForm.product_id.trim(),
+        supplier_internal_id: manualForm.supplier_internal_id.trim(),
+        price: parseFloat(manualForm.price),
+        currency: manualForm.currency.trim() || "INR",
+      });
+      toast.success("Price spec written to SAP", {
+        description: `${manualForm.product_id} / ${manualForm.supplier_internal_id} @ ${manualForm.price}`,
+      });
+      setReadProductId(manualForm.product_id.trim());
+      setReadSpecs(data);
+      setReadError(null);
+    } catch (err) {
+      const detail = err?.response?.data?.detail || err.message || "Failed to write price spec";
+      setManualError(detail);
+      toast.error("Write to SAP failed", { description: detail });
+    } finally {
+      setManualWriting(false);
+    }
+  };
 
   const unlock = (e) => {
     e.preventDefault();
@@ -199,6 +250,156 @@ export default function SapWritePage() {
             be pushed.
           </div>
         </div>
+
+        <section className="bg-white border border-[#D0D5DD] rounded-sm p-4" data-testid="manual-price-spec-section">
+          <div className="flex items-center gap-2 mb-2">
+            <PencilSimple size={16} weight="bold" className="text-[#004B87]" />
+            <h2 className="font-heading text-sm font-bold text-[#1D2939]">Write Single Price Spec to SAP</h2>
+          </div>
+          <p className="text-[13px] text-[#475467] mb-3">
+            Manually write one Product ID + Supplier + Price into SAP as a Procurement Price Specification (SOAP
+            write) - useful for one-off corrections or testing a specific item/supplier combination outside the
+            bulk ERP push.
+          </p>
+          <form onSubmit={writeManualPriceSpec} className="grid grid-cols-2 sm:grid-cols-5 gap-2 items-end">
+            <div>
+              <label className="text-xs text-[#667085] block mb-1">Product ID</label>
+              <input
+                required
+                value={manualForm.product_id}
+                onChange={(e) => setManualForm((f) => ({ ...f, product_id: e.target.value }))}
+                className={inputCls}
+                data-testid="manual-price-spec-product-id"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[#667085] block mb-1">Supplier Internal ID</label>
+              <input
+                required
+                placeholder="e.g. S1822"
+                value={manualForm.supplier_internal_id}
+                onChange={(e) => setManualForm((f) => ({ ...f, supplier_internal_id: e.target.value }))}
+                className={inputCls}
+                data-testid="manual-price-spec-supplier-id"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[#667085] block mb-1">Price</label>
+              <input
+                required
+                type="number"
+                step="0.01"
+                value={manualForm.price}
+                onChange={(e) => setManualForm((f) => ({ ...f, price: e.target.value }))}
+                className={inputCls}
+                data-testid="manual-price-spec-price"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[#667085] block mb-1">Currency</label>
+              <input
+                value={manualForm.currency}
+                onChange={(e) => setManualForm((f) => ({ ...f, currency: e.target.value }))}
+                className={inputCls}
+                data-testid="manual-price-spec-currency"
+              />
+            </div>
+            <Button
+              type="submit"
+              disabled={manualWriting}
+              className="h-9 bg-[#004B87] hover:bg-[#003A6A] text-white text-sm rounded-sm"
+              data-testid="manual-price-spec-write-button"
+            >
+              {manualWriting ? "Writing..." : "Write to SAP"}
+            </Button>
+          </form>
+          {manualError && (
+            <div className="mt-3 flex items-start gap-2 bg-[#FEF3F2] border border-[#FECDCA] rounded-sm p-3" data-testid="manual-price-spec-error">
+              <WarningCircle size={14} weight="fill" className="text-[#B42318] mt-0.5 shrink-0" />
+              <span className="text-[13px] text-[#B42318]">{manualError}</span>
+            </div>
+          )}
+        </section>
+
+        <section className="bg-white border border-[#D0D5DD] rounded-sm p-4" data-testid="read-price-spec-section">
+          <div className="flex items-center gap-2 mb-2">
+            <Database size={16} weight="bold" className="text-[#004B87]" />
+            <h2 className="font-heading text-sm font-bold text-[#1D2939]">Read Price Specs from SAP</h2>
+          </div>
+          <div className="flex items-center gap-2 mb-3">
+            <input
+              placeholder="Product ID"
+              value={readProductId}
+              onChange={(e) => setReadProductId(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && readFromSap(readProductId)}
+              className={`${inputCls} w-48`}
+              data-testid="read-price-spec-product-id"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => readFromSap(readProductId)}
+              disabled={readLoading || !readProductId.trim()}
+              className="h-9 text-sm rounded-sm border-[#D0D5DD] text-[#344054]"
+              data-testid="read-price-spec-button"
+            >
+              {readLoading ? "Reading..." : "Read from SAP"}
+            </Button>
+          </div>
+          {readError && (
+            <div className="flex items-start gap-2 bg-[#FEF3F2] border border-[#FECDCA] rounded-sm p-3" data-testid="read-price-spec-error">
+              <WarningCircle size={14} weight="fill" className="text-[#B42318] mt-0.5 shrink-0" />
+              <span className="text-[13px] text-[#B42318]">{readError}</span>
+            </div>
+          )}
+          {readSpecs && (
+            <div className="border border-[#D0D5DD] rounded-sm overflow-hidden" data-testid="read-price-spec-table">
+              <table className="w-full text-[13px] border-collapse">
+                <thead>
+                  <tr>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">Supplier</th>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">Internal ID</th>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase">Price</th>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">Status</th>
+                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">Valid From</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {readSpecs.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="border border-[#D0D5DD] text-center py-4 text-[#475467]" data-testid="read-price-spec-empty">
+                        No price specs found in SAP for this Product ID
+                      </td>
+                    </tr>
+                  ) : (
+                    readSpecs.map((s, i) => (
+                      <tr key={s.sap_id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`read-price-spec-row-${i}`}>
+                        <td className="border border-[#D0D5DD] px-2 py-1 font-medium text-[#101828]">{s.supplier_name || "—"}</td>
+                        <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]">{s.supplier_internal_id || "—"}</td>
+                        <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#101828]">
+                          {s.currency} {s.price}
+                        </td>
+                        <td className="border border-[#D0D5DD] px-2 py-1">
+                          <Badge
+                            variant="outline"
+                            className={
+                              s.release_status_code === "3"
+                                ? "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6] text-xs"
+                                : "bg-[#F2F4F7] text-[#475467] border-[#D0D5DD] text-xs"
+                            }
+                          >
+                            {s.release_status_code === "3" ? "Released" : s.release_status_code || "—"}
+                          </Badge>
+                        </td>
+                        <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]">{s.start_date || "—"}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
 
         <section className="bg-white border border-[#D0D5DD] rounded-sm p-4" data-testid="bulk-push-erp-section">
           <div className="flex items-center gap-2 mb-2">

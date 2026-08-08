@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -490,6 +491,8 @@ class InventoryLocation(BaseModel):
     logistics_area: Optional[str] = None
     stock_status: Optional[str] = None
     qty: float
+    company_code: Optional[str] = None
+    company_name: Optional[str] = None
 
 
 class InventoryItem(BaseModel):
@@ -1690,6 +1693,28 @@ async def get_part_suppliers_bulk(product_ids: str = Query(..., description="Com
     }
 
 
+class ProductSuggestion(BaseModel):
+    product_id: str
+    description: Optional[str] = None
+
+
+@api_router.get("/products/search", response_model=List[ProductSuggestion])
+async def search_products(q: str = Query(..., min_length=1), limit: int = 10):
+    """Live autosuggest for Product ID fields (Suppliers page) - backed by
+    the `component_master` Mongo cache (3200+ known parts across all BOMs,
+    already synced with description text) rather than a live SAP call per
+    keystroke. Matches on Product ID prefix OR a description substring."""
+    q_escaped = re.escape(q.strip())
+    cursor = db["component_master"].find(
+        {"$or": [
+            {"_id": {"$regex": f"^{q_escaped}", "$options": "i"}},
+            {"description": {"$regex": q_escaped, "$options": "i"}},
+        ]},
+        {"_id": 1, "description": 1},
+    ).limit(limit)
+    return [ProductSuggestion(product_id=d["_id"], description=d.get("description")) for d in cursor]
+
+
 @api_router.post("/part-suppliers", response_model=PartSupplierAssignment)
 async def add_part_supplier(payload: PartSupplierCreate):
     supplier = supplier_service.get_supplier(db, payload.supplier_id)
@@ -1742,6 +1767,32 @@ async def get_sap_price_specs(product_id: str):
     part_suppliers assignments). Read-only - see sap_price_spec_client.py."""
     try:
         specs = await asyncio.to_thread(sap_price_spec_client.get_price_specs_for_product, product_id)
+    except SAPPriceSpecError as e:
+        raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+    return [SapPriceSpec(**s) for s in specs]
+
+
+class SapPriceSpecCreate(BaseModel):
+    product_id: str
+    supplier_internal_id: str
+    price: float
+    currency: str = "INR"
+
+
+@api_router.post("/suppliers/sap-price-specs", response_model=List[SapPriceSpec])
+async def create_sap_price_spec(payload: SapPriceSpecCreate):
+    """Manually writes a single Procurement Price Specification into SAP
+    for one Product ID + one Supplier (SOAP write, see
+    sap_price_spec_client.create_price_spec) - the manual counterpart to
+    the automated bulk ERP push, for one-off corrections/testing. Returns
+    the product's full up-to-date list of SAP price specs after the write
+    (re-reads from SAP) so the UI can immediately show the new record."""
+    try:
+        await asyncio.to_thread(
+            sap_price_spec_client.create_price_spec,
+            payload.product_id, payload.supplier_internal_id, payload.price, payload.currency,
+        )
+        specs = await asyncio.to_thread(sap_price_spec_client.get_price_specs_for_product, payload.product_id)
     except SAPPriceSpecError as e:
         raise HTTPException(status_code=502, detail=f"SAP error: {e}")
     return [SapPriceSpec(**s) for s in specs]
