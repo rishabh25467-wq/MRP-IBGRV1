@@ -304,6 +304,13 @@
 - Verified live: preview's own SAP tenant was actively throwing numerous connect-timeouts during this exact test, and the fix correctly skipped each one while still completing a full run - and the *production* deployment (once redeployed by user) immediately went from ~₹4.08 Cr to ₹51.43 Cr (matching preview) with all 3,175 items priced, no "—" gaps.
 - Related cosmetic note (not a bug, not fixed): production items show category "Uncategorized" since it's a freshly-seeded catalog with no AI categorization run yet - will populate once BOM Explorer/Purchasing Plan or the categorizer runs, same as preview did over time.
 
+## Feature: "Categorize All" full-inventory AI categorization (Feb 2026, Session 11 cont'd) - COMPLETE
+- Gap: BOM Explorer/Purchasing Plan's existing "Categorize" flow only ever sends BOM LEAF nodes to the AI categorizer (see their `collectAllItems()`/leaf-filtering) - a BOM ROOT/top-level assembled product never got categorized at all, showing "Uncategorized"/"Other" on the Inventory page even though Inventory lists finished goods too.
+- User's explicit business rule: "Many items that are top level items in BOM are Finished Goods items."
+- Added "Finished Goods" to the category taxonomy; `bom_categorizer.categorize_full_inventory(db, items)` cross-references the already-cached `bom_node_cache` (found=True = has its own BOM = top-level assembly - no new live SAP calls) and deterministically force-sets those to `category="Finished Goods"`, `category_source="rule"` (never overwriting a manual override) - everything else still goes through the normal AI categorizer, whose system prompt was also updated with this disambiguation rule for future ad-hoc calls.
+- New "Categorize All" button on the Inventory page (`POST/GET /api/inventory/categorize-all`, background job via job_store) - patches the cached inventory items' categories in place so the table updates immediately without a live SAP re-pull.
+- Verified: 3,174 items processed, 826 correctly tagged "Finished Goods" (e.g. "Fixed Wall Mount ... Assy" items), 1,385 newly AI-categorized, leaf items' prior categories preserved. testing_agent_v4 (iteration_38): 100%/100%, no regressions on Inventory filters/search/pagination or BOM Explorer/Purchasing Plan.
+
 ## Backlog / Next Tasks (updated, Session 10)
 - P2: Purchase Order Draft - click a Net Purchase Qty/Net Qty row (Purchasing Plan or MRP Plan) to generate a ready-to-send PO draft for that component
 - P2: SAP Push History Log - audit trail (who/when/what) of every SAP write, stored in Mongo
