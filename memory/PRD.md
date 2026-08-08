@@ -283,12 +283,21 @@
 - **Deferred per user request**: Purchasing Plan page integration (inline supplier/quota summary per component row) - user said "let's decide later on this" pending SAP connection confirmation; not built this session.
 
 ## Backlog / Next Tasks (updated, Session 12)
-- P0 (external, user-owned): Get SAP admin to create the "Query Supplier" Communication Arrangement (steps in `SAP_SUPPLIER_SYNC_AUTHORIZATION_REQUEST.md`) - then "Sync from SAP" on the Suppliers page will start pulling real supplier names/contacts automatically.
 - P1 (pending user decision): Purchasing Plan page - show supplier/quota summary inline per component row (deferred, was about to be built when user paused it for the SAP question above).
 - P2: Purchase Order Draft - click a Net Purchase Qty row to generate a ready-to-send PO draft for that component
 - P2: SAP Push History Log - audit trail (who/when/what) of every SAP write, stored in Mongo
 - P3: SAP Cost Retry Alert banner when the Standard Costs feed is unreachable, so 0.00/"-" isn't mistaken for real data
 - P3: Entity/company filter on Inventory page (Ray vs Radish)
+
+## Feature: SAP Supplier Sync - RESOLVED, now live with 2984 real suppliers (Feb 2026, Session 12 cont'd)
+- User self-resolved the "Query Supplier" Communication Arrangement blocker (activated scenario `BusinessPartnerEmergent` with the `QuerySupplierIn`/"Find Suppliers" operation, linked to `_EMERGENTBOM`) and shared the real endpoint (`.../sap/bc/srt/scs/sap/querysupplierin1`) - updated `SAP_SOAP_SUPPLIER_ENDPOINT` in `.env`.
+- **Found and fixed a real SOAP request bug**: initial probe kept returning a generic "Web service processing error" even against the correct endpoint - root cause was `SelectionByLifeCycleStatusCode` being sent as a bare value tag (`<SelectionByLifeCycleStatusCode>2</SelectionByLifeCycleStatusCode>`) instead of the required interval-boundary structure (`InclusionExclusionCode`/`IntervalBoundaryTypeCode`/`LowerBoundaryLifeCycleStatusCode`), confirmed via web research on the official `QuerySupplierIn` schema. Fixed in `sap_supplier_client.py` - now returns 200 with real data.
+- Discovered the tenant has **2984 active suppliers** (took ~78s to fetch the full list with `QueryHitsMaximumNumberValue=6000`, `QueryHitsUnlimitedIndicator=true` timed out at the network level on this large a response). Converted `POST /api/suppliers/sync-from-sap` from a blocking single-request call to an **async job+polling pattern** (`GET /api/suppliers/sync-from-sap/status/{job_id}`, same pattern as Purchasing Plan/MRP/Push-All-to-SAP) since a single HTTP request would exceed the platform's ingress timeout. Frontend polls every 2.5s up to 5 min, showing "Syncing..." the whole time.
+- Fixed a data bug found during verification: supplier names contained un-unescaped XML entities (e.g. `A &amp; D TECHNOLOGY` instead of `A & D TECHNOLOGY`) - added `html.unescape()` in `sap_supplier_client.py`'s tag parser.
+- Added client-side pagination (50/page, `supplier-pagination-bar`/`supplier-page-prev-button`/`supplier-page-next-button`) to the Supplier Master List table proactively, since it now holds ~2984 real rows instead of being empty (same lag-prevention pattern used for the Admin page's component table earlier).
+- Verified LIVE end-to-end: full sync job completed successfully (`created: 2984, updated: 0` on first run; re-run correctly showed near-all `updated`), names/emails match real SAP data, pagination/search/CRUD all work against the real dataset.
+- Tested via testing_agent_v4 (iteration_44): 100% pass - real-data pagination, search+pagination-reset, sync-from-SAP full 85s job cycle, Local vs SAP source badges, assignment flow against a real synced supplier, cleanup left exactly 2984 suppliers (no real data lost). Only note: same benign CRA dev-overlay ResizeObserver cosmetic quirk as iteration_43 (not present in production).
+- Per-part Quota %/Lead Time/Price/Preferred assignments remain LOCAL-only (unchanged decision - SAP ByD has no supported write-back API for this data).
 
 ## Data-accuracy bug found + escalated to OMS team (not a code fix - external feed issue)
 - User found specific POs (Walmart customer POs 9528550591 / 1529115718 / 0884026160) that OMS shows as CLOSED but the Open-PO Demand feed still returns as open (`qty_open > 0`).
