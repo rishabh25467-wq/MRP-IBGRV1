@@ -12,6 +12,10 @@ import {
   WarningCircle,
   Star,
   ShieldCheck,
+  Sparkle,
+  ArrowsClockwise,
+  ClockCounterClockwise,
+  XCircle,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -29,15 +33,6 @@ const labelCls = "font-heading text-xs font-bold text-[#475467] uppercase tracki
 
 const emptySupplierForm = { name: "", contact_person: "", email: "", phone: "" };
 const RELEASE_STATUS_LABELS = { "1": "Not Released", "2": "Partially Released", "3": "Released", "5": "Release Canceled" };
-const emptyAssignmentForm = {
-  supplier_id: "",
-  quota_percent: "",
-  lead_time_days: "",
-  unit_price: "",
-  currency: "INR",
-  preference: "Preferred",
-  notes: "",
-};
 
 export default function SuppliersPage() {
   const [suppliers, setSuppliers] = useState([]);
@@ -55,8 +50,6 @@ export default function SuppliersPage() {
 
   const [productIdInput, setProductIdInput] = useState("");
   const [activeProductId, setActiveProductId] = useState(null);
-  const [assignments, setAssignments] = useState([]);
-  const [assignmentsLoading, setAssignmentsLoading] = useState(false);
   const [sapPriceSpecs, setSapPriceSpecs] = useState([]);
   const [sapPriceSpecsLoading, setSapPriceSpecsLoading] = useState(false);
   const [sapPriceSpecsError, setSapPriceSpecsError] = useState(null);
@@ -74,10 +67,22 @@ export default function SuppliersPage() {
   const suggestionDebounceRef = useRef(null);
   const productInputWrapperRef = useRef(null);
 
-  const [assignmentDialogOpen, setAssignmentDialogOpen] = useState(false);
-  const [editingAssignment, setEditingAssignment] = useState(null);
-  const [assignmentForm, setAssignmentForm] = useState(emptyAssignmentForm);
-  const [savingAssignment, setSavingAssignment] = useState(false);
+  // Quota Arrangement - AI-suggested, buyer-editable, revision-tracked.
+  const [quotaArrangementId, setQuotaArrangementId] = useState(null);
+  const [quotaRevisionNo, setQuotaRevisionNo] = useState(0);
+  const [quotaAllocations, setQuotaAllocations] = useState([]);
+  const [quotaSource, setQuotaSource] = useState("ai"); // "ai" | "user" - flips to "user" on any manual edit
+  const [quotaOverallRationale, setQuotaOverallRationale] = useState(null);
+  const [quotaRevisions, setQuotaRevisions] = useState([]);
+  const [quotaLoading, setQuotaLoading] = useState(false);
+  const [quotaSuggesting, setQuotaSuggesting] = useState(false);
+  const [quotaError, setQuotaError] = useState(null);
+  const [quotaRemarks, setQuotaRemarks] = useState("");
+  const [quotaCreatedBy, setQuotaCreatedBy] = useState("");
+  const [quotaSaving, setQuotaSaving] = useState(false);
+  const [showQuotaHistory, setShowQuotaHistory] = useState(false);
+  const [addSupplierPickerOpen, setAddSupplierPickerOpen] = useState(false);
+  const [addSupplierPickerValue, setAddSupplierPickerValue] = useState("");
 
   const loadSuppliers = async () => {
     setSuppliersLoading(true);
@@ -175,23 +180,59 @@ export default function SuppliersPage() {
       await axios.delete(`${API}/suppliers/${s.id}`);
       toast.success("Supplier deleted");
       loadSuppliers();
-      if (activeProductId) loadAssignments(activeProductId);
+      if (activeProductId) loadQuotaArrangement(activeProductId);
     } catch (err) {
       toast.error("Failed to delete supplier", { description: err?.response?.data?.detail || err.message });
     }
   };
 
-  const loadAssignments = async (productId) => {
-    setAssignmentsLoading(true);
+  const applySuggestion = (data) => {
+    setQuotaAllocations(data.allocations || []);
+    setQuotaOverallRationale(data.overall_rationale || null);
+    setQuotaSource("ai");
+  };
+
+  const suggestQuota = async (productId) => {
+    setQuotaSuggesting(true);
+    setQuotaError(null);
     try {
-      const { data } = await axios.get(`${API}/part-suppliers`, { params: { product_id: productId } });
-      if (productLoadRequestRef.current !== productId) return; // a newer Load click superseded this one
-      setAssignments(data);
+      const { data } = await axios.post(`${API}/quota-arrangements/${encodeURIComponent(productId)}/suggest`);
+      if (productLoadRequestRef.current !== productId) return;
+      applySuggestion(data);
     } catch (err) {
       if (productLoadRequestRef.current !== productId) return;
-      toast.error("Could not load supplier assignments", { description: err?.response?.data?.detail || err.message });
+      setQuotaError(err?.response?.data?.detail || err.message || "Could not generate AI suggestion");
     } finally {
-      if (productLoadRequestRef.current === productId) setAssignmentsLoading(false);
+      if (productLoadRequestRef.current === productId) setQuotaSuggesting(false);
+    }
+  };
+
+  const loadQuotaArrangement = async (productId) => {
+    setQuotaLoading(true);
+    setQuotaError(null);
+    setQuotaAllocations([]);
+    setQuotaOverallRationale(null);
+    setQuotaRemarks("");
+    setShowQuotaHistory(false);
+    try {
+      const { data } = await axios.get(`${API}/quota-arrangements/${encodeURIComponent(productId)}`);
+      if (productLoadRequestRef.current !== productId) return;
+      setQuotaArrangementId(data.arrangement_id);
+      setQuotaRevisionNo(data.current_revision_no);
+      setQuotaRevisions(data.revisions || []);
+      if (data.latest_revision) {
+        setQuotaAllocations(data.latest_revision.allocations || []);
+        setQuotaSource("user");
+        setQuotaOverallRationale(null);
+      } else {
+        // Never arranged before for this part - default straight to an AI suggestion.
+        await suggestQuota(productId);
+      }
+    } catch (err) {
+      if (productLoadRequestRef.current !== productId) return;
+      setQuotaError(err?.response?.data?.detail || err.message || "Could not load quota arrangement");
+    } finally {
+      if (productLoadRequestRef.current === productId) setQuotaLoading(false);
     }
   };
 
@@ -250,10 +291,10 @@ export default function SuppliersPage() {
     setShowProductSuggestions(false);
     productLoadRequestRef.current = pid;
     setActiveProductId(pid);
-    loadAssignments(pid);
     loadSapPriceSpecs(pid);
     loadErpPrices(pid);
     loadSapPurchaseHistory(pid);
+    loadQuotaArrangement(pid);
   };
 
   useEffect(() => {
@@ -286,20 +327,9 @@ export default function SuppliersPage() {
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, []);
 
-  const openAddAssignment = () => {
-    if (suppliers.length === 0) {
-      toast.error("Add a supplier first", { description: "You need at least one supplier before assigning it to a part." });
-      return;
-    }
-    setEditingAssignment(null);
-    const { recommended } = getRecommendedSuppliers();
-    setAssignmentForm({ ...emptyAssignmentForm, supplier_id: (recommended[0] || suppliers[0]).id });
-    setAssignmentDialogOpen(true);
-  };
-
   // Suppliers with a Released SAP price or real ERP purchase history for the
-  // currently-loaded product are surfaced first in the Assign Supplier
-  // dropdown, since those are far more likely to be the right pick than
+  // currently-loaded product are surfaced first in the "+ Add Supplier"
+  // picker, since those are far more likely to be the right pick than
   // scrolling through all ~2984 synced suppliers.
   const getRecommendedSuppliers = () => {
     const releasedSapIds = new Set(
@@ -308,72 +338,63 @@ export default function SuppliersPage() {
     const erpIds = new Set(
       erpPrices.flatMap((item) => [item.lowest?.pcode, item.last?.pcode]).filter(Boolean)
     );
-    const recommended = suppliers.filter((s) => s.sap_internal_id && (releasedSapIds.has(s.sap_internal_id) || erpIds.has(s.sap_internal_id)));
+    const alreadyIn = new Set(quotaAllocations.map((a) => a.supplier_id).filter(Boolean));
+    const recommended = suppliers.filter(
+      (s) => !alreadyIn.has(s.id) && s.sap_internal_id && (releasedSapIds.has(s.sap_internal_id) || erpIds.has(s.sap_internal_id))
+    );
     const recommendedIds = new Set(recommended.map((s) => s.id));
-    // Cap the fallback list - rendering all ~2984 suppliers in one dropdown
-    // would lag the UI (same reason the master list table is paginated).
-    // Use the Supplier Master List's search box to find anyone not listed here.
-    const others = suppliers.filter((s) => !recommendedIds.has(s.id)).slice(0, 150);
+    const others = suppliers.filter((s) => !alreadyIn.has(s.id) && !recommendedIds.has(s.id)).slice(0, 150);
     return { recommended, others };
   };
 
-  const openEditAssignment = (a) => {
-    setEditingAssignment(a);
-    setAssignmentForm({
-      supplier_id: a.supplier_id,
-      quota_percent: a.quota_percent ?? "",
-      lead_time_days: a.lead_time_days ?? "",
-      unit_price: a.unit_price ?? "",
-      currency: a.currency || "INR",
-      preference: a.preference || "Preferred",
-      notes: a.notes || "",
-    });
-    setAssignmentDialogOpen(true);
+  const updateAllocation = (index, field, value) => {
+    setQuotaAllocations((prev) => prev.map((a, i) => (i === index ? { ...a, [field]: value } : a)));
+    setQuotaSource("user");
   };
 
-  const saveAssignment = async () => {
-    if (!assignmentForm.supplier_id) {
-      toast.error("Pick a supplier");
+  const removeAllocationRow = (index) => {
+    setQuotaAllocations((prev) => prev.filter((_, i) => i !== index));
+    setQuotaSource("user");
+  };
+
+  const addAllocationRow = (supplierId) => {
+    const sup = suppliers.find((s) => s.id === supplierId);
+    if (!sup) return;
+    setQuotaAllocations((prev) => [
+      ...prev,
+      { supplier_id: sup.id, supplier_name: sup.name, sap_internal_id: sup.sap_internal_id, price: null, currency: null, price_source: "Manually added", lead_time_days: null, quota_percent: 0, rationale: "Manually added by buyer." },
+    ]);
+    setQuotaSource("user");
+    setAddSupplierPickerOpen(false);
+    setAddSupplierPickerValue("");
+  };
+
+  const quotaTotal = quotaAllocations.reduce((sum, a) => sum + (Number(a.quota_percent) || 0), 0);
+  const quotaTotalValid = quotaAllocations.length === 0 || Math.abs(quotaTotal - 100) < 0.5;
+
+  const confirmQuotaArrangement = async () => {
+    if (!quotaTotalValid) {
+      toast.error("Quota percentages must sum to 100", { description: `Currently ${quotaTotal.toFixed(1)}%` });
       return;
     }
-    setSavingAssignment(true);
-    const payload = {
-      quota_percent: assignmentForm.quota_percent === "" ? null : Number(assignmentForm.quota_percent),
-      lead_time_days: assignmentForm.lead_time_days === "" ? null : Number(assignmentForm.lead_time_days),
-      unit_price: assignmentForm.unit_price === "" ? null : Number(assignmentForm.unit_price),
-      currency: assignmentForm.currency || null,
-      preference: assignmentForm.preference,
-      notes: assignmentForm.notes || null,
-    };
+    setQuotaSaving(true);
     try {
-      if (editingAssignment) {
-        await axios.patch(`${API}/part-suppliers/${editingAssignment.id}`, payload);
-        toast.success("Assignment updated");
-      } else {
-        await axios.post(`${API}/part-suppliers`, {
-          product_id: activeProductId,
-          supplier_id: assignmentForm.supplier_id,
-          ...payload,
-        });
-        toast.success("Supplier assigned to part");
-      }
-      setAssignmentDialogOpen(false);
-      loadAssignments(activeProductId);
+      const { data } = await axios.post(`${API}/quota-arrangements/${encodeURIComponent(activeProductId)}/confirm`, {
+        allocations: quotaAllocations.map((a) => ({ ...a, quota_percent: Number(a.quota_percent) || 0 })),
+        remarks: quotaRemarks || null,
+        source: quotaSource,
+        created_by: quotaCreatedBy || null,
+      });
+      setQuotaArrangementId(data.arrangement_id);
+      setQuotaRevisionNo(data.current_revision_no);
+      setQuotaRevisions(data.revisions || []);
+      setQuotaAllocations(data.latest_revision?.allocations || []);
+      setQuotaSource("user");
+      toast.success("Quota arrangement saved", { description: `${data.arrangement_id} - revision ${data.current_revision_no}` });
     } catch (err) {
-      toast.error("Failed to save assignment", { description: err?.response?.data?.detail || err.message });
+      toast.error("Failed to save quota arrangement", { description: err?.response?.data?.detail || err.message });
     } finally {
-      setSavingAssignment(false);
-    }
-  };
-
-  const deleteAssignment = async (a) => {
-    if (!window.confirm(`Remove ${a.supplier_name || a.supplier_id} from this part?`)) return;
-    try {
-      await axios.delete(`${API}/part-suppliers/${a.id}`);
-      toast.success("Assignment removed");
-      loadAssignments(activeProductId);
-    } catch (err) {
-      toast.error("Failed to remove assignment", { description: err?.response?.data?.detail || err.message });
+      setQuotaSaving(false);
     }
   };
 
@@ -617,17 +638,6 @@ export default function SuppliersPage() {
                 Load
               </Button>
             </div>
-            {activeProductId && (
-              <Button
-                type="button"
-                onClick={openAddAssignment}
-                className="h-8 bg-[#004B87] hover:bg-[#003A6A] text-white text-xs rounded-sm ml-auto"
-                data-testid="add-part-supplier-button"
-              >
-                <Plus size={13} className="mr-1.5" />
-                Assign Supplier
-              </Button>
-            )}
           </div>
 
           {!activeProductId ? (
@@ -813,84 +823,235 @@ export default function SuppliersPage() {
                 )}
               </div>
 
-              <div className="px-2.5 pt-2.5 pb-1 flex items-center gap-1.5">
-                <Badge variant="outline" className="bg-[#F2F4F7] text-[#475467] border-[#D0D5DD] text-xs">Local</Badge>
-                <span className="font-heading text-xs font-bold text-[#344054] uppercase tracking-wide">
-                  App-Managed Assignments (editable - for splitting purchase requisitions)
-                </span>
-              </div>
-              <div className="overflow-x-auto">
-              <table className="w-full text-[13px] border-collapse" data-testid="part-supplier-table">
-                <thead>
-                  <tr>
-                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">Supplier</th>
-                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase">Quota %</th>
-                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase">Lead Time (D)</th>
-                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase">Unit Price</th>
-                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">Preference</th>
-                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">Notes</th>
-                    <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-center text-xs font-bold text-[#344054] font-heading uppercase w-20">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {assignmentsLoading ? (
-                    <tr>
-                      <td colSpan={7} className="border border-[#D0D5DD] text-center py-6 text-[13px] text-[#475467]">Loading...</td>
-                    </tr>
-                  ) : assignments.length === 0 ? (
-                    <tr>
-                      <td colSpan={7} className="border border-[#D0D5DD] text-center py-6 text-[13px] text-[#475467]" data-testid="part-supplier-no-assignments">
-                        No suppliers assigned to "{activeProductId}" yet
-                      </td>
-                    </tr>
-                  ) : (
-                    assignments.map((a, i) => (
-                      <tr key={a.id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`part-supplier-row-${i}`}>
-                        <td className="border border-[#D0D5DD] px-2 py-1 font-medium text-[#101828]">{a.supplier_name || a.supplier_id}</td>
-                        <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#101828]">{a.quota_percent ?? "—"}</td>
-                        <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#101828]">{a.lead_time_days ?? "—"}</td>
-                        <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#101828]">
-                          {a.unit_price != null ? `${a.currency || ""} ${a.unit_price}` : "—"}
-                        </td>
-                        <td className="border border-[#D0D5DD] px-2 py-1">
-                          <Badge
-                            variant="outline"
-                            className={
-                              a.preference === "Preferred"
-                                ? "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6] text-xs inline-flex items-center gap-1"
-                                : "bg-[#F2F4F7] text-[#475467] border-[#D0D5DD] text-xs inline-flex items-center gap-1"
-                            }
-                          >
-                            {a.preference === "Preferred" && <Star size={10} weight="fill" />}
-                            {a.preference}
-                          </Badge>
-                        </td>
-                        <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]">{a.notes || "—"}</td>
-                        <td className="border border-[#D0D5DD] px-2 py-1 text-center">
-                          <div className="flex items-center justify-center gap-1">
-                            <button
-                              type="button"
-                              onClick={() => openEditAssignment(a)}
-                              className="p-1 text-[#475467] hover:text-[#004B87]"
-                              data-testid={`edit-part-supplier-button-${i}`}
-                            >
-                              <PencilSimple size={14} />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => deleteAssignment(a)}
-                              className="p-1 text-[#475467] hover:text-[#B42318]"
-                              data-testid={`delete-part-supplier-button-${i}`}
-                            >
-                              <Trash size={14} />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))
+              <div className="px-2.5 pt-2.5 pb-1.5 flex items-center gap-1.5 justify-between flex-wrap">
+                <div className="flex items-center gap-1.5">
+                  <Badge variant="outline" className="bg-[#EEF4FF] text-[#4338CA] border-[#C7D2FE] text-xs inline-flex items-center gap-1">
+                    <Sparkle size={11} weight="fill" /> AI
+                  </Badge>
+                  <span className="font-heading text-xs font-bold text-[#344054] uppercase tracking-wide">
+                    Quota Arrangement (replaces manual assignments - AI-suggested, buyer-adjustable)
+                  </span>
+                  {quotaArrangementId && (
+                    <span className="text-xs text-[#667085]" data-testid="quota-arrangement-id">
+                      {quotaArrangementId} · revision {quotaRevisionNo}
+                    </span>
                   )}
-                </tbody>
-              </table>
+                </div>
+                {quotaRevisions.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowQuotaHistory((v) => !v)}
+                    className="text-xs text-[#004B87] hover:underline inline-flex items-center gap-1"
+                    data-testid="toggle-quota-history-button"
+                  >
+                    <ClockCounterClockwise size={13} />
+                    {showQuotaHistory ? "Hide" : "Show"} Revision History ({quotaRevisions.length})
+                  </button>
+                )}
+              </div>
+
+              {showQuotaHistory && (
+                <div className="mx-2.5 mb-2 border border-[#D0D5DD] rounded-sm overflow-hidden overflow-x-auto" data-testid="quota-history-panel">
+                  <table className="w-full text-[13px] border-collapse">
+                    <thead>
+                      <tr>
+                        <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Rev</th>
+                        <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Date</th>
+                        <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Source</th>
+                        <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">By</th>
+                        <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Remarks</th>
+                        <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Allocations</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {quotaRevisions.map((r, i) => (
+                        <tr key={r.id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`quota-history-row-${r.revision_no}`}>
+                          <td className="border border-[#D0D5DD] px-1.5 py-1 font-bold text-[#101828]">{r.revision_no}</td>
+                          <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#475467]">{new Date(r.created_at).toLocaleString()}</td>
+                          <td className="border border-[#D0D5DD] px-1.5 py-1">
+                            <Badge variant="outline" className={r.source === "ai" ? "bg-[#EEF4FF] text-[#4338CA] border-[#C7D2FE] text-xs" : "bg-[#F2F4F7] text-[#475467] border-[#D0D5DD] text-xs"}>
+                              {r.source === "ai" ? "AI" : "Buyer"}
+                            </Badge>
+                          </td>
+                          <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#475467]">{r.created_by || "—"}</td>
+                          <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#475467]">{r.remarks || "—"}</td>
+                          <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#475467]">
+                            {r.allocations.map((a) => `${a.supplier_name} ${a.quota_percent}%`).join(", ")}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className="px-2.5 pb-3">
+                {quotaLoading || quotaSuggesting ? (
+                  <div className="py-6 text-center text-[13px] text-[#475467] flex items-center justify-center gap-2" data-testid="quota-loading-state">
+                    <Sparkle size={14} className="animate-pulse text-[#4338CA]" />
+                    {quotaSuggesting ? "Generating AI suggestion (weighing price + lead time)..." : "Loading..."}
+                  </div>
+                ) : quotaError ? (
+                  <div className="text-[13px] text-[#B42318] py-2" data-testid="quota-error">{quotaError}</div>
+                ) : (
+                  <>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-[13px] border-collapse" data-testid="quota-allocation-table">
+                        <thead>
+                          <tr>
+                            <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">Supplier</th>
+                            <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase w-24">Quota %</th>
+                            <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase w-28">Lead Time (d)</th>
+                            <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase">Price</th>
+                            <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">Rationale</th>
+                            <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 w-8"></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {quotaAllocations.length === 0 ? (
+                            <tr>
+                              <td colSpan={6} className="border border-[#D0D5DD] text-center py-6 text-[13px] text-[#475467]" data-testid="quota-allocation-empty">
+                                No known suppliers found for "{activeProductId}" yet - use "+ Add Supplier" below.
+                              </td>
+                            </tr>
+                          ) : (
+                            quotaAllocations.map((a, i) => (
+                              <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`quota-allocation-row-${i}`}>
+                                <td className="border border-[#D0D5DD] px-2 py-1 font-medium text-[#101828]">
+                                  {a.supplier_name || a.sap_internal_id}
+                                  {a.price_source && <div className="text-xs text-[#98A2B3]">{a.price_source}</div>}
+                                </td>
+                                <td className="border border-[#D0D5DD] px-1 py-1">
+                                  <input
+                                    type="number"
+                                    step="0.1"
+                                    value={a.quota_percent}
+                                    onChange={(e) => updateAllocation(i, "quota_percent", e.target.value)}
+                                    className={`${inputCls} h-7 text-right`}
+                                    data-testid={`quota-percent-input-${i}`}
+                                  />
+                                </td>
+                                <td className="border border-[#D0D5DD] px-1 py-1">
+                                  <input
+                                    type="number"
+                                    placeholder="—"
+                                    value={a.lead_time_days ?? ""}
+                                    onChange={(e) => updateAllocation(i, "lead_time_days", e.target.value === "" ? null : e.target.value)}
+                                    className={`${inputCls} h-7 text-right`}
+                                    data-testid={`quota-lead-time-input-${i}`}
+                                  />
+                                </td>
+                                <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">
+                                  {a.price != null ? `${a.currency || ""} ${a.price}` : "—"}
+                                </td>
+                                <td className="border border-[#D0D5DD] px-2 py-1 text-xs text-[#667085]">{a.rationale || "—"}</td>
+                                <td className="border border-[#D0D5DD] px-1 py-1 text-center">
+                                  <button
+                                    type="button"
+                                    onClick={() => removeAllocationRow(i)}
+                                    className="text-[#98A2B3] hover:text-[#B42318]"
+                                    data-testid={`remove-quota-row-${i}`}
+                                  >
+                                    <XCircle size={15} />
+                                  </button>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="flex items-center justify-between mt-2 flex-wrap gap-2">
+                      <div className={`text-xs font-bold ${quotaTotalValid ? "text-[#027A48]" : "text-[#B42318]"}`} data-testid="quota-total-indicator">
+                        Total: {quotaTotal.toFixed(1)}% {!quotaTotalValid && "(must equal 100%)"}
+                      </div>
+                      {addSupplierPickerOpen ? (
+                        <div className="flex items-center gap-1.5">
+                          <Select value={addSupplierPickerValue} onValueChange={setAddSupplierPickerValue}>
+                            <SelectTrigger className="h-7 w-56 text-xs rounded-sm border-[#D0D5DD]" data-testid="add-quota-supplier-select">
+                              <SelectValue placeholder="Pick a supplier..." />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {(() => {
+                                const { recommended, others } = getRecommendedSuppliers();
+                                return (
+                                  <>
+                                    {recommended.map((s) => (
+                                      <SelectItem key={s.id} value={s.id}>{s.name} (known price/history)</SelectItem>
+                                    ))}
+                                    {others.map((s) => (
+                                      <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                                    ))}
+                                  </>
+                                );
+                              })()}
+                            </SelectContent>
+                          </Select>
+                          <Button type="button" size="sm" className="h-7 text-xs bg-[#004B87] hover:bg-[#003A6A]" disabled={!addSupplierPickerValue} onClick={() => addAllocationRow(addSupplierPickerValue)} data-testid="confirm-add-quota-supplier-button">
+                            Add
+                          </Button>
+                          <Button type="button" size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setAddSupplierPickerOpen(false)}>Cancel</Button>
+                        </div>
+                      ) : (
+                        <button type="button" onClick={() => setAddSupplierPickerOpen(true)} className="text-xs text-[#004B87] hover:underline inline-flex items-center gap-1" data-testid="open-add-quota-supplier-button">
+                          <Plus size={12} /> Add Supplier
+                        </button>
+                      )}
+                    </div>
+
+                    {quotaOverallRationale && (
+                      <div className="text-xs text-[#667085] italic mt-1.5" data-testid="quota-overall-rationale">{quotaOverallRationale}</div>
+                    )}
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3">
+                      <div>
+                        <label className={labelCls}>Remarks (why this split / change)</label>
+                        <textarea
+                          value={quotaRemarks}
+                          onChange={(e) => setQuotaRemarks(e.target.value)}
+                          rows={2}
+                          className={`${inputCls} mt-1 h-auto py-1.5`}
+                          data-testid="quota-remarks-input"
+                        />
+                      </div>
+                      <div>
+                        <label className={labelCls}>Set By</label>
+                        <input
+                          type="text"
+                          value={quotaCreatedBy}
+                          onChange={(e) => setQuotaCreatedBy(e.target.value)}
+                          placeholder="Your name"
+                          className={`${inputCls} mt-1`}
+                          data-testid="quota-created-by-input"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 mt-3">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => suggestQuota(activeProductId)}
+                        disabled={quotaSuggesting}
+                        className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
+                        data-testid="regenerate-quota-suggestion-button"
+                      >
+                        <ArrowsClockwise size={13} className="mr-1.5" />
+                        Regenerate AI Suggestion
+                      </Button>
+                      <Button
+                        type="button"
+                        onClick={confirmQuotaArrangement}
+                        disabled={quotaSaving || !quotaTotalValid || quotaAllocations.length === 0}
+                        className="h-8 bg-[#004B87] hover:bg-[#003A6A] text-white text-xs rounded-sm"
+                        data-testid="confirm-quota-arrangement-button"
+                      >
+                        {quotaSaving ? "Saving..." : "Confirm Quota Arrangement"}
+                      </Button>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           )}

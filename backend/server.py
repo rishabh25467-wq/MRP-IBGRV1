@@ -20,6 +20,7 @@ from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplier
 from sap_price_spec_client import SAPPriceSpecClient, SAPPriceSpecError, bulk_push_erp_prices_to_sap
 from sap_supplier_invoice_client import SAPSupplierInvoiceClient, SAPSupplierInvoiceError
 from price_explorer_client import PriceExplorerClient, PriceExplorerError
+import quota_arrangement_service
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
@@ -1752,6 +1753,110 @@ async def remove_part_supplier(assignment_id: str):
     if not ok:
         raise HTTPException(status_code=404, detail="Assignment not found")
     return {"deleted": True}
+
+
+# ---------------------------------------------------------------------------
+# Quota Arrangements - AI-assisted, revision-tracked replacement for the old
+# simple part_suppliers table. See quota_arrangement_service.py.
+# ---------------------------------------------------------------------------
+
+class QuotaAllocation(BaseModel):
+    supplier_id: Optional[str] = None
+    supplier_name: Optional[str] = None
+    sap_internal_id: Optional[str] = None
+    price: Optional[float] = None
+    currency: Optional[str] = None
+    price_source: Optional[str] = None
+    lead_time_days: Optional[float] = None
+    quota_percent: float
+    rationale: Optional[str] = None
+
+
+class SuggestQuotaResponse(BaseModel):
+    allocations: List[QuotaAllocation]
+    overall_rationale: Optional[str] = None
+
+
+@api_router.post("/quota-arrangements/{product_id}/suggest", response_model=SuggestQuotaResponse)
+async def suggest_quota(product_id: str):
+    """Gathers every known candidate supplier for this part (local
+    assignments, ERP billing history, SAP Supplier Invoices, SAP Released
+    Price Specs) and asks an LLM to suggest a fair quota % split weighted
+    by price + lead time (quality/OTIF are None placeholders today - see
+    module docstring). Does NOT save anything - the buyer reviews/edits
+    the suggestion, then calls /confirm."""
+    candidates = await asyncio.to_thread(
+        quota_arrangement_service.gather_candidate_suppliers, db, product_id,
+        price_explorer_client, sap_price_spec_client, sap_supplier_invoice_client,
+    )
+    result = await asyncio.to_thread(
+        quota_arrangement_service.suggest_allocation, product_id, candidates, os.environ['EMERGENT_LLM_KEY'],
+    )
+    return SuggestQuotaResponse(**result)
+
+
+class QuotaRevision(BaseModel):
+    id: str
+    arrangement_id: str
+    revision_no: int
+    source: str
+    remarks: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: str
+    allocations: List[QuotaAllocation]
+
+
+class QuotaArrangementResponse(BaseModel):
+    arrangement_id: Optional[str] = None
+    product_id: str
+    current_revision_no: int = 0
+    latest_revision: Optional[QuotaRevision] = None
+    revisions: List[QuotaRevision] = []
+
+
+def _revision_to_model(r: dict) -> QuotaRevision:
+    return QuotaRevision(
+        id=r["_id"], arrangement_id=r["arrangement_id"], revision_no=r["revision_no"], source=r["source"],
+        remarks=r.get("remarks"), created_by=r.get("created_by"), created_at=r["created_at"].isoformat(),
+        allocations=[QuotaAllocation(**a) for a in r["allocations"]],
+    )
+
+
+@api_router.get("/quota-arrangements/{product_id}", response_model=QuotaArrangementResponse)
+async def get_quota_arrangement(product_id: str):
+    result = await asyncio.to_thread(quota_arrangement_service.get_arrangement, db, product_id)
+    arrangement = result["arrangement"]
+    return QuotaArrangementResponse(
+        arrangement_id=arrangement["_id"] if arrangement else None,
+        product_id=product_id,
+        current_revision_no=arrangement["current_revision_no"] if arrangement else 0,
+        latest_revision=_revision_to_model(result["latest_revision"]) if result["latest_revision"] else None,
+        revisions=[_revision_to_model(r) for r in result["revisions"]],
+    )
+
+
+class ConfirmQuotaRequest(BaseModel):
+    allocations: List[QuotaAllocation]
+    remarks: Optional[str] = None
+    source: str = "user"  # "ai" (confirmed as-is) | "user" (buyer edited)
+    created_by: Optional[str] = None
+
+
+@api_router.post("/quota-arrangements/{product_id}/confirm", response_model=QuotaArrangementResponse)
+async def confirm_quota(product_id: str, payload: ConfirmQuotaRequest):
+    total = sum(a.quota_percent for a in payload.allocations)
+    if payload.allocations and abs(total - 100.0) > 0.5:
+        raise HTTPException(status_code=400, detail=f"Quota percentages must sum to 100 (got {total})")
+    result = await asyncio.to_thread(
+        quota_arrangement_service.confirm_arrangement, db, product_id,
+        [a.dict() for a in payload.allocations], payload.remarks, payload.source, payload.created_by,
+    )
+    arrangement = result["arrangement"]
+    return QuotaArrangementResponse(
+        arrangement_id=arrangement["_id"], product_id=product_id, current_revision_no=arrangement["current_revision_no"],
+        latest_revision=_revision_to_model(result["latest_revision"]) if result["latest_revision"] else None,
+        revisions=[_revision_to_model(r) for r in result["revisions"]],
+    )
 
 
 class SapPriceSpec(BaseModel):
