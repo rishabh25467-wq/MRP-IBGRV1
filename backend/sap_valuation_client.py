@@ -85,7 +85,19 @@ class SAPValuationClient:
 
         def fetch_chunk(chunk):
             filter_expr = " or ".join(f"MaterialUUID eq guid'{uuid}'" for uuid in chunk)
-            return self._get("MaterialValuationDataValuationLevelCollection", filter_expr)
+            try:
+                return self._get("MaterialValuationDataValuationLevelCollection", filter_expr)
+            except (SAPValuationError, requests.exceptions.RequestException) as e:
+                # One flaky chunk (of ~BATCH_SIZE products) must not wipe out
+                # every OTHER chunk's already-successful results - this tenant
+                # is prone to intermittent timeouts under load, and treating
+                # the whole multi-thousand-item batch as all-or-nothing meant
+                # a single hiccup could permanently starve valuation coverage
+                # (see get_standard_costs docstring/inventory_service.py sticky
+                # comment). Skip just this chunk - it's retried on the next
+                # refresh cycle like any other unresolved item.
+                logger.warning(f"Standard Costs: valuation-level lookup failed for a chunk of {len(chunk)} product(s), skipping this round: {e}")
+                return []
 
         chunks = list(self._chunks(product_uuids, BATCH_SIZE))
         with ThreadPoolExecutor(max_workers=6) as executor:
@@ -105,7 +117,12 @@ class SAPValuationClient:
 
         def fetch_chunk(chunk):
             filter_expr = " or ".join(f"ValuationLevelUUID eq guid'{uuid}'" for uuid in chunk)
-            return self._get("MaterialValuationDataValuationPriceCollection", filter_expr)
+            try:
+                return self._get("MaterialValuationDataValuationPriceCollection", filter_expr)
+            except (SAPValuationError, requests.exceptions.RequestException) as e:
+                # Same per-chunk tolerance as _fetch_valuation_level_ids above.
+                logger.warning(f"Standard Costs: valuation-price lookup failed for a chunk of {len(chunk)} level(s), skipping this round: {e}")
+                return []
 
         chunks = list(self._chunks(valuation_level_uuids, BATCH_SIZE))
         with ThreadPoolExecutor(max_workers=6) as executor:
