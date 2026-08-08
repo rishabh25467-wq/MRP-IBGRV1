@@ -25,7 +25,7 @@ from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
 from inventory_service import get_cached_inventory, refresh_inventory_cache, deep_backfill_uuids
-from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids, categorize_full_inventory
+from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids, categorize_full_inventory, backfill_drawing_urls
 from oms_client import OMSClient, OMSError
 from open_po_client import OpenPODemandClient, OpenPODemandError
 from purchasing_plan import (
@@ -336,6 +336,22 @@ async def categorize(payload: CategorizeRequest):
     except BomCategorizerError as e:
         raise HTTPException(status_code=502, detail=str(e))
     return CategorizeResponse(categories=categories)
+
+
+@api_router.get("/bom/drawing-urls")
+async def get_drawing_urls(product_ids: str = Query(..., description="Comma-separated product IDs")):
+    """Read-only lookup of drawing/documentation links for BOM Explorer -
+    ALWAYS served from the `component_master` cache (never a live SAP call
+    here), populated in the background by the periodic drawing-URL backfill
+    scheduler (see server.py's start_drawing_url_backfill_loop). Returns
+    only the product_ids that actually have a URL on file - anything
+    absent from the response simply has no drawing (or hasn't been checked
+    by the background job yet)."""
+    ids = [p.strip() for p in product_ids.split(",") if p.strip()]
+    if not ids:
+        return {}
+    docs = db["component_master"].find({"_id": {"$in": ids}, "drawing_url": {"$ne": None}}, {"_id": 1, "drawing_url": 1})
+    return {doc["_id"]: doc["drawing_url"] for doc in docs}
 
 
 class PurchasingPlanGenerateRequest(BaseModel):
@@ -2109,6 +2125,30 @@ async def start_inventory_cache_refresh_loop():
             except Exception as e:
                 logger.error(f"Inventory cache background refresh failed: {e}")
             await asyncio.sleep(INVENTORY_CACHE_REFRESH_INTERVAL_SECONDS)
+
+    asyncio.create_task(loop())
+
+
+# Background maintenance: throttled per-component drawing/documentation
+# URL backfill (see bom_categorizer.backfill_drawing_urls) - grows coverage
+# automatically over time, no manual button needed. Runs more frequently
+# than the other two loops since each cycle only processes a small,
+# gentle batch (DRAWING_URL_BACKFILL_BATCH_SIZE) rather than a full sweep.
+DRAWING_URL_BACKFILL_INTERVAL_SECONDS = 15 * 60
+
+
+@app.on_event("startup")
+async def start_drawing_url_backfill_loop():
+    async def loop():
+        await asyncio.sleep(60)
+        while True:
+            try:
+                stats = await asyncio.to_thread(backfill_drawing_urls, db, sap_material_client)
+                if stats["checked"] > 0:
+                    logger.info(f"Drawing URL background backfill: checked {stats['checked']}, found {stats['found']}")
+            except Exception as e:
+                logger.error(f"Drawing URL background backfill failed: {e}")
+            await asyncio.sleep(DRAWING_URL_BACKFILL_INTERVAL_SECONDS)
 
     asyncio.create_task(loop())
 

@@ -62,11 +62,19 @@ class SAPMaterialClient:
   </glob:MaterialByElementsQuery_sync>
  </soapenv:Body></soapenv:Envelope>"""
 
-    def resolve_uuid(self, internal_id: str):
-        """Returns the material's UUID (str), or None if SAP has no
-        material with that exact InternalID. Raises SAPMaterialAuthError if
-        the technical user isn't authorized for this service, or
-        SAPMaterialError for any other SOAP fault/HTTP error."""
+    def resolve_material_info(self, internal_id: str):
+        """Returns {"uuid": str|None, "drawing_url": str|None} for a
+        Material's InternalID (business ID, e.g. 'SPC5WM'). The drawing_url
+        comes from the Material master's own AttachmentFolder.Document -
+        SAP ByDesign lets a Document entry be either an uploaded file OR a
+        plain external web link (ExternalLinkWebURI); this tenant uses the
+        latter to point at drawings/documentation hosted on a separate
+        shared-drive portal (e.g. 'https://rampgroup.net/Documents.aspx?
+        mid=SPC5WM') - confirmed live, NOT every material has one. Returns
+        {"uuid": None, "drawing_url": None} if SAP has no material with
+        that exact InternalID. Raises SAPMaterialAuthError if the technical
+        user isn't authorized for this service, or SAPMaterialError for any
+        other SOAP fault/HTTP error."""
         resp = requests.post(
             self.endpoint,
             data=self._request_xml(internal_id).encode("utf-8"),
@@ -83,10 +91,17 @@ class SAPMaterialClient:
 
         material_match = re.search(r"<(?:\w+:)?Material(?:\s[^>]*)?>(.*?)</(?:\w+:)?Material>", xml, re.S)
         if not material_match:
-            return None
+            return {"uuid": None, "drawing_url": None}
         block = material_match.group(1)
         returned_id = _first_tag(block, "InternalID")
+        if returned_id != internal_id:
+            return {"uuid": None, "drawing_url": None}
         material_uuid = _first_tag(block, "UUID")
-        if returned_id != internal_id or not material_uuid:
-            return None
-        return material_uuid
+        drawing_url = _first_tag(block, "ExternalLinkWebURI")
+        return {"uuid": material_uuid, "drawing_url": drawing_url}
+
+    def resolve_uuid(self, internal_id: str):
+        """Returns just the material's UUID (str), or None - thin wrapper
+        over resolve_material_info() kept for existing callers that only
+        need the UUID (e.g. the Inventory page's deep backfill)."""
+        return self.resolve_material_info(internal_id)["uuid"]

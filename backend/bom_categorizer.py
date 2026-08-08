@@ -18,15 +18,24 @@ import json
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+
+from sap_material_client import SAPMaterialError, SAPMaterialAuthError
 
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 80
 MODEL = "gpt-5.4"
 CATEGORY_COLLECTION = "category_master"
+
+# Throttled background drawing-URL backfill - deliberately gentle (same
+# spirit as the Inventory page's deep UUID backfill) since this SAP tenant
+# is known to hit connection timeouts under concurrent load.
+DRAWING_URL_BACKFILL_BATCH_SIZE = 100
+DRAWING_URL_BACKFILL_MAX_WORKERS = 3
 
 DEFAULT_CATEGORIES = [
     "Raw Material", "Hardware", "Plastic", "Sheet Metal",
@@ -109,6 +118,67 @@ def backfill_product_uuids(db) -> int:
         )
         updated += 1
     return updated
+
+
+def backfill_drawing_urls(db, sap_material_client, batch_size: int = DRAWING_URL_BACKFILL_BATCH_SIZE) -> dict:
+    """Background maintenance job (called on a periodic scheduler loop, see
+    server.py's start_drawing_url_backfill_loop) that grows drawing/
+    documentation link coverage across `component_master` over time,
+    mirroring the Inventory page's deep UUID backfill's throttled-batch
+    spirit but fully automatic (no manual button click needed).
+
+    For each component not yet checked, calls the already-authorized
+    QueryMaterialIn service (same one used for UUID resolution) to read its
+    Material master's AttachmentFolder.Document.ExternalLinkWebURI - this
+    tenant uses that field to point at drawings hosted on a separate
+    shared-drive portal (e.g. rampgroup.net), NOT every material has one.
+    Only marks `drawing_url_checked=True` on a genuinely successful SAP
+    response (found a URL, or confirmed there isn't one) - a transient
+    network error or a missing-authorization fault leaves the item
+    unchecked so a later cycle retries it, rather than silently giving up
+    on it forever. Returns {"checked", "found"}."""
+    targets = [
+        doc["_id"] for doc in db["component_master"].find(
+            {"drawing_url_checked": {"$ne": True}}, {"_id": 1}
+        ).limit(batch_size)
+    ]
+    if not targets:
+        return {"checked": 0, "found": 0}
+
+    checked = 0
+    found = 0
+    auth_error_seen = False
+
+    def fetch_one(product_id):
+        info = sap_material_client.resolve_material_info(product_id)
+        return product_id, info
+
+    with ThreadPoolExecutor(max_workers=DRAWING_URL_BACKFILL_MAX_WORKERS) as executor:
+        futures = {executor.submit(fetch_one, pid): pid for pid in targets}
+        for future in as_completed(futures):
+            product_id = futures[future]
+            try:
+                _, info = future.result()
+            except SAPMaterialAuthError as e:
+                auth_error_seen = True
+                logger.error(f"Drawing URL backfill: SAP rejected the Material lookup (missing authorization) - stopping this cycle: {e}")
+                break
+            except SAPMaterialError as e:
+                logger.warning(f"Drawing URL backfill: lookup failed for '{product_id}', will retry next cycle: {e}")
+                continue
+            except Exception as e:
+                logger.warning(f"Drawing URL backfill: network error for '{product_id}', will retry next cycle: {e}")
+                continue
+
+            update = {"drawing_url_checked": True, "drawing_url": info["drawing_url"]}
+            if info["uuid"]:
+                update["product_uuid"] = info["uuid"]
+            db["component_master"].update_one({"_id": product_id}, {"$set": update}, upsert=True)
+            checked += 1
+            if info["drawing_url"]:
+                found += 1
+
+    return {"checked": checked, "found": found, "auth_error": auth_error_seen}
 
 
 def _build_system_message(categories: list[str]) -> str:

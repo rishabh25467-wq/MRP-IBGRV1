@@ -23,6 +23,7 @@ import {
   CurrencyCircleDollar,
   Sparkle,
   ShoppingCartSimple,
+  FileImage,
 } from "@phosphor-icons/react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -72,6 +73,21 @@ const collectAllItems = (nodes) => {
   };
   walk(nodes);
   return Array.from(items.values());
+};
+
+// Every product_id in the tree (leaf AND sub-assembly/parent) - unlike
+// collectAllItems above (leaf-only, for AI categorization), a drawing/
+// documentation link can exist on any Material master, parent or not.
+const collectAllProductIds = (nodes) => {
+  const ids = new Set();
+  const walk = (list) => {
+    list.forEach((node) => {
+      if (node.product_id) ids.add(node.product_id);
+      if (node.children && node.children.length > 0) walk(node.children);
+    });
+  };
+  walk(nodes);
+  return Array.from(ids);
 };
 
 const computeTotalCost = (nodes, costs) => {
@@ -230,6 +246,7 @@ export default function BomExplorerPage() {
   const [categories, setCategories] = useState({});
   const [loadingCategories, setLoadingCategories] = useState(false);
   const [categoriesLoaded, setCategoriesLoaded] = useState(false);
+  const [drawingUrls, setDrawingUrls] = useState({});
   const [treeSearch, setTreeSearch] = useState("");
   const [sortConfig, setSortConfig] = useState({ field: null, direction: "asc" });
 
@@ -328,6 +345,19 @@ export default function BomExplorerPage() {
     }
   };
 
+  const loadDrawingUrls = async (treeOverride) => {
+    const tree = treeOverride || result?.tree;
+    if (!tree) return;
+    const productIds = collectAllProductIds(tree);
+    if (productIds.length === 0) return;
+    try {
+      const response = await axios.get(`${API}/bom/drawing-urls`, { params: { product_ids: productIds.join(",") } });
+      setDrawingUrls(response.data || {});
+    } catch {
+      // Non-critical, read-only cache lookup - silently skip, drawings just won't show this load.
+    }
+  };
+
   const handleSearch = async (e) => {
     e.preventDefault();
     if (!bomId.trim()) return;
@@ -341,6 +371,7 @@ export default function BomExplorerPage() {
     setCostsLoaded(false);
     setCategories({});
     setCategoriesLoaded(false);
+    setDrawingUrls({});
     setTreeSearch("");
     setSortConfig({ field: null, direction: "asc" });
 
@@ -359,6 +390,7 @@ export default function BomExplorerPage() {
         description: `${response.data.total_components} components across ${response.data.max_level} levels`,
       });
       loadCategories(response.data.tree);
+      loadDrawingUrls(response.data.tree);
     } catch (err) {
       const detail = err?.response?.data?.detail || "Failed to fetch BOM from SAP";
       setError(detail);
@@ -639,6 +671,19 @@ export default function BomExplorerPage() {
                           <span className="w-3" />
                         )}
                         {highlightMatch(node.product_id, treeSearch)}
+                        {drawingUrls[node.product_id] && (
+                          <a
+                            href={drawingUrls[node.product_id]}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-[#9E165F] hover:text-[#7A1049] shrink-0"
+                            title="View drawing / documentation"
+                            data-testid={`bom-drawing-link-${path}`}
+                          >
+                            <FileImage size={13} weight="fill" />
+                          </a>
+                        )}
                       </span>
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] text-[#101828]">
