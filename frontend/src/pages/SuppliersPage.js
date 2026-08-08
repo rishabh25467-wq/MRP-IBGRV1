@@ -60,6 +60,9 @@ export default function SuppliersPage() {
   const [sapPriceSpecs, setSapPriceSpecs] = useState([]);
   const [sapPriceSpecsLoading, setSapPriceSpecsLoading] = useState(false);
   const [sapPriceSpecsError, setSapPriceSpecsError] = useState(null);
+  const [erpPrices, setErpPrices] = useState([]);
+  const [erpPricesLoading, setErpPricesLoading] = useState(false);
+  const [erpPricesError, setErpPricesError] = useState(null);
   const productLoadRequestRef = useRef(null);
 
   const [assignmentDialogOpen, setAssignmentDialogOpen] = useState(false);
@@ -199,6 +202,22 @@ export default function SuppliersPage() {
     }
   };
 
+  const loadErpPrices = async (productId) => {
+    setErpPricesLoading(true);
+    setErpPricesError(null);
+    try {
+      const { data } = await axios.get(`${API}/suppliers/erp-prices/${encodeURIComponent(productId)}`);
+      if (productLoadRequestRef.current !== productId) return;
+      setErpPrices(data);
+    } catch (err) {
+      if (productLoadRequestRef.current !== productId) return;
+      setErpPrices([]);
+      setErpPricesError(err?.response?.data?.detail || err.message || "Could not read ERP purchase history");
+    } finally {
+      if (productLoadRequestRef.current === productId) setErpPricesLoading(false);
+    }
+  };
+
   const searchProduct = () => {
     const pid = productIdInput.trim();
     if (!pid) return;
@@ -206,6 +225,7 @@ export default function SuppliersPage() {
     setActiveProductId(pid);
     loadAssignments(pid);
     loadSapPriceSpecs(pid);
+    loadErpPrices(pid);
   };
 
   const openAddAssignment = () => {
@@ -586,6 +606,54 @@ export default function SuppliersPage() {
                         </tbody>
                       </table>
                     </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Real ERP purchase history - read-only, most reliable source */}
+              <div className="p-2.5 bg-[#F9FAFB] border-b border-[#D0D5DD]" data-testid="erp-prices-panel">
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <Badge variant="outline" className="bg-[#FDF2FA] text-[#9E165F] border-[#F3B6D9] text-xs">ERP</Badge>
+                  <span className="font-heading text-xs font-bold text-[#344054] uppercase tracking-wide">
+                    Real Purchase History (last 6 months, from billed invoices)
+                  </span>
+                </div>
+                {erpPricesLoading ? (
+                  <div className="text-[13px] text-[#475467] py-2">Reading from ERP...</div>
+                ) : erpPricesError ? (
+                  <div className="text-[13px] text-[#B54708] py-1" data-testid="erp-prices-error">{erpPricesError}</div>
+                ) : erpPrices.length === 0 ? (
+                  <div className="text-[13px] text-[#98A2B3] py-1" data-testid="erp-prices-empty">
+                    No billed purchase history found in the ERP for "{activeProductId}"
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[13px] border-collapse" data-testid="erp-prices-table">
+                      <thead>
+                        <tr>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Item</th>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Most Recent</th>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Lowest Seen</th>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-right text-xs font-bold text-[#344054] font-heading uppercase">6-Mo Avg</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {erpPrices.map((item, i) => (
+                          <tr key={item.icode} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`erp-price-row-${i}`}>
+                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#101828]">{item.iname || item.icode}</td>
+                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#101828]">
+                              {item.last ? `${item.last.supplier} @ ₹${item.last.rate} (${item.last.bill_date})` : "—"}
+                            </td>
+                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#475467]">
+                              {item.lowest ? `${item.lowest.supplier} @ ₹${item.lowest.rate} (${item.lowest.bill_date})` : "—"}
+                            </td>
+                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-right tabular-nums text-[#101828]">
+                              {item.average ? `₹${item.average.rate} (${item.average.bill_count} bills)` : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 )}
               </div>

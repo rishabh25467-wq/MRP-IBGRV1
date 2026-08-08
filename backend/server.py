@@ -17,6 +17,7 @@ from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_material_client import SAPMaterialClient, SAPMaterialError, SAPMaterialAuthError
 from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplierAuthError, SAPSupplierNotConfiguredError
 from sap_price_spec_client import SAPPriceSpecClient, SAPPriceSpecError
+from price_explorer_client import PriceExplorerClient, PriceExplorerError
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
@@ -93,6 +94,12 @@ sap_price_spec_client = SAPPriceSpecClient(
     base_url=os.environ['SAP_PRICE_SPEC_ODATA_BASE_URL'],
     username=os.environ['SAP_ODATA_USERNAME'],
     password=os.environ['SAP_ODATA_PASSWORD'],
+)
+
+price_explorer_client = PriceExplorerClient(
+    base_url=os.environ['PRICE_EXPLORER_BASE_URL'],
+    username=os.environ['PRICE_EXPLORER_USERNAME'],
+    password=os.environ['PRICE_EXPLORER_PASSWORD'],
 )
 
 oms_client = OMSClient(
@@ -1736,6 +1743,39 @@ async def get_sap_price_specs(product_id: str):
     except SAPPriceSpecError as e:
         raise HTTPException(status_code=502, detail=f"SAP error: {e}")
     return [SapPriceSpec(**s) for s in specs]
+
+
+class ErpPriceQuote(BaseModel):
+    supplier: str
+    pcode: str
+    rate: float
+    bill_date: str
+
+
+class ErpPriceAverage(BaseModel):
+    rate: float
+    bill_count: int
+
+
+class ErpPriceItem(BaseModel):
+    icode: str
+    iname: Optional[str] = None
+    lowest: Optional[ErpPriceQuote] = None
+    last: Optional[ErpPriceQuote] = None
+    average: Optional[ErpPriceAverage] = None
+
+
+@api_router.get("/suppliers/erp-prices/{product_id}", response_model=List[ErpPriceItem])
+async def get_erp_prices(product_id: str, lookback_days: int = 180):
+    """Reads real billed-purchase history (lowest/last/6-month average price
+    per supplier) from the company's MS SQL ERP, via the existing separate
+    Price Explorer service (see price_explorer_client.py). This reflects
+    ACTUAL past purchases, unlike SAP's mostly-unpopulated List Prices."""
+    try:
+        items = await asyncio.to_thread(price_explorer_client.search, product_id, lookback_days, 5)
+    except PriceExplorerError as e:
+        raise HTTPException(status_code=502, detail=f"Price Explorer error: {e}")
+    return [ErpPriceItem(**i) for i in items]
 
 
 app.include_router(api_router)
