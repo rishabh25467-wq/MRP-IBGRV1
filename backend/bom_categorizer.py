@@ -32,7 +32,7 @@ DEFAULT_CATEGORIES = [
     "Raw Material", "Hardware", "Plastic", "Sheet Metal",
     "Zinc", "Copper Alloy", "Aluminum", "Steel", "Stainless Steel",
     "Rubber/Elastomer", "Electronics", "Packaging", "Stationery",
-    "Adhesive", "Label/Printing", "Sub-Assembly", "Other",
+    "Adhesive", "Label/Printing", "Sub-Assembly", "Finished Goods", "Other",
 ]
 
 
@@ -129,7 +129,12 @@ def _build_system_message(categories: list[str]) -> str:
         "'Electronics', even if the item also has a printed label/adhesive component. Do not use "
         "'Label/Printing' for anything with 'RFID' in its description.\n"
         "- Plain printed labels, stickers, tags, or barcode labels WITHOUT any electronic component "
-        "-> 'Label/Printing'.\n\n"
+        "-> 'Label/Printing'.\n"
+        "- An item that is itself a top-level assembled/manufactured product with its own Bill of "
+        "Materials (i.e., other components are built INTO it, rather than it being a raw material or "
+        "a single purchased part) -> 'Finished Goods', not a raw-material category. This includes "
+        "fully assembled mounts, kits, and multi-part units described as an '...Assy' or a complete "
+        "product.\n\n"
         "Respond with ONLY a valid JSON object mapping each product_id to its category string, "
         "no markdown, no explanation."
     )
@@ -234,5 +239,52 @@ async def categorize_items(items: list[dict], db) -> dict:
             {"_id": product_id},
             {"$set": {"category": category, "category_source": "ai", "categorized_at": now}},
         )
+    results.update(ai_results)
+    return results
+
+
+async def categorize_full_inventory(db, items: list[dict]) -> dict:
+    """Bulk-categorizes every item CURRENTLY on the Inventory page - unlike
+    categorize_items above, which BOM Explorer/Purchasing Plan only ever
+    feed BOM LEAF nodes (see their own collectAllItems()/leaf-filtering), so
+    a BOM ROOT/top-level assembled product never gets sent through either of
+    those flows at all. Cross-references the already-cached bom_node_cache
+    (no live SAP calls - same "never trigger fresh SAP lookups from this
+    page" rule as the rest of inventory_service.py) to find which of these
+    product_ids has its OWN BOM (found=True) and force-categorizes those
+    as 'Finished Goods' - a deterministic, more reliable signal than asking
+    the AI to guess "is this an assembly?" from a bare description alone -
+    overwriting any previous AI/rule guess (never a manual one) so a
+    previously-mis-AI-categorized root gets corrected too. Everything else
+    still goes through the normal AI categorizer. Returns
+    {product_id: category} for every item that has (or gets) one."""
+    add_category(db, "Finished Goods")
+    collection = db["component_master"]
+    ids = [item["product_id"] for item in items if item.get("product_id")]
+    if not ids:
+        return {}
+
+    bom_root_ids = {
+        doc["_id"] for doc in db["bom_node_cache"].find({"_id": {"$in": ids}, "found": True}, {"_id": 1})
+    }
+    manual_ids = {
+        doc["_id"] for doc in collection.find(
+            {"_id": {"$in": list(bom_root_ids)}, "category_source": "manual"}, {"_id": 1}
+        )
+    }
+    to_force = bom_root_ids - manual_ids
+
+    now = datetime.now(timezone.utc)
+    results = {}
+    for product_id in to_force:
+        collection.update_one(
+            {"_id": product_id},
+            {"$set": {"category": "Finished Goods", "category_source": "rule", "categorized_at": now}},
+            upsert=True,
+        )
+        results[product_id] = "Finished Goods"
+
+    remaining_items = [item for item in items if item.get("product_id") not in to_force]
+    ai_results = await categorize_items(remaining_items, db)
     results.update(ai_results)
     return results

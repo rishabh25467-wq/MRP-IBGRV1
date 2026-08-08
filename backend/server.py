@@ -17,8 +17,8 @@ from sap_material_client import SAPMaterialClient, SAPMaterialError, SAPMaterial
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
-from inventory_service import get_cached_inventory, refresh_inventory_cache, deep_backfill_uuids
-from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids
+from inventory_service import get_cached_inventory, refresh_inventory_cache, deep_backfill_uuids, INVENTORY_CACHE_COLLECTION, INVENTORY_CACHE_ID
+from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids, categorize_full_inventory
 from oms_client import OMSClient, OMSError
 from open_po_client import OpenPODemandClient, OpenPODemandError
 from purchasing_plan import (
@@ -552,6 +552,83 @@ async def get_deep_backfill_status(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id")
     return DeepBackfillJobStatus(job_id=job_id, **job)
+
+
+class CategorizeAllResult(BaseModel):
+    total_items: int
+    finished_goods: int
+    ai_categorized: int
+
+
+class CategorizeAllJobStatus(BaseModel):
+    job_id: str
+    status: str  # "running" | "done" | "failed"
+    result: Optional[CategorizeAllResult] = None
+    error: Optional[str] = None
+
+
+@api_router.post("/inventory/categorize-all")
+async def start_categorize_all_inventory():
+    """One-click bulk categorization for EVERY item currently on the
+    Inventory page - unlike the AI Categorize button on BOM Explorer /
+    Purchasing Plan (which only ever sees BOM LEAF nodes), this is the only
+    flow that also covers BOM ROOT/top-level finished products, which get
+    deterministically classified as 'Finished Goods' (see
+    bom_categorizer.categorize_full_inventory). Runs as a background job -
+    the AI pass over any still-uncategorized leaf items is a handful of
+    sequential LLM calls (BATCH_SIZE=80 each) that can take a couple of
+    minutes for a large, freshly-seeded catalog."""
+    job_id = str(uuid.uuid4())
+    job_store.create_job(db, job_id, {"status": "running", "result": None, "error": None})
+
+    async def run():
+        try:
+            cached = await asyncio.to_thread(get_cached_inventory, db)
+            items = [{"product_id": it["product_id"], "description": it.get("description")} for it in cached["items"]]
+            before = {
+                doc["_id"]: doc.get("category")
+                for doc in db["component_master"].find({"_id": {"$in": [i["product_id"] for i in items]}}, {"category": 1})
+            }
+            categories = await categorize_full_inventory(db, items)
+
+            # Patch the already-cached Inventory items in place so the
+            # Category column updates immediately - without this, the page
+            # would keep showing the OLD category (frozen at the last live
+            # SAP refresh) until the next full SAP pull, even though
+            # component_master now has the right answer.
+            for it in cached["items"]:
+                new_cat = categories.get(it["product_id"])
+                if new_cat:
+                    it["category"] = new_cat
+            new_category_list = sorted({it["category"] for it in cached["items"] if it.get("category")})
+            db[INVENTORY_CACHE_COLLECTION].update_one(
+                {"_id": INVENTORY_CACHE_ID},
+                {"$set": {"items": cached["items"], "categories": new_category_list}},
+            )
+
+            finished_goods = sum(1 for c in categories.values() if c == "Finished Goods")
+            newly_ai = sum(1 for pid, c in categories.items() if c != "Finished Goods" and before.get(pid) != c)
+            job_store.update_job(db, job_id, {
+                "status": "done",
+                "result": {"total_items": len(items), "finished_goods": finished_goods, "ai_categorized": newly_ai},
+                "error": None,
+            })
+        except BomCategorizerError as e:
+            job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
+        except Exception as e:
+            logger.error(f"Categorize-all inventory failed: {e}")
+            job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+@api_router.get("/inventory/categorize-all/{job_id}", response_model=CategorizeAllJobStatus)
+async def get_categorize_all_status(job_id: str):
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return CategorizeAllJobStatus(job_id=job_id, **job)
 
 
 class BomCacheStats(BaseModel):

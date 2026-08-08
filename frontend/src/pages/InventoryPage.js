@@ -11,6 +11,7 @@ import {
   MapPin,
   Database,
   Sparkle,
+  Tag,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Toaster, toast } from "@/components/ui/sonner";
@@ -71,6 +72,7 @@ export default function InventoryPage() {
   const [backfillProgress, setBackfillProgress] = useState({ processed: 0, total: 0 });
   const [backfillResult, setBackfillResult] = useState(null);
   const [backfillError, setBackfillError] = useState(null);
+  const [categorizeStatus, setCategorizeStatus] = useState("idle"); // idle | running | done | failed
 
   const refreshFromSap = async () => {
     setStatus("running");
@@ -188,6 +190,45 @@ export default function InventoryPage() {
     }
   };
 
+  const categorizeAllInventory = async () => {
+    setCategorizeStatus("running");
+    try {
+      const { data } = await axios.post(`${API}/inventory/categorize-all`);
+      const jobId = data.job_id;
+      let consecutiveFailures = 0;
+      const poll = async () => {
+        try {
+          const { data: job } = await axios.get(`${API}/inventory/categorize-all/${jobId}`);
+          consecutiveFailures = 0;
+          if (job.status === "running") {
+            setTimeout(poll, 2000);
+          } else if (job.status === "done") {
+            setCategorizeStatus("done");
+            toast.success("Categorization complete", {
+              description: `${job.result.finished_goods} top-level item(s) set to Finished Goods, ${job.result.ai_categorized} classified by AI, out of ${job.result.total_items} total.`,
+            });
+            loadFromCache();
+          } else {
+            setCategorizeStatus("failed");
+            toast.error("Categorization failed", { description: job.error });
+          }
+        } catch (err) {
+          consecutiveFailures += 1;
+          if (consecutiveFailures <= 5) {
+            setTimeout(poll, 2000);
+          } else {
+            setCategorizeStatus("failed");
+            toast.error("Categorization failed", { description: err?.response?.data?.detail || err.message });
+          }
+        }
+      };
+      poll();
+    } catch (err) {
+      setCategorizeStatus("failed");
+      toast.error("Categorization failed", { description: err?.response?.data?.detail || err.message });
+    }
+  };
+
   const sites = useMemo(() => {
     const set = new Set();
     items.forEach((it) => it.locations.forEach((loc) => loc.site && set.add(loc.site)));
@@ -258,6 +299,18 @@ export default function InventoryPage() {
             )}
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={categorizeAllInventory}
+              disabled={categorizeStatus === "running"}
+              className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
+              data-testid="inventory-categorize-all-button"
+              title="AI-classify every item on this page into a material/type category, including top-level assemblies (auto-set to Finished Goods)"
+            >
+              <Tag size={13} className={`mr-1.5 ${categorizeStatus === "running" ? "animate-pulse" : ""}`} />
+              {categorizeStatus === "running" ? "Categorizing..." : "Categorize All"}
+            </Button>
             <Button
               type="button"
               variant="outline"
