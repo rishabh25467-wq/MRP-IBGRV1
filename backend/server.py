@@ -35,6 +35,7 @@ from purchasing_plan import (
 import bom_cache_service
 import production_plan_service
 import mrp_service
+import mps_service
 import po_selection_service
 import mrp_plan_store
 import job_store
@@ -873,14 +874,138 @@ async def get_open_po_demand(customer: Optional[str] = Query(None), plant: Optio
     return OpenPoDemandResponse(count=feed.get("count", 0), max_changed_at=feed.get("max_changed_at"), truncated=feed.get("truncated", False), rows=feed.get("rows", []))
 
 
+class MpsDemandLine(BaseModel):
+    internal_pono: Optional[float] = None
+    customer_po: Optional[str] = None
+    customer: Optional[str] = None
+    target_ship_date: Optional[str] = None
+    lead_day: Optional[float] = None
+    production_start_date: Optional[str] = None
+    qty_open: float
+    net_qty: float
+
+
+class MpsFinishedGood(BaseModel):
+    item_code: str
+    description: Optional[str] = None
+    ams: float = 0.0
+    safety_stock_qty: float = 0.0
+    on_hand_qty: Optional[float] = None
+    total_gross_qty: float
+    total_net_qty: float
+    demand_lines: List[MpsDemandLine]
+
+
+class MpsPlanResponse(BaseModel):
+    generated_at: str
+    po_data_as_of: Optional[str] = None
+    total_open_po_lines: int = 0
+    total_selected_po_lines: int = 0
+    fgs: List[MpsFinishedGood]
+
+
+class MpsPlanJobStatus(BaseModel):
+    job_id: str
+    status: str
+    result: Optional[MpsPlanResponse] = None
+    error: Optional[str] = None
+
+
+@api_router.post("/production-plan/mps/generate")
+async def start_mps_plan_job(customer: Optional[str] = None):
+    """Kicks off the Production Plan (Tier 1 of the MRP II cascade - see
+    mps_service.py) computation as a background job - same pattern as
+    Purchasing Plan/MRP generation. This is a DRAFT only; nothing is
+    committed until it's explicitly locked (see /mps/lock below)."""
+    job_id = str(uuid.uuid4())
+    job_store.create_job(db, job_id, {"status": "running", "result": None, "error": None})
+
+    async def run():
+        try:
+            result = await asyncio.to_thread(mps_service.build_production_plan, open_po_client, oms_client, db, customer)
+            job_store.update_job(db, job_id, {"status": "done", "result": result, "error": None})
+        except Exception as e:
+            logger.error(f"Production Plan (MPS) generation failed: {e}")
+            job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+@api_router.get("/production-plan/mps/status/{job_id}", response_model=MpsPlanJobStatus)
+async def mps_plan_status(job_id: str):
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return MpsPlanJobStatus(
+        job_id=job_id, status=job["status"],
+        result=MpsPlanResponse(**job["result"]) if job["result"] else None,
+        error=job["error"],
+    )
+
+
+class LockMpsPlanRequest(BaseModel):
+    job_id: str
+    locked_by: Optional[str] = None
+
+
+class LockMpsPlanResponse(BaseModel):
+    locked_plan_id: str
+    locked_at: str
+    fg_count: int
+
+
+@api_router.post("/production-plan/mps/lock", response_model=LockMpsPlanResponse)
+async def lock_mps_plan(payload: LockMpsPlanRequest):
+    """Commits a just-generated draft (by job_id, so exactly the snapshot
+    the user reviewed gets locked - not a fresh, possibly-different
+    recompute) as the new stable Production Plan every downstream MRP run
+    reads from until the next lock."""
+    job = job_store.get_job(db, payload.job_id)
+    if job is None or job["status"] != "done" or not job["result"]:
+        raise HTTPException(status_code=400, detail="job_id must refer to a completed Production Plan draft")
+    doc = await asyncio.to_thread(mps_service.lock_production_plan, db, job["result"], payload.locked_by)
+    return LockMpsPlanResponse(locked_plan_id=str(doc["_id"]), locked_at=doc["locked_at"].isoformat(), fg_count=len(doc["fgs"]))
+
+
+class MpsLockMeta(BaseModel):
+    id: str
+    locked_at: str
+    locked_by: Optional[str] = None
+    po_data_as_of: Optional[str] = None
+    fg_count: int = 0
+
+
+@api_router.get("/production-plan/mps/locks", response_model=List[MpsLockMeta])
+async def list_mps_locks():
+    docs = await asyncio.to_thread(mps_service.list_locked_plans, db)
+    return [
+        MpsLockMeta(id=str(d["_id"]), locked_at=d["locked_at"].isoformat(), locked_by=d.get("locked_by"),
+                    po_data_as_of=d.get("po_data_as_of"), fg_count=d.get("fg_count", 0))
+        for d in docs
+    ]
+
+
+@api_router.get("/production-plan/mps/locks/latest", response_model=MpsPlanResponse)
+async def get_latest_mps_lock():
+    doc = await asyncio.to_thread(mps_service.get_latest_locked_plan, db)
+    if not doc:
+        raise HTTPException(status_code=404, detail="No Production Plan has been locked yet")
+    return MpsPlanResponse(
+        generated_at=doc["generated_at"], po_data_as_of=doc.get("po_data_as_of"),
+        total_open_po_lines=doc.get("total_open_po_lines", 0), total_selected_po_lines=doc.get("total_selected_po_lines", 0),
+        fgs=doc["fgs"],
+    )
+
+
 class MrpDemandLine(BaseModel):
     internal_pono: Optional[float] = None
     customer_po: Optional[str] = None
     customer: Optional[str] = None
     item_code: str
     target_ship_date: Optional[str] = None
+    need_by_date: Optional[str] = None
     order_by_date: Optional[str] = None
-    lead_time_missing: bool = False
     gross_qty: float
     net_qty: float
 
@@ -890,7 +1015,8 @@ class MrpComponent(BaseModel):
     description: Optional[str] = None
     unit_of_measure: Optional[str] = None
     lead_time_days: Optional[float] = None
-    msl: Optional[float] = None
+    lead_time_is_default: bool = False
+    dynamic_msl: Optional[float] = None
     on_hand_qty: Optional[float] = None
     total_gross_qty: float
     total_net_qty: float
@@ -906,9 +1032,8 @@ class UnresolvedMrpItem(BaseModel):
 
 class MrpPlanResponse(BaseModel):
     generated_at: str
-    po_data_as_of: Optional[str] = None
-    total_po_lines: int
-    total_open_po_lines: int = 0
+    locked_plan_id: str
+    locked_at: str
     unresolved_items: List[UnresolvedMrpItem]
     components: List[MrpComponent]
 
@@ -921,22 +1046,24 @@ class MrpPlanJobStatus(BaseModel):
 
 
 @api_router.post("/production-plan/mrp/generate")
-async def start_mrp_plan_job(customer: Optional[str] = None, actor: Optional[str] = None):
+async def start_mrp_plan_job(actor: Optional[str] = None):
     """Kicks off the MRP computation (see mrp_service.build_mrp_plan) as a
     background job - same pattern as Purchasing Plan generation, since
-    exploding every open PO line's BOM against live SAP can take a while
-    for item_codes not already warm in the BOM cache. On success, also
-    silently autosaves the result (mrp_plan_store) so a page refresh never
-    loses the last-generated plan."""
+    exploding every locked FG's BOM against live SAP can take a while for
+    item_codes not already warm in the BOM cache. Always explodes the
+    LATEST LOCKED Production Plan snapshot (see mps_service.py) - fails
+    clearly if nothing has been locked yet. On success, also silently
+    autosaves the result (mrp_plan_store) so a page refresh never loses
+    the last-generated plan."""
     job_id = str(uuid.uuid4())
     job_store.create_job(db, job_id, {"status": "running", "result": None, "error": None})
 
     async def run():
         try:
-            result = await asyncio.to_thread(mrp_service.build_mrp_plan, open_po_client, sap_soap_client, db, customer)
+            result = await asyncio.to_thread(mrp_service.build_mrp_plan, sap_soap_client, db)
             job_store.update_job(db, job_id, {"status": "done", "result": result, "error": None})
             await asyncio.to_thread(mrp_plan_store.set_autosave, db, result, actor)
-        except OpenPODemandError as e:
+        except mrp_service.NoLockedPlanError as e:
             job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
         except Exception as e:
             logger.error(f"MRP plan generation failed: {e}")
@@ -990,8 +1117,7 @@ class SavedMrpPlanMeta(BaseModel):
     name: str
     created_by: Optional[str] = None
     created_at: str
-    total_po_lines: int
-    total_open_po_lines: int = 0
+    locked_plan_id: Optional[str] = None
     components_count: int
     total_net_qty: float
 
@@ -1005,7 +1131,7 @@ def _saved_plan_meta(doc) -> SavedMrpPlanMeta:
     return SavedMrpPlanMeta(
         id=doc["_id"], name=doc["name"], created_by=doc.get("created_by"),
         created_at=doc["created_at"].isoformat(),
-        total_po_lines=plan.get("total_po_lines", 0), total_open_po_lines=plan.get("total_open_po_lines", 0),
+        locked_plan_id=plan.get("locked_plan_id"),
         components_count=len(plan.get("components", [])),
         total_net_qty=round(sum(c.get("total_net_qty", 0) for c in plan.get("components", [])), 2),
     )
