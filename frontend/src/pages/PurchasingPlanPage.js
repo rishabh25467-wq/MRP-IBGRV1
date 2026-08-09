@@ -386,18 +386,42 @@ export default function PurchasingPlanPage() {
   const categoryGrandTotal = (items) => items.reduce((sum, c) => sum + totalValueOverall(c), 0);
   const categoryGrandTotalNet = (items) => items.reduce((sum, c) => sum + totalNetValueOverall(c), 0);
 
+  // Rounds a supplier's raw split qty to a practical, shippable lot size -
+  // suppliers can't ship 257,394.6 units, they ship round lots. Combined
+  // qty+price rule (no exact thresholds given by user, so using a sensible
+  // default, easy to retune here if needed): costly/precision items (unit
+  // cost >= 20) always round tight (nearest 10) since a lot swing has real
+  // money impact; cheap, high-volume items (unit cost < 20 AND qty >= 200,
+  // e.g. fasteners/washers) round coarse (nearest 100) since suppliers of
+  // those don't care about single-digit precision anyway.
+  const roundToLotSize = (qty, unitCost) => {
+    const isCostly = unitCost != null && unitCost >= 20;
+    const base = !isCostly && qty >= 200 ? 100 : 10;
+    return Math.round(qty / base) * base;
+  };
+
   // Auto-splits a component's Net Purchase Qty (per month) across its
   // assigned suppliers using each supplier's confirmed AI Quota %
   // (quota_arrangement_service - the Purchasing Strategy > Quota
   // Allocation page is where that % gets set/confirmed). Only suppliers
   // with a quota_percent on file are split; unassigned suppliers are
-  // omitted rather than guessed at.
+  // omitted rather than guessed at. Every supplier's raw share is
+  // independently rounded to a shippable lot size (see roundToLotSize) -
+  // per user's explicit goal ("split the business, not to the dot, in a
+  // way suppliers can ship"), the resulting per-supplier total may drift
+  // slightly from the exact Net Purchase Qty, which is an accepted
+  // trade-off for clean, orderable lot sizes on every row (forcing an
+  // exact reconciliation would undo the rounding for whichever supplier
+  // absorbs the difference, defeating the point for that row).
   const computeSupplierSplit = (component) => {
     const assignments = (supplierSummaries[component.product_id] || []).filter((a) => a.quota_percent != null);
     return assignments.map((a) => ({
       ...a,
       qtyByMonth: Object.fromEntries(
-        months.map((m) => [m, ((component.net_qty_by_month[m] || 0) * a.quota_percent) / 100])
+        months.map((m) => {
+          const netQty = component.net_qty_by_month[m] || 0;
+          return [m, roundToLotSize((netQty * a.quota_percent) / 100, component.unit_cost)];
+        })
       ),
     }));
   };
