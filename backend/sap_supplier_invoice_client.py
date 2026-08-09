@@ -96,6 +96,21 @@ class SAPSupplierInvoiceClient:
             if seller is not None:
                 supplier_name = seller.findtext("AddressSnapshot/FormattedAddress/FormattedName")
                 supplier_internal_id = seller.findtext("PartyKey/PartyID")
+            # The vendor's own invoice number (as printed on their physical/PDF
+            # bill) is NOT the top-level <ID> above (that's SAP's internal
+            # document number) - it's under ExternalDocumentID, identified by
+            # TypeCode 28. Falls back to any ExternalDocumentID ref without a
+            # TypeCode if 28 isn't present (some tenants omit it).
+            supplier_invoice_number = None
+            for ext_ref in invoice.findall("ExternalDocumentID/BusinessTransactionDocumentReference"):
+                ref_id = ext_ref.findtext("ID")
+                if not ref_id:
+                    continue
+                if ext_ref.findtext("TypeCode") == "28":
+                    supplier_invoice_number = ref_id
+                    break
+                if supplier_invoice_number is None:
+                    supplier_invoice_number = ref_id
             for item in invoice.findall("Item"):
                 item_product_id = item.findtext("Product/ProductKey/ProductID")
                 if not item_product_id or item_product_id.strip().upper() != product_id.strip().upper():
@@ -104,6 +119,7 @@ class SAPSupplierInvoiceClient:
                 price_el = item.find("NetUnitPrice/Amount")
                 rows.append({
                     "invoice_id": invoice_id,
+                    "supplier_invoice_number": supplier_invoice_number,
                     "date": date,
                     "supplier_name": (supplier_name or "").strip() or None,
                     "supplier_internal_id": supplier_internal_id,

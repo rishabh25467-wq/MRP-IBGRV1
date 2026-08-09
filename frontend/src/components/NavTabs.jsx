@@ -12,7 +12,11 @@ const TABS = [
   { to: "/purchasing-plan", label: "Purchasing Plan", testId: "nav-purchasing-plan" },
   { to: "/production-plan", label: "Production Plan", testId: "nav-production-plan" },
   { to: "/inventory", label: "Inventory", testId: "nav-inventory" },
-  { to: "/suppliers", label: "Suppliers", testId: "nav-suppliers" },
+];
+
+const PURCHASING_STRATEGY_SUBTABS = [
+  { to: "/purchasing-strategy/supplier-master", label: "Supplier Master", testId: "nav-purchasing-strategy-supplier-master" },
+  { to: "/purchasing-strategy/quota-allocation", label: "Quota Allocation", testId: "nav-purchasing-strategy-quota-allocation" },
 ];
 
 const ADMIN_SUBTABS = [
@@ -23,6 +27,7 @@ const ADMIN_SUBTABS = [
 export const NavTabs = () => {
   const { pathname } = useLocation();
   const adminActive = ADMIN_SUBTABS.some((t) => t.to === pathname);
+  const purchasingStrategyActive = PURCHASING_STRATEGY_SUBTABS.some((t) => t.to === pathname);
   return (
     <div className="flex items-center gap-1">
       {TABS.map((tab) => {
@@ -40,6 +45,26 @@ export const NavTabs = () => {
           </Link>
         );
       })}
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          className={`flex items-center gap-1 px-3 py-1 rounded-sm text-xs font-bold font-heading transition-colors outline-none ${
+            purchasingStrategyActive ? "bg-white/20 text-white" : "text-white/70 hover:bg-white/10 hover:text-white"
+          }`}
+          data-testid="nav-purchasing-strategy"
+        >
+          Purchasing Strategy
+          <CaretDown size={10} weight="bold" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="min-w-[180px]" data-testid="nav-purchasing-strategy-dropdown-content">
+          {PURCHASING_STRATEGY_SUBTABS.map((tab) => (
+            <DropdownMenuItem key={tab.to} asChild>
+              <Link to={tab.to} className="w-full cursor-pointer" data-testid={tab.testId}>
+                {tab.label}
+              </Link>
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
       <DropdownMenu>
         <DropdownMenuTrigger
           className={`flex items-center gap-1 px-3 py-1 rounded-sm text-xs font-bold font-heading transition-colors outline-none ${

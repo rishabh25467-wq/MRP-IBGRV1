@@ -2104,6 +2104,7 @@ async def get_erp_prices(product_id: str, lookback_days: int = 180):
 
 class SapSupplierInvoiceLine(BaseModel):
     invoice_id: Optional[str] = None
+    supplier_invoice_number: Optional[str] = None
     date: Optional[str] = None
     supplier_name: Optional[str] = None
     supplier_internal_id: Optional[str] = None
