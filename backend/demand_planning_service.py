@@ -18,12 +18,12 @@ the trailing window instead of a single month.
 
 Extensibility note: get_demand_signal() is the ONE function every planning
 layer (mps_service.py, mrp_service.py) should call for "how much of this FG
-do we typically need per month" - it currently always returns the AMS
-value, but is deliberately the single seam to swap in a real per-item
-weekly forecast once OMS exposes one (per user's Session 17 note: "OMS is
-going to expose weekly forecasts too... use that instead of AMS for only
-those items that have a forecast flowing in" - not available yet, so
-today every item falls back to AMS unconditionally)."""
+do we typically need per month" - it now prioritizes a real per-item
+forecast (see get_forecast_signal() below, sourced from OMS's
+"Forecast Demand" feed - forecast_demand_client.py) over AMS wherever one
+exists, per the user's Session 17 instruction: "Forecast will supersede
+AMS logic... for others AMS is OK until a forecast kicks in." An item with
+no forecast source at all falls back to AMS unchanged."""
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -110,9 +110,66 @@ def get_average_monthly_sales(oms_client, months: int = TRAILING_MONTHS_DEFAULT)
     }
 
 
-def get_demand_signal(oms_client, months: int = TRAILING_MONTHS_DEFAULT) -> dict:
+def get_forecast_signal(forecast_demand_client) -> dict:
+    """Returns {oms_code: {"monthly_qty": float, "description": str,
+    "sources": [customer, ...]}} - summed across EVERY customer/source
+    currently forecasting that item, using each source's `rollups.wk4.qty`
+    (next 4 weeks, treated as ~1 calendar month - the same 30-day
+    approximation used everywhere else in this design) as that source's
+    monthly-equivalent quantity. Returns {} (never raises) if the feed is
+    unreachable or empty - callers should treat that as "fall back to AMS
+    for everything", not a hard failure."""
+    try:
+        feed = forecast_demand_client.get_forecast_demand()
+    except Exception as e:
+        logger.warning(f"Forecast signal: could not fetch OMS forecast-demand feed, falling back to AMS for everything: {e}")
+        return {}
+
+    totals = {}
+    for item in feed.get("items", []):
+        oms_code = item.get("oms_code")
+        if not oms_code:
+            continue
+        wk4 = (item.get("rollups") or {}).get("wk4") or {}
+        qty = wk4.get("qty") or 0
+        entry = totals.setdefault(oms_code, {"monthly_qty": 0.0, "description": item.get("description"), "sources": set()})
+        entry["monthly_qty"] += qty
+        if item.get("customer"):
+            entry["sources"].add(item["customer"])
+        if not entry["description"] and item.get("description"):
+            entry["description"] = item.get("description")
+
+    return {
+        oms_code: {
+            "monthly_qty": round(data["monthly_qty"], 4),
+            "description": data["description"],
+            "sources": sorted(data["sources"]),
+        }
+        for oms_code, data in totals.items()
+    }
+
+
+def get_demand_signal(oms_client, forecast_demand_client=None, months: int = TRAILING_MONTHS_DEFAULT) -> dict:
     """Single entrypoint for "how much of this FG do we typically need per
-    month" - see module docstring. Today this always resolves to AMS; once
-    a per-item weekly forecast feed exists, this is the one place to make
-    it take priority over AMS for the items that have one."""
-    return get_average_monthly_sales(oms_client, months=months)
+    month" - see module docstring. Returns the same shape as
+    get_average_monthly_sales() ({part_no: {"ams": float, "description":
+    str, ...}}) for every item - the `ams` key holds whichever signal won
+    (forecast or trailing-average) so downstream callers (mps_service.py,
+    mrp_service.py) don't need to know which; a `source` key ("forecast" |
+    "trailing_average") is included for transparency/debugging."""
+    ams_map = get_average_monthly_sales(oms_client, months=months)
+    for data in ams_map.values():
+        data["source"] = "trailing_average"
+
+    if forecast_demand_client is None:
+        return ams_map
+
+    forecast_map = get_forecast_signal(forecast_demand_client)
+    for part_no, fdata in forecast_map.items():
+        ams_map[part_no] = {
+            "ams": fdata["monthly_qty"],
+            "description": fdata["description"] or (ams_map.get(part_no) or {}).get("description"),
+            "source": "forecast",
+            "forecast_sources": fdata["sources"],
+        }
+    return ams_map

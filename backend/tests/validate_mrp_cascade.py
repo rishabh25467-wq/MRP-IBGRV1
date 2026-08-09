@@ -18,6 +18,7 @@ from pymongo import MongoClient
 
 from oms_client import OMSClient
 from open_po_client import OpenPODemandClient
+from forecast_demand_client import ForecastDemandClient
 from sap_soap_client import SAPSoapBOMClient
 import demand_planning_service
 import mps_service
@@ -30,10 +31,20 @@ oms_client = OMSClient(
     base_url=os.environ["OMS_BASE_URL"], username=os.environ["OMS_USERNAME"], password=os.environ["OMS_PASSWORD"],
 )
 open_po_client = OpenPODemandClient(os.environ["OPEN_PO_DEMAND_BASE_URL"], os.environ["OPEN_PO_DEMAND_API_KEY"])
+forecast_demand_client = ForecastDemandClient(os.environ["FORECAST_DEMAND_BASE_URL"], os.environ["FORECAST_DEMAND_API_KEY"])
 sap_soap_client = SAPSoapBOMClient(
     endpoint=os.environ["SAP_SOAP_ENDPOINT"], username=os.environ["SAP_SOAP_USERNAME"], password=os.environ["SAP_SOAP_PASSWORD"],
 )
 
+print("=" * 70)
+print("STEP 0: Forecast Demand feed signal (new, Session 17 follow-up)")
+print("=" * 70)
+forecast_signal = demand_planning_service.get_forecast_signal(forecast_demand_client)
+print(f"Forecast signal covers {len(forecast_signal)} item(s) right now (feed is brand new, may be empty/sparse).")
+for oms_code, data in list(forecast_signal.items())[:5]:
+    print(f"  {oms_code:20s} monthly_qty={data['monthly_qty']:>10.2f}  sources={data['sources']}  {data['description']}")
+
+print()
 print("=" * 70)
 print("STEP 1: AMS (Average Monthly Sales) - Sales Plan layer")
 print("=" * 70)
@@ -45,11 +56,17 @@ for part_no, data in top5:
     print(f"  {part_no:20s} AMS={data['ams']:>10.2f}/mo   {data['description']}")
 
 print()
+print("Combined get_demand_signal() (forecast overrides AMS per-item where available):")
+combined = demand_planning_service.get_demand_signal(oms_client, forecast_demand_client)
+forecast_sourced = [k for k, v in combined.items() if v.get("source") == "forecast"]
+print(f"  {len(combined)} total items, {len(forecast_sourced)} sourced from forecast, {len(combined) - len(forecast_sourced)} from trailing-average AMS")
+
+print()
 print("=" * 70)
 print("STEP 2: Production Plan draft (Tier 1 - MPS)")
 print("=" * 70)
 t0 = time.time()
-draft = mps_service.build_production_plan(open_po_client, oms_client, db)
+draft = mps_service.build_production_plan(open_po_client, oms_client, db, forecast_demand_client=forecast_demand_client)
 print(f"Built draft in {time.time() - t0:.1f}s: {len(draft['fgs'])} FG(s) with a net requirement "
       f"(out of {draft['total_selected_po_lines']} selected PO lines / {draft['total_open_po_lines']} total open PO lines)")
 for fg in draft["fgs"][:5]:

@@ -28,6 +28,7 @@ from inventory_service import get_cached_inventory, refresh_inventory_cache, dee
 from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids, categorize_full_inventory, backfill_drawing_urls
 from oms_client import OMSClient, OMSError
 from open_po_client import OpenPODemandClient, OpenPODemandError
+from forecast_demand_client import ForecastDemandClient
 from purchasing_plan import (
     build_purchasing_plan, retry_missing_boms, get_part_overrides, save_part_override,
     _default_month, _validate_month,
@@ -126,6 +127,15 @@ oms_client = OMSClient(
 open_po_client = OpenPODemandClient(
     base_url=os.environ['OPEN_PO_DEMAND_BASE_URL'],
     api_key=os.environ['OPEN_PO_DEMAND_API_KEY'],
+)
+
+# Forecast Demand feed - same host/family as open_po_client, X-Api-Key auth.
+# Supersedes AMS per-item in demand_planning_service.get_demand_signal()
+# wherever a real forecast exists; AMS remains the fallback for everything
+# else (per user's Session 17 instruction).
+forecast_demand_client = ForecastDemandClient(
+    base_url=os.environ['FORECAST_DEMAND_BASE_URL'],
+    api_key=os.environ['FORECAST_DEMAND_API_KEY'],
 )
 
 
@@ -922,7 +932,7 @@ async def start_mps_plan_job(customer: Optional[str] = None):
 
     async def run():
         try:
-            result = await asyncio.to_thread(mps_service.build_production_plan, open_po_client, oms_client, db, customer)
+            result = await asyncio.to_thread(mps_service.build_production_plan, open_po_client, oms_client, db, customer, forecast_demand_client)
             job_store.update_job(db, job_id, {"status": "done", "result": result, "error": None})
         except Exception as e:
             logger.error(f"Production Plan (MPS) generation failed: {e}")

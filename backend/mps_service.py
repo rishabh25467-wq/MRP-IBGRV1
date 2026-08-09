@@ -57,7 +57,7 @@ def _offset_date(date_str: str, offset_days: float) -> str:
     return (d - timedelta(days=offset_days or 0)).isoformat()
 
 
-def build_production_plan(open_po_client, oms_client, db, customer: str = None) -> dict:
+def build_production_plan(open_po_client, oms_client, db, customer: str = None, forecast_demand_client=None) -> dict:
     """Returns {generated_at, po_data_as_of, fgs: [{item_code, description,
     ams, safety_stock_qty, on_hand_qty, total_gross_qty, total_net_qty,
     demand_lines: [{internal_pono, customer_po, customer, target_ship_date,
@@ -72,7 +72,7 @@ def build_production_plan(open_po_client, oms_client, db, customer: str = None) 
     rows = [r for r in all_rows if r.get("internal_pono") is not None and r.get("item_code")
             and selection_key(r["internal_pono"], r["item_code"]) in selected_keys]
 
-    demand_signal = get_demand_signal(oms_client)
+    demand_signal = get_demand_signal(oms_client, forecast_demand_client)
     on_hand_by_product = {it["product_id"]: it["total_qty"] for it in get_cached_inventory(db)["items"]}
 
     lines_by_item = {}
