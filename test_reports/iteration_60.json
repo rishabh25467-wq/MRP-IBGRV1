@@ -1,0 +1,42 @@
+{
+  "summary": "Frontend testing of two new features. Feature 1 (BOM Explorer 'Run Cost Estimate' button) fully verified working as expected, including the known/escalated SAP-side error path. Feature 2 (Purchasing Plan 'Split Qty' supplier toggle) could NOT be verified end-to-end because Purchasing Plan generation itself is currently failing 100% of the time (5+ consecutive attempts, both via UI and direct API) due to an unhandled OMS read-timeout exception - a pre-existing gap in oms_client.py unrelated to this session's SAP semaphore fix.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/purchasing-plan/generate (via oms_client.py OMSClient._get)",
+        "issue": "Purchasing Plan generation fails 100% of the time in this session (5 consecutive attempts today, both via curl and UI, at 10:08, 10:09, 10:32, 10:37, 10:40) with error 'HTTPSConnectionPool(host=oms.radishtechnologies.com, port=443): Read timed out. (read timeout=30)'. Root cause: oms_client.py's _get() method (used by get_parts/get_monthly_demand/get_sales_plan, called via ThreadPoolExecutor across every OMS customer) does NOT wrap `requests.get(...)` in a try/except - only OMSClient._login() catches RequestException. So a single slow/timing-out customer call anywhere in the thread pool raises an uncaught requests.exceptions.ReadTimeout that propagates through executor.map() and crashes the entire job (status becomes 'failed'), instead of being logged+skipped like the sibling demand_planning_service.py does for the same OMS host (see its 'AMS: could not fetch OMS parts for X: Read timed out' WARNING logs which recover gracefully). This completely blocks the Purchasing Plan page and, by extension, this session's Feature 2 (Supplier Quota Split) could not be tested at all.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Purchasing Plan > Generate Purchasing Plan",
+        "issue": "Clicking Generate Purchasing Plan always ends in the 'Purchasing plan generation failed' error toast (see backend_issues.critical) after ~20-30s, for the default month. Could not reach the point of inspecting Suppliers column / Split Qty toggle at all.",
+        "affected_selectors": ["purchasing-plan-supplier-split-toggle-*", "purchasing-plan-supplier-split-row-*"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Fix oms_client.py OMSClient._get(): wrap the `resp = requests.get(...)` calls in try/except requests.exceptions.RequestException and raise OMSError (mirroring _login()'s existing pattern), so that get_monthly_demand()/get_sales_plan()'s per-customer `fetch()` closures (which already catch OMSError) can skip a single failing customer instead of crashing the whole purchasing-plan job.",
+    "Once fixed, re-run Purchasing Plan generation and verify the Suppliers column 'Split Qty' toggle for SPC5WM (1 supplier, 60% quota) and/or SCR415WM/scr415wm (2 suppliers, 50%/55% quota) - confirmed quota_percent values are present in MongoDB part_suppliers collection right now, ready for the next testing pass.",
+    "Also worth checking: is oms.radishtechnologies.com itself under load / slow right now (root path returned 200 in 0.5s, so the host is up - only the deeper /api/ms/sales-monthly/parts calls for specific customers are timing out at 30s), separate infra item for main agent's awareness."
+  ],
+  "critical_code_review_comments": [
+    "BOM Explorer runCostEstimate()/Run Cost Estimate button code (BomExplorerPage.js lines 379-397, 785-797) is correct: button only rendered inside the isRollup branch (never on genuine-cost or no-cost rows), disables and shows 'Running...' while in flight via runningCostEstimate state, re-enables after, and surfaces err.response.data.detail verbatim in the error toast description - verified this produces the real SAP 'Web service processing error ... Transaction ID ...' text end-to-end, matching the documented known/escalated SAP-side issue.",
+    "PurchasingPlanPage.js computeSupplierSplit() (lines 395-403) logic reads correctly by code inspection - filters supplierSummaries to only quota_percent != null assignments and multiplies net_qty_by_month[m] * quota_percent/100 per month, matching the requested math - but this could not be exercised live because plan generation itself is broken (see backend_issues).",
+    "oms_client.py: _login() has requests.exceptions.RequestException handling but _get() (the far more frequently-called method, invoked once per customer per plan generation, often 50-100+ times via an 8-worker thread pool) has none - this asymmetry is the direct root cause of the current outage. Low-risk, contained fix."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A - not requested (frontend only), but 1 critical blocking backend bug found via investigation", "frontend": "50% - Feature 1 fully passed; Feature 2 blocked/untestable"},
+  "seed_data_creation": "None - confirmed pre-existing MongoDB part_suppliers docs for SPC5WM (60%), SCR415WM (55%), scr415wm (50%) already present for next tester to use once Purchasing Plan generation is fixed.",
+  "retest_needed": true,
+  "main_agent_can_self_test": false,
+  "context_for_next_testing_agent": "Feature 1 (BOM Explorer Run Cost Estimate) is DONE and verified working correctly - do not retest unless code changes. Feature 2 (Purchasing Plan Split Qty) is completely UNTESTED because plan generation itself is broken right now (see critical backend issue - oms_client.py _get() unhandled ReadTimeout). Once main agent fixes that, re-run: navigate to /purchasing-plan, click Generate Purchasing Plan for default month, poll /api/purchasing-plan/status/<job_id> (can take 1-5 min), then look for SPC5WM or SCR415WM/scr415wm rows and verify the Split Qty toggle + math (Order Qty = Net Purchase Qty * quota_percent/100 per month) using data-testids purchasing-plan-supplier-split-toggle-<category>-<i> and purchasing-plan-supplier-split-row-<category>-<i>.",
+  "rca_of_the_issue": "Purchasing Plan generation depends on OMSClient.get_monthly_demand()/get_sales_plan(), which fan out one HTTP GET per OMS customer via an 8-worker ThreadPoolExecutor calling OMSClient._get(). _get() calls requests.get(...) with a 30s timeout but does NOT catch request exceptions (unlike _login(), which does and raises a clean OMSError). When any single customer's call read-times-out (observed repeatedly against oms.radishtechnologies.com's /api/ms/sales-monthly/parts endpoint - the host itself responds fine on other paths), the raw requests.exceptions.ReadTimeout escapes uncaught through get_parts() -> the fetch() closure in get_monthly_demand()/get_sales_plan() (which only catches OMSError, not generic RequestException) -> executor.map() -> the purchasing_plan job, killing the entire generation with 'failed' status. Confirmed via 5 consecutive real failures today (both curl-triggered and UI-triggered) all citing the identical error message, and via backend logs showing the sibling demand_planning_service.py module already has the correct defensive pattern (catches ReadTimeout and logs+skips per-customer) for the same OMS host, confirming this is a real, fixable code gap rather than a total OMS outage."
+}

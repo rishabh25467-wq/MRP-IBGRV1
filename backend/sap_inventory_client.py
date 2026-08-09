@@ -27,6 +27,8 @@ import logging
 import requests
 from requests.auth import HTTPBasicAuth
 
+from sap_rate_limiter import sap_semaphore
+
 logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 5000
@@ -42,13 +44,14 @@ class SAPInventoryClient:
         self.auth = HTTPBasicAuth(username, password)
 
     def _fetch_page(self, skip: int) -> list:
-        resp = requests.get(
-            self.report_url,
-            auth=self.auth,
-            timeout=60,
-            headers={"Accept": "application/json"},
-            params={"$format": "json", "$top": PAGE_SIZE, "$skip": skip},
-        )
+        with sap_semaphore:
+            resp = requests.get(
+                self.report_url,
+                auth=self.auth,
+                timeout=60,
+                headers={"Accept": "application/json"},
+                params={"$format": "json", "$top": PAGE_SIZE, "$skip": skip},
+            )
         if resp.status_code != 200:
             raise SAPInventoryError(f"SAP inventory report returned HTTP {resp.status_code}: {resp.text[:300]}")
         data = resp.json()

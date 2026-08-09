@@ -18,6 +18,8 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
+from sap_rate_limiter import sap_semaphore
+
 
 class SAPSupplierInvoiceError(Exception):
     pass
@@ -72,13 +74,14 @@ class SAPSupplierInvoiceClient:
         date_filter = _DATE_FILTER.format(min_date=min_date) if min_date else ""
         body = _REQUEST_TEMPLATE.format(product_id=product_id, limit=limit, date_filter=date_filter)
         try:
-            resp = requests.post(
-                self.endpoint,
-                auth=(self.username, self.password),
-                data=body.encode("utf-8"),
-                headers={"Content-Type": "text/xml; charset=utf-8", "SOAPAction": "QUERY_BY_ELEMENTS"},
-                timeout=60,
-            )
+            with sap_semaphore:
+                resp = requests.post(
+                    self.endpoint,
+                    auth=(self.username, self.password),
+                    data=body.encode("utf-8"),
+                    headers={"Content-Type": "text/xml; charset=utf-8", "SOAPAction": "QUERY_BY_ELEMENTS"},
+                    timeout=60,
+                )
         except requests.exceptions.RequestException as e:
             raise SAPSupplierInvoiceError(f"Could not reach SAP: {e}")
 

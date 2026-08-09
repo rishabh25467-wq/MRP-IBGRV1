@@ -25,6 +25,8 @@ import re
 import requests
 from requests.auth import HTTPBasicAuth
 
+from sap_rate_limiter import sap_semaphore
+
 
 class SAPSupplierError(Exception):
     pass
@@ -122,13 +124,14 @@ class SAPSupplierClient:
         callers should surface these as an actionable message, not a
         silent empty list."""
         try:
-            resp = requests.post(
-                self.endpoint,
-                data=self._request_xml(max_hits).encode("utf-8"),
-                auth=self.auth,
-                headers={"Content-Type": "text/xml; charset=utf-8", "Accept": "text/xml", "SOAPAction": '""'},
-                timeout=120,
-            )
+            with sap_semaphore:
+                resp = requests.post(
+                    self.endpoint,
+                    data=self._request_xml(max_hits).encode("utf-8"),
+                    auth=self.auth,
+                    headers={"Content-Type": "text/xml; charset=utf-8", "Accept": "text/xml", "SOAPAction": '""'},
+                    timeout=120,
+                )
         except requests.exceptions.RequestException as e:
             raise SAPSupplierError(f"Could not reach SAP: {e}")
 

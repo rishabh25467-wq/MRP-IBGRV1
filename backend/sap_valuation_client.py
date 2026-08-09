@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 import requests
 from requests.auth import HTTPBasicAuth
 
+from sap_rate_limiter import sap_semaphore
+
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 15
@@ -59,13 +61,14 @@ class SAPValuationClient:
 
     def _get(self, path: str, filter_expr: str):
         url = f"{self.base_url}/{path}"
-        resp = requests.get(
-            url,
-            auth=self.auth,
-            timeout=30,
-            headers={"Accept": "application/json"},
-            params={"$filter": filter_expr, "$format": "json"},
-        )
+        with sap_semaphore:
+            resp = requests.get(
+                url,
+                auth=self.auth,
+                timeout=30,
+                headers={"Accept": "application/json"},
+                params={"$filter": filter_expr, "$format": "json"},
+            )
         if resp.status_code != 200:
             raise SAPValuationError(f"SAP valuation service returned HTTP {resp.status_code}: {resp.text[:300]}")
         data = resp.json()

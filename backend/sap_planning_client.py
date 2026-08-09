@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 import requests
 from requests.auth import HTTPBasicAuth
 
+from sap_rate_limiter import sap_semaphore
+
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 15
@@ -56,13 +58,14 @@ class SAPPlanningClient:
         self.password = password
 
     def _get(self, filter_expr: str):
-        resp = requests.get(
-            f"{self.base_url}/{COLLECTION}",
-            auth=HTTPBasicAuth(self.username, self.password),
-            timeout=30,
-            headers={"Accept": "application/json"},
-            params={"$filter": filter_expr, "$format": "json"},
-        )
+        with sap_semaphore:
+            resp = requests.get(
+                f"{self.base_url}/{COLLECTION}",
+                auth=HTTPBasicAuth(self.username, self.password),
+                timeout=30,
+                headers={"Accept": "application/json"},
+                params={"$filter": filter_expr, "$format": "json"},
+            )
         if resp.status_code != 200:
             raise SAPPlanningError(f"SAP planning service returned HTTP {resp.status_code}: {resp.text[:300]}")
         data = resp.json()
@@ -136,12 +139,13 @@ class SAPPlanningClient:
         session = requests.Session()
         session.auth = HTTPBasicAuth(self.username, self.password)
 
-        csrf_resp = session.get(
-            f"{self.base_url}/{COLLECTION}",
-            headers={"x-csrf-token": "fetch", "Accept": "application/json"},
-            params={"$top": 1},
-            timeout=30,
-        )
+        with sap_semaphore:
+            csrf_resp = session.get(
+                f"{self.base_url}/{COLLECTION}",
+                headers={"x-csrf-token": "fetch", "Accept": "application/json"},
+                params={"$top": 1},
+                timeout=30,
+            )
         token = csrf_resp.headers.get("x-csrf-token")
         if not token:
             raise SAPPlanningError("SAP did not return a CSRF token - cannot write")
@@ -153,12 +157,13 @@ class SAPPlanningClient:
                 continue
             last_error = None
             for attempt in range(1, WRITE_RETRY_ATTEMPTS + 1):
-                resp = session.patch(
-                    f"{self.base_url}/{COLLECTION}('{object_id}')",
-                    headers={"x-csrf-token": token, "Content-Type": "application/json", "Accept": "application/json"},
-                    json=payload,
-                    timeout=30,
-                )
+                with sap_semaphore:
+                    resp = session.patch(
+                        f"{self.base_url}/{COLLECTION}('{object_id}')",
+                        headers={"x-csrf-token": token, "Content-Type": "application/json", "Accept": "application/json"},
+                        json=payload,
+                        timeout=30,
+                    )
                 if resp.status_code in (200, 204):
                     updated += 1
                     last_error = None

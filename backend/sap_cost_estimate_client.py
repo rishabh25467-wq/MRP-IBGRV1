@@ -18,6 +18,8 @@ from datetime import date
 import requests
 from requests.auth import HTTPBasicAuth
 
+from sap_rate_limiter import sap_semaphore
+
 SOAP_ACTION = "http://sap.com/xi/A1S/Global/ManageMaterialCostEstimateRunDataBundle/ManageMaterialCostEstimateMaintainBundleRequest"
 
 
@@ -73,13 +75,14 @@ class SAPCostEstimateClient:
 </soapenv:Envelope>"""
 
         try:
-            resp = requests.post(
-                self.endpoint,
-                data=body.encode("utf-8"),
-                auth=self.auth,
-                headers={"Content-Type": "text/xml; charset=utf-8", "SOAPAction": SOAP_ACTION},
-                timeout=45,
-            )
+            with sap_semaphore:
+                resp = requests.post(
+                    self.endpoint,
+                    data=body.encode("utf-8"),
+                    auth=self.auth,
+                    headers={"Content-Type": "text/xml; charset=utf-8", "SOAPAction": SOAP_ACTION},
+                    timeout=45,
+                )
         except requests.exceptions.RequestException as e:
             raise SAPCostEstimateError(f"Could not reach SAP: {e}")
 

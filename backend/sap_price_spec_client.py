@@ -25,6 +25,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from requests.auth import HTTPBasicAuth
 
+from sap_rate_limiter import sap_semaphore
+
 PROPERTY_VALUATION_COLLECTION = "ProcurementPriceSpecificationPropertyValuationCollection"
 PRICE_SPEC_COLLECTION = "ProcurementPriceSpecificationCollection"
 PRODUCT_PROPERTY_CODE = "CND_PRODUCT_ID"
@@ -53,13 +55,14 @@ class SAPPriceSpecClient:
 
     def _get(self, collection: str, params: dict) -> list:
         try:
-            resp = requests.get(
-                f"{self.base_url}/{collection}",
-                auth=self.auth,
-                timeout=30,
-                headers={"Accept": "application/json"},
-                params={**params, "$format": "json"},
-            )
+            with sap_semaphore:
+                resp = requests.get(
+                    f"{self.base_url}/{collection}",
+                    auth=self.auth,
+                    timeout=30,
+                    headers={"Accept": "application/json"},
+                    params={**params, "$format": "json"},
+                )
         except requests.exceptions.RequestException as e:
             raise SAPPriceSpecError(f"Could not reach SAP: {e}")
         if resp.status_code != 200:
@@ -160,11 +163,12 @@ class SAPPriceSpecClient:
  </soapenv:Body>
 </soapenv:Envelope>"""
         try:
-            resp = requests.post(
-                self.soap_endpoint, data=xml.encode("utf-8"), auth=self.soap_auth,
-                headers={"Content-Type": "text/xml; charset=utf-8", "Accept": "text/xml", "SOAPAction": '""'},
-                timeout=30,
-            )
+            with sap_semaphore:
+                resp = requests.post(
+                    self.soap_endpoint, data=xml.encode("utf-8"), auth=self.soap_auth,
+                    headers={"Content-Type": "text/xml; charset=utf-8", "Accept": "text/xml", "SOAPAction": '""'},
+                    timeout=30,
+                )
         except requests.exceptions.RequestException as e:
             raise SAPPriceSpecError(f"Could not reach SAP: {e}")
         if resp.status_code != 200 or "Fault" in resp.text:

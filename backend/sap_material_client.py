@@ -15,6 +15,8 @@ import re
 import requests
 from requests.auth import HTTPBasicAuth
 
+from sap_rate_limiter import sap_semaphore
+
 
 class SAPMaterialError(Exception):
     pass
@@ -75,13 +77,14 @@ class SAPMaterialClient:
         that exact InternalID. Raises SAPMaterialAuthError if the technical
         user isn't authorized for this service, or SAPMaterialError for any
         other SOAP fault/HTTP error."""
-        resp = requests.post(
-            self.endpoint,
-            data=self._request_xml(internal_id).encode("utf-8"),
-            auth=self.auth,
-            headers={"Content-Type": "text/xml; charset=utf-8", "Accept": "text/xml", "SOAPAction": '""'},
-            timeout=45,
-        )
+        with sap_semaphore:
+            resp = requests.post(
+                self.endpoint,
+                data=self._request_xml(internal_id).encode("utf-8"),
+                auth=self.auth,
+                headers={"Content-Type": "text/xml; charset=utf-8", "Accept": "text/xml", "SOAPAction": '""'},
+                timeout=45,
+            )
         xml = resp.text
         if resp.status_code >= 400 or "<Fault" in xml or ":Fault" in xml:
             faultstring = _first_tag(xml, "faultstring") or f"HTTP {resp.status_code}"

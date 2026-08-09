@@ -7,6 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 from requests.auth import HTTPBasicAuth
 
+from sap_rate_limiter import sap_semaphore
+
 logger = logging.getLogger(__name__)
 
 SOAP_ACTION = "http://sap.com/xi/A1S/Global/QueryProductionBillofMaterialsIn/QueryProductionBillOfMaterialByElementsRequest"
@@ -40,7 +42,8 @@ class SAPSoapBOMClient:
 </soapenv:Envelope>"""
         headers = {"Content-Type": "text/xml; charset=utf-8", "SOAPAction": SOAP_ACTION}
         try:
-            response = requests.post(self.endpoint, data=body.encode("utf-8"), headers=headers, auth=self.auth, timeout=30)
+            with sap_semaphore:
+                response = requests.post(self.endpoint, data=body.encode("utf-8"), headers=headers, auth=self.auth, timeout=30)
         except requests.exceptions.RequestException as e:
             raise SAPSoapError(str(e))
 
