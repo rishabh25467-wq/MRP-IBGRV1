@@ -1,0 +1,45 @@
+{
+  "summary": "Tested the toast readability fix in /app/frontend/src/components/ui/sonner.jsx on SupplierMasterPage. The critical white-on-white unreadable text bug IS fixed (toasts now show dark navy text/icons on white background, which is readable). However, the intended color-coding requirement (green background+text for success, red background+text for error) is NOT fully achieved - background stays plain white and the visible title text stays dark navy (#101828) for ALL toast types; only the small icon glyph picks up the correct red/green color via SVG currentColor inheritance.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Toaster (sonner.jsx)",
+        "issue": "Root cause: the rendered <li data-sonner-toast> element receives BOTH the base 'toast' className (!bg-white !text-[#101828] ...) AND the type-specific className (!bg-[#FEF3F2] !text-[#B42318] ... for error, similarly for success). Both sets use Tailwind '!important' with identical specificity, so the CSS cascade tie is broken by Tailwind's generated stylesheet source order, not by className attribute order in JSX. Result: '!bg-white' consistently wins over the tinted backgrounds (confirmed via getComputedStyle: bg stayed rgb(255,255,255) for both success and error toasts instead of #FEF3F2/#ECFDF3). Separately, the 'title' className (which wraps the actual visible text in a nested <div data-title>) is unconditionally set to '!text-[#101828] !font-medium' regardless of toast type, so the visible text never inherits the success/error/warning/info text color at all - only the SVG icon (which uses currentColor from the outer <li>) shows the correct red/green tint. Verified via DOM outerHTML + getComputedStyle: outer <li> color resolved to #B42318 (red, correct) but the actual text <div data-title> color resolved to #101828 (dark navy, NOT red) for the error toast; similarly success toast text stayed dark navy instead of #027A48 green.",
+        "selector": "[data-sonner-toast]",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Toast notifications (app-wide, verified on Supplier Master)",
+        "issues": [
+          "Core readability bug (white text on white bg) is fixed - text is dark navy on white bg, sufficient contrast, no longer unreadable.",
+          "But toasts do NOT show the requested distinct green/red tinted backgrounds and colored text - all toast types currently render visually near-identical (white bg, dark navy text), differentiated only by a small colored icon. This does not fully satisfy the user's ask 'green and red based on result'."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "In sonner.jsx, remove the duplicate/conflicting base '!bg-white !text-[#101828]' from the shared 'toast' className (or make it type-conditional) so it doesn't tie/override the success/error/warning/info background colors.",
+    "Remove or override the unconditional '!text-[#101828] !font-medium' on the 'title' className, OR add per-type title color overrides (e.g. via CSS attribute selectors like '[data-type=success] [data-title]') so the visible toast text actually renders in green/red/amber/blue per type, not just the icon.",
+    "Re-verify via getComputedStyle on the <li data-sonner-toast> AND the nested <div data-title> (the actual visible text element) after the fix, not just the outer <li>, since that's what determines visible readability/color."
+  ],
+  "critical_code_review_comments": [
+    "sonner.jsx: Applying two conflicting sets of '!important' Tailwind utility classes (base 'toast' + type-specific 'success/error/warning/info') for the same CSS properties (background-color, color) on the same element is fragile - Tailwind resolves ties by stylesheet generation order, not JSX class order, making the outcome non-deterministic/hard to reason about. Should instead make the base classNames NOT declare bg/text color (only border/shadow/radius), letting type-specific classes fully own bg/text, or use conditional logic to only apply the base color when no type is set.",
+    "The 'title' className unconditionally hardcodes text color for ALL toast types - this is the actual functional bug preventing the green/red text requirement from being met, since the visible text lives inside the title div, not the outer <li>."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A", "frontend": "60%"},
+  "test_credentials": "None required for this test",
+  "seed_data_creation": "Created and cleaned up one test supplier 'QA Toast Test Supplier' via UI (added then deleted) during testing.",
+  "retest_needed": true,
+  "main_agent_can_self_test": false,
+  "context_for_next_testing_agent": "Critical white-on-white toast bug from the original report IS resolved (verified via screenshot + getComputedStyle - text is dark navy #101828 on white bg, readable). But the color-coding (green success / red error backgrounds+text) described in the fix summary is not actually rendering - confirmed via DOM inspection that both 'toast' base className and type-specific className set conflicting !important bg/text colors on the same <li>, and 'toast' base wins for background; separately the nested title div's text color is hardcoded regardless of type so only the icon shows the correct tint, not the text. Next agent should re-check computed styles of the [data-title] div specifically (not just the outer <li>) after any fix attempt.",
+  "rca of the issue": "sonner.jsx assigns classNames.toast = '!bg-white !text-[#101828] ...' AND classNames.success/error/warning/info = '!bg-[color] !text-[color] ...'. Sonner's library applies both classes to the same <li> element (base 'toast' class is always applied, plus the type-matched class). Because both use Tailwind '!important' modifiers with identical CSS specificity, whichever utility appears later in Tailwind's generated stylesheet wins for a given property - this happened to be '!bg-white' for background (so tinted backgrounds never show), while for color the type-specific class happened to win at the <li> level (icon shows correct color). However, the actual visible text is in a separate nested <div data-title> with its own classNames.title = '!text-[#101828] !font-medium' which is applied unconditionally (not type-aware), so the visible text is always dark navy regardless of toast type - it does not inherit the <li>'s color because it has its own explicit !important color set directly on itself."
+}
