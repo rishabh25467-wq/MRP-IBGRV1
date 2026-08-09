@@ -1064,25 +1064,25 @@ const SalesProductionPlanTab = ({ actorName }) => {
                             <table className="w-full text-[11px] border-collapse">
                               <thead>
                                 <tr className="text-[#71717A]">
-                                  <th className="pl-8 py-1 text-left font-heading uppercase text-[9px] tracking-wider">Customer PO</th>
-                                  <th className="text-left font-heading uppercase text-[9px] tracking-wider">Customer</th>
-                                  <th className="text-left font-heading uppercase text-[9px] tracking-wider">Ship Date</th>
-                                  <th className="text-right font-heading uppercase text-[9px] tracking-wider">Lead Day</th>
-                                  <th className="text-left font-heading uppercase text-[9px] tracking-wider">Prod. Start</th>
-                                  <th className="text-right font-heading uppercase text-[9px] tracking-wider">Qty Open</th>
-                                  <th className="text-right font-heading uppercase text-[9px] tracking-wider pr-2">Net</th>
+                                  <th className="pl-8 pr-2 py-1 text-left font-heading uppercase text-[9px] tracking-wider">Customer PO</th>
+                                  <th className="px-2 text-left font-heading uppercase text-[9px] tracking-wider">Customer</th>
+                                  <th className="px-2 text-left font-heading uppercase text-[9px] tracking-wider">Ship Date</th>
+                                  <th className="px-2 text-right font-heading uppercase text-[9px] tracking-wider">Lead Day</th>
+                                  <th className="px-2 text-left font-heading uppercase text-[9px] tracking-wider">Prod. Start</th>
+                                  <th className="px-2 text-right font-heading uppercase text-[9px] tracking-wider">Qty Open</th>
+                                  <th className="px-2 text-right font-heading uppercase text-[9px] tracking-wider pr-2">Net</th>
                                 </tr>
                               </thead>
                               <tbody>
                                 {fg.demand_lines.map((l, i) => (
                                   <tr key={i} data-testid={`mps-demand-line-${fg.item_code}-${i}`}>
-                                    <td className="font-data pl-8 py-0.5">{l.customer_po || "—"}</td>
-                                    <td className="py-0.5">{l.customer || "—"}</td>
-                                    <td className="font-data py-0.5">{formatDate(l.target_ship_date)}</td>
-                                    <td className="font-data text-right py-0.5">{l.lead_day ?? "—"}</td>
-                                    <td className="font-data py-0.5">{formatDate(l.production_start_date)}</td>
-                                    <td className="font-data text-right py-0.5">{formatQty(l.qty_open)}</td>
-                                    <td className="font-data text-right font-bold pr-2 py-0.5">{formatQty(l.net_qty)}</td>
+                                    <td className="font-data pl-8 pr-2 py-0.5">{l.customer_po || "—"}</td>
+                                    <td className="px-2 py-0.5">{l.customer || "—"}</td>
+                                    <td className="font-data px-2 py-0.5">{formatDate(l.target_ship_date)}</td>
+                                    <td className="font-data text-right px-2 py-0.5">{l.lead_day ?? "—"}</td>
+                                    <td className="font-data px-2 py-0.5">{formatDate(l.production_start_date)}</td>
+                                    <td className="font-data text-right px-2 py-0.5">{formatQty(l.qty_open)}</td>
+                                    <td className="font-data text-right font-bold px-2 py-0.5">{formatQty(l.net_qty)}</td>
                                   </tr>
                                 ))}
                               </tbody>

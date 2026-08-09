@@ -10,7 +10,7 @@ from typing import List, Optional
 import requests
 from dotenv import load_dotenv
 from fastapi import APIRouter, FastAPI, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from pymongo import MongoClient
 from starlette.middleware.cors import CORSMiddleware
 
@@ -1110,8 +1110,15 @@ async def get_mrp_autosave():
     doc = await asyncio.to_thread(mrp_plan_store.get_autosave, db)
     if not doc:
         return MrpAutosaveResponse(found=False)
+    try:
+        plan = MrpPlanResponse(**doc["plan"])
+    except ValidationError:
+        # Stale autosave from before a schema change (e.g. the Tier-2-from-lock
+        # migration added required fields) - treat as "nothing to restore"
+        # instead of crashing; a fresh Generate will overwrite it.
+        return MrpAutosaveResponse(found=False)
     return MrpAutosaveResponse(
-        found=True, plan=MrpPlanResponse(**doc["plan"]),
+        found=True, plan=plan,
         created_at=doc["created_at"].isoformat(), created_by=doc.get("created_by"),
     )
 
