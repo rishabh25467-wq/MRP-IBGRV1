@@ -58,6 +58,9 @@ export default function QuotaAllocationPage() {
   const [sapPurchaseHistory, setSapPurchaseHistory] = useState([]);
   const [sapPurchaseHistoryLoading, setSapPurchaseHistoryLoading] = useState(false);
   const [sapPurchaseHistoryError, setSapPurchaseHistoryError] = useState(null);
+  const [sapReceiptDates, setSapReceiptDates] = useState([]);
+  const [sapReceiptDatesLoading, setSapReceiptDatesLoading] = useState(false);
+  const [sapReceiptDatesError, setSapReceiptDatesError] = useState(null);
   const productLoadRequestRef = useRef(null);
 
   const [productSuggestions, setProductSuggestions] = useState([]);
@@ -88,6 +91,11 @@ export default function QuotaAllocationPage() {
       .then(({ data }) => setSuppliers(data))
       .catch((err) => toast.error("Could not load supplier list", { description: err?.response?.data?.detail || err.message }));
   }, []);
+
+  // Goods Receipt responses from SAP only carry the supplier's internal
+  // SAP ID (no name snapshot on that document) - resolve it against the
+  // Supplier Master list we already have loaded.
+  const nameForSapId = (sapInternalId) => suppliers.find((s) => s.sap_internal_id === sapInternalId)?.name;
 
   const applySuggestion = (data) => {
     setQuotaAllocations(data.allocations || []);
@@ -187,6 +195,22 @@ export default function QuotaAllocationPage() {
     }
   };
 
+  const loadSapReceiptDates = async (productId) => {
+    setSapReceiptDatesLoading(true);
+    setSapReceiptDatesError(null);
+    try {
+      const { data } = await axios.get(`${API}/suppliers/sap-receipt-dates/${encodeURIComponent(productId)}`);
+      if (productLoadRequestRef.current !== productId) return;
+      setSapReceiptDates(data);
+    } catch (err) {
+      if (productLoadRequestRef.current !== productId) return;
+      setSapReceiptDates([]);
+      setSapReceiptDatesError(err?.response?.data?.detail || err.message || "Could not read SAP Goods Receipt history");
+    } finally {
+      if (productLoadRequestRef.current === productId) setSapReceiptDatesLoading(false);
+    }
+  };
+
   const searchProduct = (pidOverride) => {
     const pid = (pidOverride ?? productIdInput).trim().toUpperCase();
     if (!pid) return;
@@ -197,6 +221,7 @@ export default function QuotaAllocationPage() {
     loadSapPriceSpecs(pid);
     loadErpPrices(pid);
     loadSapPurchaseHistory(pid);
+    loadSapReceiptDates(pid);
     loadQuotaArrangement(pid);
   };
 
@@ -568,6 +593,56 @@ export default function QuotaAllocationPage() {
                             </td>
                             <td className="border border-[#D0D5DD] px-1.5 py-1 text-right tabular-nums text-[#101828]">
                               {row.price != null ? `${row.currency || ""} ${row.price}` : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Real SAP-native Goods Receipt (Goods & Service Acknowledgement)
+                  history - the actual physical delivery date, a genuinely
+                  different document from the Supplier Invoice (billing) above. */}
+              <div className="p-2.5 bg-[#F9FAFB] border-b border-[#D0D5DD]" data-testid="sap-receipt-dates-panel">
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <Badge variant="outline" className="bg-[#EFF4FF] text-[#004B87] border-[#B8D4ED] text-xs">SAP</Badge>
+                  <span className="font-heading text-xs font-bold text-[#344054] uppercase tracking-wide">
+                    Goods Receipts from SAP (real posted delivery dates)
+                  </span>
+                </div>
+                {sapReceiptDatesLoading ? (
+                  <div className="text-[13px] text-[#475467] py-2">Reading from SAP...</div>
+                ) : sapReceiptDatesError ? (
+                  <div className="text-[13px] text-[#B54708] py-1" data-testid="sap-receipt-dates-error">{sapReceiptDatesError}</div>
+                ) : sapReceiptDates.length === 0 ? (
+                  <div className="text-[13px] text-[#98A2B3] py-1" data-testid="sap-receipt-dates-empty">
+                    No posted Goods Receipts found in SAP for "{activeProductId}"
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[13px] border-collapse" data-testid="sap-receipt-dates-table">
+                      <thead>
+                        <tr>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Goods Receipt</th>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Receipt Date</th>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Supplier</th>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">PO</th>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-right text-xs font-bold text-[#344054] font-heading uppercase">Qty</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sapReceiptDates.map((row, i) => (
+                          <tr key={`${row.gsa_id}-${i}`} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`sap-receipt-dates-row-${i}`}>
+                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#101828]">{row.gsa_id || "—"}</td>
+                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#475467]">{row.posting_date || "—"}</td>
+                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#101828]">
+                              {withVendorCode(nameForSapId(row.supplier_internal_id), row.supplier_internal_id)}
+                            </td>
+                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#475467]">{row.po_id || "—"}</td>
+                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-right tabular-nums text-[#475467]">
+                              {row.quantity != null ? `${row.quantity.toLocaleString()} ${row.unit_of_measure || ""}` : "—"}
                             </td>
                           </tr>
                         ))}

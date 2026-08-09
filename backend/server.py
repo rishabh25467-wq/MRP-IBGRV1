@@ -20,6 +20,7 @@ from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplier
 from sap_price_spec_client import SAPPriceSpecClient, SAPPriceSpecError, bulk_push_erp_prices_to_sap
 from sap_supplier_invoice_client import SAPSupplierInvoiceClient, SAPSupplierInvoiceError
 from sap_cost_estimate_client import SAPCostEstimateClient, SAPCostEstimateError
+from sap_gsa_client import SAPGSAClient, SAPGSAError
 from price_explorer_client import PriceExplorerClient, PriceExplorerError
 import quota_arrangement_service
 from sap_valuation_client import SAPValuationClient, SAPValuationError
@@ -122,6 +123,12 @@ sap_cost_estimate_client = SAPCostEstimateClient(
     password=os.environ['SAP_SOAP_PASSWORD'],
     company_id=os.environ['SAP_COMPANY_ID'],
     set_of_books_id=os.environ['SAP_SET_OF_BOOKS_ID'],
+)
+
+sap_gsa_client = SAPGSAClient(
+    endpoint=os.environ['SAP_SOAP_GSA_ENDPOINT'],
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
 )
 
 oms_client = OMSClient(
@@ -2182,6 +2189,29 @@ async def get_sap_purchase_history(product_id: str, limit: int = 20):
     except SAPSupplierInvoiceError as e:
         raise HTTPException(status_code=502, detail=f"SAP error: {e}")
     return [SapSupplierInvoiceLine(**r) for r in rows]
+
+
+class SapGSALine(BaseModel):
+    gsa_id: Optional[str] = None
+    posting_date: Optional[str] = None
+    po_id: Optional[str] = None
+    supplier_internal_id: Optional[str] = None
+    quantity: Optional[float] = None
+    unit_of_measure: Optional[str] = None
+
+
+@api_router.get("/suppliers/sap-receipt-dates/{product_id}", response_model=List[SapGSALine])
+async def get_sap_receipt_dates(product_id: str, limit: int = 20):
+    """Reads REAL, posted Goods & Service Acknowledgement (physical goods
+    receipt) line items for this Product ID straight from SAP itself
+    (QueryGoodsAndServiceAcknowledgementInbound) - a genuinely separate
+    document from the Supplier Invoice above (billing date vs. actual
+    delivery date can differ) - see sap_gsa_client.py."""
+    try:
+        rows = await asyncio.to_thread(sap_gsa_client.get_receipt_dates_for_product, product_id, limit)
+    except SAPGSAError as e:
+        raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+    return [SapGSALine(**r) for r in rows]
 
 
 class BulkPushErpProgress(BaseModel):
