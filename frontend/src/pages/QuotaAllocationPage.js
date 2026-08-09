@@ -188,7 +188,7 @@ export default function QuotaAllocationPage() {
   };
 
   const searchProduct = (pidOverride) => {
-    const pid = (pidOverride ?? productIdInput).trim();
+    const pid = (pidOverride ?? productIdInput).trim().toUpperCase();
     if (!pid) return;
     setProductIdInput(pid);
     setShowProductSuggestions(false);

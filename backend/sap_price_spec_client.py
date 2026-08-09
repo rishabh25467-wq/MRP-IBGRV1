@@ -74,8 +74,15 @@ class SAPPriceSpecClient:
         """Returns real SAP purchasing price records for a Product ID:
         [{sap_id, supplier_internal_id, supplier_name, price, currency,
         unit, start_date, end_date, release_status_code}, ...]. Empty list
-        if SAP has none - that's a normal outcome, not an error."""
-        escaped = product_id.replace("'", "''")
+        if SAP has none - that's a normal outcome, not an error.
+
+        Product IDs are normalized to uppercase before querying: SAP's
+        OData `eq` filter is case-SENSITIVE and every Product ID actually
+        stored in this tenant is uppercase (e.g. "SPC5WM"), but SAP's own
+        UI search box is case-insensitive - so a user typing "spc5wm" (as
+        seen directly in SAP's own List Price search) would silently get
+        zero results here otherwise, while SAP itself matches it fine."""
+        escaped = product_id.strip().upper().replace("'", "''")
         rows = self._get(PROPERTY_VALUATION_COLLECTION, {
             "$filter": f"PriceSpecificationElementPropertyRefe eq '{PRODUCT_PROPERTY_CODE}' "
                        f"and PriceSpecificationElementPropertyValu eq '{escaped}'",
@@ -114,9 +121,12 @@ class SAPPriceSpecClient:
         """Creates a new Procurement Price Specification in SAP via SOAP
         MaintainBundle (actionCode 01) - confirmed to auto-release with just
         these fields (see module docstring). Raises SAPPriceSpecError on any
-        SOAP fault or connectivity issue."""
+        SOAP fault or connectivity issue. Product ID is uppercased (see
+        get_price_specs_for_product docstring) so it stays consistent with
+        every other Product ID already stored in this tenant."""
         if not self.soap_endpoint or not self.soap_auth:
             raise SAPPriceSpecError("SAP price spec write endpoint is not configured")
+        product_id = product_id.strip().upper()
         today = date.today().isoformat()
         xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"

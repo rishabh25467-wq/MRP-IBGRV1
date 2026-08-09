@@ -5,17 +5,18 @@ import { Toaster as Sonner, toast } from "sonner"
 // while bg stayed light => unreadable white-on-white toasts).
 //
 // Color-coding by type (success=green, error=red, warning=amber, info=blue)
-// is done via `group-data-[type=x]:` selectors reading Sonner's own
-// `data-type` attribute on the toast <li> (which also carries the "group"
-// class from the `toast` key below) - NOT via Sonner's separate
-// success/error/warning/info classNames keys. Those keys get merged
-// alongside the base `toast` key onto the SAME element, so two competing
-// `!important` utility classes end up fighting for the same CSS property
-// (background-color, color) with identical specificity - Tailwind then
-// breaks the tie by stylesheet generation order, which is unpredictable
-// and empirically inconsistent per-property (confirmed: bg lost the tie,
-// text color won it). A single group-data selector chain has no competing
-// declaration for the same property, so it's deterministic.
+// reads Sonner's own `data-type` attribute:
+// - On the `toast` key (the <li> itself, which ALSO carries the "group"
+//   class): use the SELF-referential `data-[type=x]:` variant (no "group-"
+//   prefix) - `group-data-[type=x]:` compiles to a descendant selector
+//   (`.group[data-type=x] &`) which requires "group" to be on an ANCESTOR,
+//   so it can never match the very element that carries "group" itself.
+// - On `title`/`description` (genuine descendants of that <li>): use
+//   `group-data-[type=x]:`, which correctly resolves against the <li>
+//   ancestor.
+// Both are needed with `!important` since Sonner's own bundled CSS also
+// sets these properties and would otherwise win depending on stylesheet
+// generation order (confirmed non-deterministic per-property in testing).
 const Toaster = ({
   ...props
 }) => {
@@ -27,10 +28,10 @@ const Toaster = ({
         classNames: {
           toast:
             "group toast !border !shadow-lg !rounded-sm bg-white border-[#D0D5DD] " +
-            "group-data-[type=success]:!bg-[#ECFDF3] group-data-[type=success]:!border-[#ABEFC6] " +
-            "group-data-[type=error]:!bg-[#FEF3F2] group-data-[type=error]:!border-[#FECDCA] " +
-            "group-data-[type=warning]:!bg-[#FFFAEB] group-data-[type=warning]:!border-[#FEDF89] " +
-            "group-data-[type=info]:!bg-[#EFF4FF] group-data-[type=info]:!border-[#B8D4ED]",
+            "data-[type=success]:!bg-[#ECFDF3] data-[type=success]:!border-[#ABEFC6] " +
+            "data-[type=error]:!bg-[#FEF3F2] data-[type=error]:!border-[#FECDCA] " +
+            "data-[type=warning]:!bg-[#FFFAEB] data-[type=warning]:!border-[#FEDF89] " +
+            "data-[type=info]:!bg-[#EFF4FF] data-[type=info]:!border-[#B8D4ED]",
           title:
             "!font-medium text-[#101828] " +
             "group-data-[type=success]:!text-[#027A48] group-data-[type=error]:!text-[#B42318] " +
