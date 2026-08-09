@@ -14,6 +14,7 @@ the `_EMERGENTBOM` technical user (granted Feb 2026 - see
 endpoint: SAP_SOAP_SUPPLIER_INVOICE_ENDPOINT in backend/.env.
 """
 import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -22,12 +23,19 @@ class SAPSupplierInvoiceError(Exception):
     pass
 
 
+_DATE_FILTER = """  <SelectionByDate>
+   <InclusionExclusionCode>I</InclusionExclusionCode>
+   <IntervalBoundaryTypeCode>9</IntervalBoundaryTypeCode>
+   <LowerBoundaryDate>{min_date}</LowerBoundaryDate>
+  </SelectionByDate>
+"""
+
 _REQUEST_TEMPLATE = """<?xml version="1.0" encoding="utf-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
 <soapenv:Body>
 <n0:SupplierInvoiceSimpleByElementsQueryMBF_sync xmlns:n0="http://sap.com/xi/SAPGlobal20/Global">
  <SupplierInvoiceSimpleSelectionByElements>
-  <SelectionByItemProductProductKeyProductID>
+{date_filter}  <SelectionByItemProductProductKeyProductID>
    <InclusionExclusionCode>I</InclusionExclusionCode>
    <IntervalBoundaryTypeCode>1</IntervalBoundaryTypeCode>
    <LowerBoundaryProductID>{product_id}</LowerBoundaryProductID>
@@ -43,25 +51,33 @@ _REQUEST_TEMPLATE = """<?xml version="1.0" encoding="utf-8"?>
 
 
 class SAPSupplierInvoiceClient:
+    # How many hits to ask SAP for per query - a safety cap, not a
+    # substitute for date filtering (see get_invoices_for_product).
+    FETCH_LIMIT = 200
+    # Cascading recency windows (days) tried in order, narrowest first. A
+    # narrow window is both fast AND provably complete when the hit count
+    # comes back under FETCH_LIMIT (we know we got every invoice in that
+    # window, so no truncation-order ambiguity) - only widen if a window
+    # comes back completely empty (this product just wasn't invoiced that
+    # recently). Falls back to a plain undated query if even the widest
+    # window has zero hits (a rarely-purchased item).
+    RECENT_WINDOWS_DAYS = [30, 90, 400]
+
     def __init__(self, endpoint: str, username: str, password: str):
         self.endpoint = endpoint
         self.username = username
         self.password = password
 
-    def get_invoices_for_product(self, product_id: str, limit: int = 20) -> list:
-        """Returns real SAP Supplier Invoice line items for this Product ID:
-        [{invoice_id, date, supplier_name, supplier_internal_id, quantity,
-        unit_of_measure, price, currency}, ...] - one row per invoice line
-        (an invoice can list the same product more than once; returned
-        as-is, not deduplicated, since that reflects the real SAP data)."""
-        body = _REQUEST_TEMPLATE.format(product_id=product_id, limit=limit)
+    def _run_query(self, product_id: str, limit: int, min_date: str = None) -> list:
+        date_filter = _DATE_FILTER.format(min_date=min_date) if min_date else ""
+        body = _REQUEST_TEMPLATE.format(product_id=product_id, limit=limit, date_filter=date_filter)
         try:
             resp = requests.post(
                 self.endpoint,
                 auth=(self.username, self.password),
                 data=body.encode("utf-8"),
                 headers={"Content-Type": "text/xml; charset=utf-8", "SOAPAction": "QUERY_BY_ELEMENTS"},
-                timeout=30,
+                timeout=60,
             )
         except requests.exceptions.RequestException as e:
             raise SAPSupplierInvoiceError(f"Could not reach SAP: {e}")
@@ -96,5 +112,41 @@ class SAPSupplierInvoiceClient:
                     "price": float(price_el.text) if price_el is not None and price_el.text else None,
                     "currency": price_el.get("currencyCode") if price_el is not None else None,
                 })
-        rows.sort(key=lambda r: r["date"] or "", reverse=True)
         return rows
+
+    def get_invoices_for_product(self, product_id: str, limit: int = 20) -> list:
+        """Returns real SAP Supplier Invoice line items for this Product ID:
+        [{invoice_id, date, supplier_name, supplier_internal_id, quantity,
+        unit_of_measure, price, currency}, ...] - one row per invoice line
+        (an invoice can list the same product more than once; returned
+        as-is, not deduplicated, since that reflects the real SAP data),
+        sorted newest-first, capped to `limit` rows for display.
+
+        IMPORTANT: SAP's FindSimpleByElements query does NOT return hits in
+        date order - it's some internal/creation-order sequence, and a
+        heavily-used component can have hundreds of invoice lines even
+        within a single recent month. Asking SAP for a capped number of
+        hits and THEN sorting client-side silently misses genuinely newer
+        invoices that weren't inside that arbitrary batch, no matter how
+        large the cap - empirically confirmed on a real product (SPC5WM):
+        even a 200-hit query with a 400-day SelectionByDate filter still
+        under-reported the newest date by 2+ months compared to raising
+        the cap further, because 400+ lines existed inside that window
+        alone. Fix: try progressively wider recency windows
+        (RECENT_WINDOWS_DAYS) - a narrow window (30 days) both responds in
+        seconds AND is provably complete whenever its hit count comes back
+        under FETCH_LIMIT (no ordering ambiguity possible if we got every
+        row that exists in that window). Only widen if a window is
+        genuinely empty; fall back to an undated query only if the item
+        has no invoices at all within the widest window (a rarely-
+        purchased part)."""
+        rows = []
+        for days in self.RECENT_WINDOWS_DAYS:
+            min_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+            rows = self._run_query(product_id, self.FETCH_LIMIT, min_date=min_date)
+            if rows:
+                break
+        if not rows:
+            rows = self._run_query(product_id, self.FETCH_LIMIT)
+        rows.sort(key=lambda r: r["date"] or "", reverse=True)
+        return rows[:limit]
