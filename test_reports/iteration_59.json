@@ -1,0 +1,26 @@
+{
+  "summary": "Frontend-only verification of the BOM Explorer cost rollup fix (getEffectiveCost) in BomExplorerPage.js. Tested P26680 as search root, P26680 nested as sub-assembly inside P26584, and a regression check on unrelated BOM FLT2_4.1. All scenarios pass exactly as expected.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "getEffectiveCost/computeTotalCost implementation in BomExplorerPage.js (lines 104-135) correctly treats missing OR exactly-0 cost as 'not yet costed' and recursively rolls up from children using per-unit quantity multiplication - logic is sound and matches the described fix.",
+    "Note (informational, not a bug): when a product is searched directly as the ROOT (e.g. searching 'P26680' itself), the root node is not rendered as a table row at all - only its children are (result.tree = children list). This means a root node's own zero-cost-with-rollup scenario is never visually flagged at the root level; 'Total BOM Cost' in that case only sums the visible top-level child rows. This matches the exact behavior the review request anticipated ('root display behavior may differ') and is not a bug, just worth being aware of.",
+    "Load Standard Costs button takes ~10-12s to become enabled after a BOM search completes (likely waiting on AI categorization/drawing-link calls to settle) - this is a pre-existing UX delay unrelated to this fix, not flagged as a bug but worth noting for future testing agents (need to poll/wait for button to be enabled rather than clicking immediately)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A - not tested per request scope", "frontend": "100%"},
+  "seed_data_creation": "None - used existing real SAP data (P26680, P26584, SH6.0HR, FLT2_4.1)",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Verified 3 scenarios in browser against live SAP-backed data: (1) P26680 searched as root -> its only child SH6.0HR shows normal (non-rollup) Std Cost INR 59.49 / Ext Cost INR 20.52, no rollup flag, Total BOM Cost = INR 20.52 (root P26680 itself is not rendered as a row - by design, tree only contains children). (2) P26680 nested inside parent BOM P26584 (found via test's own suggested candidate) -> P26680's own row now shows amber WarningCircle icon + 'INR 20.52' for both Std Cost and Ext Cost, data-testid=bom-std-cost-rollup-flag-P26680 present, tooltip text exactly matches expected copy ('SAP has no direct Standard Cost on file...'), and page Total BOM Cost = INR 39.46 - exactly matching the corrected value stated in the bug report. (3) Regression on unrelated larger BOM FLT2_4.1 (91 components) - all Std/Ext Cost cells populated with real positive values, zero rollup flags present, Total BOM Cost = INR 520.40, confirming rollup logic does not fire for genuine positive costs. Fix is verified working correctly across root, nested, and regression contexts.",
+  "rca_of_the_issue": "N/A - this was a fix verification task, not a new bug investigation. Original RCA (already confirmed by main agent) is documented in code comments above getEffectiveCost (lines 93-103): SAP had a genuine explicit Standard Cost record of 0.00 for un-costed sub-assemblies, and old logic treated 'cost record = 0' identically to 'real cost of zero' instead of falling back to summing children."
+}

@@ -90,31 +90,47 @@ const collectAllProductIds = (nodes) => {
   return Array.from(ids);
 };
 
-const computeTotalCost = (nodes, costs) => {
-  // A parent's own Standard Cost already reflects its fully-loaded value
-  // (including whatever went into making it, if it's a manufactured
-  // sub-assembly) - adding its children's costs on top would double-count.
-  // Only fall back to summing a node's children when the node itself has
-  // no direct cost of its own.
-  const totals = {};
-  const directCost = (node) => {
-    const cost = node.product_uuid ? costs[node.product_uuid.toUpperCase()] : null;
-    if (cost && node.quantity != null) {
-      return { currency: cost.currency || "—", amount: cost.amount * node.quantity };
-    }
-    return null;
-  };
-  const rollup = (list) => {
-    list.forEach((node) => {
-      const direct = directCost(node);
-      if (direct) {
-        totals[direct.currency] = (totals[direct.currency] || 0) + direct.amount;
-      } else if (node.children && node.children.length > 0) {
-        rollup(node.children);
+// SAP occasionally has an EXPLICIT standard-cost record of exactly 0.00 for
+// a sub-assembly that was created but never actually run through a Cost
+// Estimate/Cost Roll-up in SAP - in practice that means "not yet costed",
+// never a genuinely free component. Treating that 0 the same as a real
+// cost (as opposed to treating it like "no cost on file") meant a single
+// un-costed sub-assembly could silently zero out - and understate - both
+// its own row AND the whole BOM's total. Fix: treat missing AND exactly-0
+// the same way, falling back to summing the node's own children (their
+// quantities are already expressed per 1 unit of this node, so the sum
+// IS this node's own per-unit cost) - only reporting "no cost" if that
+// rollup also comes up empty.
+const getEffectiveCost = (node, costs) => {
+  const cost = node.product_uuid ? costs[(node.product_uuid || "").toUpperCase()] : null;
+  if (cost && cost.amount > 0) {
+    return { amount: cost.amount, currency: cost.currency || "—", isRollup: false };
+  }
+  if (node.children && node.children.length > 0) {
+    let total = 0;
+    let currency = null;
+    let anyFound = false;
+    node.children.forEach((child) => {
+      const childCost = getEffectiveCost(child, costs);
+      if (childCost && child.quantity != null) {
+        total += childCost.amount * child.quantity;
+        currency = currency || childCost.currency;
+        anyFound = true;
       }
     });
-  };
-  rollup(nodes);
+    if (anyFound) return { amount: total, currency: currency || "—", isRollup: true };
+  }
+  return null;
+};
+
+const computeTotalCost = (nodes, costs) => {
+  const totals = {};
+  nodes.forEach((node) => {
+    const effective = getEffectiveCost(node, costs);
+    if (effective && node.quantity != null) {
+      totals[effective.currency] = (totals[effective.currency] || 0) + effective.amount * node.quantity;
+    }
+  });
   return totals;
 };
 
@@ -192,11 +208,11 @@ const SORT_FIELD_GETTERS = {
   product_id: (node) => (node.product_id || "").toLowerCase(),
   quantity: (node) => (node.quantity != null ? node.quantity : -Infinity),
   std_cost: (node, costs) => {
-    const cost = node.product_uuid ? costs[node.product_uuid.toUpperCase()] : null;
+    const cost = getEffectiveCost(node, costs);
     return cost ? cost.amount : -Infinity;
   },
   ext_cost: (node, costs) => {
-    const cost = node.product_uuid ? costs[node.product_uuid.toUpperCase()] : null;
+    const cost = getEffectiveCost(node, costs);
     return cost && node.quantity != null ? cost.amount * node.quantity : -Infinity;
   },
 };
@@ -730,18 +746,41 @@ export default function BomExplorerPage() {
                       {loadingCosts ? (
                         <span className="text-[#98A2B3]">…</span>
                       ) : costsLoaded ? (
-                        costs[(node.product_uuid || "").toUpperCase()] ? (
-                          `${costs[node.product_uuid.toUpperCase()].currency || ""} ${costs[node.product_uuid.toUpperCase()].amount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                        ) : (
-                          <span className="text-[#98A2B3]">No cost</span>
-                        )
+                        (() => {
+                          const effective = getEffectiveCost(node, costs);
+                          if (!effective) return <span className="text-[#98A2B3]">No cost</span>;
+                          const text = `${effective.currency || ""} ${effective.amount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                          return effective.isRollup ? (
+                            <span
+                              className="inline-flex items-center gap-1 text-[#B54708]"
+                              title="SAP has no direct Standard Cost on file for this sub-assembly (or shows it as exactly 0.00 - not yet cost-rolled) - showing the sum of its own components instead."
+                              data-testid={`bom-std-cost-rollup-flag-${path}`}
+                            >
+                              <WarningCircle size={12} weight="fill" className="shrink-0" />
+                              {text}
+                            </span>
+                          ) : (
+                            text
+                          );
+                        })()
                       ) : (
                         <span className="text-[#98A2B3]">—</span>
                       )}
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828] font-medium" data-testid={`bom-ext-cost-${path}`}>
-                      {costsLoaded && costs[(node.product_uuid || "").toUpperCase()] && node.quantity != null
-                        ? `${costs[node.product_uuid.toUpperCase()].currency || ""} ${(costs[node.product_uuid.toUpperCase()].amount * node.quantity).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                      {costsLoaded && node.quantity != null && getEffectiveCost(node, costs)
+                        ? (() => {
+                            const effective = getEffectiveCost(node, costs);
+                            const text = `${effective.currency || ""} ${(effective.amount * node.quantity).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                            return effective.isRollup ? (
+                              <span className="inline-flex items-center gap-1 text-[#B54708]" title="Rolled up from this sub-assembly's own components - see Std Cost column.">
+                                <WarningCircle size={12} weight="fill" className="shrink-0" />
+                                {text}
+                              </span>
+                            ) : (
+                              text
+                            );
+                          })()
                         : <span className="text-[#98A2B3]">—</span>}
                     </td>
                   </tr>
