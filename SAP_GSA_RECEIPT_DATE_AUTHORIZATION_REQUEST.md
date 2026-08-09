@@ -9,7 +9,10 @@ and `QuerySupplierInvoiceQueryIn`.
 The "Purchase History from SAP" panel currently shows each Supplier
 Invoice's own billing/**Invoice Date**. We want to add a second column,
 **Receipt Date** - the date the physical goods actually arrived - next to
-it, so buyers can see billing lag vs. real delivery timing at a glance.
+it, so buyers can see billing lag vs. real delivery timing at a glance,
+and (longer-term) feed real On-Time-Delivery / OTIF performance into the
+AI Quota Suggestion logic - this is a genuinely important data point for
+supplier scoring, not just a display nicety.
 
 ## What's blocking this
 There is no such field on the Supplier Invoice query we already use - it's
