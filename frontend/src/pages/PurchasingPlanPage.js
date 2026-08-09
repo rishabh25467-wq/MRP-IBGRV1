@@ -140,6 +140,19 @@ export default function PurchasingPlanPage() {
   const [overrideInputs, setOverrideInputs] = useState({});
   const [savingOverride, setSavingOverride] = useState({});
   const [supplierSummaries, setSupplierSummaries] = useState({});
+  const [expandedSupplierSplitRows, setExpandedSupplierSplitRows] = useState(new Set());
+
+  const toggleSupplierSplit = (productId) => {
+    setExpandedSupplierSplitRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(productId)) {
+        next.delete(productId);
+      } else {
+        next.add(productId);
+      }
+      return next;
+    });
+  };
 
   const toggleCategoryCollapse = (category) => {
     setCollapsedCategories((prev) => {
@@ -372,6 +385,22 @@ export default function PurchasingPlanPage() {
   const categoryTotalNetValue = (items, month) => items.reduce((sum, c) => sum + (c.net_value_by_month[month] || 0), 0);
   const categoryGrandTotal = (items) => items.reduce((sum, c) => sum + totalValueOverall(c), 0);
   const categoryGrandTotalNet = (items) => items.reduce((sum, c) => sum + totalNetValueOverall(c), 0);
+
+  // Auto-splits a component's Net Purchase Qty (per month) across its
+  // assigned suppliers using each supplier's confirmed AI Quota %
+  // (quota_arrangement_service - the Purchasing Strategy > Quota
+  // Allocation page is where that % gets set/confirmed). Only suppliers
+  // with a quota_percent on file are split; unassigned suppliers are
+  // omitted rather than guessed at.
+  const computeSupplierSplit = (component) => {
+    const assignments = (supplierSummaries[component.product_id] || []).filter((a) => a.quota_percent != null);
+    return assignments.map((a) => ({
+      ...a,
+      qtyByMonth: Object.fromEntries(
+        months.map((m) => [m, ((component.net_qty_by_month[m] || 0) * a.quota_percent) / 100])
+      ),
+    }));
+  };
 
   const exportToExcel = () => {
     if (!plan) return;
@@ -940,12 +969,15 @@ export default function PurchasingPlanPage() {
                         </td>
                       </tr>
                       {!isCollapsed &&
-                        items.map((c, i) => (
-                          <tr
-                            key={c.product_id}
-                            className={`${i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} hover:bg-[#F0F4F8] transition-colors duration-150`}
-                            data-testid={`purchasing-plan-row-${category}-${i}`}
-                          >
+                        items.map((c, i) => {
+                          const supplierSplit = computeSupplierSplit(c);
+                          const isSplitExpanded = expandedSupplierSplitRows.has(c.product_id);
+                          return (
+                        <Fragment key={c.product_id}>
+                        <tr
+                          className={`${i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} hover:bg-[#F0F4F8] transition-colors duration-150`}
+                          data-testid={`purchasing-plan-row-${category}-${i}`}
+                        >
                             <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828] font-medium">
                               {c.product_id}
                             </td>
@@ -958,7 +990,7 @@ export default function PurchasingPlanPage() {
                               {(supplierSummaries[c.product_id] || []).length === 0 ? (
                                 <span className="text-[#98A2B3]">No supplier assigned</span>
                               ) : (
-                                <div className="flex flex-wrap gap-1">
+                                <div className="flex flex-wrap items-center gap-1">
                                   {supplierSummaries[c.product_id].map((a) => (
                                     <Badge
                                       key={a.id}
@@ -973,6 +1005,17 @@ export default function PurchasingPlanPage() {
                                       {a.quota_percent != null ? ` ${a.quota_percent}%` : ""}
                                     </Badge>
                                   ))}
+                                  {supplierSplit.length > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleSupplierSplit(c.product_id)}
+                                      className="inline-flex items-center gap-0.5 text-[11px] font-bold text-[#004B87] hover:underline shrink-0"
+                                      data-testid={`purchasing-plan-supplier-split-toggle-${category}-${i}`}
+                                    >
+                                      {isSplitExpanded ? <CaretDown size={10} weight="bold" /> : <CaretRight size={10} weight="bold" />}
+                                      Split Qty
+                                    </button>
+                                  )}
                                 </div>
                               )}
                             </td>
@@ -1036,8 +1079,50 @@ export default function PurchasingPlanPage() {
                             >
                               {formatMoney(totalNetValueOverall(c), c.currency)}
                             </td>
+                        </tr>
+                        {isSplitExpanded && supplierSplit.length > 0 && (
+                          <tr className="bg-[#F5FAFF]" data-testid={`purchasing-plan-supplier-split-row-${category}-${i}`}>
+                            <td className="border border-[#D0D5DD] p-0" colSpan={8 + months.length * 4}>
+                              <table className="w-full text-[12px] border-collapse">
+                                <thead>
+                                  <tr className="bg-[#E5F0FA]">
+                                    <th className="border border-[#D0D5DD] px-2 py-1 text-left font-heading font-bold text-[#004B87] uppercase" style={{ paddingLeft: "32px" }}>
+                                      Supplier (AI Quota Split)
+                                    </th>
+                                    <th className="border border-[#D0D5DD] px-2 py-1 text-right font-heading font-bold text-[#004B87] uppercase">
+                                      Quota %
+                                    </th>
+                                    {months.map((m) => (
+                                      <th key={`split-hdr-${m}`} className="border border-[#D0D5DD] px-2 py-1 text-right font-heading font-bold text-[#004B87] uppercase">
+                                        {formatMonth(m)} Order Qty
+                                      </th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {supplierSplit.map((s) => (
+                                    <tr key={s.id} data-testid={`purchasing-plan-supplier-split-${category}-${i}-${s.id}`}>
+                                      <td className="border border-[#D0D5DD] px-2 py-1 text-[#101828]" style={{ paddingLeft: "32px" }}>
+                                        {s.supplier_name || s.supplier_id}
+                                      </td>
+                                      <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">
+                                        {s.quota_percent}%
+                                      </td>
+                                      {months.map((m) => (
+                                        <td key={`${s.id}-${m}`} className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#004B87] font-medium">
+                                          {formatQty(s.qtyByMonth[m])}
+                                        </td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </td>
                           </tr>
-                        ))}
+                        )}
+                        </Fragment>
+                          );
+                        })}
                     </Fragment>
                   );
                 })}

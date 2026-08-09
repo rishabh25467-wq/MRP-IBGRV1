@@ -24,6 +24,7 @@ import {
   Sparkle,
   ShoppingCartSimple,
   FileImage,
+  PlayCircle,
 } from "@phosphor-icons/react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -265,6 +266,7 @@ export default function BomExplorerPage() {
   const [drawingUrls, setDrawingUrls] = useState({});
   const [treeSearch, setTreeSearch] = useState("");
   const [sortConfig, setSortConfig] = useState({ field: null, direction: "asc" });
+  const [runningCostEstimate, setRunningCostEstimate] = useState(null);
 
   const toggleSort = (field) => {
     setSortConfig((prev) =>
@@ -371,6 +373,26 @@ export default function BomExplorerPage() {
       setDrawingUrls(response.data || {});
     } catch {
       // Non-critical, read-only cache lookup - silently skip, drawings just won't show this load.
+    }
+  };
+
+  const runCostEstimate = async (node) => {
+    setRunningCostEstimate(node.product_id);
+    try {
+      const response = await axios.post(`${API}/sap/cost-estimate-run`, {
+        product_id: node.product_id,
+        product_uuid: node.product_uuid,
+      });
+      toast.success(`Cost Estimate Run submitted for ${node.product_id}`, {
+        description: response.data.run_id
+          ? `SAP Run ID: ${response.data.run_id}. Re-load Standard Costs shortly to see the updated value.`
+          : "SAP accepted the run. Re-load Standard Costs shortly to see the updated value.",
+      });
+    } catch (err) {
+      const detail = err?.response?.data?.detail || "Failed to submit Cost Estimate Run to SAP";
+      toast.error(`Cost Estimate Run failed for ${node.product_id}`, { description: detail, duration: 15000 });
+    } finally {
+      setRunningCostEstimate(null);
     }
   };
 
@@ -751,13 +773,28 @@ export default function BomExplorerPage() {
                           if (!effective) return <span className="text-[#98A2B3]">No cost</span>;
                           const text = `${effective.currency || ""} ${effective.amount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
                           return effective.isRollup ? (
-                            <span
-                              className="inline-flex items-center gap-1 text-[#B54708]"
-                              title="SAP has no direct Standard Cost on file for this sub-assembly (or shows it as exactly 0.00 - not yet cost-rolled) - showing the sum of its own components instead."
-                              data-testid={`bom-std-cost-rollup-flag-${path}`}
-                            >
-                              <WarningCircle size={12} weight="fill" className="shrink-0" />
-                              {text}
+                            <span className="inline-flex items-center gap-1.5">
+                              <span
+                                className="inline-flex items-center gap-1 text-[#B54708]"
+                                title="SAP has no direct Standard Cost on file for this sub-assembly (or shows it as exactly 0.00 - not yet cost-rolled) - showing the sum of its own components instead."
+                                data-testid={`bom-std-cost-rollup-flag-${path}`}
+                              >
+                                <WarningCircle size={12} weight="fill" className="shrink-0" />
+                                {text}
+                              </span>
+                              {node.product_uuid && (
+                                <button
+                                  type="button"
+                                  onClick={() => runCostEstimate(node)}
+                                  disabled={runningCostEstimate === node.product_id}
+                                  title="Trigger a real SAP Cost Estimate Run for this material so SAP itself calculates a genuine Standard Cost"
+                                  className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-[#004B87] border border-[#B8D4ED] bg-[#E5F0FA] hover:bg-[#D3E5F5] disabled:opacity-50 disabled:cursor-not-allowed rounded-sm px-1.5 py-0.5 transition-colors shrink-0"
+                                  data-testid={`bom-run-cost-estimate-${path}`}
+                                >
+                                  <PlayCircle size={11} weight="fill" />
+                                  {runningCostEstimate === node.product_id ? "Running..." : "Run Cost Estimate"}
+                                </button>
+                              )}
                             </span>
                           ) : (
                             text

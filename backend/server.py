@@ -19,6 +19,7 @@ from sap_material_client import SAPMaterialClient, SAPMaterialError, SAPMaterial
 from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplierAuthError, SAPSupplierNotConfiguredError
 from sap_price_spec_client import SAPPriceSpecClient, SAPPriceSpecError, bulk_push_erp_prices_to_sap
 from sap_supplier_invoice_client import SAPSupplierInvoiceClient, SAPSupplierInvoiceError
+from sap_cost_estimate_client import SAPCostEstimateClient, SAPCostEstimateError
 from price_explorer_client import PriceExplorerClient, PriceExplorerError
 import quota_arrangement_service
 from sap_valuation_client import SAPValuationClient, SAPValuationError
@@ -113,6 +114,14 @@ sap_supplier_invoice_client = SAPSupplierInvoiceClient(
     endpoint=os.environ['SAP_SOAP_SUPPLIER_INVOICE_ENDPOINT'],
     username=os.environ['SAP_SOAP_USERNAME'],
     password=os.environ['SAP_SOAP_PASSWORD'],
+)
+
+sap_cost_estimate_client = SAPCostEstimateClient(
+    endpoint=os.environ['SAP_SOAP_COST_ESTIMATE_ENDPOINT'],
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
+    company_id=os.environ['SAP_COMPANY_ID'],
+    set_of_books_id=os.environ['SAP_SET_OF_BOOKS_ID'],
 )
 
 oms_client = OMSClient(
@@ -363,6 +372,52 @@ async def get_drawing_urls(product_ids: str = Query(..., description="Comma-sepa
         return {}
     docs = db["component_master"].find({"_id": {"$in": ids}, "drawing_url": {"$ne": None}}, {"_id": 1, "drawing_url": 1})
     return {doc["_id"]: doc["drawing_url"] for doc in docs}
+
+
+class CostEstimateRunRequest(BaseModel):
+    product_id: str
+    product_uuid: Optional[str] = None
+
+
+class CostEstimateRunResponse(BaseModel):
+    run_id: Optional[str] = None
+    run_uuid: Optional[str] = None
+    transaction_id: Optional[str] = None
+
+
+@api_router.post("/sap/cost-estimate-run", response_model=CostEstimateRunResponse)
+async def run_cost_estimate(payload: CostEstimateRunRequest):
+    """Manually triggers a real SAP Cost Estimate Run for a single material,
+    for use next to BOM Explorer's rolled-up (not-yet-costed) Std Cost
+    warning. Resolves the material UUID via QueryMaterialIn if the caller
+    didn't already have it cached on the BOM node."""
+    material_uuid = payload.product_uuid
+    if not material_uuid:
+        try:
+            material_uuid = await asyncio.to_thread(sap_material_client.resolve_uuid, payload.product_id)
+        except SAPMaterialError as e:
+            raise HTTPException(status_code=502, detail=f"Could not resolve {payload.product_id} in SAP: {e}")
+        if not material_uuid:
+            raise HTTPException(status_code=404, detail=f"Material '{payload.product_id}' not found in SAP")
+
+    try:
+        result = await asyncio.to_thread(
+            sap_cost_estimate_client.run_cost_estimate, material_uuid, f"Emergent App Cost Estimate {payload.product_id}"
+        )
+    except SAPCostEstimateError as e:
+        detail = str(e)
+        if e.transaction_id:
+            detail += f" — give this Transaction ID to your SAP Basis/Admin team so they can pull the exact cause from the provider-side web service error log: {e.transaction_id}"
+        # NOTE: intentionally 400, not 502/503/504 - the platform's Cloudflare
+        # ingress swallows those specific gateway-error status codes and
+        # substitutes its own generic HTML error page, silently discarding
+        # our JSON detail before it ever reaches the frontend (confirmed by
+        # comparing a direct localhost:8001 call, which DOES return our JSON,
+        # against the same call through the public ingress, which returned a
+        # Cloudflare HTML page instead). A plain 400 passes through intact.
+        raise HTTPException(status_code=400, detail=detail)
+
+    return CostEstimateRunResponse(run_id=result.get("run_id"), run_uuid=result.get("uuid"))
 
 
 class PurchasingPlanGenerateRequest(BaseModel):
