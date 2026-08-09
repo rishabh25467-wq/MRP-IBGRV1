@@ -1,0 +1,25 @@
+{
+  "summary": "Re-tested Feature 2 (Purchasing Plan 'Split Qty' supplier toggle) which was blocked in iteration_60 by the OMS ReadTimeout crash bug. That bug is now confirmed FIXED: ran two full end-to-end plan generations for target month 2026-09 via the UI, both completed successfully in ~240s (well within the expected 2-5 min window, no timeouts/crashes), rendering all 879 components. Verified SPC5WM's Split Qty toggle exactly: expands to show supplier '165 DEGREE' at 60% quota with Sep 2026 Order Qty = 2,57,394.6 (== 428991.0 * 0.60, exact match to spec), and collapses cleanly on second click (sub-row disappears). Verified SCR415WM's zero-quantity edge case: toggle expands showing all 3 suppliers (SUPER FASTENERS 55%, S.FASTNERS 30%, SUAKSI HARDWARES 15%) each with Order Qty rendering as clean '0' (not blank/NaN/undefined).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": ["None - Feature 2 fully passes. This closes out the last remaining item from iteration_60."],
+  "critical_code_review_comments": [
+    "computeSupplierSplit() (PurchasingPlanPage.js ~line 395) and the Split Qty toggle/sub-row rendering (~lines 990-1120) are correct and match the requested math exactly - net_qty_by_month[m] * quota_percent/100, verified live for both a non-zero (SPC5WM) and zero (SCR415WM) net qty case.",
+    "formatQty() correctly renders 0 as '0' (not blank) since it only short-circuits to '—' on null/undefined, confirming the zero-qty edge case is handled by design, not by luck."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A - not requested (frontend only); OMS fix confirmed working via 2 successful live generations", "frontend": "100% - Feature 2 fully verified"},
+  "seed_data_creation": "None - used existing MongoDB part_suppliers docs for SPC5WM (60%) and SCR415WM (55/30/15%).",
+  "retest_needed": false,
+  "main_agent_can_self_test": false,
+  "context_for_next_testing_agent": "Both Feature 1 (BOM Explorer Run Cost Estimate, passed in iteration_60) and Feature 2 (Purchasing Plan Split Qty toggle, passed here) are now fully verified for this session. Note: plan generation takes ~4 min and plan state is NOT persisted across a page reload/new browser context (client-side React state only) - any future re-test must generate the plan fresh within the same browser session before interacting with rows.",
+  "rca_of_the_issue": "N/A - this was a re-test confirming the previously reported oms_client.py fix (unhandled ReadTimeout) works; no new issues found."
+}

@@ -48,20 +48,26 @@ class OMSClient:
     def _get(self, path: str, params: dict = None):
         if not self._token or (time.time() - self._token_fetched_at) > TOKEN_REFRESH_SECONDS:
             self._login()
-        resp = requests.get(
-            f"{self.base_url}{path}",
-            headers={"Authorization": f"Bearer {self._token}"},
-            params=params,
-            timeout=30,
-        )
-        if resp.status_code == 401:
-            self._login()
+        try:
             resp = requests.get(
                 f"{self.base_url}{path}",
                 headers={"Authorization": f"Bearer {self._token}"},
                 params=params,
                 timeout=30,
             )
+        except requests.exceptions.RequestException as e:
+            raise OMSError(f"Could not reach OMS at {path}: {e}")
+        if resp.status_code == 401:
+            self._login()
+            try:
+                resp = requests.get(
+                    f"{self.base_url}{path}",
+                    headers={"Authorization": f"Bearer {self._token}"},
+                    params=params,
+                    timeout=30,
+                )
+            except requests.exceptions.RequestException as e:
+                raise OMSError(f"Could not reach OMS at {path}: {e}")
         if resp.status_code != 200:
             raise OMSError(f"OMS request to {path} failed: HTTP {resp.status_code}: {resp.text[:200]}")
         return resp.json()
