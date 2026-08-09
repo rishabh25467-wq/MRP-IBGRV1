@@ -1,5 +1,7 @@
 """Client for OMS's "Forecast Demand" feed (Radish Technologies) - server-
-to-server, X-Api-Key auth, same host/family as open_po_client.py. See
+to-server, X-API-Key auth, same host/family as open_po_client.py
+(order-flow-dash-4.emergent.host - both feeds are exposed by the same
+integration app under /api/integration/). See
 https://oms.radishtechnologies.com/FORECAST_DEMAND_API.md for the full
 field reference (fetched and reviewed directly - not guessed).
 
@@ -39,7 +41,7 @@ class ForecastDemandClient:
             params["limit"] = limit
         resp = requests.get(
             f"{self.base_url}/api/integration/forecast-demand",
-            headers={"X-Api-Key": self.api_key}, params=params, timeout=30,
+            headers={"X-API-Key": self.api_key}, params=params, timeout=30,
         )
         if resp.status_code == 401:
             raise ForecastDemandAuthError("Forecast Demand feed rejected the API key (401)")
