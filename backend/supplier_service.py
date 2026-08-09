@@ -46,7 +46,8 @@ def sync_suppliers_from_sap(db, sap_suppliers: list) -> dict:
             db[SUPPLIERS_COLLECTION].update_one(
                 {"_id": existing["_id"]},
                 {"$set": {
-                    "name": s["name"], "email": s.get("email"), "phone": s.get("phone"),
+                    "name": s["name"], "contact_person": s.get("contact_person"),
+                    "email": s.get("email"), "phone": s.get("phone"),
                     "sap_uuid": s.get("uuid"), "updated_at": _now(),
                 }},
             )
@@ -55,7 +56,7 @@ def sync_suppliers_from_sap(db, sap_suppliers: list) -> dict:
             db[SUPPLIERS_COLLECTION].insert_one({
                 "_id": str(uuid.uuid4()),
                 "name": s["name"],
-                "contact_person": None,
+                "contact_person": s.get("contact_person"),
                 "email": s.get("email"),
                 "phone": s.get("phone"),
                 "sap_internal_id": s["internal_id"],
