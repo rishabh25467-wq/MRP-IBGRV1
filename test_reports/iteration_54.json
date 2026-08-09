@@ -1,0 +1,34 @@
+{
+  "summary": "Frontend-only e2e test of new Tier-1 MPS (Sales & Production Plan tab) + Tier-2 MRP-from-lock flow on /production-plan. Core flow works end-to-end: Generate Draft (~95-110s live SAP/OMS call) rendered 163 FGs with real numeric AMS/Safety Stock/On-Hand/Gross/Net values, stat cards populated (163/5/158/4,45,702.5), row expand showed PO-level demand lines correctly, sorting/search worked, Lock This Plan dialog + CONFIRM-gated button + lock succeeded and updated plan-status-badge, current-lock-summary and Lock History table. MRP Plan tab 'Generate MRP Plan' (~90-120s) correctly exploded FROM the new lock - toast and locked-plan-watermark both showed the correct locked_plan_id + locked_at, 1466 components rendered in mrp-table. Found ONE real backend bug: GET /api/production-plan/mrp/autosave throws 500 (Pydantic ValidationError - old autosaved doc missing new required fields locked_plan_id/locked_at) every time the MRP Plan tab is mounted, printed as console errors on every page load of that tab. Regression smoke check (Open PO Demand, BOM Alternates, Saved Plans tabs + BOM Explorer, Purchasing Plan, Inventory, Suppliers pages) all navigated cleanly with 0 console errors.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "GET /api/production-plan/mrp/autosave", "issue": "500 Internal Server Error every time MRP Plan tab mounts. RCA: pydantic_core.ValidationError - MrpPlanResponse(**doc['plan']) fails because a pre-existing autosaved plan document in Mongo (saved before the Tier-2-from-lock schema change) does not have the new required fields 'locked_plan_id' and 'locked_at'. server.py line ~1114 in get_mrp_autosave. This breaks the 'restore last plan on page load' convenience feature and pollutes console with errors on every MRP tab visit.", "priority": "HIGH"}
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "MrpPlanTab demand-line detail sub-table (SalesProductionPlanTab expanded row too)", "issue": "In the expanded FG demand-line sub-table, the 'Lead Day' and 'Prod. Start' column values render visually adjacent/overlapping with no separating space (e.g. rendered as '018 Mar 2026' for lead_day=0 + production_start_date='18 Mar 2026') due to insufficient column padding/width at some viewport widths - purely cosmetic, values are correct in DOM/testids, just visually cramped.", "selector": "[data-testid^='mps-demand-line-']", "priority": "LOW"}
+    ],
+    "integration_issues": [
+      {"flow": "MRP Plan tab mount / autosave restore", "issue": "GET /api/production-plan/mrp/autosave fails with 500 due to backend schema mismatch (see backend_issues). Frontend swallows this silently (catch block, no toast) so a user would not see the restored-banner but also gets no visible error - however console shows an error on every tab visit, which fails the '0 console errors' regression bar for the MRP Plan tab specifically.", "affected_selectors": ["mrp-restored-banner"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Fix GET /api/production-plan/mrp/autosave to handle/skip legacy autosave docs that predate the locked_plan_id/locked_at fields (e.g. wrap MrpPlanResponse(**doc['plan']) in try/except and return found=False on validation failure, or migrate/delete the stale autosave doc).",
+    "Minor: add spacing/min-width to the Lead Day / Prod. Start columns in the MPS demand-line expand sub-table so values don't visually run together."
+  ],
+  "critical_code_review_comments": [
+    "get_mrp_autosave (server.py ~line 1114) does not defensively handle schema drift between what's stored in Mongo and the current Pydantic response model - any future schema change to MrpPlanResponse will re-trigger this same crash for old saved docs.",
+    "ProductionPlanPage.js is 2007 lines - well past the 700-line guideline; should be split into per-tab files (OpenPoDemandTab, SalesProductionPlanTab, MrpPlanTab, etc. each already reasonably self-contained) for maintainability."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (frontend-only test requested; 1 endpoint found broken during frontend flow)", "frontend": "95%"},
+  "seed_data_creation": "Two new lock entries were created via the UI during this test run (QA Tester + earlier validation-script locks visible in Lock History, e.g. 163 FG(s) at 09 Aug 01:25am). This is expected per the task's idempotent-locking note, no cleanup needed.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Tier-1 MPS (Sales & Production Plan tab) generate/lock/history flow is fully working - confirmed with real ~100s SAP/OMS-backed generation, 163 FGs, correct stat cards, working sort/search/expand, working lock dialog with CONFIRM gating. Tier-2 MRP-from-lock flow also fully working - generate takes ~90-120s and correctly explodes from the just-created lock (toast + watermark showed correct locked_plan_id/locked_at), 1466 components rendered. The ONLY real bug found is the /api/production-plan/mrp/autosave 500 error caused by a stale pre-migration document in Mongo - not a logic bug in the new MPS/MRP generation code itself. No further deep testing of MRP unresolved-items/overrides/save-as flows was done (out of scope per task description - 'do NOT deep-test' was only for the smoke pages, but those secondary MRP tab features (retry-unresolved, part-overrides, save-as, group-by month/week) were also not explicitly requested and were skipped to keep the run within time budget).",
+  "rca_of_the_issue": "MrpPlanResponse pydantic model was updated to require locked_plan_id and locked_at (part of this session's Tier-2-from-lock migration), but the autosave collection still contains at least one older document saved under the previous schema (without those fields). get_mrp_autosave does an unguarded MrpPlanResponse(**doc['plan']) which throws ValidationError -> uncaught -> FastAPI returns 500. Fix: either wrap in try/except and treat as 'not found', or backfill/delete stale autosave docs on deploy."
+}

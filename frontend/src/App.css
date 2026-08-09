@@ -5,3 +5,7 @@
 .font-sans {
     font-family: "IBM Plex Sans", sans-serif;
 }
+
+.font-data {
+    font-family: "JetBrains Mono", monospace;
+}

@@ -1,6 +1,7 @@
 import { useState, useEffect, Fragment } from "react";
 import "@/App.css";
 import axios from "axios";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   Package,
   Database,
@@ -19,6 +20,8 @@ import {
   ListChecks,
   MagnifyingGlass,
   FloppyDisk,
+  LockSimple,
+  GitCommit,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -713,13 +716,407 @@ const BomAlternatesTab = () => {
   );
 };
 
+// -------------------- Sales & Production Plan tab (Tier 1 - MPS) --------------------
+// "Industrial Command Center" treatment for this tab specifically (monochrome,
+// JetBrains Mono for every number, sharp corners, no shadows) - a deliberately
+// distinct visual register from the rest of this page's established blue/
+// rounded-sm style, per the design mockup direction being discussed with the
+// user before deciding whether to extend it further.
+const MonoStat = ({ label, value, tone }) => (
+  <div className="border border-[#E4E4E7] bg-white px-3 py-2 flex flex-col gap-0.5" data-testid={`mps-stat-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}>
+    <span className="font-heading text-[10px] font-bold uppercase tracking-wider text-[#71717A]">{label}</span>
+    <span className={`font-data text-xl font-bold ${tone || "text-[#09090B]"}`}>{value}</span>
+  </div>
+);
+
+const MonoSortableHeader = ({ label, field, sortConfig, onSort, className, align }) => {
+  const active = sortConfig?.field === field;
+  return (
+    <th
+      className={`bg-[#F4F4F5] border-b border-[#E4E4E7] px-2 py-1.5 font-heading text-[10px] font-bold uppercase tracking-wider text-[#71717A] cursor-pointer select-none hover:text-[#09090B] ${align === "right" ? "text-right" : "text-left"} ${className || ""}`}
+      onClick={() => onSort(field)}
+    >
+      <span className="inline-flex items-center gap-1">
+        {label}
+        {active && (sortConfig.direction === "asc" ? <CaretUp size={9} weight="bold" /> : <CaretDown size={9} weight="bold" />)}
+      </span>
+    </th>
+  );
+};
+
+const LockPlanDialog = ({ open, onOpenChange, draftSummary, onConfirm, locking }) => {
+  const [confirmText, setConfirmText] = useState("");
+  useEffect(() => {
+    if (!open) setConfirmText("");
+  }, [open]);
+  const canConfirm = confirmText.trim().toUpperCase() === "CONFIRM";
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md rounded-none border-2 border-[#09090B]" data-testid="lock-plan-dialog">
+        <DialogHeader>
+          <DialogTitle className="font-heading text-base flex items-center gap-2 text-[#09090B]">
+            <LockSimple size={16} weight="bold" /> Lock Production Plan
+          </DialogTitle>
+          <DialogDescription className="font-sans text-[13px] text-[#71717A] pt-1">
+            This freezes the plan as the stable target every downstream MRP run reads from - not a
+            live recalculation. This action cannot be undone (a new lock supersedes it, but this
+            snapshot stays in history).
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="border border-[#E4E4E7] bg-[#F4F4F5] p-2.5 font-data text-xs space-y-1">
+            <div className="flex justify-between"><span className="text-[#71717A]">Finished goods with net requirement</span><span className="font-bold">{draftSummary?.fgCount ?? "—"}</span></div>
+            <div className="flex justify-between"><span className="text-[#71717A]">Total net qty</span><span className="font-bold">{formatQty(draftSummary?.totalNet)}</span></div>
+          </div>
+          <div>
+            <label className="font-sans text-xs font-medium text-[#71717A]">Type CONFIRM to proceed</label>
+            <Input
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              placeholder="CONFIRM"
+              className="h-9 mt-1 rounded-none border-[#D4D4D8] font-data uppercase tracking-widest"
+              data-testid="lock-confirm-input"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" className="h-8 rounded-none border-[#D4D4D8]" onClick={() => onOpenChange(false)} data-testid="lock-cancel-button">
+            Cancel
+          </Button>
+          <Button
+            disabled={!canConfirm || locking}
+            onClick={onConfirm}
+            className="h-8 rounded-none bg-[#DC2626] hover:bg-[#B91C1C] text-white disabled:opacity-40"
+            data-testid="lock-confirm-button"
+          >
+            {locking ? "Locking..." : "Lock Plan"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+};
+
+const SalesProductionPlanTab = ({ actorName }) => {
+  const [customer, setCustomer] = useState("");
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const [draftJobId, setDraftJobId] = useState(null);
+  const [lockHistory, setLockHistory] = useState([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [expandedRows, setExpandedRows] = useState(new Set());
+  const [sortConfig, setSortConfig] = useState({ field: "total_net_qty", direction: "desc" });
+  const [lockDialogOpen, setLockDialogOpen] = useState(false);
+  const [locking, setLocking] = useState(false);
+
+  const fetchLockHistory = async () => {
+    try {
+      const res = await axios.get(`${API}/production-plan/mps/locks`);
+      setLockHistory(res.data || []);
+    } catch {
+      // non-critical - lock history is informational only
+    }
+  };
+
+  useEffect(() => {
+    fetchLockHistory();
+  }, []);
+
+  const generateDraft = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const genRes = await axios.post(`${API}/production-plan/mps/generate`, null, { params: customer ? { customer } : {} });
+      const jobId = genRes.data.job_id;
+      setDraftJobId(jobId);
+      let result = null;
+      for (let i = 0; i < 90; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const statusRes = await axios.get(`${API}/production-plan/mps/status/${jobId}`);
+        if (statusRes.data.status === "done") {
+          result = statusRes.data.result;
+          break;
+        }
+        if (statusRes.data.status === "failed") throw new Error(statusRes.data.error || "Generation failed");
+      }
+      if (!result) throw new Error("Timed out waiting for the Production Plan draft to generate");
+      setDraft(result);
+      setExpandedRows(new Set());
+      toast.success("Draft generated", { description: `${result.fgs.length} finished good(s) with a net requirement` });
+    } catch (e) {
+      const msg = e?.response?.data?.detail || e.message || "Failed to generate draft";
+      setError(msg);
+      toast.error("Generation failed", { description: msg });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const confirmLock = async () => {
+    if (!draftJobId) return;
+    setLocking(true);
+    try {
+      const res = await axios.post(`${API}/production-plan/mps/lock`, { job_id: draftJobId, locked_by: actorName || null });
+      toast.success("Production Plan locked", { description: `${res.data.fg_count} FG(s) frozen for MRP` });
+      setLockDialogOpen(false);
+      fetchLockHistory();
+    } catch (e) {
+      toast.error("Lock failed", { description: e?.response?.data?.detail || e.message });
+    } finally {
+      setLocking(false);
+    }
+  };
+
+  const onSort = (field) => {
+    setSortConfig((prev) => (prev.field === field ? { field, direction: prev.direction === "asc" ? "desc" : "asc" } : { field, direction: "desc" }));
+  };
+
+  const toggleExpand = (itemCode) => {
+    setExpandedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemCode)) next.delete(itemCode);
+      else next.add(itemCode);
+      return next;
+    });
+  };
+
+  const filteredFgs = (draft?.fgs || []).filter((fg) => {
+    if (!search) return true;
+    const s = search.toLowerCase();
+    return fg.item_code.toLowerCase().includes(s) || (fg.description || "").toLowerCase().includes(s);
+  });
+  const sortedFgs = [...filteredFgs].sort((a, b) => {
+    const result = compareValues(a[sortConfig.field], b[sortConfig.field]);
+    return sortConfig.direction === "asc" ? result : -result;
+  });
+
+  const latestLockMeta = lockHistory[0];
+  const totalNetQty = (draft?.fgs || []).reduce((sum, f) => sum + (f.total_net_qty || 0), 0);
+  const poDriverCount = (draft?.fgs || []).filter((f) => f.demand_lines.length > 0).length;
+  const safetyOnlyCount = (draft?.fgs || []).length - poDriverCount;
+
+  return (
+    <div className="space-y-3 font-sans" data-testid="sales-production-plan-tab">
+      <div className="flex items-center justify-between border border-[#E4E4E7] bg-[#FAFAFA] px-3 py-2 flex-wrap gap-2">
+        <div className="flex items-center gap-3 flex-wrap">
+          <span
+            className={`font-heading text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 border ${
+              draft ? "border-[#2563EB] text-[#2563EB]" : "border-[#D4D4D8] text-[#71717A]"
+            }`}
+            data-testid="plan-status-badge"
+          >
+            {draft ? "[ DRAFT READY ]" : "[ NO DRAFT ]"}
+          </span>
+          {latestLockMeta ? (
+            <span className="text-xs text-[#52525B] font-sans" data-testid="current-lock-summary">
+              Currently locked: <span className="font-data font-bold text-[#16A34A]">{latestLockMeta.fg_count} FG(s)</span> at{" "}
+              <span className="font-data">{formatDateTime(latestLockMeta.locked_at)}</span>
+              {latestLockMeta.locked_by ? ` by ${latestLockMeta.locked_by}` : ""}
+            </span>
+          ) : (
+            <span className="text-xs text-[#71717A]">No Production Plan has ever been locked</span>
+          )}
+        </div>
+        <button
+          onClick={() => setShowHistory((v) => !v)}
+          className="text-xs text-[#71717A] hover:text-[#09090B] inline-flex items-center gap-1"
+          data-testid="toggle-lock-history-button"
+        >
+          <ClockCounterClockwise size={13} /> Lock History ({lockHistory.length})
+        </button>
+      </div>
+
+      {showHistory && (
+        <div className="border border-[#E4E4E7] bg-white overflow-x-auto" data-testid="lock-history-panel">
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="bg-[#F4F4F5]">
+                <th className="font-heading text-[10px] font-bold uppercase tracking-wider text-[#71717A] px-2 py-1.5 text-left">Locked At</th>
+                <th className="font-heading text-[10px] font-bold uppercase tracking-wider text-[#71717A] px-2 py-1.5 text-left">Locked By</th>
+                <th className="font-heading text-[10px] font-bold uppercase tracking-wider text-[#71717A] px-2 py-1.5 text-right">FG Count</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lockHistory.length === 0 ? (
+                <tr><td colSpan={3} className="px-2 py-3 text-center text-[#A1A1AA]">No locks yet</td></tr>
+              ) : (
+                lockHistory.map((l) => (
+                  <tr key={l.id} className="border-t border-[#E4E4E7]" data-testid={`lock-history-row-${l.id}`}>
+                    <td className="font-data px-2 py-1.5">{formatDateTime(l.locked_at)}</td>
+                    <td className="px-2 py-1.5">{l.locked_by || "—"}</td>
+                    <td className="font-data text-right px-2 py-1.5">{l.fg_count}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <Input
+          placeholder="Filter by customer (optional)..."
+          value={customer}
+          onChange={(e) => setCustomer(e.target.value)}
+          className="h-8 w-52 rounded-none border-[#D4D4D8] text-xs"
+          data-testid="mps-customer-filter-input"
+        />
+        <Button
+          onClick={generateDraft}
+          disabled={loading}
+          className="h-8 rounded-none bg-[#09090B] hover:bg-[#27272A] text-white text-xs"
+          data-testid="generate-draft-button"
+        >
+          {loading ? <ArrowClockwise size={13} className="animate-spin mr-1.5" /> : <Package size={13} className="mr-1.5" />}
+          {loading ? "Generating..." : "Generate Draft"}
+        </Button>
+        {draft && (
+          <Button
+            onClick={() => setLockDialogOpen(true)}
+            className="h-8 rounded-none bg-white border border-[#DC2626] text-[#DC2626] hover:bg-[#DC2626]/5 text-xs"
+            data-testid="open-lock-dialog-button"
+          >
+            <LockSimple size={13} className="mr-1.5" /> Lock This Plan
+          </Button>
+        )}
+        <div className="flex-1" />
+        {draft && (
+          <div className="relative">
+            <MagnifyingGlass size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-[#A1A1AA]" />
+            <Input
+              placeholder="Search item code / description..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="h-8 w-56 pl-7 rounded-none border-[#D4D4D8] text-xs"
+              data-testid="mps-search-input"
+            />
+          </div>
+        )}
+      </div>
+
+      {error && (
+        <Alert className="border-[#DC2626] rounded-none" data-testid="mps-error-alert">
+          <WarningCircle size={14} className="text-[#DC2626]" />
+          <AlertTitle className="font-heading text-xs text-[#DC2626]">Generation Failed</AlertTitle>
+          <AlertDescription className="text-xs text-[#71717A]">{error}</AlertDescription>
+        </Alert>
+      )}
+
+      {loading && !draft && (
+        <div className="space-y-1.5">
+          {[...Array(5)].map((_, i) => <Skeleton key={i} className="h-8 w-full rounded-none" />)}
+        </div>
+      )}
+
+      {draft && (
+        <>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <MonoStat label="FGs w/ Net Req." value={draft.fgs.length} />
+            <MonoStat label="PO-Driven" value={poDriverCount} tone="text-[#2563EB]" />
+            <MonoStat label="Safety-Stock-Only" value={safetyOnlyCount} tone="text-[#F59E0B]" />
+            <MonoStat label="Total Net Qty" value={formatQty(totalNetQty)} tone="text-[#DC2626]" />
+          </div>
+
+          <div className="border border-[#E4E4E7] overflow-x-auto">
+            <table className="w-full text-xs border-collapse" data-testid="mps-fg-table">
+              <thead>
+                <tr>
+                  <th className="w-6 bg-[#F4F4F5] border-b border-[#E4E4E7]"></th>
+                  <MonoSortableHeader label="Item Code" field="item_code" sortConfig={sortConfig} onSort={onSort} />
+                  <th className="bg-[#F4F4F5] border-b border-[#E4E4E7] px-2 py-1.5 font-heading text-[10px] font-bold uppercase tracking-wider text-[#71717A] text-left">Description</th>
+                  <MonoSortableHeader label="AMS / mo" field="ams" sortConfig={sortConfig} onSort={onSort} align="right" />
+                  <MonoSortableHeader label="Safety Stock" field="safety_stock_qty" sortConfig={sortConfig} onSort={onSort} align="right" />
+                  <MonoSortableHeader label="On-Hand" field="on_hand_qty" sortConfig={sortConfig} onSort={onSort} align="right" />
+                  <MonoSortableHeader label="Gross" field="total_gross_qty" sortConfig={sortConfig} onSort={onSort} align="right" />
+                  <MonoSortableHeader label="Net" field="total_net_qty" sortConfig={sortConfig} onSort={onSort} align="right" />
+                </tr>
+              </thead>
+              <tbody>
+                {sortedFgs.length === 0 && (
+                  <tr><td colSpan={8} className="px-2 py-6 text-center text-[#A1A1AA]">No finished goods match</td></tr>
+                )}
+                {sortedFgs.map((fg) => (
+                  <Fragment key={fg.item_code}>
+                    <tr
+                      className="border-t border-[#E4E4E7] hover:bg-[#FAFAFA] cursor-pointer"
+                      onClick={() => fg.demand_lines.length > 0 && toggleExpand(fg.item_code)}
+                      data-testid={`mps-fg-row-${fg.item_code}`}
+                    >
+                      <td className="text-center">
+                        {fg.demand_lines.length > 0 && (expandedRows.has(fg.item_code) ? <CaretDown size={11} /> : <CaretRight size={11} />)}
+                      </td>
+                      <td className="font-data font-bold py-1.5 px-2">{fg.item_code}</td>
+                      <td className="px-2 text-[#71717A] truncate max-w-[220px]">{fg.description || "—"}</td>
+                      <td className="font-data text-right px-2">{formatQty(fg.ams)}</td>
+                      <td className="font-data text-right px-2">{formatQty(fg.safety_stock_qty)}</td>
+                      <td className="font-data text-right px-2">{formatQty(fg.on_hand_qty)}</td>
+                      <td className="font-data text-right px-2">{formatQty(fg.total_gross_qty)}</td>
+                      <td className={`font-data text-right px-2 font-bold ${fg.total_net_qty > 0 ? "text-[#DC2626]" : "text-[#71717A]"}`}>
+                        {formatQty(fg.total_net_qty)}
+                      </td>
+                    </tr>
+                    <AnimatePresence>
+                      {expandedRows.has(fg.item_code) && fg.demand_lines.length > 0 && (
+                        <motion.tr initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                          <td colSpan={8} className="bg-[#FAFAFA] p-0 border-t border-[#E4E4E7]">
+                            <table className="w-full text-[11px] border-collapse">
+                              <thead>
+                                <tr className="text-[#71717A]">
+                                  <th className="pl-8 py-1 text-left font-heading uppercase text-[9px] tracking-wider">Customer PO</th>
+                                  <th className="text-left font-heading uppercase text-[9px] tracking-wider">Customer</th>
+                                  <th className="text-left font-heading uppercase text-[9px] tracking-wider">Ship Date</th>
+                                  <th className="text-right font-heading uppercase text-[9px] tracking-wider">Lead Day</th>
+                                  <th className="text-left font-heading uppercase text-[9px] tracking-wider">Prod. Start</th>
+                                  <th className="text-right font-heading uppercase text-[9px] tracking-wider">Qty Open</th>
+                                  <th className="text-right font-heading uppercase text-[9px] tracking-wider pr-2">Net</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {fg.demand_lines.map((l, i) => (
+                                  <tr key={i} data-testid={`mps-demand-line-${fg.item_code}-${i}`}>
+                                    <td className="font-data pl-8 py-0.5">{l.customer_po || "—"}</td>
+                                    <td className="py-0.5">{l.customer || "—"}</td>
+                                    <td className="font-data py-0.5">{formatDate(l.target_ship_date)}</td>
+                                    <td className="font-data text-right py-0.5">{l.lead_day ?? "—"}</td>
+                                    <td className="font-data py-0.5">{formatDate(l.production_start_date)}</td>
+                                    <td className="font-data text-right py-0.5">{formatQty(l.qty_open)}</td>
+                                    <td className="font-data text-right font-bold pr-2 py-0.5">{formatQty(l.net_qty)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </td>
+                        </motion.tr>
+                      )}
+                    </AnimatePresence>
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      <LockPlanDialog
+        open={lockDialogOpen}
+        onOpenChange={setLockDialogOpen}
+        draftSummary={draft ? { fgCount: draft.fgs.length, totalNet: totalNetQty } : null}
+        onConfirm={confirmLock}
+        locking={locking}
+      />
+    </div>
+  );
+};
+
+
 // -------------------- MRP Plan tab --------------------
 const MrpPlanTab = ({ actorName }) => {
   const [plan, setPlan] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const [customer, setCustomer] = useState("");
   const [groupBy, setGroupBy] = useState("flat"); // "flat" | "month" | "week"
   const [expanded, setExpanded] = useState(new Set());
   const [search, setSearch] = useState("");
@@ -790,7 +1187,7 @@ const MrpPlanTab = ({ actorName }) => {
     setElapsedSeconds(0);
     const startedAt = Date.now();
     try {
-      const params = customer.trim() ? { customer: customer.trim() } : {};
+      const params = {};
       if (actorName.trim()) params.actor = actorName.trim();
       const { data } = await axios.post(`${API}/production-plan/mrp/generate`, null, { params });
       const jobId = data.job_id;
@@ -804,7 +1201,7 @@ const MrpPlanTab = ({ actorName }) => {
           setExpanded(new Set());
           setRestoredFrom(null);
           toast.success("MRP plan generated", {
-            description: `${job.result.components.length} component(s) from ${job.result.total_po_lines} selected PO line(s) (of ${job.result.total_open_po_lines} open)`,
+            description: `${job.result.components.length} component(s) exploded from locked plan ${job.result.locked_plan_id} (locked ${formatDateTime(job.result.locked_at)})`,
           });
           break;
         }
@@ -955,7 +1352,7 @@ const MrpPlanTab = ({ actorName }) => {
     { label: "Description" },
     { label: "UOM" },
     { label: "Lead Time (D)", field: "lead_time_days" },
-    { label: "MSL", field: "msl" },
+    { label: "Dynamic MSL", field: "dynamic_msl" },
     { label: "On-Hand", field: "on_hand_qty" },
     { label: "Total Gross Qty", field: "total_gross_qty" },
     { label: "Total Net Qty", field: "total_net_qty" },
@@ -970,15 +1367,9 @@ const MrpPlanTab = ({ actorName }) => {
         </div>
       )}
       <div className="bg-white border border-[#D0D5DD] rounded-sm p-2.5 flex items-center gap-3 flex-wrap mb-3">
-        <input
-          type="text"
-          placeholder="Filter by customer (optional)..."
-          value={customer}
-          onChange={(e) => setCustomer(e.target.value)}
-          disabled={loading}
-          className="h-8 w-56 px-2 text-[13px] rounded-sm border border-[#D0D5DD] text-[#101828] focus:outline-none focus:border-[#004B87] focus:ring-1 focus:ring-[#004B87]"
-          data-testid="mrp-customer-filter"
-        />
+        <span className="text-xs text-[#475467]" data-testid="mrp-explosion-note">
+          Explodes the latest LOCKED Production Plan - lock one on the "Sales & Production Plan" tab first.
+        </span>
         <Button
           type="button"
           onClick={generate}
@@ -1037,9 +1428,9 @@ const MrpPlanTab = ({ actorName }) => {
           </div>
         )}
         {plan && (
-          <div className="flex items-center gap-1.5 text-xs text-[#475467] ml-auto" data-testid="mrp-po-data-as-of">
+          <div className="flex items-center gap-1.5 text-xs text-[#475467] ml-auto" data-testid="mrp-locked-plan-watermark">
             <CalendarBlank size={13} weight="bold" />
-            PO data watermark: {plan.po_data_as_of ? new Date(plan.po_data_as_of).toLocaleString() : "—"}
+            Exploded locked plan {plan.locked_plan_id} (locked {formatDateTime(plan.locked_at)})
           </div>
         )}
       </div>
@@ -1076,8 +1467,8 @@ const MrpPlanTab = ({ actorName }) => {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
         <StatCard
           icon={Package}
-          label="PO Lines Considered"
-          value={plan ? `${plan.total_po_lines} / ${plan.total_open_po_lines}` : "—"}
+          label="Locked Plan"
+          value={plan ? plan.locked_plan_id : "—"}
           testId="stat-mrp-po-lines"
         />
         <StatCard icon={Database} label="Components in Demand" value={plan ? plan.components.length : "—"} testId="stat-mrp-components" />
@@ -1236,8 +1627,11 @@ const MrpPlanTab = ({ actorName }) => {
                       <td className="border border-[#D0D5DD] px-2 py-1 font-medium text-[#101828]">{c.product_id}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-[#101828]">{c.description || "—"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467] text-xs">{c.unit_of_measure || "—"}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">{c.lead_time_days ?? "—"}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">{formatQty(c.msl)}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">
+                        {c.lead_time_days ?? "—"}
+                        {c.lead_time_is_default && <span className="text-[#B54708] text-[10px] ml-0.5" title="No lead time on file - defaulted to 30 days">*</span>}
+                      </td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">{formatQty(c.dynamic_msl)}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">{formatQty(c.on_hand_qty)}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#101828]" data-testid={`mrp-gross-${i}`}>
                         {formatQty(c.total_gross_qty)}
@@ -1257,15 +1651,10 @@ const MrpPlanTab = ({ actorName }) => {
                             {l.item_code} · {l.customer || "—"} · PO {l.customer_po || l.internal_pono || "—"}
                           </td>
                           <td className="border border-[#D0D5DD] px-2 py-1 text-xs text-[#475467]" colSpan={3}>
-                            Ship {formatDate(l.target_ship_date)} → Order by{" "}
+                            Ship {formatDate(l.target_ship_date)} · Need by {formatDate(l.need_by_date)} → Order by{" "}
                             <span className={isPastDue(l.order_by_date) ? "text-[#B42318] font-bold" : "text-[#004B87] font-bold"}>
                               {formatDate(l.order_by_date)}
                             </span>
-                            {l.lead_time_missing && (
-                              <span className="ml-1.5 text-[#B54708]" title="No Lead Time set for this component - order-by date defaults to the ship date">
-                                (lead time unset)
-                              </span>
-                            )}
                             <button
                               type="button"
                               onClick={() => removeFromProduction(l)}
@@ -1299,10 +1688,8 @@ const MrpPlanTab = ({ actorName }) => {
               {sortedComponents.length === 0 && (
                 <tr>
                   <td colSpan={9} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="mrp-no-components">
-                    {plan.total_po_lines === 0
-                      ? "No open PO lines are currently selected for production - go to the Open PO Demand tab and check off the POs you want to build, then generate again."
-                      : plan.components.length === 0
-                      ? "No purchasable leaf components found against the current open PO demand"
+                    {plan.components.length === 0
+                      ? "No purchasable leaf components found against the currently locked Production Plan"
                       : "No components match the current search/filters"}
                   </td>
                 </tr>
@@ -1452,7 +1839,7 @@ const SavedPlansTab = () => {
           <table className="border-collapse w-full text-[13px]" data-testid="saved-plans-table">
             <thead>
               <tr>
-                {["Name", "Created By", "Created At", "PO Lines", "Components", "Total Net Qty", "Actions"].map((h) => (
+                {["Name", "Created By", "Created At", "Locked Plan", "Components", "Total Net Qty", "Actions"].map((h) => (
                   <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
                     {h}
                   </th>
@@ -1465,7 +1852,7 @@ const SavedPlansTab = () => {
                   <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium text-[#101828]">{p.name}</td>
                   <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">{p.created_by || "—"}</td>
                   <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">{formatDateTime(p.created_at)}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums text-[#475467]">{p.total_po_lines} / {p.total_open_po_lines}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums text-[#475467]">{p.locked_plan_id || "—"}</td>
                   <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums text-[#475467]">{p.components_count}</td>
                   <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums font-bold text-[#B42318]">{formatQty(p.total_net_qty)}</td>
                   <td className="border border-[#D0D5DD] px-2 py-1.5">
@@ -1503,8 +1890,8 @@ const SavedPlansTab = () => {
           <DialogHeader>
             <DialogTitle>{viewingMeta?.name}</DialogTitle>
             <DialogDescription>
-              Saved by {viewingMeta?.created_by || "—"} on {viewingMeta ? formatDateTime(viewingMeta.created_at) : ""} · Generated from{" "}
-              {viewing?.total_po_lines} of {viewing?.total_open_po_lines} open PO lines
+              Saved by {viewingMeta?.created_by || "—"} on {viewingMeta ? formatDateTime(viewingMeta.created_at) : ""} · Exploded from locked plan{" "}
+              {viewing?.locked_plan_id} (locked {viewing ? formatDateTime(viewing.locked_at) : ""})
             </DialogDescription>
           </DialogHeader>
           {viewLoading ? (
@@ -1514,7 +1901,7 @@ const SavedPlansTab = () => {
               <table className="border-collapse w-full text-[13px]" data-testid="saved-plan-view-table">
                 <thead>
                   <tr>
-                    {["Product ID", "Description", "UOM", "Lead Time (D)", "MSL", "On-Hand", "Gross Qty", "Net Qty"].map((h) => (
+                    {["Product ID", "Description", "UOM", "Lead Time (D)", "Dynamic MSL", "On-Hand", "Gross Qty", "Net Qty"].map((h) => (
                       <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase sticky top-0">
                         {h}
                       </th>
@@ -1527,8 +1914,11 @@ const SavedPlansTab = () => {
                       <td className="border border-[#D0D5DD] px-2 py-1 font-medium text-[#101828]">{c.product_id}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-[#101828]">{c.description || "—"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-xs text-[#475467]">{c.unit_of_measure || "—"}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">{c.lead_time_days ?? "—"}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">{formatQty(c.msl)}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">
+                        {c.lead_time_days ?? "—"}
+                        {c.lead_time_is_default && <span className="text-[#B54708] text-[10px] ml-0.5" title="No lead time on file - defaulted to 30 days">*</span>}
+                      </td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">{formatQty(c.dynamic_msl)}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">{formatQty(c.on_hand_qty)}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#101828]">{formatQty(c.total_gross_qty)}</td>
                       <td className={`border border-[#D0D5DD] px-2 py-1 text-right tabular-nums font-bold ${c.total_net_qty > 0 ? "text-[#B42318]" : "text-[#027A48]"}`}>
@@ -1581,6 +1971,9 @@ export default function ProductionPlanPage() {
             <TabsTrigger value="open-po" data-testid="production-plan-tab-open-po">
               <Truck size={14} className="mr-1.5" /> Open PO Demand
             </TabsTrigger>
+            <TabsTrigger value="sales-production" data-testid="production-plan-tab-sales-production">
+              <GitCommit size={14} className="mr-1.5" /> Sales & Production Plan
+            </TabsTrigger>
             <TabsTrigger value="alternates" data-testid="production-plan-tab-alternates">
               <TreeStructure size={14} className="mr-1.5" /> BOM Alternates
             </TabsTrigger>
@@ -1593,6 +1986,9 @@ export default function ProductionPlanPage() {
           </TabsList>
           <TabsContent value="open-po" data-testid="production-plan-content-open-po">
             <OpenPoDemandTab actorName={actorName} />
+          </TabsContent>
+          <TabsContent value="sales-production" data-testid="production-plan-content-sales-production">
+            <SalesProductionPlanTab actorName={actorName} />
           </TabsContent>
           <TabsContent value="alternates" data-testid="production-plan-content-alternates">
             <BomAlternatesTab />
