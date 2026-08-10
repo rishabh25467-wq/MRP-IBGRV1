@@ -523,5 +523,11 @@
 - P1: "Urgent — Needs Immediate Action" alert/view - separate UI flag for tight-lead-time POs arriving mid-month (after the monthly plan is already locked) so production isn't blindsided.
 - P0 BLOCKED on user's SAP admin: "Receipt Date" column for Purchase History (needs a new GSA Communication Arrangement) - see `/app/SAP_GSA_RECEIPT_DATE_AUTHORIZATION_REQUEST.md`.
 - P2: Incorporate Quality Failures and OTIF delivery metrics into the AI Quota Suggestion prompt once Receipt Date (above) is available.
+
+## Auth Change: Price Explorer reverted to username/password login (Feb 2026, Session 19 cont.) - COMPLETE
+- User explicitly requested reverting the Price Explorer (`scmai.radishtechnologies.com`) integration from the scoped API key (set up Session 13) back to a username/password JWT login, with rotated credentials `rishabh` / `25469` (the original human login before Session 13 used `rishabh`/`25468`, since replaced).
+- Recovered the exact original login implementation from git history (`_login()`/`_get_token()`, POST `/api/auth/login` -> `{token}`, Bearer auth, 29-day cache with 401-triggered refresh) rather than re-guessing it - `price_explorer_client.py` restored to that shape with updated docstring. `server.py` now instantiates `PriceExplorerClient(base_url, username, password)`. `.env`: `PRICE_EXPLORER_API_KEY` replaced by `PRICE_EXPLORER_USERNAME`/`PRICE_EXPLORER_PASSWORD`.
+- Verified live: direct login call to `scmai.radishtechnologies.com/api/auth/login` with the new credentials returns HTTP 200; `GET /api/suppliers/erp-prices/SH1.2CR` returns real ERP purchase data end-to-end post-restart (backend restarted for the `.env` change, no import/startup errors).
+
 - P3: SAP Cost Retry Alert banner when the Standard Costs feed is unreachable.
 - P2: Refactor `server.py` (>2380 lines) into `/app/backend/routes/` modules.

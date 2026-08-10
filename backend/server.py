@@ -108,7 +108,8 @@ sap_price_spec_client = SAPPriceSpecClient(
 
 price_explorer_client = PriceExplorerClient(
     base_url=os.environ['PRICE_EXPLORER_BASE_URL'],
-    api_key=os.environ['PRICE_EXPLORER_API_KEY'],
+    username=os.environ['PRICE_EXPLORER_USERNAME'],
+    password=os.environ['PRICE_EXPLORER_PASSWORD'],
 )
 
 sap_supplier_invoice_client = SAPSupplierInvoiceClient(
