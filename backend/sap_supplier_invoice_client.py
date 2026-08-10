@@ -115,6 +115,14 @@ class SAPSupplierInvoiceClient:
                 if supplier_invoice_number is None:
                     supplier_invoice_number = ref_id
             for item in invoice.findall("Item"):
+                # Items with a ParentItemUUID are SAP's own sub-item
+                # breakdown/reference detail of another item on this same
+                # invoice (e.g. when one commercial line is matched against
+                # multiple PO/goods-receipt references) - NOT an independent
+                # second purchase. Counting them produces phantom "duplicate"
+                # rows with identical qty/price to their parent - skip them.
+                if item.findtext("ParentItemUUID"):
+                    continue
                 item_product_id = item.findtext("Product/ProductKey/ProductID")
                 if not item_product_id or item_product_id.strip().upper() != product_id.strip().upper():
                     continue
@@ -136,10 +144,11 @@ class SAPSupplierInvoiceClient:
     def get_invoices_for_product(self, product_id: str, limit: int = 20) -> list:
         """Returns real SAP Supplier Invoice line items for this Product ID:
         [{invoice_id, date, supplier_name, supplier_internal_id, quantity,
-        unit_of_measure, price, currency}, ...] - one row per invoice line
-        (an invoice can list the same product more than once; returned
-        as-is, not deduplicated, since that reflects the real SAP data),
-        sorted newest-first, capped to `limit` rows for display.
+        unit_of_measure, price, currency}, ...] - one row per genuine
+        top-level commercial item (SAP's own ParentItemUUID sub-items,
+        which duplicate their parent's product/qty/price as reference
+        breakdown detail, are filtered out - see the ParentItemUUID check
+        above), sorted newest-first, capped to `limit` rows for display.
 
         IMPORTANT: SAP's FindSimpleByElements query does NOT return hits in
         date order - it's some internal/creation-order sequence, and a
