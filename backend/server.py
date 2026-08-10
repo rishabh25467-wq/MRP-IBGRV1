@@ -2174,6 +2174,9 @@ class SapSupplierInvoiceLine(BaseModel):
     unit_of_measure: Optional[str] = None
     price: Optional[float] = None
     currency: Optional[str] = None
+    document_type: Optional[str] = None
+    reverses_invoice_id: Optional[str] = None
+    reverses_supplier_invoice_number: Optional[str] = None
 
 
 @api_router.get("/suppliers/sap-purchase-history/{product_id}", response_model=List[SapSupplierInvoiceLine])

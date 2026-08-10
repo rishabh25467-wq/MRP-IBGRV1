@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Fragment } from "react";
 import "@/App.css";
 import axios from "axios";
 import {
@@ -11,6 +11,7 @@ import {
   ClockCounterClockwise,
   XCircle,
   Plus,
+  ArrowBendDownRight,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -42,6 +43,38 @@ const isFutureBillDate = (dateStr) => {
 const withVendorCode = (name, code) => {
   if (!name) return code ? `SAP Supplier ${code}` : "Unknown Supplier";
   return code ? `${name} (${code})` : name;
+};
+
+const DOC_TYPE_BADGE_CLS = {
+  "Invoice": "bg-[#EFF4FF] text-[#004B87] border-[#B8D4ED]",
+  "Credit Memo": "bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]",
+  "Debit Memo": "bg-[#FFF6ED] text-[#B54708] border-[#FDDCAB]",
+};
+const docTypeBadgeCls = (docType) => DOC_TYPE_BADGE_CLS[docType] || "bg-[#F2F4F7] text-[#475467] border-[#D0D5DD]";
+
+// A Credit Memo that reverses a specific Invoice shares that Invoice's own
+// vendor document reference (supplier_invoice_number) - the backend already
+// resolves this into `reverses_invoice_id`. Here we turn the flat row list
+// into a display list where a reversing Credit Memo is grouped right under
+// the Invoice it reverses (never shown as a standalone look-alike
+// "duplicate" row) - see sap_supplier_invoice_client.py for the matching
+// logic. Rows are returned as {row, creditMemos: []} pairs, in the same
+// order as the input, minus any Credit Memo rows that got grouped under
+// an earlier/later Invoice in the same list.
+const buildPurchaseHistoryGroups = (rows) => {
+  const byInvoiceId = new Set(rows.map((r) => r.invoice_id));
+  const creditsByInvoiceId = {};
+  const groupedCreditIds = new Set();
+  rows.forEach((row) => {
+    if (row.document_type === "Credit Memo" && row.reverses_invoice_id && byInvoiceId.has(row.reverses_invoice_id)) {
+      groupedCreditIds.add(row.invoice_id);
+      if (!creditsByInvoiceId[row.reverses_invoice_id]) creditsByInvoiceId[row.reverses_invoice_id] = [];
+      creditsByInvoiceId[row.reverses_invoice_id].push(row);
+    }
+  });
+  return rows
+    .filter((row) => !groupedCreditIds.has(row.invoice_id))
+    .map((row) => ({ row, creditMemos: creditsByInvoiceId[row.invoice_id] || [] }));
 };
 
 export default function QuotaAllocationPage() {
@@ -571,6 +604,7 @@ export default function QuotaAllocationPage() {
                     <table className="w-full text-[13px] border-collapse" data-testid="sap-purchase-history-table">
                       <thead>
                         <tr>
+                          <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Type</th>
                           <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Invoice</th>
                           <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Invoice Date</th>
                           <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase">Supplier</th>
@@ -579,23 +613,74 @@ export default function QuotaAllocationPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {sapPurchaseHistory.map((row, i) => (
-                          <tr key={`${row.invoice_id}-${i}`} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`sap-purchase-history-row-${i}`}>
-                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#101828]" title={row.invoice_id ? `SAP internal doc: ${row.invoice_id}` : undefined}>
-                              {row.supplier_invoice_number || row.invoice_id || "—"}
-                            </td>
-                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#475467]">{row.date || "—"}</td>
-                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#101828]">
-                              {withVendorCode(row.supplier_name, row.supplier_internal_id)}
-                            </td>
-                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-right tabular-nums text-[#475467]">
-                              {row.quantity != null ? `${row.quantity.toLocaleString()} ${row.unit_of_measure || ""}` : "—"}
-                            </td>
-                            <td className="border border-[#D0D5DD] px-1.5 py-1 text-right tabular-nums text-[#101828]">
-                              {row.price != null ? `${row.currency || ""} ${row.price}` : "—"}
-                            </td>
-                          </tr>
-                        ))}
+                        {buildPurchaseHistoryGroups(sapPurchaseHistory).map(({ row, creditMemos }, i) => {
+                          const netQty = creditMemos.length
+                            ? (row.quantity || 0) - creditMemos.reduce((sum, c) => sum + (c.quantity || 0), 0)
+                            : null;
+                          return (
+                            <Fragment key={`${row.invoice_id}-${i}`}>
+                              <tr className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`sap-purchase-history-row-${i}`}>
+                                <td className="border border-[#D0D5DD] px-1.5 py-1">
+                                  <Badge variant="outline" className={`text-[11px] ${docTypeBadgeCls(row.document_type)}`} data-testid={`sap-purchase-history-doctype-${i}`}>
+                                    {row.document_type || "—"}
+                                  </Badge>
+                                </td>
+                                <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#101828]" title={row.invoice_id ? `SAP internal doc: ${row.invoice_id}` : undefined}>
+                                  {row.supplier_invoice_number || row.invoice_id || "—"}
+                                </td>
+                                <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#475467]">{row.date || "—"}</td>
+                                <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#101828]">
+                                  {withVendorCode(row.supplier_name, row.supplier_internal_id)}
+                                </td>
+                                <td className="border border-[#D0D5DD] px-1.5 py-1 text-right tabular-nums text-[#475467]">
+                                  {row.quantity != null ? `${row.quantity.toLocaleString()} ${row.unit_of_measure || ""}` : "—"}
+                                </td>
+                                <td className="border border-[#D0D5DD] px-1.5 py-1 text-right tabular-nums text-[#101828]">
+                                  {row.price != null ? `${row.currency || ""} ${row.price}` : "—"}
+                                </td>
+                              </tr>
+                              {creditMemos.map((cm, ci) => (
+                                <tr key={`${cm.invoice_id}-${i}-${ci}`} className="bg-[#FEF3F2]" data-testid={`sap-purchase-history-creditmemo-row-${i}-${ci}`}>
+                                  <td className="border border-[#D0D5DD] px-1.5 py-1">
+                                    <Badge variant="outline" className={`text-[11px] ${docTypeBadgeCls(cm.document_type)}`}>
+                                      {cm.document_type}
+                                    </Badge>
+                                  </td>
+                                  <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#B42318]" title={`SAP internal doc: ${cm.invoice_id}`}>
+                                    <span className="inline-flex items-center gap-1">
+                                      <ArrowBendDownRight size={12} weight="bold" />
+                                      {cm.supplier_invoice_number || cm.invoice_id || "—"}
+                                    </span>
+                                    <div className="text-[11px] text-[#912018] italic">
+                                      Reverses Invoice {row.supplier_invoice_number || row.invoice_id}
+                                    </div>
+                                  </td>
+                                  <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#B42318]">{cm.date || "—"}</td>
+                                  <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#B42318]">
+                                    {withVendorCode(cm.supplier_name, cm.supplier_internal_id)}
+                                  </td>
+                                  <td className="border border-[#D0D5DD] px-1.5 py-1 text-right tabular-nums text-[#B42318]">
+                                    -{cm.quantity != null ? `${cm.quantity.toLocaleString()} ${cm.unit_of_measure || ""}` : "—"}
+                                  </td>
+                                  <td className="border border-[#D0D5DD] px-1.5 py-1 text-right tabular-nums text-[#B42318]">
+                                    {cm.price != null ? `${cm.currency || ""} ${cm.price}` : "—"}
+                                  </td>
+                                </tr>
+                              ))}
+                              {creditMemos.length > 0 && (
+                                <tr key={`${row.invoice_id}-${i}-net`} className="bg-[#F9FAFB]" data-testid={`sap-purchase-history-net-row-${i}`}>
+                                  <td colSpan={4} className="border border-[#D0D5DD] px-1.5 py-1 text-right text-[11px] font-bold text-[#475467] uppercase font-heading">
+                                    Net Purchase Qty ({row.supplier_invoice_number || row.invoice_id}):
+                                  </td>
+                                  <td className="border border-[#D0D5DD] px-1.5 py-1 text-right tabular-nums text-[11px] font-bold text-[#101828]">
+                                    {netQty != null ? `${netQty.toLocaleString()} ${row.unit_of_measure || ""}` : "—"}
+                                  </td>
+                                  <td className="border border-[#D0D5DD] px-1.5 py-1"></td>
+                                </tr>
+                              )}
+                            </Fragment>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>

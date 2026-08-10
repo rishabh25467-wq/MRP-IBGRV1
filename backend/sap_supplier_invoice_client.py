@@ -12,8 +12,21 @@ Authorization: requires the `QuerySupplierInvoiceQueryIn` service role on
 the `_EMERGENTBOM` technical user (granted Feb 2026 - see
 /app/SAP_SUPPLIER_INVOICE_QUERY_AUTHORIZATION_REQUEST.md). WSDL confirmed
 endpoint: SAP_SOAP_SUPPLIER_INVOICE_ENDPOINT in backend/.env.
+Document type / Credit Memo linking (added Feb 2026 - user flagged that a
+posted Credit Memo reversing a prior Invoice for the same product/qty was
+visually indistinguishable from an accidental duplicate row): SAP tags each
+document with a ProcessingTypeCode ("INV"=Invoice, "CRME"=Credit Memo) and
+a numeric TypeCode fallback ("004"=Invoice, "005"=Credit Memo). A Credit
+Memo that reverses a specific Invoice shares that Invoice's own
+ExternalDocumentID (the vendor's own document reference number, e.g. "288")
+- confirmed empirically against a real reversed pair (RI-3748-2026 /
+RIDN-43-2026, both referencing vendor doc "288") - so we use that shared
+reference (+ same supplier) to link a Credit Memo row to the Invoice row it
+reverses via `reverses_invoice_id`, letting the UI show them as a linked
+pair instead of what looks like a plain duplicate.
 """
 import xml.etree.ElementTree as ET
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -23,6 +36,59 @@ from sap_rate_limiter import sap_semaphore
 
 class SAPSupplierInvoiceError(Exception):
     pass
+
+
+_PROCESSING_TYPE_LABELS = {
+    "INV": "Invoice",
+    "CRME": "Credit Memo",
+    "DMEM": "Debit Memo",
+}
+_TYPE_CODE_LABELS = {
+    "004": "Invoice",
+    "005": "Credit Memo",
+    "006": "Debit Memo",
+}
+
+
+def _document_type(processing_type_code: str, type_code: str) -> str:
+    if processing_type_code in _PROCESSING_TYPE_LABELS:
+        return _PROCESSING_TYPE_LABELS[processing_type_code]
+    if type_code in _TYPE_CODE_LABELS:
+        return _TYPE_CODE_LABELS[type_code]
+    return f"Other (Type {type_code})" if type_code else "Other"
+
+
+def _link_credit_memos(rows: list) -> list:
+    """Sets `reverses_invoice_id`/`reverses_supplier_invoice_number` on any
+    Credit Memo row that shares its vendor document reference
+    (supplier_invoice_number) and supplier with an Invoice row in the same
+    result set - see module docstring. Leaves everything else untouched."""
+    groups = defaultdict(list)
+    for r in rows:
+        ref = r.get("supplier_invoice_number")
+        if not ref:
+            continue
+        groups[(ref, r.get("supplier_internal_id"))].append(r)
+
+    for group_rows in groups.values():
+        invoices = [r for r in group_rows if r["document_type"] == "Invoice"]
+        credit_memos = [r for r in group_rows if r["document_type"] == "Credit Memo"]
+        if not invoices or not credit_memos:
+            continue
+        for cm in credit_memos:
+            # If several invoices share this vendor ref, pick the one
+            # closest in date to this credit memo (rare edge case).
+            def _days_apart(inv):
+                try:
+                    d1 = datetime.fromisoformat(inv["date"])
+                    d2 = datetime.fromisoformat(cm["date"])
+                    return abs((d1 - d2).days)
+                except (TypeError, ValueError):
+                    return 0
+            target = min(invoices, key=_days_apart)
+            cm["reverses_invoice_id"] = target["invoice_id"]
+            cm["reverses_supplier_invoice_number"] = target.get("supplier_invoice_number")
+    return rows
 
 
 _DATE_FILTER = """  <SelectionByDate>
@@ -93,6 +159,7 @@ class SAPSupplierInvoiceClient:
         for invoice in root.findall(".//SupplierInvoice"):
             invoice_id = invoice.findtext("ID")
             date = invoice.findtext("Date")
+            document_type = _document_type(invoice.findtext("ProcessingTypeCode"), invoice.findtext("TypeCode"))
             seller = invoice.find("SellerParty")
             supplier_name = None
             supplier_internal_id = None
@@ -138,6 +205,9 @@ class SAPSupplierInvoiceClient:
                     "unit_of_measure": qty_el.get("unitCode") if qty_el is not None else None,
                     "price": float(price_el.text) if price_el is not None and price_el.text else None,
                     "currency": price_el.get("currencyCode") if price_el is not None else None,
+                    "document_type": document_type,
+                    "reverses_invoice_id": None,
+                    "reverses_supplier_invoice_number": None,
                 })
         return rows
 
@@ -176,5 +246,6 @@ class SAPSupplierInvoiceClient:
                 break
         if not rows:
             rows = self._run_query(product_id, self.FETCH_LIMIT)
+        rows = _link_credit_memos(rows)
         rows.sort(key=lambda r: r["date"] or "", reverse=True)
         return rows[:limit]
