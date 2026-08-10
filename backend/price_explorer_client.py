@@ -36,7 +36,7 @@ class PriceExplorerClient:
             resp = requests.post(
                 f"{self.base_url}/api/auth/login",
                 json={"username": self.username, "password": self.password},
-                timeout=20,
+                timeout=(5, 15),
             )
         except requests.exceptions.RequestException as e:
             raise PriceExplorerError(f"Could not reach Price Explorer service: {e}")
@@ -58,14 +58,23 @@ class PriceExplorerClient:
     def search(self, query: str, lookback_days: int = 180, limit: int = 25) -> list:
         """Returns items: [{icode, iname, lowest, last, average}, ...] where
         lowest/last are {rate, supplier, pcode, bill_date} and average is
-        {rate, bill_count}. Empty list if nothing matches - normal outcome."""
+        {rate, bill_count}. Empty list if nothing matches - normal outcome.
+
+        Timeouts are deliberately tight (connect=5s, read=15s per leg, worst
+        case ~35-40s across login+search+retry) - the platform's own
+        ingress has a gateway timeout well under a minute, so if we let a
+        stalled upstream (this vendor's search endpoint has been observed
+        hanging indefinitely, independent of auth method) run past that,
+        the PLATFORM'S generic gateway-timeout page reaches the user instead
+        of our own clear PriceExplorerError message - failing fast here is
+        what lets that clear message actually get through."""
         token = self._get_token()
         try:
             resp = requests.get(
                 f"{self.base_url}/api/price-explorer/search",
                 params={"q": query, "lookback_days": lookback_days, "limit": limit},
                 headers={"Authorization": f"Bearer {token}"},
-                timeout=20,
+                timeout=(5, 15),
             )
             if resp.status_code == 401:
                 # token expired/invalid - refresh once and retry
@@ -74,7 +83,7 @@ class PriceExplorerClient:
                     f"{self.base_url}/api/price-explorer/search",
                     params={"q": query, "lookback_days": lookback_days, "limit": limit},
                     headers={"Authorization": f"Bearer {token}"},
-                    timeout=20,
+                    timeout=(5, 15),
                 )
         except requests.exceptions.RequestException as e:
             raise PriceExplorerError(f"Could not reach Price Explorer service: {e}")

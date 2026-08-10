@@ -1,0 +1,26 @@
+{
+  "summary": "Regression swept the 3 infra changes (502->400 status codes on ~25 external-error paths, price_explorer_client timeout tuples (5,15), and new startup configure_default_executor() raising asyncio's shared ThreadPoolExecutor to 128 workers). Backend boots cleanly, no exceptions in supervisor logs. Confirmed live via curl+backend logs that GET /api/suppliers/erp-prices/SH1.2CR now returns HTTP 400 (was 502) with a clean JSON body: {\"detail\":\"Price Explorer error: Could not reach Price Explorer service: ...Read timed out. (read timeout=15)\"} - matches the expected outage-passthrough behavior, request completed in ~15s (bounded by the new (5,15) timeout tuple, not hanging indefinitely). On /purchasing-strategy/quota-allocation searching SH1.2CR via Playwright: 'Purchase History from SAP' table rendered correctly with Type column, Credit Memo grouped under Invoice 288 with 'Reverses Invoice 288' caption, Net Purchase Qty row (0 KGM), vendor ref + 'SAP Doc:' both visible per row - no regression from iteration_62. The ERP prices panel showed the readable error message inline (data-testid='erp-prices-error') - NOT a blank page/spinner/raw HTML - while Price Specs, Purchase History from SAP, Goods Receipts, and AI Quota Arrangement panels all rendered/completed normally alongside it, confirming the one failed panel did not block the others. Happy-path spot checks: BOM Explorer product lookup (SH1.2CR -> correctly shown as 'No Bill of Materials' raw material with live SAP cost/qty), Inventory page (3,191 items, load ~instant), Admin page (3,276 components table), Purchasing Plan and Production Plan initial pages all loaded normally. Responsiveness check: /api/suppliers (0.26s), /api/products/search (0.11s), /api/inventory (0.26s), /api/bom/connection-status (3-8s, SAP health check, within reason) - none hung or timed out; no evidence of thread-pool exhaustion during this test window (SAP connectivity appeared largely healthy with occasional individual 30s connect-timeouts logged only in background BOM/valuation cache refresh loops, as expected/designed).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "configure_default_executor() correctly uses @app.on_event('startup') and loop.set_default_executor(ThreadPoolExecutor(max_workers=128)) - sound fix for the shared-executor exhaustion RCA; note this is process-wide for asyncio.to_thread only (does not affect the separate sap_rate_limiter.Semaphore(3) which still caps concurrent live SAP HTTP calls at 3).",
+    "All ~25 status_code=400 changes reviewed are confined to external SAP/OMS/Price-Explorer error passthrough paths (raise HTTPException with str(e)/f-string detail) - business logic and validation-error 400s (e.g. 'Quota percentages must sum to 100') were already 400 before, so no ambiguity was introduced between 'bad client input' and 'external service failure' by this change, though both now share the same status code (400) which could be a minor future ambiguity for API consumers distinguishing client vs upstream errors - not a bug, just worth noting for future observability.",
+    "price_explorer_client.py timeout tuples (connect=5s, read=15s) with a single retry-on-401 leg means worst-case ~40s (login+search+retry) is still comfortably under typical gateway timeouts - confirmed empirically (search calls returned in ~15s during the current vendor outage, consistent with the read timeout)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None - used live SAP/OMS/Price-Explorer data (SH1.2CR).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "This session's 3 backend changes (502->400, tighter price-explorer timeouts, larger default executor) are verified working with no regressions across BOM Explorer, Inventory, Admin, Purchasing Plan, Production Plan, and Quota Allocation. The Price Explorer vendor outage (scmai.radishtechnologies.com read-timeout on /api/price-explorer/search) is confirmed still ongoing and correctly surfaces as a clean 400 JSON error end-to-end (backend curl + frontend rendered error text) - this is expected/external, not a bug. AI Quota Arrangement suggestion (LLM-based, gpt-5-mini) took ~43s end-to-end via direct curl to /api/quota-arrangements/SH1.2CR/suggest and returned a valid 200 with full allocation JSON - this is normal LLM latency, unrelated to this session's thread-pool/timeout changes, not a regression.",
+  "rca_of_the_issue": "N/A - infra regression check only, no new bug found. Original outage RCA (external Price Explorer vendor hang, Cloudflare 502 swallowing, asyncio default-executor exhaustion) was already fixed prior to this test session; this session only verified the fixes did not break anything else."
+}

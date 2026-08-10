@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -52,6 +53,23 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
+
+
+@app.on_event("startup")
+async def configure_default_executor():
+    """Raise asyncio.to_thread's shared default executor size well above
+    Python's default (min(32, cpu_count+4)). This app funnels essentially
+    all blocking I/O (SAP SOAP/OData, OMS, Price Explorer, Mongo) through
+    `asyncio.to_thread` on that one shared pool - during a SAP tenant
+    outage (repeated 30s connect-timeout retries piling up across the
+    BOM/inventory background refresh loops), that default pool can fill up
+    and stall even unrelated, fast requests app-wide. Observed live (Feb
+    2026) while debugging a Price Explorer report: the whole backend,
+    including trivial endpoints, became unresponsive during a SAP outage
+    window purely from thread-pool exhaustion, not from the reported
+    endpoint itself being slow."""
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=128))
 
 mongo_client = MongoClient(os.environ['MONGO_URL'], tz_aware=True)
 db = mongo_client[os.environ['DB_NAME']]
@@ -280,7 +298,14 @@ async def search_bom(bom_id: str = Query(..., min_length=1)):
     try:
         result = await asyncio.to_thread(sap_soap_client.explode_bom, product_id)
     except SAPSoapError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        # NOTE: 400, not 502/503/504 - the platform's Cloudflare ingress
+        # swallows those gateway-error status codes and substitutes its own
+        # generic HTML error page, discarding our JSON detail before it
+        # reaches the frontend (see the Cost Estimate Run endpoint below for
+        # the original discovery/verification of this). A plain 400 passes
+        # through intact - applied consistently to every external
+        # SAP/OMS/Price-Explorer error response in this file.
+        raise HTTPException(status_code=400, detail=str(e))
 
     if result is None:
         item_info = await asyncio.to_thread(_lookup_item_without_bom, product_id)
@@ -353,7 +378,7 @@ async def standard_costs(payload: StandardCostsRequest):
     try:
         costs = await asyncio.to_thread(sap_valuation_client.get_standard_costs, payload.product_uuids)
     except SAPValuationError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
     return StandardCostsResponse(costs=costs)
 
 
@@ -362,7 +387,7 @@ async def categorize(payload: CategorizeRequest):
     try:
         categories = await categorize_items(payload.items, db)
     except BomCategorizerError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
     return CategorizeResponse(categories=categories)
 
 
@@ -404,7 +429,7 @@ async def run_cost_estimate(payload: CostEstimateRunRequest):
         try:
             material_uuid = await asyncio.to_thread(sap_material_client.resolve_uuid, payload.product_id)
         except SAPMaterialError as e:
-            raise HTTPException(status_code=502, detail=f"Could not resolve {payload.product_id} in SAP: {e}")
+            raise HTTPException(status_code=400, detail=f"Could not resolve {payload.product_id} in SAP: {e}")
         if not material_uuid:
             raise HTTPException(status_code=404, detail=f"Material '{payload.product_id}' not found in SAP")
 
@@ -580,7 +605,7 @@ async def get_sales_plan(month: Optional[str] = Query(None)):
     try:
         items = await asyncio.to_thread(oms_client.get_sales_plan, validated_month)
     except OMSError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
     return SalesPlanResponse(month=validated_month, items=items)
 
 
@@ -943,7 +968,7 @@ async def get_open_po_demand(customer: Optional[str] = Query(None), plant: Optio
     try:
         feed = await asyncio.to_thread(open_po_client.get_open_po_demand, customer, plant)
     except OpenPODemandError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
     return OpenPoDemandResponse(count=feed.get("count", 0), max_changed_at=feed.get("max_changed_at"), truncated=feed.get("truncated", False), rows=feed.get("rows", []))
 
 
@@ -1526,7 +1551,7 @@ async def recategorize_components(payload: RecategorizeRequest):
         categories = await asyncio.to_thread(get_categories, db)
         ai_results = await _ai_categorize(targets, categories)
     except BomCategorizerError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
 
     def persist():
         now = datetime.now(timezone.utc)
@@ -1563,7 +1588,7 @@ async def get_sap_planning_data(product_id: str):
     try:
         planning = await asyncio.to_thread(sap_planning_client.get_planning_data, [product_uuid])
     except SAPPlanningError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
 
     data = planning.get(product_uuid.upper())
     if not data:
@@ -1607,7 +1632,7 @@ async def push_component_to_sap(product_id: str):
             sap_planning_client.push_planning_data, product_uuid, data["rows"], msl, lead_time_days
         )
     except SAPPlanningError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
 
     await asyncio.to_thread(
         db["component_master"].update_one,
@@ -2102,7 +2127,7 @@ async def get_sap_price_specs(product_id: str):
     try:
         specs = await asyncio.to_thread(sap_price_spec_client.get_price_specs_for_product, product_id)
     except SAPPriceSpecError as e:
-        raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+        raise HTTPException(status_code=400, detail=f"SAP error: {e}")
     return [SapPriceSpec(**s) for s in specs]
 
 
@@ -2128,7 +2153,7 @@ async def create_sap_price_spec(payload: SapPriceSpecCreate):
         )
         specs = await asyncio.to_thread(sap_price_spec_client.get_price_specs_for_product, payload.product_id)
     except SAPPriceSpecError as e:
-        raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+        raise HTTPException(status_code=400, detail=f"SAP error: {e}")
     return [SapPriceSpec(**s) for s in specs]
 
 
@@ -2161,7 +2186,7 @@ async def get_erp_prices(product_id: str, lookback_days: int = 180):
     try:
         items = await asyncio.to_thread(price_explorer_client.search, product_id, lookback_days, 5)
     except PriceExplorerError as e:
-        raise HTTPException(status_code=502, detail=f"Price Explorer error: {e}")
+        raise HTTPException(status_code=400, detail=f"Price Explorer error: {e}")
     return [ErpPriceItem(**i) for i in items]
 
 
@@ -2191,7 +2216,7 @@ async def get_sap_purchase_history(product_id: str, limit: int = 20):
     try:
         rows = await asyncio.to_thread(sap_supplier_invoice_client.get_invoices_for_product, product_id, limit)
     except SAPSupplierInvoiceError as e:
-        raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+        raise HTTPException(status_code=400, detail=f"SAP error: {e}")
     return [SapSupplierInvoiceLine(**r) for r in rows]
 
 
@@ -2214,7 +2239,7 @@ async def get_sap_receipt_dates(product_id: str, limit: int = 20):
     try:
         rows = await asyncio.to_thread(sap_gsa_client.get_receipt_dates_for_product, product_id, limit)
     except SAPGSAError as e:
-        raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+        raise HTTPException(status_code=400, detail=f"SAP error: {e}")
     return [SapGSALine(**r) for r in rows]
 
 
