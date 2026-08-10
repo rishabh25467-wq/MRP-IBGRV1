@@ -625,8 +625,13 @@ export default function QuotaAllocationPage() {
                                     {row.document_type || "—"}
                                   </Badge>
                                 </td>
-                                <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#101828]" title={row.invoice_id ? `SAP internal doc: ${row.invoice_id}` : undefined}>
-                                  {row.supplier_invoice_number || row.invoice_id || "—"}
+                                <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#101828]">
+                                  <div>{row.supplier_invoice_number || "—"}</div>
+                                  {row.invoice_id && (
+                                    <div className="text-[11px] text-[#98A2B3]" data-testid={`sap-purchase-history-sapdoc-${i}`}>
+                                      SAP Doc: {row.invoice_id}
+                                    </div>
+                                  )}
                                 </td>
                                 <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#475467]">{row.date || "—"}</td>
                                 <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#101828]">
@@ -646,13 +651,19 @@ export default function QuotaAllocationPage() {
                                       {cm.document_type}
                                     </Badge>
                                   </td>
-                                  <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#B42318]" title={`SAP internal doc: ${cm.invoice_id}`}>
+                                  <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#B42318]">
                                     <span className="inline-flex items-center gap-1">
                                       <ArrowBendDownRight size={12} weight="bold" />
-                                      {cm.supplier_invoice_number || cm.invoice_id || "—"}
+                                      {cm.supplier_invoice_number || "—"}
                                     </span>
+                                    {cm.invoice_id && (
+                                      <div className="text-[11px] text-[#B54748]" data-testid={`sap-purchase-history-creditmemo-sapdoc-${i}-${ci}`}>
+                                        SAP Doc: {cm.invoice_id}
+                                      </div>
+                                    )}
                                     <div className="text-[11px] text-[#912018] italic">
                                       Reverses Invoice {row.supplier_invoice_number || row.invoice_id}
+                                      {row.invoice_id ? ` (SAP Doc: ${row.invoice_id})` : ""}
                                     </div>
                                   </td>
                                   <td className="border border-[#D0D5DD] px-1.5 py-1 text-[#B42318]">{cm.date || "—"}</td>
