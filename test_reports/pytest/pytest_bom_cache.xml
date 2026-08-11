@@ -1,1 +1,19 @@
-<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="4" time="20.469" timestamp="2026-08-07T04:45:16.679692+00:00" hostname="agent-env-025980c2-0ecc-461b-b2ad-6d583c87f706"><testcase classname="tests.test_bom_cache.TestBomCachePurchasingPlan" name="test_run1_cold_then_run2_warm_identical_and_faster" time="10.130" /><testcase classname="tests.test_bom_cache.TestBomCachePurchasingPlan" name="test_run3_stable_after_cache_warm" time="5.008" /><testcase classname="tests.test_bom_cache.TestBomCacheStats" name="test_stats_shape_and_positive_after_generation" time="5.187" /><testcase classname="tests.test_bom_cache.TestBomCacheRefresh" name="test_refresh_returns_fast_and_triggered" time="0.094" /></testsuite></testsuites>
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="3" skipped="0" tests="4" time="151.976" timestamp="2026-08-11T18:13:57.806941+00:00" hostname="agent-env-025980c2-0ecc-461b-b2ad-6d583c87f706"><testcase classname="tests.test_bom_cache.TestBomCacheStats" name="test_stats_shape_and_positive_after_generation" time="90.517"><failure message="TimeoutError: Job 6a89d38b-881a-40bc-9100-2b86758371ac did not complete within 90s">tests/test_bom_cache.py:91: in test_stats_shape_and_positive_after_generation
+    generate_plan()
+tests/test_bom_cache.py:46: in generate_plan
+    return poll_job(job_id)
+           ^^^^^^^^^^^^^^^^
+tests/test_bom_cache.py:35: in poll_job
+    raise TimeoutError(f"Job {job_id} did not complete within {timeout}s")
+E   TimeoutError: Job 6a89d38b-881a-40bc-9100-2b86758371ac did not complete within 90s</failure></testcase><testcase classname="tests.test_bom_cache.TestBomCachePurchasingPlan" name="test_run1_cold_then_run2_warm_identical_and_faster" time="90.615"><failure message="TimeoutError: Job 9ebacdef-4e40-4af7-9833-c25484be0582 did not complete within 90s">tests/test_bom_cache.py:51: in test_run1_cold_then_run2_warm_identical_and_faster
+    data1, elapsed1 = generate_plan()
+                      ^^^^^^^^^^^^^^^
+tests/test_bom_cache.py:46: in generate_plan
+    return poll_job(job_id)
+           ^^^^^^^^^^^^^^^^
+tests/test_bom_cache.py:35: in poll_job
+    raise TimeoutError(f"Job {job_id} did not complete within {timeout}s")
+E   TimeoutError: Job 9ebacdef-4e40-4af7-9833-c25484be0582 did not complete within 90s</failure></testcase><testcase classname="tests.test_bom_cache.TestBomCachePurchasingPlan" name="test_run3_stable_after_cache_warm" time="60.882"><failure message="AssertionError: 3rd warm run took 60.75299334526062s, expected fast cached response&#10;assert 60.75299334526062 &lt; 20">tests/test_bom_cache.py:85: in test_run3_stable_after_cache_warm
+    assert elapsed3 &lt; 20, f"3rd warm run took {elapsed3}s, expected fast cached response"
+E   AssertionError: 3rd warm run took 60.75299334526062s, expected fast cached response
+E   assert 60.75299334526062 &lt; 20</failure></testcase><testcase classname="tests.test_bom_cache.TestBomCacheRefresh" name="test_refresh_returns_fast_and_triggered" time="0.124" /></testsuite></testsuites>
