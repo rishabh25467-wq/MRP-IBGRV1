@@ -127,6 +127,17 @@ def _resolve_boms(part_nos, part_map, sap_soap_client, db, overrides=None):
     fetch_failed_by_id = {}
 
     override_ids = sorted({overrides[p].strip() for p in part_nos if (overrides.get(p) or "").strip()})
+    sorted_part_nos = sorted(part_nos)
+
+    # Pre-warm the persistent cache for every override_id + part_no in ONE
+    # batched pass (Feb 2026 speedup) instead of the loops below each
+    # triggering their own individual live SAP call, one part at a time -
+    # see bom_cache_service.bulk_prefetch. Idempotent/cheap to call on every
+    # run (skips ids already cached); the loops below are otherwise
+    # unchanged - they still go through the same build_tree_from_cache() /
+    # _explode() path, which will simply find these ids already warm.
+    bom_cache_service.bulk_prefetch(override_ids + sorted_part_nos, sap_soap_client, db)
+
     for cid in override_ids:
         bom_by_id[cid], fetch_failed_by_id[cid] = _explode(cid, sap_soap_client, db)
 
@@ -134,7 +145,7 @@ def _resolve_boms(part_nos, part_map, sap_soap_client, db, overrides=None):
         override = (overrides.get(part_no) or "").strip()
         return bool(override and bom_by_id.get(override))
 
-    for part_no in sorted(part_nos):
+    for part_no in sorted_part_nos:
         if not already_resolved(part_no) and part_no not in bom_by_id:
             bom_by_id[part_no], fetch_failed_by_id[part_no] = _explode(part_no, sap_soap_client, db)
 
@@ -144,6 +155,7 @@ def _resolve_boms(part_nos, part_map, sap_soap_client, db, overrides=None):
         for p in unresolved_part_nos
         if (part_map.get(p) or "").strip() and (part_map.get(p) or "").strip() != p
     })
+    bom_cache_service.bulk_prefetch(fallback_ids, sap_soap_client, db)
     for cid in fallback_ids:
         bom_by_id[cid], fetch_failed_by_id[cid] = _explode(cid, sap_soap_client, db)
 

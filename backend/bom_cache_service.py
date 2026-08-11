@@ -28,6 +28,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
+from sap_soap_client import BATCH_CHUNK_SIZE
+
 logger = logging.getLogger(__name__)
 
 MAX_DEPTH = 6
@@ -50,6 +52,34 @@ class BomFetchError(Exception):
     sub-assembly must not blow up resolving the rest of the tree)."""
 
 
+def _apply_override(sap_soap_client, db, product_id, raw):
+    """If `raw` has genuine alternates (see sap_soap_client._parse -
+    multiple currently-active revisions using DIFFERENT materials for the
+    same output, not just an admin revision chain) and production has saved
+    a standing choice for this product_id that differs from the default-
+    picked revision (bom_variant_overrides), re-fetches and substitutes that
+    EXACT chosen revision instead - see production_plan_service.py. Shared
+    by both the single-product (_fetch_live) and batched (_fetch_live_batch)
+    fetch paths - override lookups are rare enough (a manual, per-product
+    production decision) that batching them isn't worth the complexity;
+    they're applied as a small per-product post-processing step regardless
+    of which path produced `raw`."""
+    if not (db is not None and raw and raw.get("alternates")):
+        return raw
+    override = db[OVERRIDES_COLLECTION_NAME].find_one({"_id": product_id})
+    if not override or override["chosen_bom_id"] == raw["bom_id"]:
+        return raw
+    try:
+        chosen = sap_soap_client._fetch_bom_by_id(override["chosen_bom_id"])
+    except Exception as e:
+        logger.warning(f"BOM variant override lookup failed for '{product_id}' -> '{override['chosen_bom_id']}', using default instead: {e}")
+        return raw
+    if chosen:
+        chosen["alternates"] = raw["alternates"]
+        return chosen
+    return raw
+
+
 def _fetch_live(sap_soap_client, product_id, db=None):
     """One lightweight (non-recursive) SAP fetch for a single product's own
     BOM header+items - NOT a full explosion. Returns the raw bom dict, or
@@ -62,13 +92,7 @@ def _fetch_live(sap_soap_client, product_id, db=None):
     missing (see bug report: dozens of real parts falsely flagged "No SAP
     BOM found" that resolved fine on a plain retry).
 
-    If `db` is given and the fetched BOM has genuine alternates (see
-    sap_soap_client._parse - multiple currently-active revisions using
-    DIFFERENT materials for the same output, not just an admin revision
-    chain), checks `bom_variant_overrides` for a production-made choice and
-    re-fetches that EXACT revision by ID instead of the default (highest
-    revision) - see production_plan_service.py, where production resolves
-    which alternate to use for a given component."""
+    See _apply_override for the `db`-driven BOM-alternate substitution."""
     last_error = None
     for attempt in range(FETCH_RETRY_ATTEMPTS):
         try:
@@ -82,18 +106,75 @@ def _fetch_live(sap_soap_client, product_id, db=None):
     else:
         raise BomFetchError(str(last_error)) from last_error
 
-    if db is not None and raw and raw.get("alternates"):
-        override = db[OVERRIDES_COLLECTION_NAME].find_one({"_id": product_id})
-        if override and override["chosen_bom_id"] != raw["bom_id"]:
-            try:
-                chosen = sap_soap_client._fetch_bom_by_id(override["chosen_bom_id"])
-            except Exception as e:
-                logger.warning(f"BOM variant override lookup failed for '{product_id}' -> '{override['chosen_bom_id']}', using default instead: {e}")
-                chosen = None
-            if chosen:
-                chosen["alternates"] = raw["alternates"]
-                raw = chosen
-    return raw
+    return _apply_override(sap_soap_client, db, product_id, raw)
+
+
+def _fetch_live_batch(sap_soap_client, product_ids: list, db=None) -> dict:
+    """Batched analogue of _fetch_live() for MANY never-before-cached
+    product_ids at once (Feb 2026 speedup - same technique already applied
+    to BOM Explorer's explode_bom(), extended here to Purchasing Plan/MRP's
+    cache-miss and background-refresh paths). Chunks product_ids into
+    BATCH_CHUNK_SIZE-sized groups and does ONE SOAP round-trip per chunk
+    (via sap_soap_client._safe_fetch_boms_batch, already retried 2x
+    internally) instead of one call per product - cuts wall-clock cost of
+    warming up a large batch of never-seen products roughly by a factor of
+    BATCH_CHUNK_SIZE, with NO increase in concurrent SAP load (same
+    sap_rate_limiter.py cap either way - fewer, bigger round-trips, not more
+    of them).
+
+    Note: unlike _fetch_live, this only searches by OUTPUT product (SAP's
+    SelectionByOutputProductID) - it skips the SelectionByProductionBillOf
+    MaterialID direct-ID-match _fetch_live tries first. That first attempt
+    is a no-op for the overwhelming majority of callers here (OMS part
+    numbers / FG item codes are bare product codes, not literal revisioned
+    BOM IDs like "P26663_1") - correctness is preserved either way since any
+    id this misses simply won't be pre-warmed and falls through to the
+    normal, unabridged _fetch_live path the first time it's actually needed
+    (see build_tree_from_cache/bulk_prefetch below), it just loses the
+    speedup for that one rare id.
+
+    Returns {product_id: bom_dict_or_None} for every id that got a genuine
+    response (bom_dict is None when SAP cleanly confirms no BOM); a
+    product_id absent from the result means its WHOLE chunk failed after
+    retries (a real connectivity issue, not "confirmed no BOM") - callers
+    leave it unresolved/uncached for the next run, same as a BomFetchError."""
+    if not product_ids:
+        return {}
+    chunks = [product_ids[i:i + BATCH_CHUNK_SIZE] for i in range(0, len(product_ids), BATCH_CHUNK_SIZE)]
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        chunk_results = list(executor.map(sap_soap_client._safe_fetch_boms_batch, chunks))
+    results = {}
+    for chunk_result in chunk_results:
+        results.update(chunk_result)
+    for pid, raw in list(results.items()):
+        results[pid] = _apply_override(sap_soap_client, db, pid, raw)
+    return results
+
+
+def bulk_prefetch(product_ids: list, sap_soap_client, db) -> None:
+    """Pre-warms the persistent cache for MANY product_ids in one batched
+    pass - intended to be called ONCE upfront with every root candidate a
+    Purchasing Plan/MRP run is about to explode (see purchasing_plan.py's
+    _resolve_boms and mrp_service.py's build_mrp_plan), instead of letting
+    each one trigger its own individual live SAP call as build_tree_from_
+    cache's root-fetch would otherwise do, sequentially, one part at a
+    time. Skips ids already cached (idempotent/cheap to call on every run -
+    a warm cache costs nothing here, just one Mongo $in query). Silently
+    leaves any id whose batch fetch failed uncached - it will raise
+    BomFetchError as usual (and be reported as a "fetch_error" in the
+    caller's missing/unresolved list) the first time build_tree_from_cache
+    actually reaches it, same as if bulk_prefetch had never run."""
+    if not product_ids:
+        return
+    collection = db[COLLECTION_NAME]
+    already_cached = {doc["_id"] for doc in collection.find({"_id": {"$in": list(product_ids)}}, {"_id": 1})}
+    to_fetch = [pid for pid in product_ids if pid not in already_cached]
+    if not to_fetch:
+        return
+    fetched = _fetch_live_batch(sap_soap_client, to_fetch, db)
+    for pid in to_fetch:
+        if pid in fetched:
+            _upsert(collection, pid, fetched[pid], changed=True)
 
 
 def _upsert(collection, product_id, raw_bom, changed):
@@ -200,22 +281,23 @@ def build_tree_from_cache(root_id: str, sap_soap_client, db):
 
         if uncached_ids:
             now = datetime.now(timezone.utc)
-
-            def fetch_and_cache(pid):
-                try:
-                    raw = _fetch_live(sap_soap_client, pid, db)
-                except BomFetchError as e:
-                    logger.warning(f"BOM fetch failed for '{pid}' (leaving uncached for retry next run): {e}")
-                    return None, False
-                _upsert(collection, pid, raw, changed=True)
-                return raw, True
-
-            with ThreadPoolExecutor(max_workers=8) as executor:
-                fetched = list(executor.map(fetch_and_cache, uncached_ids))
-            for pid, (raw, was_persisted) in zip(uncached_ids, fetched):
-                resolved[pid] = raw
-                if was_persisted:
+            # Batched (Feb 2026 speedup): one SOAP round-trip per
+            # BATCH_CHUNK_SIZE never-before-seen products at this tree
+            # level, instead of one call per product - see
+            # _fetch_live_batch. A pid absent from the result means its
+            # whole chunk failed after retries (real connectivity issue) -
+            # left uncached for retry next run, same tolerant behavior the
+            # old per-item fetch_and_cache had for a single failed item.
+            fetched_batch = _fetch_live_batch(sap_soap_client, uncached_ids, db)
+            for pid in uncached_ids:
+                if pid in fetched_batch:
+                    raw = fetched_batch[pid]
+                    _upsert(collection, pid, raw, changed=True)
+                    resolved[pid] = raw
                     track(now)
+                else:
+                    logger.warning(f"BOM fetch failed for '{pid}' (leaving uncached for retry next run)")
+                    resolved[pid] = None
 
         lookups_done += len(to_resolve)
 
@@ -263,38 +345,34 @@ def build_tree_from_cache(root_id: str, sap_soap_client, db):
     }
 
 
-def refresh_stale_nodes(sap_soap_client, db, max_workers: int = 5) -> dict:
+def refresh_stale_nodes(sap_soap_client, db) -> dict:
     """Background maintenance: for every product_id already in the cache, do
-    ONE lightweight SAP fetch and update only if its BOM revision actually
-    changed. A failed fetch leaves the existing entry untouched (retried next
-    cycle). Returns {"checked": n, "changed": n, "failed": n}."""
+    a lightweight SAP fetch and update only if its BOM revision actually
+    changed. Batched (Feb 2026 speedup): BATCH_CHUNK_SIZE products per SOAP
+    round-trip instead of one call per product - this job routinely
+    re-checks every cached node (potentially thousands), so this is the
+    single biggest win of this round's speedup work. A product whose batch
+    fails after retries leaves its existing entry untouched (retried next
+    cycle) - same "don't erase good data on a transient error" principle as
+    everywhere else in this module. Returns {"checked": n, "changed": n,
+    "failed": n}."""
     collection = db[COLLECTION_NAME]
-    product_ids = [doc["_id"] for doc in collection.find({}, {"_id": 1})]
+    existing_bom_id_by_product = {doc["_id"]: doc.get("bom_id") for doc in collection.find({}, {"_id": 1, "bom_id": 1})}
+    product_ids = list(existing_bom_id_by_product.keys())
     stats = {"checked": 0, "changed": 0, "failed": 0}
     if not product_ids:
         return stats
 
-    def check_one(product_id):
-        existing = collection.find_one({"_id": product_id})
-        try:
-            raw = _fetch_live(sap_soap_client, product_id, db)
-        except BomFetchError as e:
-            logger.warning(f"Background refresh: fetch failed for '{product_id}', keeping existing cache entry: {e}")
-            return "failed"
-        old_bom_id = existing.get("bom_id") if existing else None
-        new_bom_id = raw["bom_id"] if raw else None
-        changed = old_bom_id != new_bom_id
-        _upsert(collection, product_id, raw, changed=changed)
-        return "changed" if changed else "unchanged"
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        results = list(executor.map(check_one, product_ids))
-
-    for outcome in results:
-        if outcome == "failed":
+    fetched = _fetch_live_batch(sap_soap_client, product_ids, db)
+    for product_id in product_ids:
+        if product_id not in fetched:
+            logger.warning(f"Background refresh: fetch failed for '{product_id}', keeping existing cache entry")
             stats["failed"] += 1
-        else:
-            stats["checked"] += 1
-            if outcome == "changed":
-                stats["changed"] += 1
+            continue
+        raw = fetched[product_id]
+        changed = existing_bom_id_by_product.get(product_id) != (raw["bom_id"] if raw else None)
+        _upsert(collection, product_id, raw, changed=changed)
+        stats["checked"] += 1
+        if changed:
+            stats["changed"] += 1
     return stats

@@ -183,6 +183,14 @@ def build_mrp_plan(sap_soap_client, db) -> dict:
     item_codes = sorted({fg["item_code"] for fg in fgs})
     overrides = get_part_overrides(db)
 
+    # Pre-warm the persistent cache for every FG item_code + its override
+    # target (if any) in ONE batched pass (Feb 2026 speedup, same technique
+    # as purchasing_plan.py's _resolve_boms) instead of the loop below
+    # triggering one individual live SAP call per FG - see
+    # bom_cache_service.bulk_prefetch.
+    override_targets = sorted({(overrides.get(ic) or "").strip() for ic in item_codes if (overrides.get(ic) or "").strip()})
+    bom_cache_service.bulk_prefetch(item_codes + override_targets, sap_soap_client, db)
+
     leaves_by_item = {}
     unresolved_items = []
     for item_code in item_codes:
