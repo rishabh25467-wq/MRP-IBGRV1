@@ -449,14 +449,14 @@ export default function BomExplorerPage() {
       <Toaster position="top-right" />
 
       {/* Header - "Materials Hub" redesign preview (Feb 2026 design pass) */}
-      <header className="h-14 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-5 shrink-0 z-10 gap-4">
+      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-5 shrink-0 z-10 gap-4">
         <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
           <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
             <Shield size={18} weight="fill" className="text-white" />
           </div>
           <div className="flex flex-col leading-tight">
-            <span className="font-heading text-[15px] font-bold text-white tracking-tight">Materials Hub</span>
-            <span className="font-sans text-[11px] text-white/70 hidden sm:inline">Production Bill of Material</span>
+            <span className="font-heading text-[16px] font-bold text-white tracking-tight">Materials Hub</span>
+            <span className="font-sans text-[12px] text-white/70 hidden sm:inline">Production Bill of Material</span>
           </div>
           <div
             className="flex items-center gap-1.5 bg-white/10 border border-white/20 px-2.5 py-1 rounded-full shrink-0 ml-1"
@@ -479,7 +479,7 @@ export default function BomExplorerPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-3 flex-1 justify-center min-w-0">
+        <div className="flex items-center gap-3 flex-1 justify-start min-w-0">
           <NavTabs />
         </div>
 

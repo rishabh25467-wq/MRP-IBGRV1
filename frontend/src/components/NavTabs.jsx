@@ -39,7 +39,7 @@ export const NavTabs = () => {
           <Link
             key={tab.to}
             to={tab.to}
-            className={`px-3.5 py-1.5 rounded-full text-xs font-bold font-heading transition-colors duration-150 ${
+            className={`px-3.5 py-1.5 rounded-full text-[13px] font-bold font-heading transition-colors duration-150 ${
               active ? "bg-white text-[#0B6B74]" : "text-white/85 hover:bg-white/15 hover:text-white"
             }`}
             data-testid={tab.testId}
@@ -50,7 +50,7 @@ export const NavTabs = () => {
       })}
       <DropdownMenu>
         <DropdownMenuTrigger
-          className={`flex items-center gap-1 px-3.5 py-1.5 rounded-full text-xs font-bold font-heading transition-colors duration-150 outline-none ${
+          className={`flex items-center gap-1 px-3.5 py-1.5 rounded-full text-[13px] font-bold font-heading transition-colors duration-150 outline-none ${
             purchasingStrategyActive ? "bg-white text-[#0B6B74]" : "text-white/85 hover:bg-white/15 hover:text-white"
           }`}
           data-testid="nav-purchasing-strategy"
@@ -70,7 +70,7 @@ export const NavTabs = () => {
       </DropdownMenu>
       <DropdownMenu>
         <DropdownMenuTrigger
-          className={`flex items-center gap-1 px-3.5 py-1.5 rounded-full text-xs font-bold font-heading transition-colors duration-150 outline-none ${
+          className={`flex items-center gap-1 px-3.5 py-1.5 rounded-full text-[13px] font-bold font-heading transition-colors duration-150 outline-none ${
             adminActive ? "bg-white text-[#0B6B74]" : "text-white/85 hover:bg-white/15 hover:text-white"
           }`}
           data-testid="nav-admin"
