@@ -14,6 +14,13 @@ logger = logging.getLogger(__name__)
 SOAP_ACTION = "http://sap.com/xi/A1S/Global/QueryProductionBillofMaterialsIn/QueryProductionBillOfMaterialByElementsRequest"
 MAX_DEPTH = 6
 MAX_LOOKUPS = 300
+# Max distinct products packed into ONE batched SelectionByOutputProductID
+# query (see _fetch_boms_by_output_products_batch). Kept comfortably under
+# the query's QueryHitsMaximumNumberValue=500 even if every product in the
+# batch happens to have several BOM revisions/alternates (empirically rare,
+# but a few products in this tenant do have 3-4) - 60 products x up to ~6
+# revisions each = 360 hits, safe margin under 500.
+BATCH_CHUNK_SIZE = 60
 
 
 class SAPSoapError(Exception):
@@ -49,7 +56,7 @@ class SAPSoapBOMClient:
                 # ConnectTimeoutError), not a slow response body - a single
                 # blended timeout wastes up to 15s just discovering a dead
                 # connect attempt. Failing the connect stage fast (8s) frees
-                # that budget for the retry in _safe_fetch_by_output_product
+                # that budget for the retry in _safe_fetch_boms_batch
                 # instead, without shrinking the 15s a genuinely slow-but-
                 # working SAP response is still allowed to take.
                 response = requests.post(self.endpoint, data=body.encode("utf-8"), headers=headers, auth=self.auth, timeout=(8, 15))
@@ -86,6 +93,33 @@ class SAPSoapBOMClient:
           <LowerBoundaryIdentifier>{product_id}</LowerBoundaryIdentifier>
         </SelectionByOutputProductID>"""
         return self._parse(self._query(selection))
+
+    def _fetch_boms_by_output_products_batch(self, product_ids: list) -> dict:
+        """Batched sub-BOM lookup (Feb 2026 speedup): fetches MANY products'
+        BOMs in a SINGLE SOAP round-trip instead of one request per product.
+        Empirically confirmed against this tenant - QueryProductionBillof
+        MaterialsIn accepts multiple SelectionByOutputProductID blocks in
+        one request and returns hits for all of them together (18 products
+        batched -> 1.6s total, vs. what would be many sequential 3-at-a-
+        time rounds given the tenant's hard 3-concurrent-session cap, see
+        sap_rate_limiter.py). This is a pure latency win with NO increase in
+        concurrent SAP load - one connection carrying N products' worth of
+        work is strictly less load than N separate connections, so it does
+        not risk the self-inflicted-timeout problem that raising
+        concurrency limits would. Returns {product_id: bom_dict}; a
+        product_id absent from the result had no BOM in SAP (same meaning
+        as _fetch_bom_by_output_product returning None for it)."""
+        if not product_ids:
+            return {}
+        selection_xml = "".join(
+            f"""<SelectionByOutputProductID>
+          <InclusionExclusionCode>I</InclusionExclusionCode>
+          <IntervalBoundaryTypeCode>1</IntervalBoundaryTypeCode>
+          <LowerBoundaryIdentifier>{pid}</LowerBoundaryIdentifier>
+        </SelectionByOutputProductID>"""
+            for pid in product_ids
+        )
+        return self._parse_batch(self._query(selection_xml))
 
     @staticmethod
     def _eco_matches_own_product(eco_id: str, product_id: str) -> bool:
@@ -141,6 +175,45 @@ class SAPSoapBOMClient:
         (highest revision among Consistent) - callers/production only need
         to look at the `alternates` list when it's non-empty and decide."""
         hit_blocks = re.findall(r"<ProductionBillOfMaterials>(.*?)</ProductionBillOfMaterials>", xml_text, re.S)
+        return cls._build_bom_from_hit_blocks(hit_blocks)
+
+    @classmethod
+    def _parse_batch(cls, xml_text: str) -> dict:
+        """Batched analogue of _parse() for a response covering MULTIPLE
+        different output products in one query (see
+        _fetch_boms_by_output_products_batch) - splits the response's hit
+        blocks by each hit's OWN output product ID first, then applies the
+        exact same per-product revision/alternate logic as _parse()
+        (via the shared _build_bom_from_hit_blocks) independently per group.
+        Returns {product_id: bom_dict}; a product with zero hits (no BOM in
+        SAP) simply won't be a key in the returned dict - callers treat a
+        missing key the same as _parse() returning None for that product."""
+        hit_blocks = re.findall(r"<ProductionBillOfMaterials>(.*?)</ProductionBillOfMaterials>", xml_text, re.S)
+        grouped: dict = {}
+        for block in hit_blocks:
+            variant_match = re.search(r"<ProductionBillOfMaterialVariant>(.*?)</ProductionBillOfMaterialVariant>", block, re.S)
+            if not variant_match:
+                continue
+            # The outer <ProductID> wrapping this variant's own output
+            # product wraps ProductTypeCode/ProductIdentifierTypeCode/an
+            # INNER <ProductID>VALUE</ProductID> - a plain non-nested
+            # `[^<]*` search naturally skips the outer tag (its content
+            # starts with another '<', so it can't match `[^<]*</ProductID>`)
+            # and lands on the true leaf value, same trick already used
+            # for InputProductID elsewhere in this parser.
+            pid_match = re.search(r"<ProductID>([^<]*)</ProductID>", variant_match.group(1))
+            if not pid_match:
+                continue
+            grouped.setdefault(pid_match.group(1), []).append(block)
+        return {pid: cls._build_bom_from_hit_blocks(blocks) for pid, blocks in grouped.items()}
+
+    @classmethod
+    def _build_bom_from_hit_blocks(cls, hit_blocks: list):
+        """Shared by _parse() (hit_blocks all belong to one already-known
+        product) and _parse_batch() (hit_blocks pre-split by output product,
+        one call per product) - picks the winning revision/alternates and
+        builds that single product's bom dict. Returns None if hit_blocks
+        is empty."""
         if not hit_blocks:
             return None
 
@@ -291,12 +364,9 @@ class SAPSoapBOMClient:
         max_level_seen = 0
         lookups_done = 0
         # Hard wall-clock cap on the whole sub-BOM exploration phase. During
-        # a severe/sustained SAP outage, per-call retries (_safe_fetch_by_
-        # output_product, 3x15s each) can still add up across MANY distinct
-        # sub-components and multiple tree levels - a single explode_bom()
-        # call was observed taking 90s+ this way, well past the platform's
-        # own gateway timeout (~60s), producing a raw Cloudflare error
-        # instead of our own response. Once this deadline passes, we stop
+        # a severe/sustained SAP outage, per-batch retries (_safe_fetch_
+        # boms_batch, 2x8s connect timeout each) can still add up across
+        # multiple tree levels - once this deadline passes, we stop
         # fetching further sub-BOMs and return the tree AS-IS - any
         # not-yet-reached components simply show as leaf nodes (degraded
         # but instant, instead of a total failure).
@@ -318,10 +388,20 @@ class SAPSoapBOMClient:
 
             to_fetch = list(candidate_ids)[: max(0, MAX_LOOKUPS - lookups_done)]
             if to_fetch:
+                # Split into batched SOAP requests (BATCH_CHUNK_SIZE products
+                # per request) instead of one request per product - see
+                # _fetch_boms_by_output_products_batch. Chunks themselves are
+                # still submitted through a small pool, but each one is a
+                # SINGLE round-trip covering many products, so the typical
+                # case (a level with well under BATCH_CHUNK_SIZE candidates)
+                # collapses to exactly ONE SAP call instead of one-per-item.
+                chunks = [to_fetch[i:i + BATCH_CHUNK_SIZE] for i in range(0, len(to_fetch), BATCH_CHUNK_SIZE)]
                 with ThreadPoolExecutor(max_workers=8) as executor:
-                    fetched = list(executor.map(self._safe_fetch_by_output_product, to_fetch))
-                for pid, sub in zip(to_fetch, fetched):
-                    sub_bom_cache[pid] = sub
+                    chunk_results = list(executor.map(self._safe_fetch_boms_batch, chunks))
+                for pid in to_fetch:
+                    sub_bom_cache[pid] = None
+                for result in chunk_results:
+                    sub_bom_cache.update(result)
                 lookups_done += len(to_fetch)
 
             next_frontier = []
@@ -366,19 +446,18 @@ class SAPSoapBOMClient:
             "tree": root_children,
         }
 
-    def _safe_fetch_by_output_product(self, product_id: str):
-        # 2 attempts (not 3), flat 1.5s backoff (not 1.5s/3.0s escalating):
-        # with the connect timeout now failing fast at 8s (see _query), a
-        # single stuck item's worst case drops from ~49.5s (3 attempts x
-        # 15s + 1.5s + 3.0s backoff) to ~17.5s (2 attempts x 8s + 1.5s
-        # backoff) - keeps one flaky sub-component from eating most of
-        # explode_bom's overall deadline budget by itself.
+    def _safe_fetch_boms_batch(self, product_ids: list) -> dict:
+        # 2 attempts, flat 1.5s backoff - same retry policy already applied
+        # to the (now-removed) per-item fetch. A failed batch degrades every
+        # product in it to "unresolved this run" (shown as leaf nodes) -
+        # never partially executed, matching the existing graceful-
+        # degradation behavior for a single item's failure.
         attempts = 2
         for attempt in range(attempts):
             try:
-                return self._fetch_bom_by_output_product(product_id)
+                return self._fetch_boms_by_output_products_batch(product_ids)
             except SAPSoapError as e:
-                logger.warning(f"Sub-BOM lookup failed for {product_id} (attempt {attempt + 1}/{attempts}): {e}")
+                logger.warning(f"Batch sub-BOM lookup failed for {len(product_ids)} product(s) (attempt {attempt + 1}/{attempts}): {e}")
                 if attempt < attempts - 1:
                     time.sleep(1.5)
-        return None
+        return {}
