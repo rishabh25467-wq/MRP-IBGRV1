@@ -7,11 +7,14 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
+// Labels follow global MRP/ERP naming conventions (SAP/Oracle/Infor-style
+// module names) - renamed Feb 2026 as part of the "Materials Hub" rebrand.
+// Routes are unchanged; only the displayed label changed.
 const TABS = [
-  { to: "/", label: "BOM Explorer", testId: "nav-bom-explorer" },
-  { to: "/purchasing-plan", label: "Purchasing Plan", testId: "nav-purchasing-plan" },
-  { to: "/production-plan", label: "Production Plan", testId: "nav-production-plan" },
-  { to: "/inventory", label: "Inventory", testId: "nav-inventory" },
+  { to: "/", label: "BOM Management", testId: "nav-bom-explorer" },
+  { to: "/purchasing-plan", label: "Procurement Planning", testId: "nav-purchasing-plan" },
+  { to: "/production-plan", label: "Production Planning", testId: "nav-production-plan" },
+  { to: "/inventory", label: "Inventory Management", testId: "nav-inventory" },
 ];
 
 const PURCHASING_STRATEGY_SUBTABS = [
@@ -36,8 +39,8 @@ export const NavTabs = () => {
           <Link
             key={tab.to}
             to={tab.to}
-            className={`px-3 py-1 rounded-sm text-xs font-bold font-heading transition-colors ${
-              active ? "bg-white/20 text-white" : "text-white/70 hover:bg-white/10 hover:text-white"
+            className={`px-3.5 py-1.5 rounded-full text-xs font-bold font-heading transition-colors duration-150 ${
+              active ? "bg-white text-[#0B6B74]" : "text-white/85 hover:bg-white/15 hover:text-white"
             }`}
             data-testid={tab.testId}
           >
@@ -47,15 +50,15 @@ export const NavTabs = () => {
       })}
       <DropdownMenu>
         <DropdownMenuTrigger
-          className={`flex items-center gap-1 px-3 py-1 rounded-sm text-xs font-bold font-heading transition-colors outline-none ${
-            purchasingStrategyActive ? "bg-white/20 text-white" : "text-white/70 hover:bg-white/10 hover:text-white"
+          className={`flex items-center gap-1 px-3.5 py-1.5 rounded-full text-xs font-bold font-heading transition-colors duration-150 outline-none ${
+            purchasingStrategyActive ? "bg-white text-[#0B6B74]" : "text-white/85 hover:bg-white/15 hover:text-white"
           }`}
           data-testid="nav-purchasing-strategy"
         >
-          Purchasing Strategy
+          Supplier Management
           <CaretDown size={10} weight="bold" />
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="min-w-[180px]" data-testid="nav-purchasing-strategy-dropdown-content">
+        <DropdownMenuContent align="start" className="min-w-[180px] bg-white border border-[#D0D5DD]" data-testid="nav-purchasing-strategy-dropdown-content">
           {PURCHASING_STRATEGY_SUBTABS.map((tab) => (
             <DropdownMenuItem key={tab.to} asChild>
               <Link to={tab.to} className="w-full cursor-pointer" data-testid={tab.testId}>
@@ -67,15 +70,15 @@ export const NavTabs = () => {
       </DropdownMenu>
       <DropdownMenu>
         <DropdownMenuTrigger
-          className={`flex items-center gap-1 px-3 py-1 rounded-sm text-xs font-bold font-heading transition-colors outline-none ${
-            adminActive ? "bg-white/20 text-white" : "text-white/70 hover:bg-white/10 hover:text-white"
+          className={`flex items-center gap-1 px-3.5 py-1.5 rounded-full text-xs font-bold font-heading transition-colors duration-150 outline-none ${
+            adminActive ? "bg-white text-[#0B6B74]" : "text-white/85 hover:bg-white/15 hover:text-white"
           }`}
           data-testid="nav-admin"
         >
-          Admin
+          Master Data
           <CaretDown size={10} weight="bold" />
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="min-w-[180px]" data-testid="nav-admin-dropdown-content">
+        <DropdownMenuContent align="start" className="min-w-[180px] bg-white border border-[#D0D5DD]" data-testid="nav-admin-dropdown-content">
           {ADMIN_SUBTABS.map((tab) => (
             <DropdownMenuItem key={tab.to} asChild>
               <Link to={tab.to} className="w-full cursor-pointer" data-testid={tab.testId}>

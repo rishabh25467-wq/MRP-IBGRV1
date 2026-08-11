@@ -1,10 +1,11 @@
-import { useState, useEffect, Fragment } from "react";
+import { useState, useEffect, useRef, Fragment } from "react";
 import "@/App.css";
 import axios from "axios";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Package,
   Database,
+  Shield,
   WarningCircle,
   ArrowClockwise,
   CaretDown,
@@ -170,8 +171,43 @@ const OpenPoDemandTab = ({ actorName }) => {
   const [selectionsByKey, setSelectionsByKey] = useState({});
   const [selectedOnly, setSelectedOnly] = useState(false);
   const [historyTarget, setHistoryTarget] = useState(null);
+  const [restoredAt, setRestoredAt] = useState(null);
+  const manualFetchTriggered = useRef(false);
+
+  // Restore the last-fetched feed (if any) so navigating away and back
+  // never loses it - purely a convenience hydration; "Fetch Open PO Demand"
+  // always available to get a fresh live pull. Guarded by
+  // manualFetchTriggered so a slow-to-resolve restore call can never
+  // clobber a fresher result if the user clicks Fetch before it lands.
+  useEffect(() => {
+    axios
+      .get(`${API}/production-plan/open-po-demand/autosave`)
+      .then(async ({ data }) => {
+        if (!data.found || manualFetchTriggered.current) return;
+        setCustomer(data.customer || "");
+        setPlant(data.plant || "");
+        setRows(data.rows);
+        setMeta({ count: data.count, truncated: data.truncated, max_changed_at: data.max_changed_at });
+        setRestoredAt(data.created_at);
+        setLoaded(true);
+        try {
+          const selRes = await axios.get(`${API}/production-plan/po-selections`);
+          if (manualFetchTriggered.current) return;
+          const selMap = {};
+          selRes.data.selections.forEach((s) => {
+            selMap[s.key] = s;
+          });
+          setSelectionsByKey(selMap);
+        } catch {
+          // non-critical - selections just won't be pre-checked until refetch
+        }
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const fetchDemand = async () => {
+    manualFetchTriggered.current = true;
     setLoading(true);
     setError(null);
     try {
@@ -190,6 +226,7 @@ const OpenPoDemandTab = ({ actorName }) => {
       });
       setSelectionsByKey(selMap);
       setLoaded(true);
+      setRestoredAt(null);
       toast.success(`Loaded ${feedRes.data.count} open PO line(s)`);
     } catch (err) {
       const detail = err?.response?.data?.detail || err.message || "Failed to load Open PO Demand feed";
@@ -282,6 +319,12 @@ const OpenPoDemandTab = ({ actorName }) => {
 
   return (
     <div>
+      {restoredAt && (
+        <div className="mb-3 bg-[#EFF8FF] border border-[#B2DDFF] rounded-sm px-3 py-2 flex items-center gap-2 text-xs text-[#175CD3]" data-testid="open-po-restored-banner">
+          <ClockCounterClockwise size={14} weight="bold" />
+          Restored your last-fetched feed ({formatDateTime(restoredAt)}). Click "Fetch Open PO Demand" for fresh live numbers.
+        </div>
+      )}
       <div className="bg-white border border-[#D0D5DD] rounded-sm p-2.5 flex items-center gap-3 flex-wrap mb-3">
         <div className="flex items-center gap-1.5">
           <Funnel size={13} className="text-[#475467]" />
@@ -810,6 +853,8 @@ const SalesProductionPlanTab = ({ actorName }) => {
   const [sortConfig, setSortConfig] = useState({ field: "total_net_qty", direction: "desc" });
   const [lockDialogOpen, setLockDialogOpen] = useState(false);
   const [locking, setLocking] = useState(false);
+  const [restoredFrom, setRestoredFrom] = useState(null); // {created_at, created_by} when hydrated from autosave
+  const manualGenerateTriggered = useRef(false);
 
   const fetchLockHistory = async () => {
     try {
@@ -822,13 +867,33 @@ const SalesProductionPlanTab = ({ actorName }) => {
 
   useEffect(() => {
     fetchLockHistory();
+    // Restore the last-generated draft (if any) so navigating away and back
+    // never loses it - the restored job_id still works for Lock as long as
+    // that background job hasn't expired (24h TTL) server-side. Guarded by
+    // manualGenerateTriggered so a slow-to-resolve restore call can never
+    // clobber a fresher draft if the user clicks Generate before it lands.
+    axios
+      .get(`${API}/production-plan/mps/autosave`)
+      .then(({ data }) => {
+        if (data.found && !manualGenerateTriggered.current) {
+          setDraft(data.result);
+          setDraftJobId(data.job_id);
+          setCustomer(data.customer || "");
+          setRestoredFrom({ created_at: data.created_at, created_by: data.created_by });
+        }
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const generateDraft = async () => {
+    manualGenerateTriggered.current = true;
     setLoading(true);
     setError(null);
     try {
-      const genRes = await axios.post(`${API}/production-plan/mps/generate`, null, { params: customer ? { customer } : {} });
+      const params = customer ? { customer } : {};
+      if (actorName.trim()) params.actor = actorName.trim();
+      const genRes = await axios.post(`${API}/production-plan/mps/generate`, null, { params });
       const jobId = genRes.data.job_id;
       setDraftJobId(jobId);
       let result = null;
@@ -844,6 +909,7 @@ const SalesProductionPlanTab = ({ actorName }) => {
       if (!result) throw new Error("Timed out waiting for the Production Plan draft to generate");
       setDraft(result);
       setExpandedRows(new Set());
+      setRestoredFrom(null);
       toast.success("Draft generated", { description: `${result.fgs.length} finished good(s) with a net requirement` });
     } catch (e) {
       const msg = e?.response?.data?.detail || e.message || "Failed to generate draft";
@@ -899,6 +965,12 @@ const SalesProductionPlanTab = ({ actorName }) => {
 
   return (
     <div className="space-y-3 font-sans" data-testid="sales-production-plan-tab">
+      {restoredFrom && (
+        <div className="border border-[#93C5FD] bg-[#EFF6FF] text-[#1D4ED8] px-3 py-2 flex items-center gap-2 text-xs font-mono" data-testid="mps-restored-banner">
+          <ClockCounterClockwise size={14} weight="bold" />
+          Restored your last-generated draft (by {restoredFrom.created_by || "unknown"} · {formatDateTime(restoredFrom.created_at)}). Click Generate Draft for fresh live numbers.
+        </div>
+      )}
       <div className="flex items-center justify-between border border-[#E4E4E7] bg-[#FAFAFA] px-3 py-2 flex-wrap gap-2">
         <div className="flex items-center gap-3 flex-wrap">
           <span
@@ -1943,23 +2015,27 @@ export default function ProductionPlanPage() {
     <div className="h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]">
       <Toaster position="top-right" />
 
-      <header className="h-12 bg-[#004B87] shadow-[0_1px_3px_0_rgba(16,24,40,0.1)] flex items-center justify-between px-4 shrink-0 z-10">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2.5" data-testid="app-title">
-            <Database size={18} weight="bold" className="text-white" />
-            <span className="font-heading text-sm font-bold text-white tracking-tight">SAP BOM Explorer</span>
-            <span className="font-sans text-xs text-white/60 hidden sm:inline">| Production Plan</span>
+      <header className="h-14 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-5 shrink-0 z-10 gap-4">
+        <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
+          <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
+            <Shield size={18} weight="fill" className="text-white" />
           </div>
+          <div className="flex flex-col leading-tight">
+            <span className="font-heading text-[15px] font-bold text-white tracking-tight">Materials Hub</span>
+            <span className="font-sans text-[11px] text-white/70 hidden sm:inline">Production Planning</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 flex-1 justify-center min-w-0">
           <NavTabs />
         </div>
-        <div className="flex items-center gap-1.5">
-          <span className="font-sans text-xs text-white/70 hidden md:inline">Your name (for selection tracking):</span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className="font-sans text-[11px] text-white/70 hidden md:inline">Your name (for selection tracking):</span>
           <input
             type="text"
             placeholder="Your name..."
             value={actorName}
             onChange={(e) => setActorName(e.target.value)}
-            className="h-7 w-40 px-2 text-[13px] rounded-sm border border-white/20 bg-white/10 text-white placeholder:text-white/50 focus:outline-none focus:border-white/60 focus:bg-white/20"
+            className="h-7 w-36 px-2.5 text-[13px] rounded-full border border-white/25 bg-white/15 text-white placeholder:text-white/50 focus:outline-none focus:border-white/70 focus:bg-white/25"
             data-testid="actor-name-input"
           />
         </div>

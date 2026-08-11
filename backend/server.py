@@ -42,6 +42,7 @@ import mrp_service
 import mps_service
 import po_selection_service
 import mrp_plan_store
+import autosave_store
 import job_store
 import supplier_service
 
@@ -964,12 +965,46 @@ async def get_open_po_demand(customer: Optional[str] = Query(None), plant: Optio
     """Browsable view of the raw external Open-PO Demand feed (see
     open_po_client.py) - backs the Production Plan page's "Open PO Demand"
     tab. Live call every time (no caching) since this feed is the
-    up-to-the-minute source of truth for target ship dates."""
+    up-to-the-minute source of truth for target ship dates. On success,
+    also silently autosaves the result (autosave_store) so navigating away
+    and back never loses what was last fetched - see the /autosave route
+    below."""
     try:
         feed = await asyncio.to_thread(open_po_client.get_open_po_demand, customer, plant)
     except OpenPODemandError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return OpenPoDemandResponse(count=feed.get("count", 0), max_changed_at=feed.get("max_changed_at"), truncated=feed.get("truncated", False), rows=feed.get("rows", []))
+    response = OpenPoDemandResponse(count=feed.get("count", 0), max_changed_at=feed.get("max_changed_at"), truncated=feed.get("truncated", False), rows=feed.get("rows", []))
+    try:
+        await asyncio.to_thread(
+            autosave_store.set_autosave, db, "open_po_demand",
+            {"customer": customer, "plant": plant, **response.dict()},
+        )
+    except Exception as e:
+        logger.warning(f"Open PO Demand autosave write failed (non-fatal, live data still returned): {e}")
+    return response
+
+
+class OpenPoDemandAutosaveResponse(BaseModel):
+    found: bool
+    customer: Optional[str] = None
+    plant: Optional[str] = None
+    count: int = 0
+    max_changed_at: Optional[str] = None
+    truncated: bool = False
+    rows: List[OpenPoRow] = []
+    created_at: Optional[str] = None
+
+
+@api_router.get("/production-plan/open-po-demand/autosave", response_model=OpenPoDemandAutosaveResponse)
+async def get_open_po_demand_autosave():
+    """The last Open PO Demand fetch, silently autosaved server-side - lets
+    the tab restore exactly what was last seen after navigating away and
+    back, without needing to search again. Always labeled in the UI as a
+    past snapshot; a fresh search still hits the live feed as usual."""
+    doc = await asyncio.to_thread(autosave_store.get_autosave, db, "open_po_demand")
+    if not doc:
+        return OpenPoDemandAutosaveResponse(found=False)
+    return OpenPoDemandAutosaveResponse(found=True, created_at=doc["created_at"].isoformat(), **doc["data"])
 
 
 class MpsDemandLine(BaseModel):
@@ -1010,11 +1045,14 @@ class MpsPlanJobStatus(BaseModel):
 
 
 @api_router.post("/production-plan/mps/generate")
-async def start_mps_plan_job(customer: Optional[str] = None):
+async def start_mps_plan_job(customer: Optional[str] = None, actor: Optional[str] = None):
     """Kicks off the Production Plan (Tier 1 of the MRP II cascade - see
     mps_service.py) computation as a background job - same pattern as
     Purchasing Plan/MRP generation. This is a DRAFT only; nothing is
-    committed until it's explicitly locked (see /mps/lock below)."""
+    committed until it's explicitly locked (see /mps/lock below). On
+    success, also silently autosaves the draft (autosave_store, including
+    this job_id so a restored draft can still be locked) so navigating
+    away and back never loses the last-generated draft."""
     job_id = str(uuid.uuid4())
     job_store.create_job(db, job_id, {"status": "running", "result": None, "error": None})
 
@@ -1022,6 +1060,7 @@ async def start_mps_plan_job(customer: Optional[str] = None):
         try:
             result = await asyncio.to_thread(mps_service.build_production_plan, open_po_client, oms_client, db, customer, forecast_demand_client)
             job_store.update_job(db, job_id, {"status": "done", "result": result, "error": None})
+            await asyncio.to_thread(autosave_store.set_autosave, db, "mps_draft", {"job_id": job_id, "customer": customer, "result": result}, actor)
         except Exception as e:
             logger.error(f"Production Plan (MPS) generation failed: {e}")
             job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
@@ -1039,6 +1078,38 @@ async def mps_plan_status(job_id: str):
         job_id=job_id, status=job["status"],
         result=MpsPlanResponse(**job["result"]) if job["result"] else None,
         error=job["error"],
+    )
+
+
+class MpsAutosaveResponse(BaseModel):
+    found: bool
+    job_id: Optional[str] = None
+    customer: Optional[str] = None
+    result: Optional[MpsPlanResponse] = None
+    created_at: Optional[str] = None
+    created_by: Optional[str] = None
+
+
+@api_router.get("/production-plan/mps/autosave", response_model=MpsAutosaveResponse)
+async def get_mps_autosave():
+    """The last Production Plan draft that finished generating, silently
+    autosaved server-side - lets the Sales & Production Plan tab restore
+    exactly what was last seen (including its job_id, so the restored
+    draft can still be Locked) after navigating away and back, without
+    needing to click Generate Draft again."""
+    doc = await asyncio.to_thread(autosave_store.get_autosave, db, "mps_draft")
+    if not doc:
+        return MpsAutosaveResponse(found=False)
+    data = doc["data"]
+    try:
+        result = MpsPlanResponse(**data["result"])
+    except ValidationError:
+        # Stale autosave from before a schema change - treat as "nothing to
+        # restore" instead of crashing; a fresh Generate Draft overwrites it.
+        return MpsAutosaveResponse(found=False)
+    return MpsAutosaveResponse(
+        found=True, job_id=data.get("job_id"), customer=data.get("customer"), result=result,
+        created_at=doc["created_at"].isoformat(), created_by=doc.get("created_by"),
     )
 
 

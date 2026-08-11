@@ -3,6 +3,7 @@ import "@/App.css";
 import axios from "axios";
 import {
   Database,
+  Shield,
   ShieldCheck,
   MagnifyingGlass,
   WarningCircle,
@@ -363,15 +364,20 @@ export default function QuotaAllocationPage() {
     <div className="h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]">
       <Toaster position="top-right" />
 
-      <header className="h-12 bg-[#004B87] shadow-[0_1px_3px_0_rgba(16,24,40,0.1)] flex items-center justify-between px-4 shrink-0 z-10">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2.5" data-testid="app-title">
-            <Database size={18} weight="bold" className="text-white" />
-            <span className="font-heading text-sm font-bold text-white tracking-tight">SAP BOM Explorer</span>
-            <span className="font-sans text-xs text-white/60 hidden sm:inline">| Quota Allocation</span>
+      <header className="h-14 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-5 shrink-0 z-10 gap-4">
+        <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
+          <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
+            <Shield size={18} weight="fill" className="text-white" />
           </div>
+          <div className="flex flex-col leading-tight">
+            <span className="font-heading text-[15px] font-bold text-white tracking-tight">Materials Hub</span>
+            <span className="font-sans text-[11px] text-white/70 hidden sm:inline">Quota Allocation</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 flex-1 justify-center min-w-0">
           <NavTabs />
         </div>
+        <div className="shrink-0 w-8" />
       </header>
 
       <main className="flex-1 overflow-auto p-4 space-y-4">

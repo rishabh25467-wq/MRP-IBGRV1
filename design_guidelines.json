@@ -1,69 +1,130 @@
 {
-  "theme_strategy": {
-    "name": "Industrial Command Center (Data-Dense & Technical)",
-    "mode": "Light (Optimized for dual-monitor data work, reduces glare during long analytical sessions)",
-    "description": "A strict, high-contrast, data-dense interface designed for supply chain planners. Values precision and density over whitespace. Mimics the feel of a technical schematic or Bloomberg Terminal."
-  },
+  "app_name": "Materials Hub",
+  "theme_type": "dashboard",
+  "design_context": "Internal Enterprise MRP / B2B Procurement Tool",
   "typography": {
-    "headings": "Chivo",
-    "body": "Inter",
-    "mono_data": "JetBrains Mono",
-    "instructions": "Use Chivo for page headers, widget titles, and high-level metrics. Use Inter for general UI text. CRITICAL: You MUST use JetBrains Mono (or similar monospace) for ALL numeric data inside tables, MRP explosions, and quantities to ensure decimal alignment. Enable tabular numerals if using standard fonts."
+    "primary_font": "IBM Plex Sans",
+    "fallback_font": "sans-serif",
+    "heading_strategy": "Professional, crisp enterprise scale. No oversized typography in the header.",
+    "weights": {
+      "regular": 400,
+      "medium": 500,
+      "bold": 600,
+      "black": 700
+    }
   },
   "colors": {
-    "background": "#FFFFFF",
-    "surface": "#F4F4F5",
-    "surface_alt": "#FAFAFA",
-    "border": "#E4E4E7",
-    "border_dark": "#D4D4D8",
-    "text_primary": "#09090B",
-    "text_secondary": "#71717A",
-    "accent_primary": "#000000",
-    "accent_warning": "#F59E0B",
-    "accent_critical": "#DC2626",
-    "lock_state": {
-      "draft": "#2563EB",
-      "locked": "#16A34A"
+    "primary": {
+      "brand": "#0E7C86",
+      "brand_dark": "#0B6B74",
+      "brand_text": "#FFFFFF"
     },
-    "instructions": "Color is function. 95% of the UI should be monochrome (white, grays, black). Reserve colors EXCLUSIVELY for state indicators (Blue = Draft, Green = Locked, Amber/Red = Shortage/Warning). Never use generic gradients."
+    "status": {
+      "connected": "#10B981",
+      "disconnected": "#EF4444",
+      "checking": "#F59E0B"
+    },
+    "header_elements": {
+      "background": "#0E7C86",
+      "search_bg": "#FFFFFF",
+      "search_text": "#333333",
+      "active_pill_bg": "#FFFFFF",
+      "active_pill_text": "#0B6B74",
+      "inactive_tab_text": "#FFFFFF",
+      "hover_tab_bg": "rgba(255, 255, 255, 0.15)"
+    }
   },
-  "visual_enhancers": {
-    "surfaces": "Grid Borders (The Technical Look). Expose the skeleton. Use border-collapse style layouts or 1px solid borders for all panels.",
-    "corners": "Sharp edges (rounded-none) or maximum 4px radius (rounded-sm) for inputs/buttons. No soft or pill shapes.",
-    "shadows": "None. Use flat 1px borders to separate overlapping elements (Neo-brutalist / Technical layout). Remove default Shadcn shadows.",
-    "textures": "Optional: Extremely subtle noise texture on the main background to cut the digital flatness."
+  "layout_specifications": {
+    "scope": "ONLY redesign the top header/navigation bar. DO NOT alter page body content.",
+    "header_structure": "Flexbox row, full width (100vw), horizontally spaced (justify-between), items centered vertically, generous padding (px-6 py-4).",
+    "left_cluster": {
+      "purpose": "App identity and system status",
+      "elements": [
+        "Small White Shield Icon in a soft rounded square.",
+        "App Title ('Materials Hub') stacked with a subtitle below it (e.g. 'Production Bill of Material').",
+        "SAP Connection Status Pill (Compact pill: Colored dot + 'SAP PRD Connected'). Positioned near the title to ensure connectivity health is always visible."
+      ]
+    },
+    "center_cluster": {
+      "purpose": "Global search and main navigation",
+      "elements": [
+        "Search Input: Rounded white pill shape with magnifying glass icon and placeholder 'Find PR #...'.",
+        "Navigation Items (Text + Icon pairs).",
+        "Active Tab: Solid white rounded-pill background with dark teal text.",
+        "Inactive Tab: Plain white text with icons."
+      ]
+    },
+    "right_cluster": {
+      "purpose": "User profile and utilities",
+      "elements": [
+        "User Role stack ('APPROVER' in small caps over User Name in bold white).",
+        "Notification Bell icon with a red circular badge (e.g., '30').",
+        "Logout action (Text + Icon link)."
+      ]
+    }
   },
-  "layouts": {
-    "strategy": "High Density Grid (Mode B). The screen must be utilized edge-to-edge. No massive padding. Use tight gaps.",
-    "page_structure": "3-Pane or Split Layout. Top: Sticky Header (Date Range, Plan Status, Lock Action). Left/Right Sidebar: Sales Plan Context & Lock History. Center Main: Dense Data Table (Draft) OR MRP Explosion Tree (Locked).",
-    "spacing": "Minimize vertical padding in data rows (py-1 or py-2 maximum). Planners prefer seeing 50 rows over 10 rows with generous padding."
+  "menu_naming_conventions": {
+    "rationale": "Global MRP standards (SAP, Oracle) prioritize clarity and actionable data categorization over casual terms.",
+    "items": {
+      "BOM Explorer": {
+        "recommended": "BOM Management",
+        "alternatives": ["Bill of Materials", "Item Master & BOM"],
+        "note": "'Management' implies active control, standard for MRP, compared to 'Explorer' which sounds read-only."
+      },
+      "Purchasing Plan": {
+        "recommended": "Procurement Planning",
+        "alternatives": ["Purchase Requisitions", "Material Requirements - Purchasing"],
+        "note": "Standard global terminology for inbound supply planning."
+      },
+      "Production Plan": {
+        "recommended": "Master Production Schedule",
+        "alternatives": ["Production Planning", "MRP - Production"],
+        "note": "MPS is the definitive industry-standard term for high-level production plans."
+      },
+      "Inventory": {
+        "recommended": "Inventory Management",
+        "alternatives": ["Stock Overview", "Warehouse"],
+        "note": "Standard module naming for ERPs."
+      },
+      "Purchasing Strategy (Dropdown)": {
+        "recommended": "Supplier Management",
+        "alternatives": ["Vendor Management", "Sourcing & Quotas"],
+        "note": "Clearly encapsulates Supplier Master and Quota Allocations."
+      },
+      "Admin (Dropdown)": {
+        "recommended": "Master Data",
+        "alternatives": ["System Administration", "Data Management"],
+        "note": "In SAP/MRP contexts, base component edits and write functionalities fall strictly under 'Master Data'."
+      }
+    }
   },
-  "components": {
-    "data_tables": "Use extremely dense HTML tables. Sticky headers. Pin the first column (SKU/Item) if scrolling horizontally. Row text should be text-sm or text-xs. All numerical columns MUST be right-aligned.",
-    "the_lock_action": "CRITICAL: Do NOT use a simple standard button. The 'Lock Plan' action must feel weighty. Implement a Shadcn Dialog that requires the user to manually type 'CONFIRM' to execute the lock, paired with a warning message ('This freezes the plan for downstream MRP'). Use a contrasting color (Warning or Critical) for the final commit button.",
-    "mrp_tree": "For the MRP Explosion, use a collapsible nested table/list (tree-grid style). Indent child components and use 'L' shaped border lines (SVG or CSS left/bottom borders) to visualize dependency and traceability back to the parent PO.",
-    "status_badges": "Use sharp, rectangular badges. Text-xs, uppercase, tracking-wider. e.g., [ DRAFT ], [ LOCKED ], [ SHORTAGE ].",
-    "sales_plan_panel": "A dense reference panel showing which items are driven by 'AMS/Forecast' vs 'Trailing-Average'. Use compact list items or a summary grid."
-  },
-  "motion": {
-    "rules": "Utilitarian and functional only. Fast, snappy transitions (150ms) for UI states. Disable universal transition properties. Use Framer Motion only for accordion expansions in the MRP tree to keep context.",
-    "libraries": "framer-motion (for the MRP drill-down tree smooth height expansion)."
+  "component_usage": {
+    "dropdowns": "Shadcn DropdownMenu. CRITICAL: Must have solid backgrounds (e.g., bg-white). NO transparent backgrounds.",
+    "search": "Shadcn Input styled as a rounded pill inside the header.",
+    "badges": "Shadcn Badge for the red notification count and SAP connection status.",
+    "icons": "lucide-react (Shield, Search, ClipboardList, Factory, Box, Users, Database, Bell, LogOut, Activity/Wifi for connection)."
   },
   "accessibility": {
-    "contrast": "Ensure high contrast. Black text on white/gray. APCA compliant. Critical warnings must be visible for color-blind users (use icons alongside colors).",
-    "testing": "CRITICAL: All interactive elements MUST have data-testid attributes (e.g., 'btn-lock-plan', 'modal-confirm-lock', 'row-mrp-expand', 'tab-explosion')."
+    "contrast": "Ensure the white text on teal background (#0E7C86) passes WCAG AA guidelines.",
+    "focus": "All interactive header items must have visible focus rings (e.g., focus:ring-2 focus:ring-white/50).",
+    "testing": "All interactive and key informational elements MUST include a data-testid attribute (e.g., data-testid='nav-bom-management')."
   },
-  "media": {
-    "icons": "lucide-react. Recommended icons: Lock, Unlock, GitCommit (for traceability/explosion nodes), Table, History, AlertTriangle. Set strokeWidth to 1.5 for a technical look."
-  },
-  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
-    "You MUST NOT center align the app container. Left-align all content. Add 'text-left' to root.",
-    "Prioritize data density. Supply chain planners hate scrolling and whitespace. Pack the information tightly but keep it readable using JetBrains Mono for numbers.",
-    "For the 'Lock' action, implement a distinct UI pattern. A standard Shadcn button is insufficient. It must be a deliberate, two-step dialog.",
-    "Use Shadcn UI components but aggressively override their default styles: remove rounded-md, remove shadows, tighten padding (h-8 instead of h-10 for inputs).",
-    "All numerical columns in tables MUST be right-aligned to allow visual magnitude comparison.",
-    "Do not use generic stock imagery. This is a hardcore data application. Visual interest should come from layout precision and typography, not pictures.",
-    "Implement conditional rendering: If Plan is DRAFT, show the Production Plan grid. If LOCKED, show the MRP Explosion grid as the primary focus, with the locked plan as read-only.",
-    "Always provide realistic mock data (SKUs, PO numbers like 'PO-49291', Safety Stock quantities) to demonstrate the layout properly."
+  "instructions_to_main_agent": [
+    "You are creating a mockup of ONLY the top header/navigation bar.",
+    "DO NOT redesign the page bodies or KPI cards below the header. The mockup should represent the new header sitting atop the application.",
+    "Change the app name to 'Materials Hub'.",
+    "Apply the Deep Teal (#0E7C86) solid background to the header.",
+    "Implement the pill-shaped active tab highlight (solid white background with dark teal text) and search bar styling precisely.",
+    "Include the 'SAP PRD Connected' pill prominently.",
+    "Use the 'recommended' options provided in menu_naming_conventions for the navigation labels.",
+    "Ensure Dropdowns (for Supplier Management & Master Data) have a completely opaque solid background."
+  ],
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
+    "You MUST NOT apply universal transition (e.g., transition: all) as it breaks transforms.",
+    "You MUST NOT center align the app container (do not add .App { text-align: center; }).",
+    "Always use modern interactive styles with micro-animations on hover/focus.",
+    "Never use AI assistant Emoji characters (🤖, 🧠, etc.) for icons.",
+    "Every interaction needs micro-animations - hover states, transitions, etc.",
+    "All interactive elements MUST include a data-testid attribute for robust testing."
   ]
 }

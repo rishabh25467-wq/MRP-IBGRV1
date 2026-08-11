@@ -1,0 +1,27 @@
+{
+  "summary": "Verified the new autosave-restore feature for Open PO Demand tab and Sales & Production Plan (MPS) tab, plus MRP Plan regression. All scenarios PASSED. Backend: curl-verified GET /api/production-plan/open-po-demand/autosave returns found:true with correct payload (786 rows), GET /api/production-plan/mps/autosave returns found:true with job_id+result (162 fgs initially), and confirmed the restored job_id still resolves via GET /api/production-plan/mps/status/{job_id} (status=done, has_result=True) - proving a restored MPS draft can still be locked server-side. Main happy-path endpoints (open-po-demand live fetch, mps/generate, mps/status) all work correctly. Frontend (Playwright, live SAP/OMS calls): (1) Open PO Demand - clicked Fetch with no filters, waited ~20s, 786 rows loaded, NO restored banner shown right after manual fetch (race-condition fix confirmed). Navigated to BOM Explorer and back - table auto-populated with same 786 rows immediately, blue 'Restored your last-fetched feed (11 Aug, 09:59 am)' banner shown correctly, and all previously-checked 'Produce?' checkboxes (with actor names/timestamps) were intact identically in both before/after screenshots. (2) Sales & Production Plan - clicked Generate Draft, live OMS+SAP call took ~116s (within the 30-90s expected range, a bit on the high end but succeeded), toast 'Draft generated - 158 finished good(s)' shown, NO restored banner during/right after generation (race-condition fix confirmed for this tab too). Navigated to Inventory and back - draft auto-restored with 158 FG rows matching the fresh generate (not the old 162-fg autosave), blue 'Restored your last-generated draft (by unknown ...)' banner shown, 'Lock This Plan' button present/enabled, clicking it opened the Lock Production Plan confirmation dialog cleanly with correct data (158 FGs, 4,18,378 net qty) and no error - confirms the restored job_id resolves for locking. (3) MRP Plan tab regression - loaded normally with its own pre-existing autosave banner ('Restored your last-generated plan'), 1466 component rows, no crash/error - unaffected by this session's changes. Minor note: banner shows 'by unknown' for created_by on both Open-PO/MPS banners in this test run because the 'Your name' actor field was left empty during automated testing - this is expected behavior (actor is optional), not a bug.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "autosave_store.py is clean, small, well-documented, correctly generalizes the mrp_plan_store.py 'silent overwrite' pattern into a single 'tab_autosaves' collection keyed by kind - good DRY design.",
+    "Race-condition fix (manualFetchTriggered / manualGenerateTriggered useRef guards) is correctly implemented on both tabs - checked in the restore .then() callback before applying restored state, preventing a slow autosave GET from clobbering a fresher manual fetch/generate. Verified this holds even when generate takes ~116s (long enough for the restore call to have long since resolved before manual generate finishes) - guard correctly persisted since it's a ref, not reset.",
+    "MpsAutosaveResponse.get_mps_autosave() defensively handles stale schema via ValidationError catch - good defensive coding, though it means a genuinely corrupt/malformed autosave doc would silently disappear rather than surfacing a warning; acceptable tradeoff for this use case (fresh Generate Draft always available as override).",
+    "open_po_demand autosave passes {'customer': customer, 'plant': plant, **response.dict()} directly to set_autosave without try/except around the autosave_store call itself in the open-po-demand route (it IS wrapped implicitly since it's after the try/except for the live fetch, so if autosave write fails for any reason e.g. transient Mongo issue, it would 500 the whole request even though the live fetch succeeded and data was already returned to caller inline - not observed in testing but worth noting as a minor robustness gap; mps/generate's autosave call is safer since it's inside the background job's try/except)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None - used live SAP/OMS/Open-PO-Demand feed data; note an earlier ad-hoc curl test with customer=NOPE_TEST_XYZ transiently overwrote the open_po_demand autosave doc mid-session (expected side effect of the live endpoint always autosaving) but was cleaned up naturally by the subsequent no-filter fetch during Playwright testing.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Autosave-restore feature for Open PO Demand + MPS tabs is fully verified working, including the race-condition fix (no banner flash right after a manual fetch/generate) and the restored-job_id-still-lockable flow. MRP Plan's own pre-existing autosave is unaffected. Only a very minor code-robustness note was raised (open-po-demand autosave write not independently try/excepted from the live-fetch response path) - not urgent, no bug observed live. No other action items.",
+  "rca_of_the_issue": "N/A - no bug found in this session; this was a net-new feature verification pass."
+}

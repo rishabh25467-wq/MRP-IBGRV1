@@ -20,6 +20,7 @@ import {
   ArrowsInSimple,
   FileArrowDown,
   Database,
+  Shield,
   CurrencyCircleDollar,
   Sparkle,
   ShoppingCartSimple,
@@ -447,36 +448,42 @@ export default function BomExplorerPage() {
     <div className="h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]">
       <Toaster position="top-right" />
 
-      {/* Header */}
-      <header className="h-12 bg-[#004B87] shadow-[0_1px_3px_0_rgba(16,24,40,0.1)] flex items-center justify-between px-4 shrink-0 z-10">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2.5" data-testid="app-title">
-            <Database size={18} weight="bold" className="text-white" />
-            <span className="font-heading text-sm font-bold text-white tracking-tight">SAP BOM Explorer</span>
-            <span className="font-sans text-xs text-white/60 hidden sm:inline">| Production Bill of Material</span>
+      {/* Header - "Materials Hub" redesign preview (Feb 2026 design pass) */}
+      <header className="h-14 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-5 shrink-0 z-10 gap-4">
+        <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
+          <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
+            <Shield size={18} weight="fill" className="text-white" />
           </div>
+          <div className="flex flex-col leading-tight">
+            <span className="font-heading text-[15px] font-bold text-white tracking-tight">Materials Hub</span>
+            <span className="font-sans text-[11px] text-white/70 hidden sm:inline">Production Bill of Material</span>
+          </div>
+          <div
+            className="flex items-center gap-1.5 bg-white/10 border border-white/20 px-2.5 py-1 rounded-full shrink-0 ml-1"
+            data-testid="connection-status-indicator"
+          >
+            {connection.connected === null ? (
+              <Circle size={8} weight="fill" className="text-[#F59E0B] animate-pulse" />
+            ) : connection.connected ? (
+              <Circle size={8} weight="fill" className="text-[#10B981] animate-pulse" />
+            ) : (
+              <Circle size={8} weight="fill" className="text-[#EF4444]" />
+            )}
+            <span className="font-sans text-[11px] text-white whitespace-nowrap hidden md:inline">
+              {connection.connected === null
+                ? "Checking SAP..."
+                : connection.connected
+                ? "SAP PRD Connected"
+                : "SAP Disconnected"}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 flex-1 justify-center min-w-0">
           <NavTabs />
         </div>
 
-        <div
-          className="flex items-center gap-2 bg-white/10 border border-white/20 px-2.5 py-1 rounded-sm shrink-0"
-          data-testid="connection-status-indicator"
-        >
-          {connection.connected === null ? (
-            <Circle size={8} weight="fill" className="text-[#F79009] animate-pulse" />
-          ) : connection.connected ? (
-            <Circle size={8} weight="fill" className="text-[#12B76A] animate-pulse" />
-          ) : (
-            <Circle size={8} weight="fill" className="text-[#F04438]" />
-          )}
-          <span className="font-sans text-xs text-white whitespace-nowrap">
-            {connection.connected === null
-              ? "Checking SAP..."
-              : connection.connected
-              ? "SAP PRD Connected"
-              : "SAP Disconnected"}
-          </span>
-        </div>
+        <div className="shrink-0 w-8" />
       </header>
 
       {/* Toolbar */}
