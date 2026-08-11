@@ -181,6 +181,7 @@ export default function SapWritePage() {
               <span className="font-sans text-[12px] text-white/70 hidden sm:inline">SAP Write</span>
             </div>
           </div>
+          <div className="w-px h-7 bg-white/25 shrink-0" />
           <div className="flex items-center gap-3 flex-1 justify-start min-w-0">
             <NavTabs />
           </div>
@@ -242,6 +243,7 @@ export default function SapWritePage() {
             <span className="font-sans text-[12px] text-white/70 hidden sm:inline">SAP Write</span>
           </div>
         </div>
+        <div className="w-px h-7 bg-white/25 shrink-0" />
         <div className="flex items-center gap-3 flex-1 justify-start min-w-0">
           <NavTabs />
         </div>

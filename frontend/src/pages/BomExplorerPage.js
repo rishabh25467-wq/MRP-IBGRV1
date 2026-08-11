@@ -458,32 +458,33 @@ export default function BomExplorerPage() {
             <span className="font-heading text-[16px] font-bold text-white tracking-tight">Materials Hub</span>
             <span className="font-sans text-[12px] text-white/70 hidden sm:inline">Production Bill of Material</span>
           </div>
-          <div
-            className="flex items-center gap-1.5 bg-white/10 border border-white/20 px-2.5 py-1 rounded-full shrink-0 ml-1"
-            data-testid="connection-status-indicator"
-          >
-            {connection.connected === null ? (
-              <Circle size={8} weight="fill" className="text-[#F59E0B] animate-pulse" />
-            ) : connection.connected ? (
-              <Circle size={8} weight="fill" className="text-[#10B981] animate-pulse" />
-            ) : (
-              <Circle size={8} weight="fill" className="text-[#EF4444]" />
-            )}
-            <span className="font-sans text-[11px] text-white whitespace-nowrap hidden md:inline">
-              {connection.connected === null
-                ? "Checking SAP..."
-                : connection.connected
-                ? "SAP PRD Connected"
-                : "SAP Disconnected"}
-            </span>
-          </div>
         </div>
+
+        <div className="w-px h-7 bg-white/25 shrink-0" />
 
         <div className="flex items-center gap-3 flex-1 justify-start min-w-0">
           <NavTabs />
         </div>
 
-        <div className="shrink-0 w-8" />
+        <div
+          className="flex items-center gap-1.5 bg-white/10 border border-white/20 px-2.5 py-1 rounded-full shrink-0"
+          data-testid="connection-status-indicator"
+        >
+          {connection.connected === null ? (
+            <Circle size={8} weight="fill" className="text-[#F59E0B] animate-pulse" />
+          ) : connection.connected ? (
+            <Circle size={8} weight="fill" className="text-[#10B981] animate-pulse" />
+          ) : (
+            <Circle size={8} weight="fill" className="text-[#EF4444]" />
+          )}
+          <span className="font-sans text-[11px] text-white whitespace-nowrap hidden md:inline">
+            {connection.connected === null
+              ? "Checking SAP..."
+              : connection.connected
+              ? "SAP PRD Connected"
+              : "SAP Disconnected"}
+          </span>
+        </div>
       </header>
 
       {/* Toolbar */}
