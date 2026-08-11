@@ -10,7 +10,7 @@ from typing import List, Optional
 
 import requests
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, HTTPException, Query
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, ValidationError
 from pymongo import MongoClient
 from starlette.middleware.cors import CORSMiddleware
@@ -49,6 +49,13 @@ import supplier_service
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
+# Imported AFTER load_dotenv (not grouped with the other module imports
+# above) because auth_service.py reads AZURE_AD_*/SUPER_ADMIN_EMAILS env
+# vars at module level - importing it before load_dotenv() runs would
+# crash with a KeyError, since none of those vars exist in the process
+# environment until the .env file is actually loaded.
+import auth_service
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -75,6 +82,7 @@ async def configure_default_executor():
 mongo_client = MongoClient(os.environ['MONGO_URL'], tz_aware=True)
 db = mongo_client[os.environ['DB_NAME']]
 job_store.ensure_indexes(db)
+auth_service.ensure_indexes(db)
 
 sap_soap_client = SAPSoapBOMClient(
     endpoint=os.environ['SAP_SOAP_ENDPOINT'],
@@ -282,6 +290,73 @@ class PurchasingPlanJobStatus(BaseModel):
 @api_router.get("/")
 async def root():
     return {"message": "SAP BOM Lookup API"}
+
+
+@api_router.get("/auth/login")
+async def auth_login(request: Request):
+    return await asyncio.to_thread(auth_service.start_login, request, db)
+
+
+@api_router.get("/auth/callback")
+async def auth_callback(request: Request):
+    return await asyncio.to_thread(auth_service.handle_callback, request, db)
+
+
+@api_router.post("/auth/logout")
+async def auth_logout(request: Request):
+    return await asyncio.to_thread(auth_service.logout, request, db)
+
+
+@api_router.get("/auth/me")
+async def auth_me(request: Request):
+    user = await asyncio.to_thread(auth_service.get_current_user, request, db)
+    if not user:
+        return {"authenticated": False}
+    return auth_service.user_public_view(user)
+
+
+@api_router.get("/admin/pages")
+async def admin_list_pages(request: Request):
+    user = await asyncio.to_thread(auth_service.get_current_user, request, db)
+    if not user or user.get("role") != "super_admin":
+        raise HTTPException(status_code=403, detail="Super admin access required")
+    return {"pages": auth_service.PAGE_CATALOG}
+
+
+@api_router.get("/admin/users")
+async def admin_list_users(request: Request):
+    user = await asyncio.to_thread(auth_service.get_current_user, request, db)
+    if not user or user.get("role") != "super_admin":
+        raise HTTPException(status_code=403, detail="Super admin access required")
+    docs = await asyncio.to_thread(
+        lambda: list(db[auth_service.USERS_COLLECTION].find({}).sort("last_login_at", -1))
+    )
+    return {"users": docs}
+
+
+class UpdateUserAccessRequest(BaseModel):
+    role: str
+    allowed_pages: List[str] = []
+
+
+@api_router.put("/admin/users/{user_id}/access")
+async def admin_update_user_access(user_id: str, body: UpdateUserAccessRequest, request: Request):
+    requester = await asyncio.to_thread(auth_service.get_current_user, request, db)
+    if not requester or requester.get("role") != "super_admin":
+        raise HTTPException(status_code=403, detail="Super admin access required")
+    if body.role not in ("user", "super_admin"):
+        raise HTTPException(status_code=400, detail="Invalid role")
+    invalid_pages = set(body.allowed_pages) - auth_service.PAGE_KEYS
+    if invalid_pages:
+        raise HTTPException(status_code=400, detail=f"Unknown page keys: {sorted(invalid_pages)}")
+    result = await asyncio.to_thread(
+        db[auth_service.USERS_COLLECTION].update_one,
+        {"_id": user_id},
+        {"$set": {"role": body.role, "allowed_pages": body.allowed_pages}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"ok": True}
 
 
 @api_router.get("/bom/connection-status", response_model=ConnectionStatus)
@@ -2411,6 +2486,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Microsoft Entra ID SSO + page-level access control (Feb 2026) - see
+# auth_service.py module docstring. Registered as HTTP middleware (not
+# Depends() on each route) so a route added later can't accidentally end
+# up unprotected by omission.
+app.middleware("http")(auth_service.create_auth_middleware(db))
 
 # Background maintenance: keep the persistent BOM cache within the ~12h
 # freshness requirement by re-checking every already-cached node's revision

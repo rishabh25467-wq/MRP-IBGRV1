@@ -98,8 +98,6 @@ const getPlanSortValue = (component, field) => {
   if (field === "product_id") return (component.product_id || "").toLowerCase();
   if (field === "on_hand") return component.on_hand_qty ?? -Infinity;
   if (field === "msl") return component.msl ?? -Infinity;
-  if (field === "total") return component.value_by_month ? Object.values(component.value_by_month).reduce((s, v) => s + (v || 0), 0) : -Infinity;
-  if (field === "net_total") return component.net_value_by_month ? Object.values(component.net_value_by_month).reduce((s, v) => s + (v || 0), 0) : -Infinity;
   if (field.startsWith("qty:")) return component.qty_by_month[field.slice(4)] ?? -Infinity;
   if (field.startsWith("netqty:")) return component.net_qty_by_month[field.slice(7)] ?? -Infinity;
   if (field.startsWith("value:")) return component.value_by_month[field.slice(6)] ?? -Infinity;
@@ -372,20 +370,12 @@ export default function PurchasingPlanPage() {
   const totalNetValueByMonth = (month) =>
     filteredComponents.reduce((sum, c) => sum + (c.net_value_by_month[month] || 0), 0);
 
-  const totalValueOverall = (component) =>
-    months.reduce((sum, m) => sum + (component.value_by_month[m] || 0), 0);
-
-  const totalNetValueOverall = (component) =>
-    months.reduce((sum, m) => sum + (component.net_value_by_month[m] || 0), 0);
-
-  const categoryTotalQty = (items, month) => items.reduce((sum, c) => sum + (c.qty_by_month[month] || 0), 0);
-  const categoryTotalNetQty = (items, month) => items.reduce((sum, c) => sum + (c.net_qty_by_month[month] || 0), 0);
   const categoryTotalOnHand = (items) => items.reduce((sum, c) => sum + (c.on_hand_qty || 0), 0);
   const categoryTotalMsl = (items) => items.reduce((sum, c) => sum + (c.msl || 0), 0);
+  const categoryTotalQty = (items, month) => items.reduce((sum, c) => sum + (c.qty_by_month[month] || 0), 0);
+  const categoryTotalNetQty = (items, month) => items.reduce((sum, c) => sum + (c.net_qty_by_month[month] || 0), 0);
   const categoryTotalValue = (items, month) => items.reduce((sum, c) => sum + (c.value_by_month[month] || 0), 0);
   const categoryTotalNetValue = (items, month) => items.reduce((sum, c) => sum + (c.net_value_by_month[month] || 0), 0);
-  const categoryGrandTotal = (items) => items.reduce((sum, c) => sum + totalValueOverall(c), 0);
-  const categoryGrandTotalNet = (items) => items.reduce((sum, c) => sum + totalNetValueOverall(c), 0);
 
   // Rounds a supplier's raw split qty to a practical, shippable lot size -
   // suppliers can't ship 257,394.6 units, they ship round lots. Combined
@@ -444,8 +434,6 @@ export default function PurchasingPlanPage() {
         row[`${formatMonth(m)} Gross Value`] = c.value_by_month[m] ?? "";
         row[`${formatMonth(m)} Net Value`] = c.net_value_by_month[m] ?? "";
       });
-      row["Total Gross Value"] = totalValueOverall(c);
-      row["Total Net Value"] = totalNetValueOverall(c);
       return row;
     });
     const workbook = XLSX.utils.book_new();
@@ -908,28 +896,6 @@ export default function PurchasingPlanPage() {
                       </span>
                     </th>
                   ))}
-                  <th
-                    onClick={() => toggleSort("total")}
-                    className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#DDE1E8] select-none"
-                    data-testid="purchasing-plan-sort-header-total"
-                  >
-                    <span className="inline-flex items-center gap-1 justify-end">
-                      Total Gross Value
-                      {sortConfig.field === "total" &&
-                        (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
-                    </span>
-                  </th>
-                  <th
-                    onClick={() => toggleSort("net_total")}
-                    className="bg-[#E5F0FA] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#004B87] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#D6E7F7] select-none"
-                    data-testid="purchasing-plan-sort-header-net-total"
-                  >
-                    <span className="inline-flex items-center gap-1 justify-end">
-                      Total Net Value
-                      {sortConfig.field === "net_total" &&
-                        (sortConfig.direction === "asc" ? <CaretUp size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />)}
-                    </span>
-                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -992,12 +958,6 @@ export default function PurchasingPlanPage() {
                             {formatMoney(categoryTotalNetValue(items, m), categoryCurrency)}
                           </td>
                         ))}
-                        <td className="border border-[#D0D5DD] px-2 py-1.5 text-[13px] tabular-nums text-right font-bold text-[#344054]">
-                          {formatMoney(categoryGrandTotal(items), categoryCurrency)}
-                        </td>
-                        <td className="border border-[#D0D5DD] px-2 py-1.5 text-[13px] tabular-nums text-right font-bold text-[#004B87] bg-[#E5F0FA]">
-                          {formatMoney(categoryGrandTotalNet(items), categoryCurrency)}
-                        </td>
                       </tr>
                       {!isCollapsed &&
                         items.map((c, i) => {
@@ -1098,22 +1058,10 @@ export default function PurchasingPlanPage() {
                                 {formatMoney(c.net_value_by_month[m], c.currency)}
                               </td>
                             ))}
-                            <td
-                              className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828] text-right font-bold"
-                              data-testid={`purchasing-plan-total-${category}-${i}`}
-                            >
-                              {formatMoney(totalValueOverall(c), c.currency)}
-                            </td>
-                            <td
-                              className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#004B87] text-right font-bold bg-[#F5FAFF]"
-                              data-testid={`purchasing-plan-net-total-${category}-${i}`}
-                            >
-                              {formatMoney(totalNetValueOverall(c), c.currency)}
-                            </td>
                         </tr>
                         {isSplitExpanded && supplierSplit.length > 0 && (
                           <tr className="bg-[#F5FAFF]" data-testid={`purchasing-plan-supplier-split-row-${category}-${i}`}>
-                            <td className="border border-[#D0D5DD] p-0" colSpan={8 + months.length * 4}>
+                            <td className="border border-[#D0D5DD] p-0" colSpan={6 + months.length * 4}>
                               <table className="w-full text-[12px] border-collapse">
                                 <thead>
                                   <tr className="bg-[#E5F0FA]">
