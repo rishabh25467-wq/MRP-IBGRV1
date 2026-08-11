@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { CaretDown, UserCircle, SignOut, ShieldCheck } from "@phosphor-icons/react";
+import { CaretDown, UserCircle, SignOut, ShieldCheck, List } from "@phosphor-icons/react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -7,6 +7,20 @@ import {
   DropdownMenuTrigger,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
+import {
+  Sheet,
+  SheetContent,
+  SheetTrigger,
+  SheetClose,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import {
+  Accordion,
+  AccordionItem,
+  AccordionTrigger,
+  AccordionContent,
+} from "@/components/ui/accordion";
 import { useAuth } from "@/contexts/AuthContext";
 
 // Labels follow global MRP/ERP naming conventions (SAP/Oracle/Infor-style
@@ -40,7 +54,9 @@ export const NavTabs = () => {
   const adminActive = ADMIN_SUBTABS.some((t) => t.to === pathname);
   const purchasingStrategyActive = PURCHASING_STRATEGY_SUBTABS.some((t) => t.to === pathname);
   return (
-    <div className="flex items-center gap-1 w-full">
+    <>
+      {/* Desktop / large tablet nav - unchanged pill tabs */}
+      <div className="hidden lg:flex items-center gap-1 w-full">
       {visibleTabs.map((tab) => {
         const active = pathname === tab.to;
         return (
@@ -129,6 +145,141 @@ export const NavTabs = () => {
           </DropdownMenuContent>
         </DropdownMenu>
       )}
-    </div>
+      </div>
+
+      {/* Mobile / tablet nav - hamburger trigger + off-canvas drawer */}
+      <div className="flex lg:hidden items-center ml-auto">
+        <Sheet>
+          <SheetTrigger asChild>
+            <button
+              type="button"
+              className="w-11 h-11 flex items-center justify-center rounded-lg text-white hover:bg-white/15 transition-colors duration-150 shrink-0"
+              data-testid="mobile-menu-trigger"
+              aria-label="Open menu"
+            >
+              <List size={22} weight="bold" />
+            </button>
+          </SheetTrigger>
+          <SheetContent
+            side="left"
+            className="w-[85vw] max-w-sm p-0 flex flex-col bg-white z-[60]"
+            data-testid="mobile-nav-drawer"
+          >
+            <SheetHeader className="px-4 pt-5 pb-3 border-b border-[#EAECF0] text-left">
+              <SheetTitle className="text-[#0E7C86] font-heading">Materials Hub</SheetTitle>
+            </SheetHeader>
+
+            <div className="flex-1 overflow-y-auto px-2 py-2">
+              {visibleTabs.map((tab) => {
+                const active = pathname === tab.to;
+                return (
+                  <SheetClose asChild key={tab.to}>
+                    <Link
+                      to={tab.to}
+                      className={`flex items-center min-h-11 px-3 rounded-lg text-[14px] font-bold font-heading transition-colors duration-150 ${
+                        active ? "bg-[#0E7C86]/10 text-[#0B6B74]" : "text-[#344054] hover:bg-slate-100"
+                      }`}
+                      data-testid={`mobile-${tab.testId}`}
+                    >
+                      {tab.label}
+                    </Link>
+                  </SheetClose>
+                );
+              })}
+
+              {(visiblePurchasingStrategySubtabs.length > 0 || visibleAdminSubtabs.length > 0) && (
+                <Accordion type="multiple" className="mt-1">
+                  {visiblePurchasingStrategySubtabs.length > 0 && (
+                    <AccordionItem value="purchasing-strategy" className="border-b-0">
+                      <AccordionTrigger
+                        className={`px-3 min-h-11 text-[14px] font-bold font-heading no-underline hover:no-underline ${
+                          purchasingStrategyActive ? "text-[#0B6B74]" : "text-[#344054]"
+                        }`}
+                        data-testid="mobile-nav-purchasing-strategy"
+                      >
+                        Supplier Management
+                      </AccordionTrigger>
+                      <AccordionContent className="pl-3">
+                        {visiblePurchasingStrategySubtabs.map((tab) => (
+                          <SheetClose asChild key={tab.to}>
+                            <Link
+                              to={tab.to}
+                              className="flex items-center min-h-11 px-3 rounded-lg text-[14px] font-medium text-[#475467] hover:bg-slate-100"
+                              data-testid={`mobile-${tab.testId}`}
+                            >
+                              {tab.label}
+                            </Link>
+                          </SheetClose>
+                        ))}
+                      </AccordionContent>
+                    </AccordionItem>
+                  )}
+                  {visibleAdminSubtabs.length > 0 && (
+                    <AccordionItem value="admin" className="border-b-0">
+                      <AccordionTrigger
+                        className={`px-3 min-h-11 text-[14px] font-bold font-heading no-underline hover:no-underline ${
+                          adminActive ? "text-[#0B6B74]" : "text-[#344054]"
+                        }`}
+                        data-testid="mobile-nav-admin"
+                      >
+                        Master Data
+                      </AccordionTrigger>
+                      <AccordionContent className="pl-3">
+                        {visibleAdminSubtabs.map((tab) => (
+                          <SheetClose asChild key={tab.to}>
+                            <Link
+                              to={tab.to}
+                              className="flex items-center min-h-11 px-3 rounded-lg text-[14px] font-medium text-[#475467] hover:bg-slate-100"
+                              data-testid={`mobile-${tab.testId}`}
+                            >
+                              {tab.label}
+                            </Link>
+                          </SheetClose>
+                        ))}
+                      </AccordionContent>
+                    </AccordionItem>
+                  )}
+                </Accordion>
+              )}
+            </div>
+
+            {user && (
+              <div className="border-t border-[#EAECF0] px-4 py-3">
+                <div className="flex items-center gap-2 mb-2" data-testid="mobile-nav-user-info">
+                  <UserCircle size={20} weight="fill" className="text-[#667085]" />
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-[13px] font-bold text-[#1D2939] truncate">{user.name || user.email}</span>
+                    <span className="text-[11px] text-[#667085] truncate">{user.email}</span>
+                  </div>
+                </div>
+                {user.role === "super_admin" && (
+                  <SheetClose asChild>
+                    <Link
+                      to="/admin/access-management"
+                      className="flex items-center gap-2 min-h-11 px-3 rounded-lg text-[14px] font-bold text-[#344054] hover:bg-slate-100"
+                      data-testid="mobile-nav-access-management"
+                    >
+                      <ShieldCheck size={16} weight="bold" />
+                      Access Management
+                    </Link>
+                  </SheetClose>
+                )}
+                <SheetClose asChild>
+                  <button
+                    type="button"
+                    onClick={logout}
+                    className="flex items-center gap-2 min-h-11 px-3 rounded-lg text-[14px] font-bold text-[#B42318] hover:bg-red-50 w-full"
+                    data-testid="mobile-nav-sign-out"
+                  >
+                    <SignOut size={16} weight="bold" />
+                    Sign Out
+                  </button>
+                </SheetClose>
+              </div>
+            )}
+          </SheetContent>
+        </Sheet>
+      </div>
+    </>
   );
 };

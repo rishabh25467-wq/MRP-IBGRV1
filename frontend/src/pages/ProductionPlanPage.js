@@ -1420,7 +1420,7 @@ const MrpPlanTab = ({ actorName }) => {
   };
 
   const mrpColumns = [
-    { label: "Product ID", field: "product_id" },
+    { label: "Product ID", field: "product_id", className: "sticky left-0 z-20 shadow-[2px_0_0_rgba(16,24,40,0.08)]" },
     { label: "Description" },
     { label: "UOM" },
     { label: "Lead Time (D)", field: "lead_time_days" },
@@ -1678,6 +1678,7 @@ const MrpPlanTab = ({ actorName }) => {
                     sortConfig={sortConfig}
                     onSort={col.field ? onSort : undefined}
                     testId={col.field ? `mrp-sort-${col.field}` : undefined}
+                    className={col.className}
                   />
                 ))}
               </tr>
@@ -1696,7 +1697,7 @@ const MrpPlanTab = ({ actorName }) => {
                       <td className="border border-[#D0D5DD] px-1.5 py-1 text-center text-[#667085]">
                         {isExpanded ? <CaretDown size={12} weight="bold" /> : <CaretRight size={12} weight="bold" />}
                       </td>
-                      <td className="border border-[#D0D5DD] px-2 py-1 font-medium text-[#101828]">{c.product_id}</td>
+                      <td className={`sticky left-0 z-10 border border-[#D0D5DD] px-2 py-1 font-medium text-[#101828] shadow-[2px_0_0_rgba(16,24,40,0.08)] ${i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"}`}>{c.product_id}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-[#101828]">{c.description || "—"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467] text-xs">{c.unit_of_measure || "—"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">
@@ -2015,7 +2016,7 @@ export default function ProductionPlanPage() {
     <div className="h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]">
       <Toaster position="top-right" />
 
-      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-5 shrink-0 z-10 gap-4">
+      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
         <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
           <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
             <Shield size={18} weight="fill" className="text-white" />
@@ -2036,7 +2037,7 @@ export default function ProductionPlanPage() {
             placeholder="Your name..."
             value={actorName}
             onChange={(e) => setActorName(e.target.value)}
-            className="h-7 w-36 px-2.5 text-[13px] rounded-full border border-white/25 bg-white/15 text-white placeholder:text-white/50 focus:outline-none focus:border-white/70 focus:bg-white/25"
+            className="h-7 w-20 sm:w-36 px-2.5 text-[13px] rounded-full border border-white/25 bg-white/15 text-white placeholder:text-white/50 focus:outline-none focus:border-white/70 focus:bg-white/25"
             data-testid="actor-name-input"
           />
         </div>

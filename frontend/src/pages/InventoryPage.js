@@ -315,7 +315,7 @@ export default function InventoryPage() {
     <div className="h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]" data-testid="inventory-page">
       <Toaster position="top-right" richColors />
 
-      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-5 shrink-0 z-10 gap-4">
+      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
         <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
           <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
             <Shield size={18} weight="fill" className="text-white" />
@@ -406,7 +406,7 @@ export default function InventoryPage() {
 
         {items.length > 0 && (
           <>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <StatCard icon={Package} label="Items in Stock" value={filtered.length.toLocaleString("en-IN")} testId="inventory-stat-items" />
               <StatCard icon={Package} label="Total On-Hand Qty" value={formatQty(totalQty)} testId="inventory-stat-qty" />
               <StatCard
@@ -475,9 +475,9 @@ export default function InventoryPage() {
             </div>
 
             <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-auto max-h-[65vh]">
-              <table className="w-full text-[13px] border-collapse">
-                <thead className="sticky top-0 z-[1]">
-                  <tr>
+              <table className="w-full text-[13px] border-collapse block md:table">
+                <thead className="hidden md:table-header-group md:sticky md:top-0 md:z-[1]">
+                  <tr className="md:table-row">
                     <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 w-8"></th>
                     <th
                       className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase cursor-pointer select-none hover:bg-[#E4E7EC]"
@@ -558,58 +558,100 @@ export default function InventoryPage() {
                     </th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="block md:table-row-group">
                   {pagedItems.map((it, i) => {
                     const isExpanded = expandedRows.has(it.product_id);
                     return (
                       <Fragment key={it.product_id}>
                         <tr
-                          className={`${i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} hover:bg-[#F0F4F8] cursor-pointer transition-colors duration-150`}
+                          className={`flex flex-col md:table-row mb-3 md:mb-0 last:mb-0 rounded-lg md:rounded-none border md:border-0 border-[#D0D5DD] overflow-hidden shadow-sm md:shadow-none ${i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} hover:bg-[#F0F4F8] cursor-pointer transition-colors duration-150`}
                           onClick={() => toggleRow(it.product_id)}
                           data-testid={`inventory-row-${it.product_id}`}
                         >
-                          <td className="border border-[#D0D5DD] px-1.5 py-1 text-center text-[#667085]">
+                          <td className="hidden md:table-cell border border-[#D0D5DD] px-1.5 py-1 text-center text-[#667085]">
                             {it.locations.length > 0 &&
                               (isExpanded ? <CaretDown size={11} weight="bold" /> : <CaretRight size={11} weight="bold" />)}
                           </td>
-                          <td className="border border-[#D0D5DD] px-2 py-1 font-medium text-[#101828]">{it.product_id}</td>
-                          <td className="border border-[#D0D5DD] px-2 py-1 text-[#101828]">{it.description || "—"}</td>
-                          <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]">{it.category || "Uncategorized"}</td>
-                          <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums font-bold text-[#101828]" data-testid={`inventory-qty-${it.product_id}`}>
+                          <td
+                            data-label="Product ID"
+                            className="flex md:table-cell justify-between items-center gap-3 border-b md:border border-[#D0D5DD] px-3 py-2 md:px-2 md:py-1 font-medium text-[#101828] before:content-[attr(data-label)] before:font-bold before:text-[10px] before:uppercase before:text-[#667085] before:shrink-0 md:before:content-none"
+                          >
+                            <span className="inline-flex items-center gap-1.5 md:contents">
+                              <span className="md:hidden text-[#667085]">
+                                {it.locations.length > 0 &&
+                                  (isExpanded ? <CaretDown size={11} weight="bold" /> : <CaretRight size={11} weight="bold" />)}
+                              </span>
+                              {it.product_id}
+                            </span>
+                          </td>
+                          <td
+                            data-label="Description"
+                            className="flex md:table-cell justify-between items-center gap-3 border-b md:border border-[#D0D5DD] px-3 py-2 md:px-2 md:py-1 text-[#101828] before:content-[attr(data-label)] before:font-bold before:text-[10px] before:uppercase before:text-[#667085] before:shrink-0 md:before:content-none"
+                          >
+                            {it.description || "—"}
+                          </td>
+                          <td
+                            data-label="Category"
+                            className="flex md:table-cell justify-between items-center gap-3 border-b md:border border-[#D0D5DD] px-3 py-2 md:px-2 md:py-1 text-[#475467] before:content-[attr(data-label)] before:font-bold before:text-[10px] before:uppercase before:text-[#667085] before:shrink-0 md:before:content-none"
+                          >
+                            {it.category || "Uncategorized"}
+                          </td>
+                          <td
+                            data-label="On-Hand Qty"
+                            className="flex md:table-cell justify-between items-center gap-3 border-b md:border border-[#D0D5DD] px-3 py-2 md:px-2 md:py-1 md:text-right tabular-nums font-bold text-[#101828] before:content-[attr(data-label)] before:font-bold before:text-[10px] before:uppercase before:text-[#667085] before:shrink-0 md:before:content-none"
+                            data-testid={`inventory-qty-${it.product_id}`}
+                          >
                             {formatQty(it.total_qty)}
                           </td>
-                          <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]">{it.uom || "—"}</td>
-                          <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]" data-testid={`inventory-unit-cost-${it.product_id}`}>
+                          <td
+                            data-label="UOM"
+                            className="flex md:table-cell justify-between items-center gap-3 border-b md:border border-[#D0D5DD] px-3 py-2 md:px-2 md:py-1 text-[#475467] before:content-[attr(data-label)] before:font-bold before:text-[10px] before:uppercase before:text-[#667085] before:shrink-0 md:before:content-none"
+                          >
+                            {it.uom || "—"}
+                          </td>
+                          <td
+                            data-label="Unit Cost"
+                            className="flex md:table-cell justify-between items-center gap-3 border-b md:border border-[#D0D5DD] px-3 py-2 md:px-2 md:py-1 md:text-right tabular-nums text-[#475467] before:content-[attr(data-label)] before:font-bold before:text-[10px] before:uppercase before:text-[#667085] before:shrink-0 md:before:content-none"
+                            data-testid={`inventory-unit-cost-${it.product_id}`}
+                          >
                             {formatMoney(it.unit_cost, it.currency)}
                           </td>
-                          <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums font-bold text-[#101828]" data-testid={`inventory-value-${it.product_id}`}>
+                          <td
+                            data-label="Total Value"
+                            className="flex md:table-cell justify-between items-center gap-3 border-0 md:border border-[#D0D5DD] px-3 py-2 md:px-2 md:py-1 md:text-right tabular-nums font-bold text-[#101828] before:content-[attr(data-label)] before:font-bold before:text-[10px] before:uppercase before:text-[#667085] before:shrink-0 md:before:content-none"
+                            data-testid={`inventory-value-${it.product_id}`}
+                          >
                             {formatMoney(it.total_value, it.currency)}
                           </td>
                         </tr>
                         {isExpanded &&
                           it.locations.map((loc, li) => (
-                            <tr key={`${it.product_id}-${li}`} className="bg-[#F5FAFF]" data-testid={`inventory-location-row-${it.product_id}`}>
-                              <td className="border border-[#D0D5DD]"></td>
-                              <td className="border border-[#D0D5DD] px-2 py-1 pl-6 text-[#475467] text-xs" colSpan={2}>
+                            <tr
+                              key={`${it.product_id}-${li}`}
+                              className="flex flex-wrap md:table-row bg-[#F5FAFF] mb-2 md:mb-0 rounded-md md:rounded-none px-3 md:px-0 py-1.5 md:py-0 gap-x-3"
+                              data-testid={`inventory-location-row-${it.product_id}`}
+                            >
+                              <td className="hidden md:table-cell border border-[#D0D5DD]"></td>
+                              <td className="border-0 md:border md:border-[#D0D5DD] px-0 md:px-2 py-0.5 md:py-1 pl-0 md:pl-6 text-[#475467] text-xs" colSpan={2}>
                                 <MapPin size={10} className="inline mr-1 text-[#98A2B3]" />
                                 {loc.site || "—"} / {loc.logistics_area || "—"}
                               </td>
-                              <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467] text-xs">{loc.stock_status || "—"}</td>
-                              <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467] text-xs" data-testid={`inventory-location-entity-${it.product_id}`}>
+                              <td className="border-0 md:border md:border-[#D0D5DD] px-0 md:px-2 py-0.5 md:py-1 text-[#475467] text-xs">{loc.stock_status || "—"}</td>
+                              <td className="border-0 md:border md:border-[#D0D5DD] px-0 md:px-2 py-0.5 md:py-1 text-[#475467] text-xs" data-testid={`inventory-location-entity-${it.product_id}`}>
                                 {loc.company_name || loc.company_code || "—"}
                               </td>
-                              <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467] text-xs">
+                              <td className="border-0 md:border md:border-[#D0D5DD] px-0 md:px-2 py-0.5 md:py-1 text-right tabular-nums text-[#475467] text-xs">
                                 {formatQty(loc.qty)}
                               </td>
-                              <td className="border border-[#D0D5DD]" colSpan={2}></td>
+                              <td className="hidden md:table-cell border border-[#D0D5DD]" colSpan={2}></td>
                             </tr>
                           ))}
                       </Fragment>
                     );
                   })}
                   {pagedItems.length === 0 && (
-                    <tr>
-                      <td colSpan={8} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="inventory-no-items">
+                    <tr className="block md:table-row">
+                      <td colSpan={8} className="block md:table-cell border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="inventory-no-items">
                         No inventory items match your filters
                       </td>
                     </tr>

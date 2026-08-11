@@ -1,130 +1,86 @@
 {
-  "app_name": "Materials Hub",
-  "theme_type": "dashboard",
-  "design_context": "Internal Enterprise MRP / B2B Procurement Tool",
-  "typography": {
-    "primary_font": "IBM Plex Sans",
-    "fallback_font": "sans-serif",
-    "heading_strategy": "Professional, crisp enterprise scale. No oversized typography in the header.",
-    "weights": {
-      "regular": 400,
-      "medium": 500,
-      "bold": 600,
-      "black": 700
-    }
+  "project_context": {
+    "app_type": "dashboard",
+    "focus": "Mobile & Tablet Responsiveness Strategy for Data-Heavy ERP",
+    "existing_stack": "React (.js), Tailwind CSS, Shadcn UI, Phosphor Icons"
   },
-  "colors": {
-    "primary": {
-      "brand": "#0E7C86",
-      "brand_dark": "#0B6B74",
-      "brand_text": "#FFFFFF"
-    },
-    "status": {
-      "connected": "#10B981",
-      "disconnected": "#EF4444",
-      "checking": "#F59E0B"
-    },
-    "header_elements": {
-      "background": "#0E7C86",
-      "search_bg": "#FFFFFF",
-      "search_text": "#333333",
-      "active_pill_bg": "#FFFFFF",
-      "active_pill_text": "#0B6B74",
-      "inactive_tab_text": "#FFFFFF",
-      "hover_tab_bg": "rgba(255, 255, 255, 0.15)"
-    }
+  "theme_and_colors": {
+    "primary": "#0E7C86",
+    "primary_hover": "#0B6B74",
+    "accent": "#004B87",
+    "background": "#F8FAFC",
+    "surface": "#FFFFFF",
+    "rules": [
+      "Do not alter the existing color palette. This is a responsive refactor.",
+      "Ensure sticky columns and sticky headers have an opaque background (surface color) so scrolling text does not bleed through."
+    ]
   },
-  "layout_specifications": {
-    "scope": "ONLY redesign the top header/navigation bar. DO NOT alter page body content.",
-    "header_structure": "Flexbox row, full width (100vw), horizontally spaced (justify-between), items centered vertically, generous padding (px-6 py-4).",
-    "left_cluster": {
-      "purpose": "App identity and system status",
-      "elements": [
-        "Small White Shield Icon in a soft rounded square.",
-        "App Title ('Materials Hub') stacked with a subtitle below it (e.g. 'Production Bill of Material').",
-        "SAP Connection Status Pill (Compact pill: Colored dot + 'SAP PRD Connected'). Positioned near the title to ensure connectivity health is always visible."
-      ]
-    },
-    "center_cluster": {
-      "purpose": "Global search and main navigation",
-      "elements": [
-        "Search Input: Rounded white pill shape with magnifying glass icon and placeholder 'Find PR #...'.",
-        "Navigation Items (Text + Icon pairs).",
-        "Active Tab: Solid white rounded-pill background with dark teal text.",
-        "Inactive Tab: Plain white text with icons."
-      ]
-    },
-    "right_cluster": {
-      "purpose": "User profile and utilities",
-      "elements": [
-        "User Role stack ('APPROVER' in small caps over User Name in bold white).",
-        "Notification Bell icon with a red circular badge (e.g., '30').",
-        "Logout action (Text + Icon link)."
-      ]
-    }
+  "responsive_breakpoints": {
+    "sm": "640px (Mobile landscape / large phones)",
+    "md": "768px (Tablet portrait) - Key breakpoint for collapsing tables to cards",
+    "lg": "1024px (Tablet landscape) - Key breakpoint for Navigation (Hamburger to Top Nav)",
+    "xl": "1280px (Standard Desktop)"
   },
-  "menu_naming_conventions": {
-    "rationale": "Global MRP standards (SAP, Oracle) prioritize clarity and actionable data categorization over casual terms.",
-    "items": {
-      "BOM Explorer": {
-        "recommended": "BOM Management",
-        "alternatives": ["Bill of Materials", "Item Master & BOM"],
-        "note": "'Management' implies active control, standard for MRP, compared to 'Explorer' which sounds read-only."
+  "responsive_strategies": {
+    "navigation": {
+      "desktop_lg_xl": "Top nav bar with logo, pill-style tab links, dropdown menus, right-aligned user menu.",
+      "mobile_tablet_sm_md": "Replace pill tabs and dropdowns with a Hamburger Icon on the right (User avatar stays visible or moves inside). Clicking hamburger opens a full-height Shadcn `Sheet` (Side Drawer) anchored to the left or right. Use Accordion inside the Sheet for dropdown menus like 'Supplier Management' and 'Master Data'.",
+      "header_rules": "Header MUST have a solid background (e.g., bg-white) with a bottom border (border-b border-slate-200). Never use a fully transparent header."
+    },
+    "dense_data_tables": {
+      "strategy_1_matrix_data": {
+        "applies_to": [
+          "Purchasing Plan",
+          "Production Plan"
+        ],
+        "method": "Horizontal Scroll with Sticky Columns",
+        "implementation": "Wrap the table in a `<div className='w-full overflow-x-auto relative'>`. Make the first 1-2 columns (e.g., Product ID, Description) sticky: `<th className='sticky left-0 z-20 bg-white border-r shadow-[1px_0_0_rgba(0,0,0,0.1)]'>` and `<td className='sticky left-0 z-10 bg-white border-r'>`. This allows viewing repeating monthly matrix data without losing context.",
+        "ux_detail": "Add a subtle inner shadow or border on the right edge of the sticky column to indicate scrollable content beneath it."
       },
-      "Purchasing Plan": {
-        "recommended": "Procurement Planning",
-        "alternatives": ["Purchase Requisitions", "Material Requirements - Purchasing"],
-        "note": "Standard global terminology for inbound supply planning."
-      },
-      "Production Plan": {
-        "recommended": "Master Production Schedule",
-        "alternatives": ["Production Planning", "MRP - Production"],
-        "note": "MPS is the definitive industry-standard term for high-level production plans."
-      },
-      "Inventory": {
-        "recommended": "Inventory Management",
-        "alternatives": ["Stock Overview", "Warehouse"],
-        "note": "Standard module naming for ERPs."
-      },
-      "Purchasing Strategy (Dropdown)": {
-        "recommended": "Supplier Management",
-        "alternatives": ["Vendor Management", "Sourcing & Quotas"],
-        "note": "Clearly encapsulates Supplier Master and Quota Allocations."
-      },
-      "Admin (Dropdown)": {
-        "recommended": "Master Data",
-        "alternatives": ["System Administration", "Data Management"],
-        "note": "In SAP/MRP contexts, base component edits and write functionalities fall strictly under 'Master Data'."
+      "strategy_2_crud_lists": {
+        "applies_to": [
+          "Inventory",
+          "Supplier Master",
+          "Quota Allocation",
+          "IT Access Management",
+          "SAP Write"
+        ],
+        "method": "Card-per-row Collapse on Mobile (< md)",
+        "implementation": "At `< md`, hide the `<thead>`. Turn each `<tbody> <tr>` into a flex column card (`flex flex-col mb-4 p-4 border rounded-lg shadow-sm bg-white`). Turn each `<td>` into a flex row with a label (`<span className='font-medium text-slate-500'>Column Name:</span>`) and the value right-aligned.",
+        "tablet_md_lg": "At `md`, revert to standard table layout but allow horizontal scroll (`overflow-x-auto`) if columns overflow."
       }
+    },
+    "bom_explorer": {
+      "mobile_adaptation": "Nested tree views consume horizontal space quickly. Reduce left padding per depth level on mobile (e.g., `pl-2` on mobile, `pl-6` on desktop).",
+      "touch_targets": "Ensure expand/collapse icons (chevrons) are wrapped in a button with minimum `w-10 h-10` touch target area.",
+      "overflow": "Allow horizontal scrolling (`overflow-x-auto`) on the specific BOM row if drawing URLs or standard cost figures are too wide."
+    },
+    "modals_dialogs_forms": {
+      "forms": "Inputs should stack vertically `flex-col` on `< md` and sit side-by-side on `>= md` using CSS Grid.",
+      "modals": "On `< sm`, Dialog components should take up 100% width and dock to the bottom (like a Bottom Sheet) or become full-screen (`w-full h-[100dvh] max-w-none rounded-none m-0`). On `>= sm`, behave as standard centered cards.",
+      "login_pending_access": "Centered cards should consume `w-full px-4` on mobile, maintaining max-width (`max-w-md`) to prevent stretching. Remove any heavy drop-shadows on mobile, replace with 1px border."
+    },
+    "touch_targets_and_spacing": {
+      "interactive_elements": "All buttons, links, dropdown triggers, and checkboxes MUST have a minimum interactable area of 44x44px. If the visual element is smaller, use padding to increase the hit area.",
+      "spacing": "Increase inter-row spacing slightly on mobile tables to prevent accidental mis-taps. Use `gap-4` or `gap-6` generously between form elements."
     }
   },
-  "component_usage": {
-    "dropdowns": "Shadcn DropdownMenu. CRITICAL: Must have solid backgrounds (e.g., bg-white). NO transparent backgrounds.",
-    "search": "Shadcn Input styled as a rounded pill inside the header.",
-    "badges": "Shadcn Badge for the red notification count and SAP connection status.",
-    "icons": "lucide-react (Shield, Search, ClipboardList, Factory, Box, Users, Database, Bell, LogOut, Activity/Wifi for connection)."
+  "component_guidelines": {
+    "tables": {
+      "wrapper": "<div className=\"w-full overflow-x-auto rounded-md border\">",
+      "note": "Avoid fixed widths on tables. Use min-w-[max-content] or let columns naturally size."
+    },
+    "toast_notifications": {
+      "positioning": "Use 'bottom-center' on mobile (< md) and 'bottom-right' on desktop (>= md) via Sonner config."
+    }
   },
-  "accessibility": {
-    "contrast": "Ensure the white text on teal background (#0E7C86) passes WCAG AA guidelines.",
-    "focus": "All interactive header items must have visible focus rings (e.g., focus:ring-2 focus:ring-white/50).",
-    "testing": "All interactive and key informational elements MUST include a data-testid attribute (e.g., data-testid='nav-bom-management')."
-  },
-  "instructions_to_main_agent": [
-    "You are creating a mockup of ONLY the top header/navigation bar.",
-    "DO NOT redesign the page bodies or KPI cards below the header. The mockup should represent the new header sitting atop the application.",
-    "Change the app name to 'Materials Hub'.",
-    "Apply the Deep Teal (#0E7C86) solid background to the header.",
-    "Implement the pill-shaped active tab highlight (solid white background with dark teal text) and search bar styling precisely.",
-    "Include the 'SAP PRD Connected' pill prominently.",
-    "Use the 'recommended' options provided in menu_naming_conventions for the navigation labels.",
-    "Ensure Dropdowns (for Supplier Management & Master Data) have a completely opaque solid background."
-  ],
-  "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
-    "You MUST NOT apply universal transition (e.g., transition: all) as it breaks transforms.",
-    "You MUST NOT center align the app container (do not add .App { text-align: center; }).",
-    "Always use modern interactive styles with micro-animations on hover/focus.",
-    "Never use AI assistant Emoji characters (🤖, 🧠, etc.) for icons.",
-    "Every interaction needs micro-animations - hover states, transitions, etc.",
-    "All interactive elements MUST include a data-testid attribute for robust testing."
+  "universal_guidelines_for_main_agent": [
+    "Do not rename `.js` files to `.tsx`. The project strictly uses `.js` for React components.",
+    "ALL interactive elements (buttons, inputs, menu items, table rows with actions) MUST include a `data-testid` attribute using kebab-case (e.g., `data-testid='bom-expand-btn'`, `data-testid='mobile-menu-trigger'`).",
+    "Avoid generic centered layouts for data apps. Text alignment should prioritize readability: left-align text, right-align numbers.",
+    "Ensure hover states explicitly define text color to avoid contrast issues, though hover effects are less critical on mobile.",
+    "When refactoring tables, ensure the parent container restricts width to 100vw or 100% to prevent the entire page from breaking its horizontal layout (the 'horizontal scroll of death').",
+    "Use pure HTML + Tailwind for structural responsive layouts (grid, flex, hidden block), and Shadcn for the interactive bits.",
+    "NEVER use completely transparent backgrounds on elements that float over data (sticky headers, sticky table columns, dialogs). Data will clash and become unreadable."
   ]
 }

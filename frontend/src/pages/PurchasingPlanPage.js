@@ -459,7 +459,7 @@ export default function PurchasingPlanPage() {
       <Toaster position="top-right" />
 
       {/* Header */}
-      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-5 shrink-0 z-10 gap-4">
+      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
         <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
           <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
             <Shield size={18} weight="fill" className="text-white" />
@@ -799,7 +799,7 @@ export default function PurchasingPlanPage() {
                 <tr>
                   <th
                     onClick={() => toggleSort("product_id")}
-                    className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#DDE1E8] select-none"
+                    className="sticky left-0 z-20 bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide cursor-pointer hover:bg-[#DDE1E8] select-none shadow-[2px_0_0_rgba(16,24,40,0.08)]"
                     data-testid="purchasing-plan-sort-header-product_id"
                   >
                     <span className="inline-flex items-center gap-1">
@@ -969,7 +969,7 @@ export default function PurchasingPlanPage() {
                           className={`${i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} hover:bg-[#F0F4F8] transition-colors duration-150`}
                           data-testid={`purchasing-plan-row-${category}-${i}`}
                         >
-                            <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828] font-medium">
+                            <td className={`sticky left-0 z-10 border border-[#D0D5DD] px-2 py-1 text-[13px] tabular-nums text-[#101828] font-medium shadow-[2px_0_0_rgba(16,24,40,0.08)] ${i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"}`}>
                               {c.product_id}
                             </td>
                             <td className="border border-[#D0D5DD] px-2 py-1 text-[13px] text-[#101828]">{c.description || "—"}</td>

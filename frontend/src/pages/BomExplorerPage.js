@@ -449,7 +449,7 @@ export default function BomExplorerPage() {
       <Toaster position="top-right" />
 
       {/* Header - "Materials Hub" redesign preview (Feb 2026 design pass) */}
-      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-5 shrink-0 z-10 gap-4">
+      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
         <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
           <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
             <Shield size={18} weight="fill" className="text-white" />
@@ -700,7 +700,7 @@ export default function BomExplorerPage() {
                       className={`border border-[#D0D5DD] py-1 text-[13px] tabular-nums text-[#101828] ${
                         hasChildren ? "cursor-pointer hover:bg-[#E5F0FA]" : ""
                       }`}
-                      style={{ paddingLeft: `${depth * 24 + 8}px`, paddingRight: "8px" }}
+                      style={{ paddingLeft: `calc(8px + ${depth} * min(24px, 3.5vw))`, paddingRight: "8px" }}
                       onClick={hasChildren ? () => toggleKey(path) : undefined}
                       data-testid={`bom-toggle-${path}`}
                     >

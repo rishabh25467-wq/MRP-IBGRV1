@@ -171,7 +171,7 @@ export default function SapWritePage() {
     return (
       <div className="h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]">
         <Toaster position="top-right" />
-        <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-5 shrink-0 z-10 gap-4">
+        <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
           <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
             <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
               <Shield size={18} weight="fill" className="text-white" />
@@ -233,7 +233,7 @@ export default function SapWritePage() {
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]">
       <Toaster position="top-right" />
-      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-5 shrink-0 z-10 gap-4">
+      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
         <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
           <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
             <Shield size={18} weight="fill" className="text-white" />
@@ -365,7 +365,7 @@ export default function SapWritePage() {
             </div>
           )}
           {readSpecs && (
-            <div className="border border-[#D0D5DD] rounded-sm overflow-hidden" data-testid="read-price-spec-table">
+            <div className="border border-[#D0D5DD] rounded-sm overflow-x-auto" data-testid="read-price-spec-table">
               <table className="w-full text-[13px] border-collapse">
                 <thead>
                   <tr>
@@ -511,8 +511,8 @@ export default function SapWritePage() {
                   <div className="bg-[#ECFDF3] px-2.5 py-1.5 text-xs font-bold text-[#027A48]">
                     Pushed to SAP ({result.pushed_items.length})
                   </div>
-                  <div className="max-h-64 overflow-y-auto">
-                    <table className="w-full text-[13px] border-collapse" data-testid="bulk-push-erp-pushed-table">
+                  <div className="max-h-64 overflow-auto">
+                    <table className="w-full text-[13px] border-collapse min-w-[500px]" data-testid="bulk-push-erp-pushed-table">
                       <thead>
                         <tr>
                           <th className="bg-[#F0FDF6] border border-[#D0D5DD] p-1 text-left text-xs font-bold text-[#344054] font-heading uppercase sticky top-0">Product ID</th>
@@ -543,8 +543,8 @@ export default function SapWritePage() {
                   <div className="bg-[#FEF3F2] px-2.5 py-1.5 text-xs font-bold text-[#B42318]">
                     Failed ({result.failed.length})
                   </div>
-                  <div className="max-h-48 overflow-y-auto">
-                    <table className="w-full text-[13px] border-collapse" data-testid="bulk-push-erp-failed-table">
+                  <div className="max-h-48 overflow-auto">
+                    <table className="w-full text-[13px] border-collapse min-w-[400px]" data-testid="bulk-push-erp-failed-table">
                       <tbody>
                         {result.failed.map((f, i) => (
                           <tr key={f.product_id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"}>

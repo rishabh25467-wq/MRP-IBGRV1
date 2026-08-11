@@ -364,7 +364,7 @@ export default function QuotaAllocationPage() {
     <div className="h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]">
       <Toaster position="top-right" />
 
-      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-5 shrink-0 z-10 gap-4">
+      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
         <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
           <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
             <Shield size={18} weight="fill" className="text-white" />
@@ -828,8 +828,8 @@ export default function QuotaAllocationPage() {
                 ) : (
                   <>
                     <div className="overflow-x-auto">
-                      <table className="w-full text-[13px] border-collapse" data-testid="quota-allocation-table">
-                        <thead>
+                      <table className="w-full text-[13px] border-collapse block md:table" data-testid="quota-allocation-table">
+                        <thead className="hidden md:table-header-group">
                           <tr>
                             <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">Supplier</th>
                             <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-right text-xs font-bold text-[#344054] font-heading uppercase w-24">Quota %</th>
@@ -839,45 +839,68 @@ export default function QuotaAllocationPage() {
                             <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 w-8"></th>
                           </tr>
                         </thead>
-                        <tbody>
+                        <tbody className="block md:table-row-group">
                           {quotaAllocations.length === 0 ? (
-                            <tr>
-                              <td colSpan={6} className="border border-[#D0D5DD] text-center py-6 text-[13px] text-[#475467]" data-testid="quota-allocation-empty">
+                            <tr className="block md:table-row">
+                              <td colSpan={6} className="block md:table-cell border border-[#D0D5DD] text-center py-6 text-[13px] text-[#475467]" data-testid="quota-allocation-empty">
                                 No known suppliers found for "{activeProductId}" yet - use "+ Add Supplier" below.
                               </td>
                             </tr>
                           ) : (
                             quotaAllocations.map((a, i) => (
-                              <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`quota-allocation-row-${i}`}>
-                                <td className="border border-[#D0D5DD] px-2 py-1 font-medium text-[#101828]">
-                                  {withVendorCode(a.supplier_name, a.sap_internal_id)}
-                                  {a.price_source && <div className="text-xs text-[#98A2B3]">{a.price_source}</div>}
+                              <tr
+                                key={i}
+                                className={`flex flex-col md:table-row mb-3 md:mb-0 last:mb-0 rounded-lg md:rounded-none border md:border-0 border-[#D0D5DD] overflow-hidden shadow-sm md:shadow-none ${i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"}`}
+                                data-testid={`quota-allocation-row-${i}`}
+                              >
+                                <td
+                                  data-label="Supplier"
+                                  className="flex md:table-cell justify-between items-center gap-3 border-b md:border border-[#D0D5DD] px-3 py-2 md:px-2 md:py-1 font-medium text-[#101828] before:content-[attr(data-label)] before:font-bold before:text-[10px] before:uppercase before:text-[#667085] before:shrink-0 md:before:content-none"
+                                >
+                                  <span className="text-right md:text-left">
+                                    {withVendorCode(a.supplier_name, a.sap_internal_id)}
+                                    {a.price_source && <div className="text-xs text-[#98A2B3]">{a.price_source}</div>}
+                                  </span>
                                 </td>
-                                <td className="border border-[#D0D5DD] px-1 py-1">
+                                <td
+                                  data-label="Quota %"
+                                  className="flex md:table-cell justify-between items-center gap-3 border-b md:border border-[#D0D5DD] px-3 py-1.5 md:px-1 md:py-1 before:content-[attr(data-label)] before:font-bold before:text-[10px] before:uppercase before:text-[#667085] before:shrink-0 md:before:content-none"
+                                >
                                   <input
                                     type="number"
                                     step="0.1"
                                     value={a.quota_percent}
                                     onChange={(e) => updateAllocation(i, "quota_percent", e.target.value)}
-                                    className={`${inputCls} h-7 text-right`}
+                                    className={`${inputCls} h-7 text-right w-24 md:w-full`}
                                     data-testid={`quota-percent-input-${i}`}
                                   />
                                 </td>
-                                <td className="border border-[#D0D5DD] px-1 py-1">
+                                <td
+                                  data-label="Lead Time (d)"
+                                  className="flex md:table-cell justify-between items-center gap-3 border-b md:border border-[#D0D5DD] px-3 py-1.5 md:px-1 md:py-1 before:content-[attr(data-label)] before:font-bold before:text-[10px] before:uppercase before:text-[#667085] before:shrink-0 md:before:content-none"
+                                >
                                   <input
                                     type="number"
                                     placeholder="—"
                                     value={a.lead_time_days ?? ""}
                                     onChange={(e) => updateAllocation(i, "lead_time_days", e.target.value === "" ? null : e.target.value)}
-                                    className={`${inputCls} h-7 text-right`}
+                                    className={`${inputCls} h-7 text-right w-24 md:w-full`}
                                     data-testid={`quota-lead-time-input-${i}`}
                                   />
                                 </td>
-                                <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums text-[#475467]">
+                                <td
+                                  data-label="Price"
+                                  className="flex md:table-cell justify-between items-center gap-3 border-b md:border border-[#D0D5DD] px-3 py-2 md:px-2 md:py-1 md:text-right tabular-nums text-[#475467] before:content-[attr(data-label)] before:font-bold before:text-[10px] before:uppercase before:text-[#667085] before:shrink-0 md:before:content-none"
+                                >
                                   {a.price != null ? `${a.currency || ""} ${a.price}` : "—"}
                                 </td>
-                                <td className="border border-[#D0D5DD] px-2 py-1 text-xs text-[#667085]">{a.rationale || "—"}</td>
-                                <td className="border border-[#D0D5DD] px-1 py-1 text-center">
+                                <td
+                                  data-label="Rationale"
+                                  className="flex md:table-cell justify-between items-center gap-3 border-b md:border border-[#D0D5DD] px-3 py-2 md:px-2 md:py-1 text-xs text-[#667085] before:content-[attr(data-label)] before:font-bold before:text-[10px] before:uppercase before:text-[#667085] before:shrink-0 md:before:content-none"
+                                >
+                                  <span className="text-right md:text-left">{a.rationale || "—"}</span>
+                                </td>
+                                <td className="flex md:table-cell justify-end border-0 md:border border-[#D0D5DD] px-3 py-2 md:px-1 md:py-1 text-center">
                                   <button
                                     type="button"
                                     onClick={() => removeAllocationRow(i)}
