@@ -1,0 +1,29 @@
+{
+  "summary": "Tested the SAP BOM timeout/retry fix in sap_soap_client.py (connect=8s/read=15s split timeout, 2-attempt flat-1.5s-backoff retry). Verified via 8+ live curl trials and Playwright UI runs across all 6 requested BOM IDs (100010102-A, P26680, P26672, P26584, P26736, 100002693-C1) plus repeats of the previously-slow 100010102-A. All searches returned HTTP 200 with valid JSON in 5-44s, well under the 60s Cloudflare gateway limit - no HTML/502 error pages observed once testing was done cleanly. Connection-status indicator correctly shows 'SAP PRD Connected'. Regression-checked Load Standard Costs, AI Categorize, and Export buttons on BOM Explorer, plus Production Planning and Procurement Planning pages - all load/function without errors.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_bom_timeout_fix.py"],
+  "action_items": [
+    "No code action needed for the timeout fix itself - confirmed working as intended within scope of the two approved changes.",
+    "IMPORTANT ENVIRONMENT NOTE (confirmed, matches agent-to-agent warning): creating/editing ANY file under /app/backend/ (including test files in /app/backend/tests/) while a long-running BOM search is in-flight triggers uvicorn's --reload watcher, which restarts the worker process and kills the in-flight request mid-response. This produced several false-positive '502/read-timeout' failures during my first test pass (backend logs showed the requests actually completing with 200 OK after the client had already been cut off by the reload-triggered connection drop). After restarting backend cleanly and avoiding any backend file edits during test execution, all 6+ BOM searches passed consistently. Future agents should avoid touching /app/backend/* files while BOM search tests are running, or expect false failures unrelated to the SAP fix itself."
+  ],
+  "critical_code_review_comments": [
+    "sap_soap_client.py changes match exactly what was described: _query() timeout=(8,15) tuple, _safe_fetch_by_output_product() attempts=2 with flat time.sleep(1.5). Comments in code are clear and accurate.",
+    "The 40s deadline in explode_bom() still only checks between BFS batches, not mid-batch (the known/accepted limitation, explicitly not fixed per user's 'not sure' on the 3rd change) - worst case for a batch of 8 concurrent lookups (ThreadPoolExecutor max_workers=8) where multiple items simultaneously hit the 8s connect-timeout + 1.5s retry could still approach ~17.5s per batch; with the observed real max of 39-44s for the deepest tested tree (100010102-A, max_level up to 6), there is still some headroom before 60s but it is not a hard guarantee under a worse flakiness day.",
+    "No functional bugs found in the 2 approved changes."
+  ],
+  "updated_files": ["/app/backend/tests/test_bom_timeout_fix.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None - used existing SAP tenant data.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The BOM timeout fix (connect/read split timeout + reduced retry) is verified working via both curl (8 trials, 5-44s, all 200) and Playwright UI (P26584, P26736 rendered trees correctly, connection status green). CAUTION: do not edit files in /app/backend/ while a BOM search request is in-flight during testing - it triggers uvicorn reload and kills the request mid-flight, producing false 502/timeout failures that look like the original bug but are purely a testing-environment artifact (confirmed by backend access logs showing the same request completing with 200 OK after the reload-cut connection). Always restart backend cleanly (sudo supervisorctl restart backend) before a timing-sensitive BOM test run if any backend files were touched beforehand.",
+  "rca_of_the_issue": "Original bug: intermittent SAP connect-timeouts (~every few minutes) combined with a 3-retry escalating backoff (1.5s/3.0s) meant one stuck sub-component could cost up to ~49.5s, and since explode_bom()'s 40s deadline only checks between BFS batches, this could push total request time past Cloudflare's ~60s gateway timeout. Fix applied: split blended 15s timeout into connect=8s/read=15s (connect-stall is the real failure mode) and reduced retries from 3 to 2 attempts with flat 1.5s backoff, cutting worst-case single-item cost to ~17.5s. Verified this holds in practice - deepest/slowest tested BOM (100010102-A, up to 37 components, level 6) consistently completed in 39-44s, comfortably under 60s across 3 separate trials."
+}

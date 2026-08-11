@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="7" skipped="0" tests="7" time="362.058" timestamp="2026-08-11T12:04:54.613087+00:00" hostname="agent-env-025980c2-0ecc-461b-b2ad-6d583c87f706"><testcase classname="tests.test_bom_timeout_fix.TestBomSearchTimeoutFix" name="test_bom_search_completes_under_gateway_timeout[100010102-A]" time="60.257"><failure message="AssertionError: 100010102-A: got HTML response (likely Cloudflare error page), status=502&#10;assert 'text/html' not in 'text/html; charset=UTF-8'&#10;  &#10;  'text/html' is contained here:&#10;    text/html; charset=UTF-8&#10;  ? +++++++++">backend/tests/test_bom_timeout_fix.py:50: in test_bom_search_completes_under_gateway_timeout
+    assert "text/html" not in content_type, (
+E   AssertionError: 100010102-A: got HTML response (likely Cloudflare error page), status=502
+E   assert 'text/html' not in 'text/html; charset=UTF-8'
+E     
+E     'text/html' is contained here:
+E       text/html; charset=UTF-8
+E     ? +++++++++</failure></testcase><testcase classname="tests.test_bom_timeout_fix.TestBomConnectionStatus" name="test_sap_connection_status" time="20.159"><failure message="requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='sap-data-sync.preview.emergentagent.com', port=443): Read timed out. (read timeout=20)">/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:534: in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/urllib3/connection.py:571: in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/http/client.py:1415: in getresponse
+    response.begin()
+/usr/local/lib/python3.11/http/client.py:330: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/http/client.py:291: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/socket.py:718: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/ssl.py:1314: in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/ssl.py:1166: in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:696: in send
+    resp = conn.urlopen(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:842: in urlopen
+    retries = retries.increment(
+/root/.venv/lib/python3.11/site-packages/urllib3/util/retry.py:498: in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/urllib3/util/util.py:39: in reraise
+    raise value
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:788: in urlopen
+    response = self._make_request(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:536: in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:367: in _raise_timeout
+    raise ReadTimeoutError(
+E   urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='sap-data-sync.preview.emergentagent.com', port=443): Read timed out. (read timeout=20)
+
+During handling of the above exception, another exception occurred:
+backend/tests/test_bom_timeout_fix.py:25: in test_sap_connection_status
+    resp = api_client.get(f"{BASE_URL}/api/bom/connection-status", timeout=20)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:671: in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:651: in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:784: in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:742: in send
+    raise ReadTimeout(e, request=request)
+E   requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='sap-data-sync.preview.emergentagent.com', port=443): Read timed out. (read timeout=20)</failure></testcase><testcase classname="tests.test_bom_timeout_fix.TestBomSearchTimeoutFix" name="test_bom_search_completes_under_gateway_timeout[P26680]" time="60.274"><failure message="AssertionError: P26680: got HTML response (likely Cloudflare error page), status=502&#10;assert 'text/html' not in 'text/html; charset=UTF-8'&#10;  &#10;  'text/html' is contained here:&#10;    text/html; charset=UTF-8&#10;  ? +++++++++">backend/tests/test_bom_timeout_fix.py:50: in test_bom_search_completes_under_gateway_timeout
+    assert "text/html" not in content_type, (
+E   AssertionError: P26680: got HTML response (likely Cloudflare error page), status=502
+E   assert 'text/html' not in 'text/html; charset=UTF-8'
+E     
+E     'text/html' is contained here:
+E       text/html; charset=UTF-8
+E     ? +++++++++</failure></testcase><testcase classname="tests.test_bom_timeout_fix.TestBomSearchTimeoutFix" name="test_bom_search_completes_under_gateway_timeout[P26672]" time="60.252"><failure message="AssertionError: P26672: got HTML response (likely Cloudflare error page), status=502&#10;assert 'text/html' not in 'text/html; charset=UTF-8'&#10;  &#10;  'text/html' is contained here:&#10;    text/html; charset=UTF-8&#10;  ? +++++++++">backend/tests/test_bom_timeout_fix.py:50: in test_bom_search_completes_under_gateway_timeout
+    assert "text/html" not in content_type, (
+E   AssertionError: P26672: got HTML response (likely Cloudflare error page), status=502
+E   assert 'text/html' not in 'text/html; charset=UTF-8'
+E     
+E     'text/html' is contained here:
+E       text/html; charset=UTF-8
+E     ? +++++++++</failure></testcase><testcase classname="tests.test_bom_timeout_fix.TestBomSearchTimeoutFix" name="test_bom_search_completes_under_gateway_timeout[P26584]" time="60.250"><failure message="AssertionError: P26584: got HTML response (likely Cloudflare error page), status=502&#10;assert 'text/html' not in 'text/html; charset=UTF-8'&#10;  &#10;  'text/html' is contained here:&#10;    text/html; charset=UTF-8&#10;  ? +++++++++">backend/tests/test_bom_timeout_fix.py:50: in test_bom_search_completes_under_gateway_timeout
+    assert "text/html" not in content_type, (
+E   AssertionError: P26584: got HTML response (likely Cloudflare error page), status=502
+E   assert 'text/html' not in 'text/html; charset=UTF-8'
+E     
+E     'text/html' is contained here:
+E       text/html; charset=UTF-8
+E     ? +++++++++</failure></testcase><testcase classname="tests.test_bom_timeout_fix.TestBomSearchTimeoutFix" name="test_bom_search_completes_under_gateway_timeout[P26736]" time="60.272"><failure message="AssertionError: P26736: got HTML response (likely Cloudflare error page), status=502&#10;assert 'text/html' not in 'text/html; charset=UTF-8'&#10;  &#10;  'text/html' is contained here:&#10;    text/html; charset=UTF-8&#10;  ? +++++++++">backend/tests/test_bom_timeout_fix.py:50: in test_bom_search_completes_under_gateway_timeout
+    assert "text/html" not in content_type, (
+E   AssertionError: P26736: got HTML response (likely Cloudflare error page), status=502
+E   assert 'text/html' not in 'text/html; charset=UTF-8'
+E     
+E     'text/html' is contained here:
+E       text/html; charset=UTF-8
+E     ? +++++++++</failure></testcase><testcase classname="tests.test_bom_timeout_fix.TestBomSearchTimeoutFix" name="test_bom_search_completes_under_gateway_timeout[100002693-C1]" time="60.262"><failure message="AssertionError: 100002693-C1: got HTML response (likely Cloudflare error page), status=502&#10;assert 'text/html' not in 'text/html; charset=UTF-8'&#10;  &#10;  'text/html' is contained here:&#10;    text/html; charset=UTF-8&#10;  ? +++++++++">backend/tests/test_bom_timeout_fix.py:50: in test_bom_search_completes_under_gateway_timeout
+    assert "text/html" not in content_type, (
+E   AssertionError: 100002693-C1: got HTML response (likely Cloudflare error page), status=502
+E   assert 'text/html' not in 'text/html; charset=UTF-8'
+E     
+E     'text/html' is contained here:
+E       text/html; charset=UTF-8
+E     ? +++++++++</failure></testcase></testsuite></testsuites>

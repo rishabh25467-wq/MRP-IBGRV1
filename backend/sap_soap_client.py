@@ -43,7 +43,16 @@ class SAPSoapBOMClient:
         headers = {"Content-Type": "text/xml; charset=utf-8", "SOAPAction": SOAP_ACTION}
         try:
             with sap_semaphore:
-                response = requests.post(self.endpoint, data=body.encode("utf-8"), headers=headers, auth=self.auth, timeout=30)
+                # Separate connect/read timeouts (8s/15s), not one shared 15s:
+                # live traffic showed the actual failure mode is the TCP
+                # connect stalling (intermittent, ~every few minutes,
+                # ConnectTimeoutError), not a slow response body - a single
+                # blended timeout wastes up to 15s just discovering a dead
+                # connect attempt. Failing the connect stage fast (8s) frees
+                # that budget for the retry in _safe_fetch_by_output_product
+                # instead, without shrinking the 15s a genuinely slow-but-
+                # working SAP response is still allowed to take.
+                response = requests.post(self.endpoint, data=body.encode("utf-8"), headers=headers, auth=self.auth, timeout=(8, 15))
         except requests.exceptions.RequestException as e:
             raise SAPSoapError(str(e))
 
@@ -281,11 +290,22 @@ class SAPSoapBOMClient:
         total_components = 0
         max_level_seen = 0
         lookups_done = 0
+        # Hard wall-clock cap on the whole sub-BOM exploration phase. During
+        # a severe/sustained SAP outage, per-call retries (_safe_fetch_by_
+        # output_product, 3x15s each) can still add up across MANY distinct
+        # sub-components and multiple tree levels - a single explode_bom()
+        # call was observed taking 90s+ this way, well past the platform's
+        # own gateway timeout (~60s), producing a raw Cloudflare error
+        # instead of our own response. Once this deadline passes, we stop
+        # fetching further sub-BOMs and return the tree AS-IS - any
+        # not-yet-reached components simply show as leaf nodes (degraded
+        # but instant, instead of a total failure).
+        deadline = time.time() + 40
         # each frontier entry: (bom, level, ancestors, children_list_to_append_into, parent_cum_qty)
         root_children = []
         frontier = [(root, 1, frozenset({bom_id, root["bom_id"]}), root_children, 1.0)]
 
-        while frontier and lookups_done < MAX_LOOKUPS:
+        while frontier and lookups_done < MAX_LOOKUPS and time.time() < deadline:
             candidate_ids = set()
             for bom, level, ancestors, _, _ in frontier:
                 if level >= MAX_DEPTH:
@@ -347,11 +367,18 @@ class SAPSoapBOMClient:
         }
 
     def _safe_fetch_by_output_product(self, product_id: str):
-        for attempt in range(3):
+        # 2 attempts (not 3), flat 1.5s backoff (not 1.5s/3.0s escalating):
+        # with the connect timeout now failing fast at 8s (see _query), a
+        # single stuck item's worst case drops from ~49.5s (3 attempts x
+        # 15s + 1.5s + 3.0s backoff) to ~17.5s (2 attempts x 8s + 1.5s
+        # backoff) - keeps one flaky sub-component from eating most of
+        # explode_bom's overall deadline budget by itself.
+        attempts = 2
+        for attempt in range(attempts):
             try:
                 return self._fetch_bom_by_output_product(product_id)
             except SAPSoapError as e:
-                logger.warning(f"Sub-BOM lookup failed for {product_id} (attempt {attempt + 1}/3): {e}")
-                if attempt < 2:
-                    time.sleep(1.5 * (attempt + 1))
+                logger.warning(f"Sub-BOM lookup failed for {product_id} (attempt {attempt + 1}/{attempts}): {e}")
+                if attempt < attempts - 1:
+                    time.sleep(1.5)
         return None
