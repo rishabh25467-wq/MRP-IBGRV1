@@ -188,6 +188,63 @@ def backfill_drawing_urls(db, sap_material_client, batch_size: int = DRAWING_URL
     return {"checked": checked, "found": found, "auth_error": auth_error_seen}
 
 
+REFRESH_ATTACHMENTS_MAX_WORKERS = 4
+REFRESH_ATTACHMENTS_MAX_IDS = 400
+
+
+def refresh_attachments_now(db, sap_material_client, product_ids: list) -> dict:
+    """On-demand refresh (BOM Explorer's "Refresh Attachments" button) of
+    drawing_url + comments for a SPECIFIC, caller-bounded list of
+    product_ids - the ones currently visible in whichever BOM tree the
+    user has open right now. Unlike backfill_drawing_urls (which only
+    ever touches components that have NEVER been checked, on its own
+    slow 15-min schedule), this ALWAYS re-fetches live from SAP
+    regardless of drawing_url_checked state, so someone who knows SAP
+    just got a new ECR/comment added doesn't have to wait for the
+    background job to eventually reach that part. Capped at
+    REFRESH_ATTACHMENTS_MAX_IDS per call (server.py also enforces this)
+    to keep a single user click from hammering this SAP tenant, which is
+    known to be sensitive to concurrent load. Returns {"checked",
+    "found", "failed"}."""
+    product_ids = product_ids[:REFRESH_ATTACHMENTS_MAX_IDS]
+    checked = 0
+    found = 0
+    failed = 0
+
+    def fetch_one(product_id):
+        return product_id, sap_material_client.resolve_material_info(product_id)
+
+    with ThreadPoolExecutor(max_workers=REFRESH_ATTACHMENTS_MAX_WORKERS) as executor:
+        futures = {executor.submit(fetch_one, pid): pid for pid in product_ids}
+        for future in as_completed(futures):
+            product_id = futures[future]
+            try:
+                _, info = future.result()
+            except SAPMaterialError as e:
+                logger.warning(f"On-demand attachment refresh: lookup failed for '{product_id}': {e}")
+                failed += 1
+                continue
+            except Exception as e:
+                logger.warning(f"On-demand attachment refresh: network error for '{product_id}': {e}")
+                failed += 1
+                continue
+
+            update = {
+                "drawing_url_checked": True,
+                "drawing_url": info["drawing_url"],
+                "comments": info.get("comments") or [],
+            }
+            if info["uuid"]:
+                update["product_uuid"] = info["uuid"]
+            db["component_master"].update_one({"_id": product_id}, {"$set": update}, upsert=True)
+            checked += 1
+            if info["drawing_url"] or info.get("comments"):
+                found += 1
+
+    return {"checked": checked, "found": found, "failed": failed}
+
+
+
 def _build_system_message(categories: list[str]) -> str:
     return (
         "You are an expert manufacturing engineer who classifies Bill of Materials (BOM) "

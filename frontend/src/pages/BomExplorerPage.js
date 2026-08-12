@@ -26,6 +26,7 @@ import {
   ShoppingCartSimple,
   FileImage,
   PlayCircle,
+  ArrowsClockwise,
 } from "@phosphor-icons/react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -267,6 +268,8 @@ export default function BomExplorerPage() {
   const [categoriesLoaded, setCategoriesLoaded] = useState(false);
   const [drawingUrls, setDrawingUrls] = useState({});
   const [comments, setComments] = useState({});
+  const [refreshingAttachments, setRefreshingAttachments] = useState(false);
+  const [refreshProgress, setRefreshProgress] = useState("");
   const [treeSearch, setTreeSearch] = useState("");
   const [sortConfig, setSortConfig] = useState({ field: null, direction: "asc" });
   const [runningCostEstimate, setRunningCostEstimate] = useState(null);
@@ -380,6 +383,41 @@ export default function BomExplorerPage() {
       setComments(commentsResponse.data || {});
     } catch {
       // Non-critical, read-only cache lookup - silently skip, drawings/comments just won't show this load.
+    }
+  };
+
+  const REFRESH_BATCH_SIZE = 20;
+
+  const refreshAttachments = async () => {
+    const tree = result?.tree;
+    if (!tree) return;
+    const productIds = collectAllProductIds(tree);
+    if (productIds.length === 0) return;
+    setRefreshingAttachments(true);
+    const batches = [];
+    for (let i = 0; i < productIds.length; i += REFRESH_BATCH_SIZE) {
+      batches.push(productIds.slice(i, i + REFRESH_BATCH_SIZE));
+    }
+    let totalChecked = 0;
+    let totalFound = 0;
+    try {
+      for (let i = 0; i < batches.length; i++) {
+        setRefreshProgress(batches.length > 1 ? `${i + 1}/${batches.length}` : "");
+        const response = await axios.post(`${API}/bom/refresh-attachments`, { product_ids: batches[i] });
+        totalChecked += response.data.checked;
+        totalFound += response.data.found;
+        await loadDrawingUrls(tree);
+      }
+      toast.success("Attachments refreshed", {
+        description: `Checked ${totalChecked} part(s) live from SAP, found drawings/ECNs on ${totalFound}.`,
+      });
+    } catch (err) {
+      toast.error("Failed to refresh attachments", {
+        description: err?.response?.data?.detail || "Please try again",
+      });
+    } finally {
+      setRefreshingAttachments(false);
+      setRefreshProgress("");
     }
   };
 
@@ -571,6 +609,17 @@ export default function BomExplorerPage() {
           >
             <ArrowsInSimple size={13} className="mr-1.5" />
             Collapse All
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            onClick={refreshAttachments}
+            disabled={!result || refreshingAttachments}
+            className="h-8 bg-[#B54708] hover:bg-[#93370D] text-white text-xs rounded-sm transition-colors"
+            data-testid="refresh-attachments-button"
+          >
+            <ArrowsClockwise size={13} className={`mr-1.5 ${refreshingAttachments ? "animate-spin" : ""}`} />
+            {refreshingAttachments ? `Refreshing${refreshProgress ? ` ${refreshProgress}` : "..."}` : "Refresh Drawings/ECNs"}
           </Button>
           <Button
             type="button"

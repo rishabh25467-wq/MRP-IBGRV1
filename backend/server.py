@@ -28,7 +28,7 @@ from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
 from inventory_service import get_cached_inventory, refresh_inventory_cache, deep_backfill_uuids
-from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids, categorize_full_inventory, backfill_drawing_urls
+from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids, categorize_full_inventory, backfill_drawing_urls, refresh_attachments_now, REFRESH_ATTACHMENTS_MAX_IDS
 from oms_client import OMSClient, OMSError
 from open_po_client import OpenPODemandClient, OpenPODemandError
 from forecast_demand_client import ForecastDemandClient
@@ -501,6 +501,29 @@ async def get_bom_comments(product_ids: str = Query(..., description="Comma-sepa
         {"_id": {"$in": ids}, "comments": {"$exists": True, "$ne": []}}, {"_id": 1, "comments": 1}
     )
     return {doc["_id"]: doc["comments"] for doc in docs}
+
+
+class RefreshAttachmentsRequest(BaseModel):
+    product_ids: List[str]
+
+
+@api_router.post("/bom/refresh-attachments")
+async def refresh_bom_attachments(payload: RefreshAttachmentsRequest):
+    """On-demand refresh of drawing_url + attachment comments (ECNs) for a
+    bounded set of product_ids - triggered by BOM Explorer's "Refresh
+    Attachments" toolbar button on whichever BOM is currently open.
+    Unlike the passive background backfill (which only ever checks
+    components never seen before, on its own slow schedule), this ALWAYS
+    re-fetches live from SAP for every id given - lets a user see a
+    brand-new SAP comment/ECR immediately instead of waiting for the
+    background job's turn. Capped at REFRESH_ATTACHMENTS_MAX_IDS ids per
+    call to protect this SAP tenant from a single click hammering it.
+    Returns {"checked", "found", "failed"}."""
+    ids = list(dict.fromkeys(p.strip() for p in payload.product_ids if p.strip()))[:REFRESH_ATTACHMENTS_MAX_IDS]
+    if not ids:
+        return {"checked": 0, "found": 0, "failed": 0}
+    stats = await asyncio.to_thread(refresh_attachments_now, db, sap_material_client, ids)
+    return stats
 
 
 class CostEstimateRunRequest(BaseModel):
