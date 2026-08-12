@@ -123,20 +123,23 @@ def backfill_product_uuids(db) -> int:
 def backfill_drawing_urls(db, sap_material_client, batch_size: int = DRAWING_URL_BACKFILL_BATCH_SIZE) -> dict:
     """Background maintenance job (called on a periodic scheduler loop, see
     server.py's start_drawing_url_backfill_loop) that grows drawing/
-    documentation link coverage across `component_master` over time,
-    mirroring the Inventory page's deep UUID backfill's throttled-batch
-    spirit but fully automatic (no manual button click needed).
+    documentation link AND attachment-comment coverage across
+    `component_master` over time, mirroring the Inventory page's deep UUID
+    backfill's throttled-batch spirit but fully automatic (no manual
+    button click needed).
 
     For each component not yet checked, calls the already-authorized
     QueryMaterialIn service (same one used for UUID resolution) to read its
-    Material master's AttachmentFolder.Document.ExternalLinkWebURI - this
-    tenant uses that field to point at drawings hosted on a separate
-    shared-drive portal (e.g. rampgroup.net), NOT every material has one.
-    Only marks `drawing_url_checked=True` on a genuinely successful SAP
-    response (found a URL, or confirmed there isn't one) - a transient
-    network error or a missing-authorization fault leaves the item
-    unchecked so a later cycle retries it, rather than silently giving up
-    on it forever. Returns {"checked", "found"}."""
+    Material master's AttachmentFolder.Document node(s) - this tenant uses
+    ExternalLinkWebURI to point at drawings hosted on a separate
+    shared-drive portal (e.g. rampgroup.net), and occasionally a
+    Description field carrying a human comment/ECR note (e.g. "ECR No. 83
+    raised to correct the Marked identification of Left and Right Arm.") -
+    NOT every material has either. Only marks `drawing_url_checked=True` on
+    a genuinely successful SAP response (found something, or confirmed
+    there isn't any) - a transient network error or a missing-authorization
+    fault leaves the item unchecked so a later cycle retries it, rather
+    than silently giving up on it forever. Returns {"checked", "found"}."""
     targets = [
         doc["_id"] for doc in db["component_master"].find(
             {"drawing_url_checked": {"$ne": True}}, {"_id": 1}
@@ -170,12 +173,16 @@ def backfill_drawing_urls(db, sap_material_client, batch_size: int = DRAWING_URL
                 logger.warning(f"Drawing URL backfill: network error for '{product_id}', will retry next cycle: {e}")
                 continue
 
-            update = {"drawing_url_checked": True, "drawing_url": info["drawing_url"]}
+            update = {
+                "drawing_url_checked": True,
+                "drawing_url": info["drawing_url"],
+                "comments": info.get("comments") or [],
+            }
             if info["uuid"]:
                 update["product_uuid"] = info["uuid"]
             db["component_master"].update_one({"_id": product_id}, {"$set": update}, upsert=True)
             checked += 1
-            if info["drawing_url"]:
+            if info["drawing_url"] or info.get("comments"):
                 found += 1
 
     return {"checked": checked, "found": found, "auth_error": auth_error_seen}

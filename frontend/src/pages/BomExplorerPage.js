@@ -26,6 +26,7 @@ import {
   ShoppingCartSimple,
   FileImage,
   PlayCircle,
+  ChatCircleText,
 } from "@phosphor-icons/react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -33,6 +34,7 @@ import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Toaster, toast } from "@/components/ui/sonner";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { NavTabs } from "@/components/NavTabs";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -265,6 +267,7 @@ export default function BomExplorerPage() {
   const [loadingCategories, setLoadingCategories] = useState(false);
   const [categoriesLoaded, setCategoriesLoaded] = useState(false);
   const [drawingUrls, setDrawingUrls] = useState({});
+  const [comments, setComments] = useState({});
   const [treeSearch, setTreeSearch] = useState("");
   const [sortConfig, setSortConfig] = useState({ field: null, direction: "asc" });
   const [runningCostEstimate, setRunningCostEstimate] = useState(null);
@@ -370,10 +373,14 @@ export default function BomExplorerPage() {
     const productIds = collectAllProductIds(tree);
     if (productIds.length === 0) return;
     try {
-      const response = await axios.get(`${API}/bom/drawing-urls`, { params: { product_ids: productIds.join(",") } });
-      setDrawingUrls(response.data || {});
+      const [drawingResponse, commentsResponse] = await Promise.all([
+        axios.get(`${API}/bom/drawing-urls`, { params: { product_ids: productIds.join(",") } }),
+        axios.get(`${API}/bom/comments`, { params: { product_ids: productIds.join(",") } }),
+      ]);
+      setDrawingUrls(drawingResponse.data || {});
+      setComments(commentsResponse.data || {});
     } catch {
-      // Non-critical, read-only cache lookup - silently skip, drawings just won't show this load.
+      // Non-critical, read-only cache lookup - silently skip, drawings/comments just won't show this load.
     }
   };
 
@@ -729,6 +736,41 @@ export default function BomExplorerPage() {
                           >
                             <FileImage size={13} weight="fill" />
                           </a>
+                        )}
+                        {comments[node.product_id]?.length > 0 && (
+                          <Popover>
+                            <PopoverTrigger asChild>
+                              <button
+                                type="button"
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-[#B54708] hover:text-[#93370D] shrink-0"
+                                title="View SAP attachment comment(s)"
+                                data-testid={`bom-comment-link-${path}`}
+                              >
+                                <ChatCircleText size={13} weight="fill" />
+                              </button>
+                            </PopoverTrigger>
+                            <PopoverContent
+                              className="w-80 max-h-72 overflow-y-auto p-3"
+                              onClick={(e) => e.stopPropagation()}
+                              data-testid={`bom-comment-popover-${path}`}
+                            >
+                              <div className="text-xs font-bold text-[#344054] uppercase tracking-wide mb-2">
+                                SAP Attachment Comments - {node.product_id}
+                              </div>
+                              <div className="space-y-3">
+                                {[...comments[node.product_id]].reverse().map((c, ci) => (
+                                  <div key={ci} className="border-l-2 border-[#B54708]/30 pl-2">
+                                    <div className="flex items-center gap-2 text-[11px] text-[#667085] mb-0.5">
+                                      <span className="font-semibold text-[#344054]">{c.title || "Document"}</span>
+                                      {c.type_label && <Badge variant="outline" className="text-[10px] px-1.5 py-0">{c.type_label}</Badge>}
+                                    </div>
+                                    <p className="text-[13px] text-[#101828] whitespace-pre-wrap">{c.comment}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            </PopoverContent>
+                          </Popover>
                         )}
                       </span>
                     </td>

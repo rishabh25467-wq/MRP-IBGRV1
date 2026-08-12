@@ -483,6 +483,26 @@ async def get_drawing_urls(product_ids: str = Query(..., description="Comma-sepa
     return {doc["_id"]: doc["drawing_url"] for doc in docs}
 
 
+@api_router.get("/bom/comments")
+async def get_bom_comments(product_ids: str = Query(..., description="Comma-separated product IDs")):
+    """Read-only lookup of SAP Material Attachment comments (e.g. ECR
+    notes) for BOM Explorer - ALWAYS served from the `component_master`
+    cache (never a live SAP call here), populated by the same background
+    drawing-URL backfill scheduler that fetches drawing_url (both come
+    from the same AttachmentFolder.Document SAP node, see
+    bom_categorizer.backfill_drawing_urls). Returns only the product_ids
+    that actually have at least one non-empty comment on file - anything
+    absent simply has none (or hasn't been checked by the background job
+    yet). Each value is a list of {"title", "type_label", "comment"}."""
+    ids = [p.strip() for p in product_ids.split(",") if p.strip()]
+    if not ids:
+        return {}
+    docs = db["component_master"].find(
+        {"_id": {"$in": ids}, "comments": {"$exists": True, "$ne": []}}, {"_id": 1, "comments": 1}
+    )
+    return {doc["_id"]: doc["comments"] for doc in docs}
+
+
 class CostEstimateRunRequest(BaseModel):
     product_id: str
     product_uuid: Optional[str] = None

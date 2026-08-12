@@ -639,3 +639,14 @@ User's explicit request: "Make all pages mobile and tablet friendly and adaptive
 - P2: Incorporate Quality Failures and OTIF metrics into the AI Quota Suggestion prompt once GSA data is unblocked.
 - P3: SAP Cost Retry Alert banner when the Standard Costs feed fails.
 - Refactoring (not urgent): `/app/backend/server.py` is 2500+ lines - consider splitting into `/app/backend/routes/`, `/app/backend/models/`.
+
+
+## Feature: SAP Attachment "Comment" in BOM Explorer - COMPLETE (Feb 2026)
+User request: surface SAP Business ByDesign's Material Attachment Folder "Comment" field (e.g. ECR notes like "ECR No. 83 raised to correct the Marked identification of Left and Right Arm.") inside BOM Explorer. User's choices: small icon per row (not a table column), hover/click popover listing ALL comments newest-first, populated via the SAME background-cached mechanism as the existing drawing-link feature (not live-per-load).
+- Confirmed live against real SAP data (product `5989828-12`) that the already-authorized `QueryMaterialIn` SOAP service (used for drawing_url/UUID resolution) returns the Material's `AttachmentFolder.Document.Description` field for free in its default response - **no new SAP authorization was needed**.
+- `sap_material_client.py`'s `resolve_material_info()` now parses ALL `<Document>` blocks (not just the first) and returns a new `comments` list (`{title, type_code, type_label, comment}`) for every Document with a non-empty Description, alongside the existing `uuid`/`drawing_url`.
+- `bom_categorizer.py`'s existing `backfill_drawing_urls()` background job (runs every 15 min, ~100 items/cycle) now ALSO persists `comments` into `component_master` in the same DB write - zero extra SAP calls. Reset `drawing_url_checked=False` on all ~3293 pre-existing cached components (one-time migration) so the background loop re-visits the whole catalog over the next several hours to backfill real comment data.
+- New endpoint `GET /api/bom/comments?product_ids=...` (same read-only cache-only pattern as the pre-existing `/api/bom/drawing-urls`).
+- `BomExplorerPage.js`: new amber `ChatCircleText` icon next to a component's Product ID (only shown when it has >=1 cached comment) opens a Shadcn `Popover` listing all comments newest-first with Title/Type badge/Comment text.
+- Tested via `testing_agent_v4` (iteration_72): 100% pass, both backend (endpoint payloads, regression on drawing-urls) and frontend (icon/popover, event-propagation, mobile viewport, Escape/outside-click close). New regression test file: `/app/backend/tests/test_bom_comments.py`.
+- Real comment coverage will grow gradually in the background over the next several hours as the throttled backfill re-checks the whole ~3300-component catalog - this is by design (matches the existing drawing-link pattern), not a bug.

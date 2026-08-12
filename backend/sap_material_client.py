@@ -39,6 +39,20 @@ def _first_tag(xml: str, tag: str):
     return re.sub(r"<[^>]+>", "", m.group(1)).strip() if m else None
 
 
+_DOCUMENT_RE = re.compile(r"<(?:\w+:)?Document(?:\s[^>]*)?>(.*?)</(?:\w+:)?Document>", re.S)
+
+# SAP ByDesign's standard Attachment Type codeset - only the ones actually
+# seen on this tenant so far are listed; anything else falls back to a
+# generic "Type {code}" label rather than showing a raw unlabeled number.
+ATTACHMENT_TYPE_LABELS = {
+    "10001": "Standard Attachment",
+    "10011": "Product Image",
+    "10015": "Technical Drawing",
+    "10018": "Product Specification",
+    "10043": "Details for Supplier",
+}
+
+
 class SAPMaterialClient:
     def __init__(self, endpoint: str, username: str, password: str):
         self.endpoint = endpoint
@@ -65,18 +79,24 @@ class SAPMaterialClient:
  </soapenv:Body></soapenv:Envelope>"""
 
     def resolve_material_info(self, internal_id: str):
-        """Returns {"uuid": str|None, "drawing_url": str|None} for a
-        Material's InternalID (business ID, e.g. 'SPC5WM'). The drawing_url
-        comes from the Material master's own AttachmentFolder.Document -
-        SAP ByDesign lets a Document entry be either an uploaded file OR a
-        plain external web link (ExternalLinkWebURI); this tenant uses the
-        latter to point at drawings/documentation hosted on a separate
-        shared-drive portal (e.g. 'https://rampgroup.net/Documents.aspx?
-        mid=SPC5WM') - confirmed live, NOT every material has one. Returns
-        {"uuid": None, "drawing_url": None} if SAP has no material with
-        that exact InternalID. Raises SAPMaterialAuthError if the technical
-        user isn't authorized for this service, or SAPMaterialError for any
-        other SOAP fault/HTTP error."""
+        """Returns {"uuid": str|None, "drawing_url": str|None, "comments":
+        list[dict]} for a Material's InternalID (business ID, e.g.
+        'SPC5WM'). Both drawing_url and comments come from the same
+        Material master AttachmentFolder.Document node(s) - SAP ByDesign
+        lets a Document entry carry an external web link
+        (ExternalLinkWebURI, this tenant uses it to point at drawings/
+        documentation hosted on a separate shared-drive portal) AND a
+        free-text Description - this is exactly the "Comment" field shown
+        against an attachment in the SAP ByDesign UI (e.g. an ECR note like
+        "ECR No. 83 raised to correct the Marked identification of Left
+        and Right Arm."), confirmed live on 11 Aug 2026. Not every
+        Document has a Description, and a Material can have more than one
+        Document - `comments` only includes the ones that actually have a
+        non-empty Description, each as {"title", "type_code",
+        "type_label", "comment"}. Returns all-None/empty if SAP has no
+        material with that exact InternalID. Raises SAPMaterialAuthError
+        if the technical user isn't authorized for this service, or
+        SAPMaterialError for any other SOAP fault/HTTP error."""
         with sap_semaphore:
             resp = requests.post(
                 self.endpoint,
@@ -94,14 +114,29 @@ class SAPMaterialClient:
 
         material_match = re.search(r"<(?:\w+:)?Material(?:\s[^>]*)?>(.*?)</(?:\w+:)?Material>", xml, re.S)
         if not material_match:
-            return {"uuid": None, "drawing_url": None}
+            return {"uuid": None, "drawing_url": None, "comments": []}
         block = material_match.group(1)
         returned_id = _first_tag(block, "InternalID")
         if returned_id != internal_id:
-            return {"uuid": None, "drawing_url": None}
+            return {"uuid": None, "drawing_url": None, "comments": []}
         material_uuid = _first_tag(block, "UUID")
-        drawing_url = _first_tag(block, "ExternalLinkWebURI")
-        return {"uuid": material_uuid, "drawing_url": drawing_url}
+
+        drawing_url = None
+        comments = []
+        for doc_match in _DOCUMENT_RE.finditer(block):
+            doc_block = doc_match.group(1)
+            if drawing_url is None:
+                drawing_url = _first_tag(doc_block, "ExternalLinkWebURI")
+            comment_text = _first_tag(doc_block, "Description")
+            if comment_text:
+                type_code = _first_tag(doc_block, "TypeCode")
+                comments.append({
+                    "title": _first_tag(doc_block, "AlternativeName") or _first_tag(doc_block, "Name"),
+                    "type_code": type_code,
+                    "type_label": ATTACHMENT_TYPE_LABELS.get(type_code, f"Type {type_code}" if type_code else None),
+                    "comment": comment_text,
+                })
+        return {"uuid": material_uuid, "drawing_url": drawing_url, "comments": comments}
 
     def resolve_uuid(self, internal_id: str):
         """Returns just the material's UUID (str), or None - thin wrapper

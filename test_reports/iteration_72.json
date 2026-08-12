@@ -1,0 +1,34 @@
+{
+  "summary": "Tested new BOM Attachment Comments feature (icon + popover) - first pass. All backend endpoints, regression checks, UI popover behavior, and mobile viewport verified working correctly. 100% pass rate, no bugs found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_bom_comments.py",
+    "/app/test_reports/pytest/pytest_bom_comments.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Code is clean and well-documented (good docstrings explaining SAP AttachmentFolder/Document semantics).",
+    "GET /api/bom/comments correctly excludes empty comment lists and returns {} for unknown IDs - matches drawing-urls pattern exactly.",
+    "resolve_material_info() correctly parses ALL <Document> blocks (not just first) while still only taking the FIRST ExternalLinkWebURI for drawing_url (regression-safe).",
+    "backfill_drawing_urls() persists comments in the same DB write as drawing_url - zero extra SAP calls, as designed.",
+    "Frontend correctly stops event propagation on both drawing-link and comment-link clicks (verified: clicking comment icon did not toggle row expand/collapse).",
+    "Popover close behavior (Escape key, outside click) works via Shadcn Popover's built-in Radix behavior - no custom bugs.",
+    "Newest-first ordering via [...array].reverse() is correct given comments are appended to the end of the array over time."
+  ],
+  "updated_files": ["/app/backend/tests/test_bom_comments.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Created temporary super_admin session (auth_users + auth_sessions docs) for testing per test_credentials.md convention. Both deleted after testing - verified 0 leftover docs.",
+  "seed_data_creation": "Temporarily set 2 fake comments on component_master doc '_id': 'BOX1942WM' for UI popover testing, per instructions in review request. Reverted via $unset afterward - verified BOX1942WM doc now has no 'comments' field.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "This is a small additive feature, fully verified in one pass: (1) Backend GET /api/bom/comments returns exact expected payload for real known ID '5989828-12' and {} for nonexistent ID. (2) GET /api/bom/drawing-urls regression-verified unchanged. (3) UI: pulled live BOM for '100010102-A' (took ~16-18s), confirmed drawing-link icon (pink) still works on multiple rows (BOX1942WM, TEMP1942WM, ETL1942WM etc - regression pass), confirmed no comment icons appear organically (expected, since no real cached comments exist on this BOM's components yet). Injected fake comments on BOX1942WM, confirmed orange chat-bubble icon (bom-comment-link-*) appears next to drawing icon, popover (bom-comment-popover-*) opens with correct title 'SAP Attachment Comments - BOX1942WM', both comments shown with Title/Type badge/Comment text in correct newest-first (last-inserted-first) order, Escape and outside-click both close it, and clicking the icon did NOT trigger row expand/collapse (row count stayed same, no toggle happened). Verified at mobile viewport (390px) too - popover bounding box (x=46, width=320) fits fully within viewport, not clipped, icon remained tappable. All temporary DB changes (fake comments + test auth session/user) were cleanly reverted/deleted - verified via direct Mongo query showing 0 leftover docs. Created /app/backend/tests/test_bom_comments.py as a reusable regression test file (4 tests, all passing) covering the new endpoint + drawing-urls regression + auth enforcement.",
+  "rca_of_the_issue": "N/A - no bugs found in this pass."
+}
