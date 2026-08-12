@@ -26,7 +26,6 @@ import {
   ShoppingCartSimple,
   FileImage,
   PlayCircle,
-  ChatCircleText,
 } from "@phosphor-icons/react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -743,11 +742,11 @@ export default function BomExplorerPage() {
                               <button
                                 type="button"
                                 onClick={(e) => e.stopPropagation()}
-                                className="text-[#B54708] hover:text-[#93370D] shrink-0"
-                                title="View SAP attachment comment(s)"
+                                className="shrink-0 px-1 py-0.5 rounded border border-[#B54708] text-[9px] font-bold uppercase tracking-wide text-[#B54708] bg-[#FFFAEB] hover:bg-[#FEF0C7] leading-none"
+                                title="View Engineering Change Notice(s)"
                                 data-testid={`bom-comment-link-${path}`}
                               >
-                                <ChatCircleText size={13} weight="fill" />
+                                ECN
                               </button>
                             </PopoverTrigger>
                             <PopoverContent
@@ -756,7 +755,7 @@ export default function BomExplorerPage() {
                               data-testid={`bom-comment-popover-${path}`}
                             >
                               <div className="text-xs font-bold text-[#344054] uppercase tracking-wide mb-2">
-                                SAP Attachment Comments - {node.product_id}
+                                Engineering Change Notice(s) - {node.product_id}
                               </div>
                               <div className="space-y-3">
                                 {[...comments[node.product_id]].reverse().map((c, ci) => (
