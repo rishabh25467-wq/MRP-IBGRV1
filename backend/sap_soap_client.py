@@ -452,10 +452,29 @@ class SAPSoapBOMClient:
         # product in it to "unresolved this run" (shown as leaf nodes) -
         # never partially executed, matching the existing graceful-
         # degradation behavior for a single item's failure.
+        #
+        # On a SUCCESSFUL response, explicitly backfill None for every
+        # requested id the parsed response didn't mention - SAP's own
+        # response simply omits ids with no BOM (see
+        # _fetch_boms_by_output_products_batch's docstring) rather than
+        # marking them explicitly, so without this backfill a caller can't
+        # tell "SAP confirmed no BOM for this id" apart from "the whole
+        # batch failed and this id was never actually resolved" - both
+        # looked identical (id absent from the dict). That ambiguity was a
+        # real bug: bom_cache_service.refresh_stale_nodes() treated
+        # confirmed-no-BOM leaf/raw-material items as permanent failures,
+        # never advancing their last_checked_at, which is why plans could
+        # show "BOM data as of N days ago" even when the refresh job was
+        # running fine on schedule (found live, Aug 2026). Only a
+        # genuinely failed batch (exception on every attempt) should still
+        # return {} so the caller retries it next cycle.
         attempts = 2
         for attempt in range(attempts):
             try:
-                return self._fetch_boms_by_output_products_batch(product_ids)
+                result = self._fetch_boms_by_output_products_batch(product_ids)
+                for pid in product_ids:
+                    result.setdefault(pid, None)
+                return result
             except SAPSoapError as e:
                 logger.warning(f"Batch sub-BOM lookup failed for {len(product_ids)} product(s) (attempt {attempt + 1}/{attempts}): {e}")
                 if attempt < attempts - 1:
