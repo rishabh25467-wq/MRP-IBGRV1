@@ -118,15 +118,23 @@ class OMSClient:
 
     def get_sales_plan(self, month: str) -> list:
         """Full sales plan for a 'YYYY-MM' month - the same underlying
-        forecast get_monthly_demand() aggregates, but returned per part with
-        a per-customer breakdown instead of collapsed into a single number.
-        Also carries unit `price` (native currency, invoice-priced per the
-        OMS's `price_basis: "invoice"` confirmation) and `sale_value_inr`,
-        plus `lead_day` - the customer's requested/selling lead time in days
-        for that part, used to back-calculate when procurement needs to
-        start. All pulled from the OMS's DEFAULT "Sales" view (expected_qty/
-        expected_inr - the same fields behind OMS's own Insights > Monthly
-        Sales screen) rather than the fulfilment view.
+        signal get_monthly_demand() aggregates (fulfilment view's
+        `planned_qty` - real placed/open orders for the month, NOT the
+        separate manually-set `expected_qty` forecast-target field, which
+        is frequently 0 even when real orders/invoices exist for that
+        part - confirmed live on 12 Aug 2026 against part 100162725/
+        WALMART INC/Aug'26: expected_qty=0 while planned_qty=360 and
+        shipped_qty=1920 for the same part+customer+month), but returned
+        per part with a per-customer breakdown instead of collapsed into a
+        single number. Deliberately does NOT use `shipped_qty`/`actual_qty`
+        (invoiced/shipped) for this "how much do we need to plan/procure
+        for" view - per the user's explicit direction, actual shipments can
+        be spillover fulfillment of a PRIOR month's plan and have no
+        bearing on what THIS month's material plan should be; `planned_qty`
+        is the right forward-looking signal. Also carries unit `price`
+        (native currency) and `sale_value_inr` (from `planned_inr`), plus
+        `lead_day` - the customer's requested/selling lead time in days for
+        that part, used to back-calculate when procurement needs to start.
         Backs the Purchasing Plan page's "Sales Plan Lookup" popup. Returns
         [{part_no, description, currency, price, lead_day, total_qty,
         total_sale_value_inr, customers: [{customer_name, qty, price,
@@ -136,7 +144,7 @@ class OMSClient:
 
         def fetch(customer_name):
             try:
-                return customer_name, self.get_parts(month, customer_name, view=None)
+                return customer_name, self.get_parts(month, customer_name, view="fulfilment")
             except OMSError as e:
                 logger.warning(f"Failed to fetch OMS parts for '{customer_name}' in {month}: {e}")
                 return customer_name, []
@@ -149,8 +157,8 @@ class OMSClient:
         for customer_name, parts in results:
             for part in parts:
                 part_no = part.get("part_no")
-                qty = part.get("expected_qty") or 0
-                sale_value_inr = part.get("expected_inr") or 0
+                qty = part.get("planned_qty") or 0
+                sale_value_inr = part.get("planned_inr") or 0
                 if not part_no:
                     continue
                 entry = by_part.setdefault(part_no, {
