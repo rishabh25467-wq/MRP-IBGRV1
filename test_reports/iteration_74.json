@@ -1,0 +1,32 @@
+{
+  "summary": "Verified the stale BOM cache timestamp fix in sap_soap_client._safe_fetch_boms_batch. Unit-level, DB-level, and log-level evidence all confirm the fix is working. 6/6 unit + DB tests pass (5 unit tests on the new backfill behavior + 1 MongoDB assertion that no found:False node is >2 days stale). Live API smoke tests were flaky against the preview backend which is under heavy SAP background load (Cloudflare 502 on /api/bom-cache/stats, /api/bom-cache/refresh returned {triggered:true} correctly but took 57s wall-time), but this is orthogonal to the BOM-cache fix.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/bom-cache/stats", "issue": "Returns Cloudflare 502 / hangs >60s under moderate backend load. The endpoint sorts bom_node_cache by last_checked_at without an index (3841 docs, collection scan). Consider adding a MongoDB index on bom_node_cache.last_checked_at."},
+      {"endpoint": "POST /api/bom-cache/refresh", "issue": "Documented as fire-and-forget (returns {triggered:true}) but the request itself blocked for 57s under load before returning. The async endpoint uses asyncio.create_task(run()) and asyncio.to_thread(refresh_stale_nodes,...) so the return itself should be near-instant; the 57s is likely the auth middleware's Mongo session lookup being starved on the same event loop as heavy SAP background jobs (sap_valuation_client, bom_categorizer drawing-URL backfill were all logging connect timeouts to SAP during the test window). Not caused by this iteration's fix."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_safe_fetch_boms_batch_backfill.py",
+    "/app/test_reports/pytest/iteration_74_results.xml"
+  ],
+  "action_items": [
+    "Add MongoDB index on bom_node_cache.last_checked_at to fix /api/bom-cache/stats slowness (currently causes 502s under load).",
+    "Investigate why /api/bom-cache/refresh (which should be fire-and-forget) blocks the request loop for ~57s under SAP background-job load - possibly middleware session-lookup starvation."
+  ],
+  "critical_code_review_comments": [
+    "sap_soap_client._safe_fetch_boms_batch fix is correct: on a SUCCESSFUL parsed response it uses result.setdefault(pid, None) for every requested id (preserves real hits, backfills omitted-by-SAP ids as None) and still returns {} on total retry failure so callers can distinguish 'no BOM' from 'try again'. Consumers in bom_cache_service.refresh_stale_nodes and _fetch_live_batch correctly rely on the 'pid not in fetched' semantic.",
+    "The stale-node symptom is FULLY resolved: pre-fix background refresh reported {'checked': 1271, 'changed': 0, 'failed': 2570} (2570 no-BOM leaf items marked as failures forever), post-fix reports {'checked': 3841, 'changed': 9, 'failed': 0} - all 2570 no-BOM nodes now advance last_checked_at every cycle. Live-verified via MongoDB: oldest found:False last_checked_at = 2026-08-17 05:21:28 UTC (fresh)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_safe_fetch_boms_batch_backfill.py"
+  ],
+  "success_rate": {"backend": "100% for the fix under test (unit + DB assertions); API smoke integration 33% due to preview-backend load issues unrelated to the fix", "frontend": "N/A - backend only"},
+  "seed_data_creation": "Inserted one synthetic super_admin session (auth_users + auth_sessions with _id prefix 'TEST_') for the API-level regression tests, then deleted it in teardown - MongoDB confirmed 0 TEST_-prefixed rows remain.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Fix is verified. Pre-fix vs post-fix backend log evidence is definitive: 'BOM cache background refresh complete: {failed: 2570}' -> '{failed: 0}'. If revisiting, the two follow-up issues (missing bom_node_cache.last_checked_at index causing /bom-cache/stats 502s under load, and /bom-cache/refresh appearing to block despite being coded as fire-and-forget) are pre-existing/orthogonal and worth a separate iteration if desired.",
+  "rca_of_the_issue": "SAP BusinessByDesign's ProductionBillsOfMaterialsQueryByElements SOAP response silently omits any requested product_id that has no BOM (leaf/raw-material items). The parser (_fetch_boms_by_output_products_batch) therefore returned dicts missing those ids entirely, and _safe_fetch_boms_batch propagated that. Downstream bom_cache_service.refresh_stale_nodes treated 'pid not in fetched' as a transient failure and skipped the _upsert (which would have advanced last_checked_at), so leaf items stayed stuck at their original insertion timestamp forever, causing 'BOM data as of N days ago' badges on Purchasing Plan/MRP. Fix: on a SUCCESSFUL parsed batch, _safe_fetch_boms_batch now explicitly result.setdefault(pid, None) for every requested id, so refresh_stale_nodes sees them as 'present with value None (no BOM)' and calls _upsert (advancing last_checked_at). A batch that actually failed on every retry attempt still returns {} entirely, preserving the 'retry next cycle' semantic. Verified: refresh cycle went from 2570 failed -> 0 failed."
+}
