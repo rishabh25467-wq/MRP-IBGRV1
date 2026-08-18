@@ -19,17 +19,28 @@ Material `5989825-2.1` via `QueryMaterialIn` today returns NEITHER "Item
 Net Weight" nor "Surface Area(Sq.Inch)" at all, even though Surface Area
 has a real value (255) in the SAP UI.
 
-**To fix, for each of the 2 fields ("Item Net Weight" and "Surface
-Area(Sq.Inch)" - you do NOT need to do this for "Item Gross Weight", "Ray
-Item code", or "Ray Item Description", we don't need those):**
-1. Open the Material screen, enter **Adaptation Mode** (the pencil/edit
-   icon usually top-right).
-2. Click the field ("Item Net Weight" or "Surface Area(Sq.Inch)") to open
-   its properties, then go to **Further Usage → Services**.
-3. This lists every web service available on that screen - select **Query
-   Material In** AND **Manage Material In**, then click **Add Field** for
-   each.
-4. Repeat for the other field.
+**Important: this needs Adaptation Mode, NOT Personalization Mode.**
+Personalization (the flag/star/pin icons top-right of the Material
+screen) only changes what YOU see - it can't link a field to a web
+service. Adaptation Mode is a separate, admin-level mode:
+
+1. On the Material screen, click your **user avatar icon** (top-right,
+   the circular profile picture/icon - NOT the flag/star icons).
+2. Select **Key User Settings** → **Start Adaptation Mode**. The screen
+   title should now show "(Adaptation Mode)", not "(Personalization
+   Mode)".
+3. **Right-click** directly on the "Item Net Weight" field (or hover
+   over it, a small icon may appear) → choose **Properties**.
+4. In the Properties panel, go to the **Further Usage** tab → **Services**
+   sub-tab. This lists every web service available on this screen.
+5. Select **Query Material In** AND **Manage Material In**, then click
+   **Add Field** for each.
+6. Repeat steps 3-5 for the "Surface Area(Sq.Inch)" field.
+7. **Save and Publish** the adaptation (top toolbar) - changes don't take
+   effect until published - then exit Adaptation Mode.
+
+(You do NOT need to do this for "Item Gross Weight", "Ray Item code", or
+"Ray Item Description" - we only need the 2 fields above.)
 
 ## Step 2: Activate the "Manage Materials" write service
 Separately, writing anything back to SAP (not just these 2 fields) needs
