@@ -289,6 +289,8 @@
 - Verified live: `get_standard_costs(['03d254d2-8883-1edf-8586-887dd95dd079'])` now returns 13.45 (was 0.0). Directly patched the cached `inventory_cache` doc for immediate relief (unit_cost=13.45, total_value=5655.72); next scheduled refresh will recompute the same value organically.
 - Tested via testing_agent (iteration_78): 8/8 pytest pass (5 mocked unit tests reproducing the bug deterministically + 3 live SAP integration tests). Regression: 8 other real product_uuids sampled, sane values, no regressions. BOM Explorer/Purchasing Plan unaffected (same shared client).
 
+- Bug fix: Excel export lost "Root Product ID"/"Level"/"Parent Product ID" columns when reformatted to match the SAP-native layout (reported on both preview and production, same underlying code bug) - since the report spans thousands of different root BOMs, this context is essential. Added them back as the first 3 columns before the SAP-native-style columns. Verified by downloading and inspecting the actual .xlsx file.
+
 ## Refinement: L1/L2 Report - Weight-Only Default Filter + Excel Format Match (Session 21 cont.) - COMPLETE
 - User feedback: too many unnecessary results. Requested (via WhatsApp screenshot forwarded from a colleague): default view should show only rows where Quantity Unit = kg, excluding packaging (polybag/polythene/laminated film) even though those are also measured in kg.
 - Implemented: default view filters to `unit_of_measure === "kg"` AND description doesn't match `/POLYBAG|POLYTHENE|LAMINATED/i` (covers "HW.FILM...Hardware Laminated Roll" and "POL46LD/POLY5X7LD...Polythene" style items) - a "Weight Items Only (kg, no packaging)" / "Show All Items" toggle switches between filtered/unfiltered.

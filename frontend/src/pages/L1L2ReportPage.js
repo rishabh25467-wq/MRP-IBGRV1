@@ -117,11 +117,14 @@ export default function L1L2ReportPage() {
 
   const exportExcel = () => {
     const headerRows = [
-      [`Last Updated On: ${updatedAt ? new Date(updatedAt).toLocaleString() : ""}`, "", "", "", "", "", "Timezone:", "INDIA"],
+      [`Last Updated On: ${updatedAt ? new Date(updatedAt).toLocaleString() : ""}`, "", "", "", "", "", "", "", "Timezone:", "INDIA"],
       [],
-      ["Product ID", "Product Description", "Product Specification ID", "Quantity", "Quantity (Unit)", "Fixed Quantity", "Line Item Group ID", "Line Item ID"],
+      ["Root Product ID", "Level", "Parent Product ID", "Product ID", "Product Description", "Product Specification ID", "Quantity", "Quantity (Unit)", "Fixed Quantity", "Line Item Group ID", "Line Item ID"],
     ];
     const dataRows = filtered.map((it) => [
+      it.root_product_id,
+      it.level,
+      it.parent_product_id,
       it.product_id,
       it.description || "",
       "",
