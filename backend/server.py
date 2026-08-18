@@ -772,6 +772,7 @@ class InventoryItem(BaseModel):
     unit_cost: Optional[float] = None
     currency: Optional[str] = None
     total_value: Optional[float] = None
+    no_bom: bool = False
     locations: List[InventoryLocation]
 
 

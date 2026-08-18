@@ -152,8 +152,18 @@ class SAPValuationClient:
         now = datetime.now(timezone.utc)
         costs = {}
         for product_uuid in product_uuids:
-            best_price = None
-            best_start = None
+            # A material can have multiple valuation levels (one per plant/
+            # site), each independently "currently valid" - these are NOT
+            # revisions of the same price and must not be compared against
+            # each other by date. Empirically some plants carry a genuine
+            # $0 valuation level (e.g. never stocked/costed there) alongside
+            # other plants with the material's real standard cost - picking
+            # purely by latest start date across levels can land on that $0
+            # level and silently zero out a material that has a real price
+            # elsewhere. Prefer any currently-valid NON-ZERO price; only
+            # fall back to a zero price if that's genuinely the only option.
+            best_price, best_start = None, None
+            best_nonzero_price, best_nonzero_start = None, None
             for level_uuid in level_map.get(product_uuid, []):
                 for price_row in price_map.get(level_uuid, []):
                     start = _parse_odata_date(price_row.get("StartDate"))
@@ -162,11 +172,14 @@ class SAPValuationClient:
                     if not is_current:
                         continue
                     if best_start is None or (start or now) > best_start:
-                        best_price = price_row
-                        best_start = start or now
+                        best_price, best_start = price_row, (start or now)
+                    if float(price_row.get("Amount") or 0) != 0:
+                        if best_nonzero_start is None or (start or now) > best_nonzero_start:
+                            best_nonzero_price, best_nonzero_start = price_row, (start or now)
+            chosen = best_nonzero_price or best_price
             costs[product_uuid] = (
-                {"amount": float(best_price["Amount"]), "currency": best_price.get("currencyCode")}
-                if best_price
+                {"amount": float(chosen["Amount"]), "currency": chosen.get("currencyCode")}
+                if chosen
                 else None
             )
         return costs

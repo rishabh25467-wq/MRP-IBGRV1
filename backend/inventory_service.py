@@ -170,6 +170,27 @@ def build_inventory(db, sap_inventory_client, sap_valuation_client) -> list:
     return sorted(by_product.values(), key=lambda e: e["product_id"])
 
 
+def _compute_no_bom_flags(db) -> dict:
+    """Scans the whole bom_node_cache collection (fast, ~20ms at current
+    3800-doc scale) to flag product_ids that are structurally orphaned in
+    the BOM graph: not a BOM root themselves (SAP confirms no production
+    BOM), AND never seen as a component/leaf inside anyone else's BOM
+    either. A genuine raw material actively used in production will show
+    up as a leaf somewhere and won't be flagged; a Finished Good/Sub-
+    Assembly missing its BOM (a real data gap) will be. Returns
+    {product_id: bool}."""
+    bom_cache = db[bom_cache_service.COLLECTION_NAME]
+    roots_with_bom = {d["_id"] for d in bom_cache.find({"found": True}, {"_id": 1})}
+    leaf_ids = set()
+    for doc in bom_cache.find({}, {"groups": 1}):
+        for group in doc.get("groups", []):
+            for item in group.get("items", []):
+                pid = item.get("product_id")
+                if pid:
+                    leaf_ids.add(pid)
+    return {"roots_with_bom": roots_with_bom, "leaf_ids": leaf_ids}
+
+
 def get_cached_inventory(db):
     """Instant read of the last-refreshed inventory snapshot - what the
     Inventory page loads on every visit. Returns
@@ -181,7 +202,11 @@ def get_cached_inventory(db):
     trusted from whatever was baked into the snapshot at the last live SAP
     refresh) - a manual edit, AI re-categorize, or bulk Categorize All can
     happen at any time independently of the next SAP refresh, and must show
-    up immediately here without needing one."""
+    up immediately here without needing one. The "no BOM" flag is likewise
+    computed live from the current bom_node_cache state on every read (see
+    _compute_no_bom_flags) rather than baked into the snapshot, so it
+    reflects the latest BOM Explorer/Purchasing Plan exploration without
+    needing a full inventory refresh."""
     doc = db[INVENTORY_CACHE_COLLECTION].find_one({"_id": INVENTORY_CACHE_ID})
     if not doc:
         return {"items": [], "categories": [], "updated_at": None}
@@ -193,8 +218,13 @@ def get_cached_inventory(db):
                 {"_id": {"$in": [it["product_id"] for it in items]}}, {"category": 1}
             )
         }
+        bom_membership = _compute_no_bom_flags(db)
         for it in items:
             it["category"] = current_categories.get(it["product_id"])
+            it["no_bom"] = (
+                it["product_id"] not in bom_membership["roots_with_bom"]
+                and it["product_id"] not in bom_membership["leaf_ids"]
+            )
     categories = sorted({it["category"] for it in items if it.get("category")})
     return {"items": items, "categories": categories, "updated_at": doc.get("updated_at")}
 

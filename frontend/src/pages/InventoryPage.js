@@ -14,6 +14,7 @@ import {
   Shield,
   Sparkle,
   Tag,
+  WarningCircle,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Toaster, toast } from "@/components/ui/sonner";
@@ -68,6 +69,7 @@ export default function InventoryPage() {
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [siteFilter, setSiteFilter] = useState("all");
   const [entityFilter, setEntityFilter] = useState("all");
+  const [noBomOnly, setNoBomOnly] = useState(false);
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [page, setPage] = useState(1);
   const [backfillOpen, setBackfillOpen] = useState(false);
@@ -257,9 +259,10 @@ export default function InventoryPage() {
         categoryFilter === "all" || (categoryFilter === "uncategorized" ? !it.category : it.category === categoryFilter);
       const matchesSite = siteFilter === "all" || it.locations.some((loc) => loc.site === siteFilter);
       const matchesEntity = entityFilter === "all" || it.locations.some((loc) => loc.company_code === entityFilter);
-      return matchesSearch && matchesCategory && matchesSite && matchesEntity;
+      const matchesNoBom = !noBomOnly || it.no_bom;
+      return matchesSearch && matchesCategory && matchesSite && matchesEntity && matchesNoBom;
     });
-  }, [items, search, categoryFilter, siteFilter, entityFilter]);
+  }, [items, search, categoryFilter, siteFilter, entityFilter, noBomOnly]);
 
   const [sortConfig, setSortConfig] = useState({ field: "product_id", direction: "asc" });
   const numericSortFields = ["total_qty", "unit_cost", "total_value"];
@@ -293,7 +296,7 @@ export default function InventoryPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [search, categoryFilter, siteFilter, entityFilter]);
+  }, [search, categoryFilter, siteFilter, entityFilter, noBomOnly]);
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -469,6 +472,18 @@ export default function InventoryPage() {
                   ))}
                 </SelectContent>
               </Select>
+              <label
+                className="flex items-center gap-1.5 h-8 px-2.5 text-xs font-medium text-[#B54708] border border-[#D0D5DD] rounded-sm cursor-pointer select-none hover:bg-[#FFFAEB] shrink-0"
+                data-testid="inventory-no-bom-only-filter"
+              >
+                <input
+                  type="checkbox"
+                  checked={noBomOnly}
+                  onChange={(e) => setNoBomOnly(e.target.checked)}
+                  className="accent-[#B54708]"
+                />
+                Show only items without BOM
+              </label>
               <span className="text-xs text-[#475467] ml-auto font-sans" data-testid="inventory-item-count">
                 {filtered.length} of {items.length} items
               </span>
@@ -582,6 +597,16 @@ export default function InventoryPage() {
                                   (isExpanded ? <CaretDown size={11} weight="bold" /> : <CaretRight size={11} weight="bold" />)}
                               </span>
                               {it.product_id}
+                              {it.no_bom && (
+                                <span
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-[#FFFAEB] border border-[#FEDF89] text-[#B54708] text-[10px] font-bold uppercase tracking-wide"
+                                  data-testid={`inventory-no-bom-tag-${it.product_id}`}
+                                  title="SAP confirms no BOM exists for this item, and it is not used as a component in any other BOM"
+                                >
+                                  <WarningCircle size={11} weight="bold" />
+                                  No BOM
+                                </span>
+                              )}
                             </span>
                           </td>
                           <td

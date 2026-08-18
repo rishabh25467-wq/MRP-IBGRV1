@@ -1,0 +1,31 @@
+{
+  "summary": "Targeted validation of the SAPValuationClient.get_standard_costs() non-zero-preference fix for material 5989829-12 (Master Carton). Created /app/backend/tests/test_sap_valuation_fix.py (8 tests, 100% pass). Includes 5 monkeypatched unit tests that deterministically reproduce the bug (3 valuation levels 13.45/0/13.45 with the $0 being latest-dated) and confirm the new logic prefers latest currently-valid NON-ZERO price; plus 3 live-SAP integration tests. Live SAP call: get_standard_costs(['03d254d2-8883-1edf-8586-887dd95dd079']) -> {'amount': 13.45, 'currency': 'INR'} (previously returned 0.0). Regression: sampled 8 additional real product_uuids from component_master via live get_standard_costs - returned sane values (2.37, 5.38, 1.1, 0.0, and None for chunks that hit SAP tenant connect timeouts, which is expected per-chunk tolerant behaviour, not a regression). Inventory API (/api/inventory) HTTP 200, 3216 items, 5989829-12 present with unit_cost=13.45, total_qty=420.5, total_value=5655.72; 98.82% of items (3178/3216) have non-zero unit_cost (well above PRD's ~55% baseline). UI verified at /inventory page: row for 5989829-12 renders 'Master Carton | Packaging | 420.5 | EA | INR 13.45 | INR 5,655.72' correctly; header 'Total Inventory Value INR 5,655.72' visible. BOM Explorer regression: /api/bom/search?bom_id=8060522_1 still returns 23 components, max_level=2, HTTP 200 (no crash). Purchasing Plan is a job/generate flow so not live-triggered, but cost columns rely on the same client - since unit tests + master-carton + 8-uuid batch all pass, no regression expected. Synthetic auth user + session cleaned up.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_sap_valuation_fix.py",
+    "/app/test_reports/pytest/iteration_78_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "sap_valuation_client.py:174 - the 'best_price' fallback tracker (used only when no non-zero option exists) still runs the max-start-date walk over ALL currently-valid prices including zeros. Correct behaviour, but the two side-by-side max-tracking loops could be simplified to a single pass storing (best_nonzero, best_any) if readability is a concern.",
+    "sap_valuation_client.py:171 - is_current uses (start<=now) AND (now<=end); if StartDate is missing OData yields start=None which is treated as 'always started' - reasonable but worth a code comment since parse_odata_date returns None for both 'missing' and 'open-ended sentinel', which are semantically different for StartDate vs EndDate."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sap_valuation_fix.py"
+  ],
+  "success_rate": {"backend": "100% (8/8 pytest, including live SAP round-trip)", "frontend": "100% (Inventory page renders 5989829-12 with correct 13.45 unit cost and 5655.72 total value)"},
+  "seed_data_creation": "1 synthetic super_admin auth_user + auth_session (TEST_ prefixed) for UI verification. Cleaned up post-test (0 TEST_ rows remain).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": false,
+  "test_credentials": "Synthetic Azure AD session via mock MongoDB documents per /app/memory/test_credentials.md - no real Microsoft account used.",
+  "context_for_next_testing_agent": "Fix in sap_valuation_client.get_standard_costs (lines ~154-184) is live-verified end-to-end. Master carton 5989829-12's inventory_cache doc was directly patched (total_qty=420.5, total_value=5655.72, unit_cost=13.45) by the main agent; a live inventory refresh will also compute the same values now that the client returns 13.45. Non-zero valuation coverage in inventory_cache is 98.82% (3178/3216). Note: intermittent SAP tenant connect timeouts (30s) on some valuation chunks are pre-existing tolerant behaviour, not a defect - the per-chunk try/except swallows them so overall calls do not fail.",
+  "rca_of_the_issue": "SAP's MaterialValuationDataValuationLevelCollection returns one 'level' per plant/site for a given MaterialUUID; each level's PriceCollection can independently be 'currently valid'. Some plants carry a genuine $0 valuation while other plants hold the real standard cost. The original code picked the row with the max StartDate across ALL levels for a product - if the $0 level happened to have a later StartDate, it silently zeroed out the material. Fix: track a separate 'latest currently-valid non-zero' candidate; only fall back to the zero/best candidate if no non-zero exists. Verified via mocked unit test (test_latest_zero_is_skipped_in_favor_of_nonzero) and live call against 03d254d2-8883-1edf-8586-887dd95dd079 which now returns 13.45."
+}
