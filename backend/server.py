@@ -930,6 +930,8 @@ class L1L2ReportItem(BaseModel):
     description: Optional[str] = None
     quantity: Optional[float] = None
     unit_of_measure: Optional[str] = None
+    line_item_group_id: Optional[str] = None
+    line_item_id: Optional[str] = None
 
 
 class L1L2Report(BaseModel):

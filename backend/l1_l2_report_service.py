@@ -66,6 +66,8 @@ def build_l1_l2_report(sap_soap_client, sap_inventory_client, db) -> dict:
                     "description": item.get("description"),
                     "quantity": item.get("quantity"),
                     "unit_of_measure": _friendly_uom(item.get("unit_of_measure")),
+                    "line_item_group_id": group.get("group_id"),
+                    "line_item_id": item.get("item_id"),
                 })
                 l1_ids_needed.add(item["product_id"])
 
@@ -94,6 +96,8 @@ def build_l1_l2_report(sap_soap_client, sap_inventory_client, db) -> dict:
                     "description": item.get("description"),
                     "quantity": item.get("quantity"),
                     "unit_of_measure": _friendly_uom(item.get("unit_of_measure")),
+                    "line_item_group_id": group.get("group_id"),
+                    "line_item_id": item.get("item_id"),
                 })
 
     items = l1_rows + l2_rows

@@ -30,6 +30,9 @@ export default function L1L2ReportPage() {
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
   const [levelFilter, setLevelFilter] = useState("all");
+  const [showAllItems, setShowAllItems] = useState(false);
+
+  const PACKAGING_KEYWORDS = /POLYBAG|POLYTHENE|LAMINATED/i;
 
   const loadCached = async () => {
     setLoading(true);
@@ -103,22 +106,34 @@ export default function L1L2ReportPage() {
         it.product_id.toLowerCase().includes(q) ||
         it.root_product_id.toLowerCase().includes(q) ||
         (it.description || "").toLowerCase().includes(q);
-      return matchesLevel && matchesSearch;
+      // Default view: only weight-based (kg) input items, excluding
+      // packaging (polybag/polythene/laminated film) even though it's
+      // also measured in kg - user-confirmed rule, "Show All Items"
+      // toggle bypasses this to see the unfiltered set.
+      const matchesWeightFilter = showAllItems || (it.unit_of_measure === "kg" && !PACKAGING_KEYWORDS.test(it.description || ""));
+      return matchesLevel && matchesSearch && matchesWeightFilter;
     });
-  }, [items, search, levelFilter]);
+  }, [items, search, levelFilter, showAllItems]);
 
   const exportExcel = () => {
-    const rows = filtered.map((it) => ({
-      "Root Product ID": it.root_product_id,
-      "Level": it.level,
-      "Parent Product ID": it.parent_product_id,
-      "Product ID": it.product_id,
-      "Description": it.description || "",
-      "Quantity": it.quantity ?? "",
-      "Unit": it.unit_of_measure || "",
-    }));
+    const headerRows = [
+      [`Last Updated On: ${updatedAt ? new Date(updatedAt).toLocaleString() : ""}`, "", "", "", "", "", "Timezone:", "INDIA"],
+      [],
+      ["Product ID", "Product Description", "Product Specification ID", "Quantity", "Quantity (Unit)", "Fixed Quantity", "Line Item Group ID", "Line Item ID"],
+    ];
+    const dataRows = filtered.map((it) => [
+      it.product_id,
+      it.description || "",
+      "",
+      it.quantity ?? "",
+      it.unit_of_measure || "",
+      "No",
+      it.line_item_group_id || "",
+      it.line_item_id || "",
+    ]);
+    const sheet = XLSX.utils.aoa_to_sheet([...headerRows, ...dataRows]);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), "L1-L2 Items");
+    XLSX.utils.book_append_sheet(workbook, sheet, "L1-L2 Items");
     XLSX.writeFile(workbook, `l1_l2_item_report_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
@@ -206,6 +221,16 @@ export default function L1L2ReportPage() {
               </button>
             ))}
           </div>
+          <button
+            type="button"
+            onClick={() => setShowAllItems((v) => !v)}
+            className={`h-9 px-3 rounded-sm text-xs font-medium border transition-colors ${
+              showAllItems ? "bg-white text-[#475467] border-[#D0D5DD] hover:bg-slate-50" : "bg-[#DC6803] text-white border-[#DC6803]"
+            }`}
+            data-testid="l1l2-report-weight-filter-toggle"
+          >
+            {showAllItems ? "Show All Items" : "Weight Items Only (kg, no packaging)"}
+          </button>
           <span className="text-xs text-[#475467] ml-auto font-sans" data-testid="l1l2-report-item-count">
             {filtered.length.toLocaleString()} of {items.length.toLocaleString()} rows
           </span>
@@ -222,19 +247,21 @@ export default function L1L2ReportPage() {
                 <th className="px-3 py-2 font-medium">Description</th>
                 <th className="px-3 py-2 font-medium text-right">Quantity</th>
                 <th className="px-3 py-2 font-medium">Unit</th>
+                <th className="px-3 py-2 font-medium">Line Item Group</th>
+                <th className="px-3 py-2 font-medium">Line Item ID</th>
               </tr>
             </thead>
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={7} className="px-3 py-8 text-center text-[#667085] text-sm" data-testid="l1l2-report-loading">
+                  <td colSpan={9} className="px-3 py-8 text-center text-[#667085] text-sm" data-testid="l1l2-report-loading">
                     Loading...
                   </td>
                 </tr>
               )}
               {!loading && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-3 py-8 text-center text-[#667085] text-sm" data-testid="l1l2-report-empty">
+                  <td colSpan={9} className="px-3 py-8 text-center text-[#667085] text-sm" data-testid="l1l2-report-empty">
                     {items.length === 0
                       ? 'No report generated yet - click "Generate Fresh Report" to pull L1/L2 items live from SAP.'
                       : "No rows match your filters."}
@@ -255,6 +282,8 @@ export default function L1L2ReportPage() {
                     <td className="px-3 py-2 text-[#475467]">{it.description || "—"}</td>
                     <td className="px-3 py-2 text-right text-[#1D2939]">{it.quantity ?? "—"}</td>
                     <td className="px-3 py-2 text-[#475467]">{it.unit_of_measure || "—"}</td>
+                    <td className="px-3 py-2 text-[#475467]">{it.line_item_group_id || "—"}</td>
+                    <td className="px-3 py-2 text-[#475467]">{it.line_item_id || "—"}</td>
                   </tr>
                 ))}
             </tbody>
