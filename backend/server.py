@@ -16,7 +16,10 @@ from pymongo import MongoClient
 from starlette.middleware.cors import CORSMiddleware
 
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
-from sap_material_client import SAPMaterialClient, SAPMaterialError, SAPMaterialAuthError
+from sap_material_client import (
+    SAPMaterialClient, SAPMaterialError, SAPMaterialAuthError, SAPMaterialWriteNotConfiguredError,
+    PHYSICAL_ATTRIBUTE_CODES,
+)
 from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplierAuthError, SAPSupplierNotConfiguredError
 from sap_price_spec_client import SAPPriceSpecClient, SAPPriceSpecError, bulk_push_erp_prices_to_sap
 from sap_supplier_invoice_client import SAPSupplierInvoiceClient, SAPSupplierInvoiceError
@@ -98,6 +101,7 @@ sap_material_client = SAPMaterialClient(
     endpoint=os.environ['SAP_SOAP_MATERIAL_ENDPOINT'],
     username=os.environ['SAP_SOAP_USERNAME'],
     password=os.environ['SAP_SOAP_PASSWORD'],
+    manage_endpoint=os.environ.get('SAP_SOAP_MATERIAL_MANAGE_ENDPOINT'),
 )
 
 sap_supplier_client = SAPSupplierClient(
@@ -1639,11 +1643,20 @@ class ComponentMasterItem(BaseModel):
     has_sap_link: bool = False
     sap_pushed_at: Optional[str] = None
     updated_at: Optional[str] = None
+    net_weight_kg: Optional[float] = None
+    gross_weight_kg: Optional[float] = None
+    net_volume_cm3: Optional[float] = None
+    gross_volume_cm3: Optional[float] = None
+    length_mm: Optional[float] = None
+    width_mm: Optional[float] = None
+    height_mm: Optional[float] = None
+    sap_physical_pushed_at: Optional[str] = None
 
 
 def _to_component_master_item(doc: dict) -> ComponentMasterItem:
     updated_at = doc.get("categorized_at") or doc.get("created_at")
     sap_pushed_at = doc.get("sap_pushed_at")
+    sap_physical_pushed_at = doc.get("sap_physical_pushed_at")
     return ComponentMasterItem(
         product_id=doc["_id"],
         description=doc.get("description"),
@@ -1654,6 +1667,14 @@ def _to_component_master_item(doc: dict) -> ComponentMasterItem:
         has_sap_link=bool(doc.get("product_uuid")),
         sap_pushed_at=sap_pushed_at.isoformat() if sap_pushed_at else None,
         updated_at=updated_at.isoformat() if updated_at else None,
+        net_weight_kg=doc.get("net_weight_kg"),
+        gross_weight_kg=doc.get("gross_weight_kg"),
+        net_volume_cm3=doc.get("net_volume_cm3"),
+        gross_volume_cm3=doc.get("gross_volume_cm3"),
+        length_mm=doc.get("length_mm"),
+        width_mm=doc.get("width_mm"),
+        height_mm=doc.get("height_mm"),
+        sap_physical_pushed_at=sap_physical_pushed_at.isoformat() if sap_physical_pushed_at else None,
     )
 
 
@@ -1680,6 +1701,13 @@ class UpdateComponentMasterRequest(BaseModel):
     category: Optional[str] = None
     msl: Optional[float] = None
     lead_time_days: Optional[float] = None
+    net_weight_kg: Optional[float] = None
+    gross_weight_kg: Optional[float] = None
+    net_volume_cm3: Optional[float] = None
+    gross_volume_cm3: Optional[float] = None
+    length_mm: Optional[float] = None
+    width_mm: Optional[float] = None
+    height_mm: Optional[float] = None
 
 
 @api_router.patch("/admin/components/{product_id}", response_model=ComponentMasterItem)
@@ -1688,7 +1716,10 @@ async def update_admin_component(product_id: str, payload: UpdateComponentMaster
     "manual" so it's never overwritten by a bulk Re-Categorise) and/or set
     its Minimum Stock Level, which the Purchasing Plan's netting math reads
     directly (see purchasing_plan.get_component_msl), and/or its Procurement
-    Lead Time (used only by the SAP Push-to-SAP write-back)."""
+    Lead Time (used only by the SAP Push-to-SAP write-back), and/or its
+    physical attributes (Net/Gross Weight, Net/Gross Volume, Length/Width/
+    Height - local values used by the separate "Push Weight & Dimensions to
+    SAP" write-back)."""
     update = {}
     if payload.category is not None:
         update["category"] = payload.category
@@ -1698,8 +1729,12 @@ async def update_admin_component(product_id: str, payload: UpdateComponentMaster
         update["msl"] = payload.msl
     if payload.lead_time_days is not None:
         update["lead_time_days"] = payload.lead_time_days
+    for field in PHYSICAL_ATTRIBUTE_CODES:
+        value = getattr(payload, field)
+        if value is not None:
+            update[field] = value
     if not update:
-        raise HTTPException(status_code=400, detail="Provide category, msl and/or lead_time_days to update")
+        raise HTTPException(status_code=400, detail="Provide at least one field to update")
 
     def apply():
         db["component_master"].update_one({"_id": product_id}, {"$set": update}, upsert=True)
@@ -1829,6 +1864,81 @@ async def push_component_to_sap(product_id: str):
         {"$set": {"sap_pushed_at": datetime.now(timezone.utc)}},
     )
     return PushToSapResponse(planning_areas_updated=updated, safety_stock=msl, lead_time_days=lead_time_days)
+
+
+class SapPhysicalAttributesResponse(BaseModel):
+    uuid: Optional[str] = None
+    attributes: dict = {}
+
+
+@api_router.get("/admin/components/{product_id}/sap-physical-attributes", response_model=SapPhysicalAttributesResponse)
+async def get_sap_physical_attributes(product_id: str):
+    """Live-reads SAP's current Weight/Volume/Dimensions ("UoM Characteristics"
+    tab) for this component via the already-authorized QueryMaterialIn service -
+    used by the Admin page's "Weight & Dimensions" dialog to show Current SAP
+    vs Pushing before an operator decides to push. An empty `attributes` dict
+    is a NORMAL result on this tenant (live-confirmed 18 Aug 2026: only 2 of
+    11,092 materials have any value set), not an error."""
+    try:
+        result = await asyncio.to_thread(sap_material_client.get_physical_attributes, product_id)
+    except SAPMaterialAuthError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except SAPMaterialError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not result:
+        raise HTTPException(status_code=404, detail="SAP has no material with this ID")
+    attributes = {field: data["value"] for field, data in result["attributes"].items()}
+    return SapPhysicalAttributesResponse(uuid=result["uuid"], attributes=attributes)
+
+
+class PushPhysicalAttributesResponse(BaseModel):
+    pushed_fields: List[str]
+
+
+@api_router.post("/admin/components/{product_id}/push-physical-attributes-to-sap", response_model=PushPhysicalAttributesResponse)
+async def push_physical_attributes_to_sap(product_id: str):
+    """Pushes this component's LOCAL Net/Gross Weight, Net/Gross Volume, and
+    Length/Width/Height -> SAP's Material master "UoM Characteristics" via
+    ManageMaterialIn. Requires the "Manage Materials" Communication
+    Arrangement to be activated on the tenant (separate from the read-only
+    "Query Materials" one already used elsewhere in this app) - raises a
+    clear, actionable error (see SAP_MATERIAL_WRITE_AUTHORIZATION_REQUEST.md)
+    if it isn't set up yet, rather than a generic failure."""
+    doc = await asyncio.to_thread(db["component_master"].find_one, {"_id": product_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Unknown component")
+    product_uuid = doc.get("product_uuid")
+    if not product_uuid:
+        raise HTTPException(status_code=404, detail="This component has no known SAP link yet - open it in BOM Explorer or a Purchasing Plan run first")
+    values = {field: doc.get(field) for field in PHYSICAL_ATTRIBUTE_CODES}
+    if not any(v is not None for v in values.values()):
+        raise HTTPException(status_code=400, detail="Set at least one of Net/Gross Weight, Net/Gross Volume, Length/Width/Height for this component before pushing")
+
+    try:
+        current = await asyncio.to_thread(sap_material_client.get_physical_attributes, product_id)
+        if not current:
+            raise HTTPException(status_code=404, detail="SAP has no material with this ID")
+        await asyncio.to_thread(
+            sap_material_client.push_physical_attributes,
+            product_id, current["uuid"], current["change_state_id"], current["existing_type_codes"], values,
+        )
+    except SAPMaterialWriteNotConfiguredError:
+        raise HTTPException(
+            status_code=400,
+            detail="SAP hasn't authorized the Manage Materials write service yet - see SAP_MATERIAL_WRITE_AUTHORIZATION_REQUEST.md for the exact SAP admin steps needed",
+        )
+    except SAPMaterialAuthError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except SAPMaterialError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    pushed_fields = [f for f, v in values.items() if v is not None]
+    await asyncio.to_thread(
+        db["component_master"].update_one,
+        {"_id": product_id},
+        {"$set": {"sap_physical_pushed_at": datetime.now(timezone.utc)}},
+    )
+    return PushPhysicalAttributesResponse(pushed_fields=pushed_fields)
 
 
 class PushAllToSapProgress(BaseModel):

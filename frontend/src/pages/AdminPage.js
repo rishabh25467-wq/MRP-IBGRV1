@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, Fragment } from "react";
 import "@/App.css";
 import axios from "axios";
 import * as XLSX from "xlsx";
@@ -16,6 +16,7 @@ import {
   CloudArrowUp,
   DownloadSimple,
   UploadSimple,
+  Scales,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -28,6 +29,16 @@ import { NavTabs } from "@/components/NavTabs";
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 const ADD_NEW_CATEGORY_VALUE = "__add_new_category__";
+
+const PHYSICAL_FIELDS = [
+  { key: "net_weight_kg", label: "Net Weight", unit: "kg" },
+  { key: "gross_weight_kg", label: "Gross Weight", unit: "kg" },
+  { key: "net_volume_cm3", label: "Net Volume", unit: "cm³" },
+  { key: "gross_volume_cm3", label: "Gross Volume", unit: "cm³" },
+  { key: "length_mm", label: "Length", unit: "mm" },
+  { key: "width_mm", label: "Width", unit: "mm" },
+  { key: "height_mm", label: "Height", unit: "mm" },
+];
 
 const formatDate = (iso) => (iso ? new Date(iso).toLocaleString() : "—");
 
@@ -47,6 +58,12 @@ export default function AdminPage() {
   const [pushDialogSapData, setPushDialogSapData] = useState(null);
   const [pushDialogLoading, setPushDialogLoading] = useState(false);
   const [pushing, setPushing] = useState(false);
+  const [physicalDialogItem, setPhysicalDialogItem] = useState(null);
+  const [physicalSapData, setPhysicalSapData] = useState(null);
+  const [physicalSapLoading, setPhysicalSapLoading] = useState(false);
+  const [physicalInputs, setPhysicalInputs] = useState({});
+  const [physicalSaving, setPhysicalSaving] = useState(false);
+  const [physicalPushing, setPhysicalPushing] = useState(false);
   const [recategorizing, setRecategorizing] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -229,6 +246,75 @@ export default function AdminPage() {
       toast.error("Push to SAP failed", { description: err?.response?.data?.detail || err.message });
     } finally {
       setPushing(false);
+    }
+  };
+
+  const openPhysicalDialog = (item) => {
+    setPhysicalDialogItem(item);
+    setPhysicalSapData(null);
+    setPhysicalInputs(Object.fromEntries(PHYSICAL_FIELDS.map(({ key }) => [key, item[key] ?? ""])));
+  };
+
+  const pullPhysicalFromSap = async () => {
+    if (!physicalDialogItem) return;
+    setPhysicalSapLoading(true);
+    try {
+      const { data } = await axios.get(`${API}/admin/components/${encodeURIComponent(physicalDialogItem.product_id)}/sap-physical-attributes`);
+      setPhysicalSapData(data);
+    } catch (err) {
+      setPhysicalSapData({ error: err?.response?.data?.detail || err.message });
+    } finally {
+      setPhysicalSapLoading(false);
+    }
+  };
+
+  const savePhysicalLocally = async () => {
+    if (!physicalDialogItem) return;
+    const productId = physicalDialogItem.product_id;
+    const payload = {};
+    for (const { key } of PHYSICAL_FIELDS) {
+      const raw = physicalInputs[key];
+      if (raw !== "" && raw !== undefined) {
+        const num = Number(raw);
+        if (Number.isNaN(num)) {
+          toast.error(`${key} must be a number`);
+          return;
+        }
+        payload[key] = num;
+      }
+    }
+    if (Object.keys(payload).length === 0) {
+      toast.error("Enter at least one value first");
+      return;
+    }
+    setPhysicalSaving(true);
+    try {
+      const { data } = await axios.patch(`${API}/admin/components/${encodeURIComponent(productId)}`, payload);
+      setItems((prev) => prev.map((it) => (it.product_id === productId ? data : it)));
+      setPhysicalDialogItem(data);
+      toast.success(`Saved weight/dimensions for ${productId}`);
+    } catch (err) {
+      toast.error("Could not save", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setPhysicalSaving(false);
+    }
+  };
+
+  const pushPhysicalToSap = async () => {
+    if (!physicalDialogItem) return;
+    const productId = physicalDialogItem.product_id;
+    setPhysicalPushing(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/components/${encodeURIComponent(productId)}/push-physical-attributes-to-sap`);
+      toast.success(`Pushed ${data.pushed_fields.length} field(s) to SAP`, { description: productId });
+      setItems((prev) =>
+        prev.map((it) => (it.product_id === productId ? { ...it, sap_physical_pushed_at: new Date().toISOString() } : it))
+      );
+      setPhysicalDialogItem(null);
+    } catch (err) {
+      toast.error("Push to SAP failed", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setPhysicalPushing(false);
     }
   };
 
@@ -653,6 +739,9 @@ export default function AdminPage() {
                 <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
                   SAP Push
                 </th>
+                <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
+                  Weight/Dims
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -768,11 +857,32 @@ export default function AdminPage() {
                       </span>
                     )}
                   </td>
+                  <td className="border border-[#D0D5DD] px-2 py-1">
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => openPhysicalDialog(it)}
+                        className="h-6 text-xs rounded-sm border-[#D0D5DD] text-[#344054] px-2"
+                        data-testid={`weight-dims-button-${it.product_id}`}
+                      >
+                        <Scales size={12} className="mr-1" />
+                        Weight/Dims
+                      </Button>
+                      {it.sap_physical_pushed_at && (
+                        <span className="text-xs text-[#667085]" title={formatDate(it.sap_physical_pushed_at)}>
+                          <ArrowClockwise size={10} className="inline mr-0.5" />
+                          {formatDate(it.sap_physical_pushed_at)}
+                        </span>
+                      )}
+                    </div>
+                  </td>
                 </tr>
               ))}
               {filteredSorted.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="admin-no-components">
+                  <td colSpan={10} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]" data-testid="admin-no-components">
                     {loading
                       ? "Loading components..."
                       : items.length === 0
@@ -936,6 +1046,91 @@ export default function AdminPage() {
             >
               <CloudArrowUp size={13} className="mr-1.5" />
               {pushing ? "Pushing..." : "Confirm Push"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!physicalDialogItem} onOpenChange={(open) => !open && setPhysicalDialogItem(null)}>
+        <DialogContent className="max-w-lg" data-testid="weight-dims-dialog">
+          <DialogHeader>
+            <DialogTitle className="font-heading text-base">Weight &amp; Dimensions: {physicalDialogItem?.product_id}</DialogTitle>
+          </DialogHeader>
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={pullPhysicalFromSap}
+              disabled={physicalSapLoading}
+              className="h-7 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
+              data-testid="weight-dims-pull-from-sap-button"
+            >
+              <ArrowClockwise size={12} className={`mr-1 ${physicalSapLoading ? "animate-spin" : ""}`} />
+              {physicalSapLoading ? "Pulling..." : "Pull Current SAP Values"}
+            </Button>
+          </div>
+          {physicalSapData?.error && (
+            <div className="text-sm text-[#B42318] py-1" data-testid="weight-dims-sap-error">
+              Could not load SAP values: {physicalSapData.error}
+            </div>
+          )}
+          <div className="grid grid-cols-4 gap-x-2 gap-y-2 text-sm py-1" data-testid="weight-dims-form">
+            <div className="font-heading text-xs font-bold text-[#667085] uppercase">Field</div>
+            <div className="font-heading text-xs font-bold text-[#667085] uppercase">Current SAP</div>
+            <div className="font-heading text-xs font-bold text-[#004B87] uppercase col-span-2">Local Value (this app)</div>
+            {PHYSICAL_FIELDS.map(({ key, label, unit }) => (
+              <Fragment key={key}>
+                <div className="text-[#344054] self-center">{label}</div>
+                <div className="tabular-nums text-[#667085] self-center" data-testid={`weight-dims-sap-${key}`}>
+                  {physicalSapData?.attributes?.[key] != null ? `${physicalSapData.attributes[key].toFixed(3)} ${unit}` : "—"}
+                </div>
+                <input
+                  type="number"
+                  step="any"
+                  placeholder="0"
+                  value={physicalInputs[key] ?? ""}
+                  onChange={(e) => setPhysicalInputs((prev) => ({ ...prev, [key]: e.target.value }))}
+                  className="h-7 col-span-1 px-1.5 text-xs border border-[#D0D5DD] rounded-sm bg-white text-[#101828] tabular-nums focus:outline-none focus:ring-1 focus:ring-[#004B87]"
+                  data-testid={`weight-dims-input-${key}`}
+                />
+                <div className="text-xs text-[#667085] self-center">{unit}</div>
+              </Fragment>
+            ))}
+          </div>
+          <p className="text-xs text-[#667085] font-sans">
+            "Save Locally" stores values in this app only. "Push to SAP" writes the local values above into SAP's Material master (requires the "Manage Materials" service to be authorized on your SAP tenant).
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setPhysicalDialogItem(null)}
+              className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
+              data-testid="weight-dims-cancel-button"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={savePhysicalLocally}
+              disabled={physicalSaving}
+              className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
+              data-testid="weight-dims-save-locally-button"
+            >
+              {physicalSaving ? "Saving..." : "Save Locally"}
+            </Button>
+            <Button
+              type="button"
+              onClick={pushPhysicalToSap}
+              disabled={physicalPushing || !physicalDialogItem?.has_sap_link}
+              className="h-8 bg-[#004B87] hover:bg-[#003A6A] text-white text-xs rounded-sm"
+              data-testid="weight-dims-push-to-sap-button"
+              title={!physicalDialogItem?.has_sap_link ? "Open this part in BOM Explorer or a Purchasing Plan run first to capture its SAP link" : undefined}
+            >
+              <CloudArrowUp size={13} className="mr-1.5" />
+              {physicalPushing ? "Pushing..." : "Push to SAP"}
             </Button>
           </div>
         </DialogContent>
