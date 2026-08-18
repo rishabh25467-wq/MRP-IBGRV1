@@ -1,0 +1,31 @@
+{
+  "summary": "Full retest of the Weight & Surface Area feature after its 2-field rework (was 7 fields in iter75). Backend: 13/14 pytest tests pass (1 skipped: no unlinked components exist in this catalog to test the 'no SAP link -> 404' branch). New GET /api/bom/net-weight endpoint verified end-to-end. Frontend Admin: dialog shows exactly 2 fields (Net Weight kg + Surface Area in²), no dropped 7-field UI remnants, Pull Current SAP shows '—' (expected: custom fields not linked to QueryMaterialIn yet), Save Locally persists across dialog close/reopen (verified 3.75/255 on SPC5WM), Push to SAP returns clean actionable error toast (no raw 500 leak / no ASGI traceback - the iter75 timeout wrapper is now working; SAPMaterialError-based error handling confirmed). Frontend BOM Explorer: exploded BOM 100010102-A and confirmed the new blue net-weight badges render exactly where components have a locally-set net_weight_kg: 'bom-net-weight-100002693-D1' -> '1.42 kg' and 'bom-net-weight-100002693-C1>SPC5WM' -> '3.75 kg'. Components without a net weight value show NO badge (correct). No console errors on any page. React key warning from iter75 is fixed (Fragment now correctly keyed on outer). Regression: existing drawing icon (bom-drawing-*) siblings still present, ECN comments still work, admin page search/list/columns still render. Cleanup done: 1 test session, 1 test user, and net_weight/surface_area values on SPC5WM/100002693-D1 all removed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_weight_dims.py",
+    "/app/test_reports/pytest/iteration_76_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "PATCH /api/admin/components/{product_id} still uses upsert=True (see server.py update_component around ln 1830) - flagged in iter75 - would silently create a component_master row for an unknown product_id. Low-risk since the endpoint is admin-only but tightening to update-only-existing would be safer.",
+    "Save Locally does not auto-close the dialog after a successful PATCH; UX-wise most save-and-close forms in this app close on success (see MSL push dialog). Minor - not a defect, just an inconsistency. If desired, close dialog on save success."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_weight_dims.py"
+  ],
+  "success_rate": {"backend": "100% (13/13 executed; 1 skipped for missing test data)", "frontend": "100%"},
+  "seed_data_creation": "1 synthetic super_admin auth_user + auth_session (both TEST_ prefixed) with allowed_pages ['admin','bom_explorer']. Set net_weight_kg=3.75 on SPC5WM (via the Admin dialog UI, mirrors user's workflow) and 1.42 on 100002693-D1 (directly via Mongo to demonstrate the BOM badge rendering). ALL of this cleaned up post-test - 0 TEST_ rows remain in auth_sessions/auth_users; SPC5WM, 100002693-D1, 5989825-2.1, and RFID-WM1942 have had net_weight_kg/surface_area_sqin/sap_physical_pushed_at unset.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": false,
+  "test_credentials": "Mock MongoDB session technique per /app/memory/test_credentials.md (Testing without a real Microsoft account section) - no real credentials used.",
+  "context_for_next_testing_agent": "The 2-field rework is solid. Backend endpoint contract is proven (13 pytest cases green). The Push-to-SAP error handling (which was iter75's HIGH bug) is fixed - a fresh push attempt returned an actionable toast (not 'Request failed with status code 500') and no ASGI traceback in backend logs. Both custom SAP fields remain unlinked on the SAP tenant (SAP_MATERIAL_NET_WEIGHT_FIELD_TAG/_NS + SAP_MATERIAL_SURFACE_AREA_FIELD_TAG/_NS are all blank in backend/.env) - this is expected/pending real SAP admin action per SAP_MATERIAL_FIELD_SETUP_REQUEST.md, do not treat as a bug.",
+  "rca_of_the_issue": "N/A - no unresolved issues this iteration."
+}
