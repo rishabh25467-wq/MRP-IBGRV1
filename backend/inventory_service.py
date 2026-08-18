@@ -174,21 +174,27 @@ def _compute_no_bom_flags(db) -> dict:
     """Scans the whole bom_node_cache collection (fast, ~20ms at current
     3800-doc scale) to flag product_ids that are structurally orphaned in
     the BOM graph: not a BOM root themselves (SAP confirms no production
-    BOM), AND never seen as a component/leaf inside anyone else's BOM
-    either. A genuine raw material actively used in production will show
-    up as a leaf somewhere and won't be flagged; a Finished Good/Sub-
-    Assembly missing its BOM (a real data gap) will be. Returns
-    {product_id: bool}."""
+    BOM), AND never seen as a component/leaf inside anyone else's CURRENT
+    ACTIVE BOM either. A genuine raw material actively used in production
+    will show up as a leaf somewhere and won't be flagged; a Finished
+    Good/Sub-Assembly missing its BOM (a real data gap) will be. This is
+    deliberately "active BOM only" per user decision (Aug 2026) - a
+    component that only ever appeared in an OLD/superseded BOM revision
+    still gets flagged here (see historical_leaf_ids below for the
+    separate transparency note instead of silently clearing the flag).
+    Returns {product_id: bool}."""
     bom_cache = db[bom_cache_service.COLLECTION_NAME]
     roots_with_bom = {d["_id"] for d in bom_cache.find({"found": True}, {"_id": 1})}
     leaf_ids = set()
-    for doc in bom_cache.find({}, {"groups": 1}):
+    historical_leaf_ids = set()
+    for doc in bom_cache.find({}, {"groups": 1, "historical_input_ids": 1}):
         for group in doc.get("groups", []):
             for item in group.get("items", []):
                 pid = item.get("product_id")
                 if pid:
                     leaf_ids.add(pid)
-    return {"roots_with_bom": roots_with_bom, "leaf_ids": leaf_ids}
+        historical_leaf_ids.update(doc.get("historical_input_ids") or [])
+    return {"roots_with_bom": roots_with_bom, "leaf_ids": leaf_ids, "historical_leaf_ids": historical_leaf_ids}
 
 
 def get_cached_inventory(db):
@@ -225,6 +231,11 @@ def get_cached_inventory(db):
                 it["product_id"] not in bom_membership["roots_with_bom"]
                 and it["product_id"] not in bom_membership["leaf_ids"]
             )
+            # Informational only (see _compute_no_bom_flags docstring) -
+            # doesn't affect no_bom or the filter checkbox, just lets the
+            # UI show "found in a historical/superseded BOM" for
+            # transparency on an otherwise-flagged item.
+            it["historical_bom"] = it["no_bom"] and it["product_id"] in bom_membership["historical_leaf_ids"]
     categories = sorted({it["category"] for it in items if it.get("category")})
     return {"items": items, "categories": categories, "updated_at": doc.get("updated_at")}
 

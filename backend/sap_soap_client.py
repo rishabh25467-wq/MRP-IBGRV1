@@ -244,6 +244,19 @@ class SAPSoapBOMClient:
         if not candidates:
             return None
 
+        # "No BOM" transparency (Aug 2026, per user decision): the active-
+        # BOM flag logic below stays untouched, but we ALSO want to surface
+        # (as a separate, non-authoritative note) when a component only
+        # shows up in an OLD/superseded revision of this parent - so a user
+        # investigating a "No BOM" flag isn't left thinking SAP has zero
+        # record of the part ever being used here. `historical_input_ids`
+        # is a superset covering EVERY input product ID seen in ANY
+        # candidate revision (Consistent or not) - collected for free from
+        # data already parsed below, no extra SAP round-trip.
+        historical_input_ids = set()
+        for c in candidates:
+            historical_input_ids.update(c["fingerprint"])
+
         # Same consistency-first tie-break as always: only consider
         # non-Consistent candidates if NOTHING is Consistent at all.
         consistent = [c for c in candidates if c["is_consistent"]]
@@ -278,6 +291,7 @@ class SAPSoapBOMClient:
         bom = {
             "bom_id": best_id, "product_uuid": root_uuid_match.group(1) if root_uuid_match else None,
             "groups": [], "alternates": alternates,
+            "historical_input_ids": list(historical_input_ids),
         }
 
         for group_match in re.finditer(r"<ProductionBillOfMaterialItemGroup>(.*?)</ProductionBillOfMaterialItemGroup>", best_block, re.S):
@@ -312,6 +326,13 @@ class SAPSoapBOMClient:
                     eco_id = eco_match.group(1) if eco_match else None
                     revision = cls._revision_number(eco_id) if eco_id else -1.0
                     self_matched = cls._eco_matches_own_product(eco_id, pid_match.group(1) if pid_match else None)
+                    if pid_match:
+                        # Every change-state's input product ID (not just the
+                        # winning one) - a line whose input product itself
+                        # changed over time (e.g. swapped for a different
+                        # part) leaves the OLD product ID only reachable
+                        # here, never in the final `groups` below.
+                        historical_input_ids.add(pid_match.group(1))
                     if best_state is None or (self_matched, revision) > (best_state_self_matched, best_state_revision):
                         best_state, best_state_revision, best_state_self_matched = state_block, revision, self_matched
 

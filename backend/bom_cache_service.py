@@ -184,6 +184,12 @@ def _upsert(collection, product_id, raw_bom, changed):
         "groups": raw_bom["groups"] if raw_bom else [],
         "product_uuid": raw_bom.get("product_uuid") if raw_bom else None,
         "alternates": raw_bom.get("alternates", []) if raw_bom else [],
+        # Superseded/old-ECO input product IDs for this parent - see
+        # sap_soap_client._build_bom_from_hit_blocks. Purely informational
+        # (see inventory_service._compute_no_bom_flags): the active "No
+        # BOM" flag logic never reads this, it only powers a separate
+        # "found in historical BOM" transparency note on the Inventory page.
+        "historical_input_ids": raw_bom.get("historical_input_ids", []) if raw_bom else [],
         "found": bool(raw_bom and raw_bom.get("groups")),
         "last_checked_at": now,
     }

@@ -17,6 +17,7 @@ import {
   Tag,
   WarningCircle,
   ArrowSquareOut,
+  ClockCounterClockwise,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Toaster, toast } from "@/components/ui/sonner";
@@ -603,10 +604,20 @@ export default function InventoryPage() {
                                 <span
                                   className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-[#FFFAEB] border border-[#FEDF89] text-[#B54708] text-[10px] font-bold uppercase tracking-wide"
                                   data-testid={`inventory-no-bom-tag-${it.product_id}`}
-                                  title="SAP confirms no BOM exists for this item, and it is not used as a component in any other BOM"
+                                  title="SAP confirms no BOM exists for this item, and it is not used as a component in any other CURRENT ACTIVE BOM"
                                 >
                                   <WarningCircle size={11} weight="bold" />
                                   No BOM
+                                </span>
+                              )}
+                              {it.no_bom && it.historical_bom && (
+                                <span
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-[#F0F4F8] border border-[#D0D5DD] text-[#475467] text-[10px] font-bold uppercase tracking-wide"
+                                  data-testid={`inventory-historical-bom-tag-${it.product_id}`}
+                                  title="This item was found in an OLDER/superseded BOM revision, but is not part of any current active BOM"
+                                >
+                                  <ClockCounterClockwise size={11} weight="bold" />
+                                  Historical BOM
                                 </span>
                               )}
                               {it.no_bom && (
