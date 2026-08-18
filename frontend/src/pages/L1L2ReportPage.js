@@ -32,7 +32,7 @@ export default function L1L2ReportPage() {
   const [levelFilter, setLevelFilter] = useState("all");
   const [showAllItems, setShowAllItems] = useState(false);
 
-  const PACKAGING_KEYWORDS = /POLYBAG|POLYTHENE|LAMINATED/i;
+  const PACKAGING_KEYWORDS = /POLYBAG|POLYTHENE|LAMINATED|\bBAG\b/i;
 
   const loadCached = async () => {
     setLoading(true);
