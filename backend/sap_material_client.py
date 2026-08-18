@@ -10,9 +10,7 @@ anywhere in the explored catalog.
 Authorized and working as of 08 Aug 2026 (the "materialquery" Communication
 Scenario / QueryMaterialIn service was activated for the _EMERGENTBOM
 business user)."""
-import os
 import re
-import uuid
 
 import requests
 from requests.auth import HTTPBasicAuth
@@ -30,49 +28,6 @@ class SAPMaterialAuthError(SAPMaterialError):
     callers can stop immediately instead of burning through retries/many
     items on every call in a batch that will all fail the same way."""
     pass
-
-
-class SAPMaterialFieldNotConfiguredError(SAPMaterialError):
-    """Raised when a custom field (Net Weight / Surface Area) isn't linked
-    to the QueryMaterialIn/ManageMaterialIn web service yet on the SAP side
-    (live-confirmed 18 Aug 2026: the SAP admin created "Item Net Weight"
-    and "Surface Area(Sq.Inch)" as custom fields directly on the Material's
-    General tab, e.g. Material 5989825-2.1 has Surface Area = 255 in the
-    SAP UI, but NEITHER field appears at all in the QueryMaterialIn SOAP
-    response - a custom field must be explicitly linked to a specific web
-    service via Key User Tools > adaptation mode > Further Usage >
-    Services > Add Field before it's exposed there, see
-    SAP_MATERIAL_FIELD_SETUP_REQUEST.md)."""
-    pass
-
-
-class SAPMaterialWriteNotConfiguredError(SAPMaterialError):
-    """Raised when the write-back service (ManageMaterialIn) has no
-    Communication Arrangement/Scenario set up on the tenant at all yet -
-    live-confirmed (18 Aug 2026) this shows up as a generic 'Web service
-    processing error' fault, NOT the specific 'Authorization role missing'
-    fault QueryMaterialIn showed before ITS own arrangement existed (same
-    distinction already used in sap_supplier_client.py)."""
-    pass
-
-
-# Net Weight and Surface Area are CUSTOM extension fields added by the SAP
-# admin directly on the Material's "General" tab (NOT SAP's standard
-# QuantityCharacteristic/"UoM Characteristics" node - live-confirmed 18 Aug
-# 2026 that tab is unpopulated tenant-wide). Custom fields show up in the
-# SOAP response under an arbitrary namespace prefix once (and only once)
-# the SAP admin links them to QueryMaterialIn/ManageMaterialIn - until then
-# these env vars are blank and the field is simply omitted (not an error).
-PHYSICAL_FIELD_CONFIG = {
-    "net_weight_kg": {
-        "tag": os.environ.get("SAP_MATERIAL_NET_WEIGHT_FIELD_TAG"),
-        "ns": os.environ.get("SAP_MATERIAL_NET_WEIGHT_FIELD_NS"),
-    },
-    "surface_area_sqin": {
-        "tag": os.environ.get("SAP_MATERIAL_SURFACE_AREA_FIELD_TAG"),
-        "ns": os.environ.get("SAP_MATERIAL_SURFACE_AREA_FIELD_NS"),
-    },
-}
 
 
 def _tag_re(tag: str):
@@ -99,9 +54,8 @@ ATTACHMENT_TYPE_LABELS = {
 
 
 class SAPMaterialClient:
-    def __init__(self, endpoint: str, username: str, password: str, manage_endpoint: str = None):
+    def __init__(self, endpoint: str, username: str, password: str):
         self.endpoint = endpoint
-        self.manage_endpoint = manage_endpoint
         self.auth = HTTPBasicAuth(username, password)
 
     @staticmethod
@@ -123,132 +77,6 @@ class SAPMaterialClient:
    </ProcessingConditions>
   </glob:MaterialByElementsQuery_sync>
  </soapenv:Body></soapenv:Envelope>"""
-
-    def get_physical_attributes(self, internal_id: str):
-        """Live-reads the Material's custom "Item Net Weight" and "Surface
-        Area(Sq.Inch)" fields (added by the SAP admin directly on the
-        Material General tab - NOT SAP's standard "UoM Characteristics"
-        node) via QueryMaterialIn. Returns None for a field whose
-        SAP_MATERIAL_*_FIELD_TAG/_NS env vars aren't set yet (not linked to
-        this web service by the SAP admin yet - see
-        SAP_MATERIAL_FIELD_SETUP_REQUEST.md) - not an error. Returns
-        {"uuid", "change_state_id", "attributes": {field_name: {"value":
-        float, "unit": str|None}}} or None if SAP has no material with
-        that ID."""
-        try:
-            with sap_semaphore:
-                resp = requests.post(
-                    self.endpoint,
-                    data=self._request_xml(internal_id).encode("utf-8"),
-                    auth=self.auth,
-                    headers={"Content-Type": "text/xml; charset=utf-8", "Accept": "text/xml", "SOAPAction": '""'},
-                    timeout=45,
-                )
-        except requests.exceptions.RequestException as e:
-            raise SAPMaterialError(f"SAP is currently unreachable - please retry ({e})") from e
-        xml = resp.text
-        if resp.status_code >= 400 or "<Fault" in xml or ":Fault" in xml:
-            faultstring = _first_tag(xml, "faultstring") or f"HTTP {resp.status_code}"
-            if "Authorization role missing" in faultstring:
-                raise SAPMaterialAuthError(faultstring)
-            raise SAPMaterialError(faultstring)
-
-        material_match = re.search(r"<(?:\w+:)?Material(?:\s[^>]*)?>(.*?)</(?:\w+:)?Material>", xml, re.S)
-        if not material_match:
-            return None
-        block = material_match.group(1)
-        if _first_tag(block, "InternalID") != internal_id:
-            return None
-
-        attributes = {}
-        for field, cfg in PHYSICAL_FIELD_CONFIG.items():
-            tag = cfg["tag"]
-            if not tag:
-                continue
-            m = _tag_re(tag).search(block)
-            if not m:
-                continue
-            unit_match = re.search(rf'<(?:\w+:)?{tag}\s[^>]*unitCode="([^"]*)"', block)
-            raw_value = re.sub(r"<[^>]+>", "", m.group(1)).strip()
-            try:
-                attributes[field] = {"value": float(raw_value), "unit": unit_match.group(1) if unit_match else None}
-            except ValueError:
-                continue
-
-        return {
-            "uuid": _first_tag(block, "UUID"),
-            "change_state_id": _first_tag(block, "ChangeStateID"),
-            "attributes": attributes,
-        }
-
-    def push_physical_attributes(self, internal_id: str, material_uuid: str, change_state_id: str, values: dict):
-        """Writes Net Weight / Surface Area (values keyed by
-        PHYSICAL_FIELD_CONFIG's field names) to SAP's custom Material
-        fields via ManageMaterialIn's MaintainBundle_V1 - simple scalar
-        extension fields, no actionCode needed (unlike a collection node).
-        Raises SAPMaterialFieldNotConfiguredError if a field's tag/ns env
-        vars aren't set, or SAPMaterialWriteNotConfiguredError if the
-        tenant has no Communication Arrangement for ManageMaterialIn at
-        all yet (live-confirmed 18 Aug 2026 'Web service processing
-        error' fault)."""
-        if not self.manage_endpoint:
-            raise SAPMaterialWriteNotConfiguredError("SAP_SOAP_MATERIAL_MANAGE_ENDPOINT is not configured")
-        lines = []
-        skipped_unconfigured = []
-        for field, value in values.items():
-            if value is None or field not in PHYSICAL_FIELD_CONFIG:
-                continue
-            cfg = PHYSICAL_FIELD_CONFIG[field]
-            if not cfg["tag"] or not cfg["ns"]:
-                skipped_unconfigured.append(field)
-                continue
-            lines.append(f'<n1:{cfg["tag"]} xmlns:n1="{cfg["ns"]}">{value}</n1:{cfg["tag"]}>')
-        if not lines:
-            if skipped_unconfigured:
-                raise SAPMaterialFieldNotConfiguredError(
-                    f"These fields aren't linked to ManageMaterialIn on the SAP side yet: {', '.join(skipped_unconfigured)}"
-                )
-            raise SAPMaterialError("Nothing to push - set Net Weight and/or Surface Area first")
-
-        xml_req = f"""<?xml version="1.0" encoding="UTF-8"?>
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
- <soapenv:Header/>
- <soapenv:Body>
-  <MaterialBundleMaintainRequest_sync_V1 xmlns="http://sap.com/xi/A1S/Global">
-   <BasicMessageHeader><ID>{uuid.uuid4().hex}</ID></BasicMessageHeader>
-   <Material actionCode="02">
-    <ChangeStateID>{change_state_id}</ChangeStateID>
-    <InternalID>{internal_id}</InternalID>
-    <UUID>{material_uuid}</UUID>
-    {''.join(lines)}
-   </Material>
-  </MaterialBundleMaintainRequest_sync_V1>
- </soapenv:Body>
-</soapenv:Envelope>"""
-        try:
-            with sap_semaphore:
-                resp = requests.post(
-                    self.manage_endpoint,
-                    data=xml_req.encode("utf-8"),
-                    auth=self.auth,
-                    headers={
-                        "Content-Type": "text/xml; charset=utf-8",
-                        "Accept": "text/xml",
-                        "SOAPAction": '"http://sap.com/xi/A1S/Global/ManageMaterialIn/MaintainBundle_V1Request"',
-                    },
-                    timeout=45,
-                )
-        except requests.exceptions.RequestException as e:
-            raise SAPMaterialError(f"SAP is currently unreachable - please retry ({e})") from e
-        xml = resp.text
-        if resp.status_code >= 400 or "<Fault" in xml or ":Fault" in xml:
-            faultstring = _first_tag(xml, "faultstring") or f"HTTP {resp.status_code}"
-            if "Web service processing error" in faultstring:
-                raise SAPMaterialWriteNotConfiguredError(faultstring)
-            if "Authorization role missing" in faultstring:
-                raise SAPMaterialAuthError(faultstring)
-            raise SAPMaterialError(faultstring)
-        return True
 
     def resolve_material_info(self, internal_id: str):
         """Returns {"uuid": str|None, "drawing_url": str|None, "comments":

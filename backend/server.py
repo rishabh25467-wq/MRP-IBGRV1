@@ -16,9 +16,9 @@ from pymongo import MongoClient
 from starlette.middleware.cors import CORSMiddleware
 
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
-from sap_material_client import (
-    SAPMaterialClient, SAPMaterialError, SAPMaterialAuthError, SAPMaterialWriteNotConfiguredError,
-    SAPMaterialFieldNotConfiguredError, PHYSICAL_FIELD_CONFIG,
+from sap_material_client import SAPMaterialClient, SAPMaterialError, SAPMaterialAuthError
+from sap_material_physical_client import (
+    SAPMaterialPhysicalClient, SAPMaterialPhysicalError, PHYSICAL_FIELD_TO_SAP_PROPERTY,
 )
 from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplierAuthError, SAPSupplierNotConfiguredError
 from sap_price_spec_client import SAPPriceSpecClient, SAPPriceSpecError, bulk_push_erp_prices_to_sap
@@ -101,7 +101,12 @@ sap_material_client = SAPMaterialClient(
     endpoint=os.environ['SAP_SOAP_MATERIAL_ENDPOINT'],
     username=os.environ['SAP_SOAP_USERNAME'],
     password=os.environ['SAP_SOAP_PASSWORD'],
-    manage_endpoint=os.environ.get('SAP_SOAP_MATERIAL_MANAGE_ENDPOINT'),
+)
+
+sap_material_physical_client = SAPMaterialPhysicalClient(
+    base_url=os.environ['SAP_MATERIAL_GENERALINFO_ODATA_URL'],
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
 )
 
 sap_supplier_client = SAPSupplierClient(
@@ -1730,7 +1735,7 @@ async def update_admin_component(product_id: str, payload: UpdateComponentMaster
         update["msl"] = payload.msl
     if payload.lead_time_days is not None:
         update["lead_time_days"] = payload.lead_time_days
-    for field in PHYSICAL_FIELD_CONFIG:
+    for field in PHYSICAL_FIELD_TO_SAP_PROPERTY:
         value = getattr(payload, field)
         if value is not None:
             update[field] = value
@@ -1868,28 +1873,24 @@ async def push_component_to_sap(product_id: str):
 
 
 class SapPhysicalAttributesResponse(BaseModel):
-    uuid: Optional[str] = None
     attributes: dict = {}
 
 
 @api_router.get("/admin/components/{product_id}/sap-physical-attributes", response_model=SapPhysicalAttributesResponse)
 async def get_sap_physical_attributes(product_id: str):
-    """Live-reads SAP's current Net Weight/Surface Area custom fields for
-    this component via QueryMaterialIn - used by the Admin page's
-    "Weight & Surface Area" dialog to show Current SAP vs Pushing before an
-    operator decides to push. An empty `attributes` dict is expected until
-    the SAP admin links these custom fields to QueryMaterialIn (see
-    SAP_MATERIAL_FIELD_SETUP_REQUEST.md) - not an error."""
+    """Live-reads SAP's current Net Weight/Surface Area for this component
+    via the custom "materialgeneralinfo" OData service - used by the
+    Admin page's "Weight & Surface Area" dialog to show Current SAP vs
+    Pushing before an operator decides to push. An empty `attributes`
+    dict just means neither value is set on this material yet - not an
+    error."""
     try:
-        result = await asyncio.to_thread(sap_material_client.get_physical_attributes, product_id)
-    except SAPMaterialAuthError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except SAPMaterialError as e:
+        result = await asyncio.to_thread(sap_material_physical_client.get_physical_attributes, product_id)
+    except SAPMaterialPhysicalError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not result:
         raise HTTPException(status_code=404, detail="SAP has no material with this ID")
-    attributes = {field: data["value"] for field, data in result["attributes"].items()}
-    return SapPhysicalAttributesResponse(uuid=result["uuid"], attributes=attributes)
+    return SapPhysicalAttributesResponse(attributes=result["attributes"])
 
 
 class PushPhysicalAttributesResponse(BaseModel):
@@ -1898,41 +1899,19 @@ class PushPhysicalAttributesResponse(BaseModel):
 
 @api_router.post("/admin/components/{product_id}/push-physical-attributes-to-sap", response_model=PushPhysicalAttributesResponse)
 async def push_physical_attributes_to_sap(product_id: str):
-    """Pushes this component's LOCAL Net Weight/Surface Area -> SAP's
-    custom Material fields via ManageMaterialIn. Requires (1) the "Manage
-    Materials" Communication Arrangement to be activated on the tenant, and
-    (2) both custom fields to be linked to QueryMaterialIn/ManageMaterialIn
-    by the SAP admin - raises a clear, actionable error (see
-    SAP_MATERIAL_FIELD_SETUP_REQUEST.md) if either isn't done yet, rather
-    than a generic failure."""
+    """Pushes this component's LOCAL Net Weight/Surface Area -> SAP via
+    the custom "materialgeneralinfo" OData service (PATCH, live-confirmed
+    working end-to-end 18 Aug 2026)."""
     doc = await asyncio.to_thread(db["component_master"].find_one, {"_id": product_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Unknown component")
-    product_uuid = doc.get("product_uuid")
-    if not product_uuid:
-        raise HTTPException(status_code=404, detail="This component has no known SAP link yet - open it in BOM Explorer or a Purchasing Plan run first")
-    values = {field: doc.get(field) for field in PHYSICAL_FIELD_CONFIG}
+    values = {field: doc.get(field) for field in PHYSICAL_FIELD_TO_SAP_PROPERTY}
     if not any(v is not None for v in values.values()):
         raise HTTPException(status_code=400, detail="Set Net Weight and/or Surface Area for this component before pushing")
 
     try:
-        current = await asyncio.to_thread(sap_material_client.get_physical_attributes, product_id)
-        if not current:
-            raise HTTPException(status_code=404, detail="SAP has no material with this ID")
-        await asyncio.to_thread(
-            sap_material_client.push_physical_attributes,
-            product_id, current["uuid"], current["change_state_id"], values,
-        )
-    except SAPMaterialWriteNotConfiguredError:
-        raise HTTPException(
-            status_code=400,
-            detail="SAP hasn't authorized the Manage Materials write service yet - see SAP_MATERIAL_FIELD_SETUP_REQUEST.md for the exact SAP admin steps needed",
-        )
-    except SAPMaterialFieldNotConfiguredError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except SAPMaterialAuthError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except SAPMaterialError as e:
+        await asyncio.to_thread(sap_material_physical_client.push_physical_attributes, product_id, values)
+    except SAPMaterialPhysicalError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     pushed_fields = [f for f, v in values.items() if v is not None]

@@ -23,7 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectSeparator } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { NavTabs } from "@/components/NavTabs";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -1050,6 +1050,7 @@ export default function AdminPage() {
         <DialogContent className="max-w-lg" data-testid="weight-dims-dialog">
           <DialogHeader>
             <DialogTitle className="font-heading text-base">Weight &amp; Surface Area: {physicalDialogItem?.product_id}</DialogTitle>
+            <DialogDescription>View, save locally, and push Net Weight and Surface Area to SAP.</DialogDescription>
           </DialogHeader>
           <div className="flex justify-end">
             <Button
@@ -1119,10 +1120,9 @@ export default function AdminPage() {
             <Button
               type="button"
               onClick={pushPhysicalToSap}
-              disabled={physicalPushing || !physicalDialogItem?.has_sap_link}
+              disabled={physicalPushing}
               className="h-8 bg-[#004B87] hover:bg-[#003A6A] text-white text-xs rounded-sm"
               data-testid="weight-dims-push-to-sap-button"
-              title={!physicalDialogItem?.has_sap_link ? "Open this part in BOM Explorer or a Purchasing Plan run first to capture its SAP link" : undefined}
             >
               <CloudArrowUp size={13} className="mr-1.5" />
               {physicalPushing ? "Pushing..." : "Push to SAP"}

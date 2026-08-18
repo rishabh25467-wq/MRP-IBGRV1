@@ -108,18 +108,20 @@ class TestAdminComponentsList:
 
 # ---------- GET sap-physical-attributes ----------
 class TestGetSapPhysicalAttributes:
-    def test_returns_uuid_and_attributes_dict(self, auth_cookies, linked_product_id):
+    def test_returns_attributes_dict(self, auth_cookies, linked_product_id):
         r = requests.get(
             f"{BASE_URL}/api/admin/components/{linked_product_id}/sap-physical-attributes",
             cookies=auth_cookies, timeout=180,
         )
-        # Custom fields aren't linked to QueryMaterialIn yet -> attributes will be {}
-        # 404 possible if SAP has no such material; 400/403 if SAP unreachable/auth
+        # OData custom service now live; 200 with attrs dict if SAP knows the material; 404 if not; 400 if SAP unreachable
         assert r.status_code in (200, 400, 403, 404), r.text[:400]
         if r.status_code == 200:
             data = r.json()
-            assert "uuid" in data and "attributes" in data
+            assert "attributes" in data
             assert isinstance(data["attributes"], dict)
+            # Only known fields
+            for k in data["attributes"].keys():
+                assert k in PHYSICAL_FIELDS, f"Unexpected attribute key: {k}"
 
     def test_unknown_product_returns_4xx(self, auth_cookies):
         r = requests.get(
@@ -169,7 +171,7 @@ class TestPatchLocalSave:
 
 # ---------- POST push-physical-attributes-to-sap ----------
 class TestPushPhysicalToSap:
-    def test_push_returns_expected_not_linked_or_not_authorized(self, auth_cookies, linked_product_id):
+    def test_push_returns_success_or_actionable_error(self, auth_cookies, linked_product_id):
         # Ensure at least one value set
         requests.patch(
             f"{BASE_URL}/api/admin/components/{linked_product_id}",
@@ -179,16 +181,14 @@ class TestPushPhysicalToSap:
             f"{BASE_URL}/api/admin/components/{linked_product_id}/push-physical-attributes-to-sap",
             cookies=auth_cookies, timeout=180,
         )
-        # Expected: 400 with actionable "not linked" or "Manage Materials not authorized" OR
-        # 403 for auth-role missing. Anything BUT 200 or 500 is acceptable graceful degrade.
-        assert r.status_code in (400, 403), f"Unexpected {r.status_code}: {r.text[:400]}"
-        detail = r.json().get("detail", "")
-        assert isinstance(detail, str) and len(detail) > 0
-        lower = detail.lower()
-        assert any(kw in lower for kw in [
-            "manage materials", "authoriz", "not linked", "linked to managematerialin",
-            "sap_material_field_setup_request", "unreachable", "web service", "field",
-        ]), f"detail should be actionable, got: {detail}"
+        # OData path: 200 on real write; 400 with actionable msg if SAP doesn't have the material or auth issue; NOT 500
+        assert r.status_code in (200, 400, 403, 404), f"Unexpected {r.status_code}: {r.text[:400]}"
+        if r.status_code == 200:
+            data = r.json()
+            assert "pushed_fields" in data and "net_weight_kg" in data["pushed_fields"]
+        else:
+            detail = r.json().get("detail", "")
+            assert isinstance(detail, str) and len(detail) > 0
 
     def test_push_unknown_product_404(self, auth_cookies):
         r = requests.post(
@@ -211,7 +211,7 @@ class TestPushPhysicalToSap:
         detail = r.json().get("detail", "").lower()
         assert "net weight" in detail or "surface area" in detail or "before pushing" in detail
 
-    def test_push_unlinked_component_returns_404(self, auth_cookies, unlinked_product_id, db):
+    def test_push_unlinked_component_returns_4xx(self, auth_cookies, unlinked_product_id, db):
         if not unlinked_product_id:
             pytest.skip("All components in this catalog have SAP links - no unlinked to test")
         db["component_master"].update_one({"_id": unlinked_product_id}, {"$set": {"net_weight_kg": 1.0}})
@@ -221,7 +221,8 @@ class TestPushPhysicalToSap:
         )
         # cleanup
         db["component_master"].update_one({"_id": unlinked_product_id}, {"$unset": {"net_weight_kg": ""}})
-        assert r.status_code == 404
+        # OData client raises SAPMaterialPhysicalError('no material with InternalID') -> 400; also acceptable: 404
+        assert r.status_code in (400, 404), r.text[:400]
 
 
 # ---------- NEW: GET /api/bom/net-weight ----------
@@ -258,6 +259,95 @@ class TestBomNetWeightEndpoint:
                          cookies=auth_cookies, timeout=30)
         assert r.status_code == 200
         assert r.json() == {}
+
+
+# ---------- LIVE SAP round-trip on a real material ----------
+# Try 5989825-2.1 first (confirmed to exist in SAP by main agent), then fall
+# back to a few other real product_ids if it's locked/unavailable in SAP.
+LIVE_ROUNDTRIP_CANDIDATES = ["5989825-2.1", "SPC5WM", "RFID-WM1942", "BSKWM"]
+
+
+def _pick_writable_material(auth_cookies):
+    """Find a candidate material that SAP will let us write to (not locked by another user)."""
+    for pid in LIVE_ROUNDTRIP_CANDIDATES:
+        r = requests.get(
+            f"{BASE_URL}/api/admin/components/{pid}/sap-physical-attributes",
+            cookies=auth_cookies, timeout=120,
+        )
+        if r.status_code != 200:
+            continue
+        # Dry-run: try setting a tiny nonzero value and pushing to detect lock
+        current = r.json().get("attributes", {}).get("net_weight_kg") or 0
+        probe = round((current or 0) + 0.001, 3) or 0.001
+        p = requests.patch(
+            f"{BASE_URL}/api/admin/components/{pid}",
+            json={"net_weight_kg": probe}, cookies=auth_cookies, timeout=60,
+        )
+        if p.status_code != 200:
+            continue
+        push = requests.post(
+            f"{BASE_URL}/api/admin/components/{pid}/push-physical-attributes-to-sap",
+            cookies=auth_cookies, timeout=180,
+        )
+        if push.status_code == 200:
+            return pid, current
+        # If locked, log and try next
+        detail = ""
+        try:
+            detail = push.json().get("detail", "")
+        except Exception:
+            pass
+        print(f"[live-roundtrip] {pid} not writable ({push.status_code}): {detail[:200]}")
+    return None, None
+
+
+class TestLiveSapRoundTrip:
+    def test_live_read_then_write_then_read(self, auth_cookies, db):
+        # Find a writable material (skip locked ones)
+        pid, original_net = _pick_writable_material(auth_cookies)
+        if not pid:
+            pytest.skip("No candidate SAP material is currently writable (all locked or unreachable)")
+
+        # A write already succeeded inside _pick_writable_material; now
+        # push a distinct 2nd value and confirm the round-trip reads it back.
+        test_value = round((original_net or 0) + 0.99, 2)
+        p = requests.patch(
+            f"{BASE_URL}/api/admin/components/{pid}",
+            json={"net_weight_kg": test_value}, cookies=auth_cookies, timeout=60,
+        )
+        assert p.status_code == 200, p.text[:400]
+
+        push = requests.post(
+            f"{BASE_URL}/api/admin/components/{pid}/push-physical-attributes-to-sap",
+            cookies=auth_cookies, timeout=180,
+        )
+        assert push.status_code == 200, f"Push failed {push.status_code}: {push.text[:400]}"
+        assert "net_weight_kg" in push.json().get("pushed_fields", [])
+
+        # Read back from SAP
+        r2 = requests.get(
+            f"{BASE_URL}/api/admin/components/{pid}/sap-physical-attributes",
+            cookies=auth_cookies, timeout=120,
+        )
+        assert r2.status_code == 200, r2.text[:400]
+        after = r2.json().get("attributes", {})
+        assert after.get("net_weight_kg") == pytest.approx(test_value, rel=1e-3), \
+            f"SAP round-trip mismatch on {pid}: pushed {test_value}, read back {after.get('net_weight_kg')}"
+        print(f"[live-roundtrip] SUCCESS {pid}: wrote {test_value} kg, read back {after.get('net_weight_kg')} kg")
+
+        # Restore original value
+        if original_net:
+            requests.patch(
+                f"{BASE_URL}/api/admin/components/{pid}",
+                json={"net_weight_kg": original_net}, cookies=auth_cookies, timeout=60,
+            )
+            requests.post(
+                f"{BASE_URL}/api/admin/components/{pid}/push-physical-attributes-to-sap",
+                cookies=auth_cookies, timeout=180,
+            )
+        else:
+            # Best-effort clear (write 0 -> filter treats 0 as unset)
+            db["component_master"].update_one({"_id": pid}, {"$unset": {"net_weight_kg": ""}})
 
 
 # ---------- BOM search smoke ----------
