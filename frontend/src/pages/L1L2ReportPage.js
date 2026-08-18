@@ -32,7 +32,11 @@ export default function L1L2ReportPage() {
   const [levelFilter, setLevelFilter] = useState("all");
   const [showAllItems, setShowAllItems] = useState(false);
 
-  const PACKAGING_KEYWORDS = /POLYBAG|POLYTHENE|LAMINATED|\bBAG\b/i;
+  const PACKAGING_KEYWORDS = /POLL?YBAG|POLYTHENE|LAMINATED|\bBAG\b|WRAP.*ROLL|PLASTIC\s*ROPE|\bLANYARD\b|\bINST\.?\s*KIT\b/i;
+  // A few packaging/accessory items don't share any common keyword with
+  // the rest (truncated SAP descriptions like "...HARDWARE POLY") -
+  // user-confirmed one-off exclusions by product_id.
+  const EXPLICIT_EXCLUDED_PRODUCT_IDS = new Set(["6801-002882P", "6801-002883P"]);
 
   const loadCached = async () => {
     setLoading(true);
@@ -110,7 +114,8 @@ export default function L1L2ReportPage() {
       // packaging (polybag/polythene/laminated film) even though it's
       // also measured in kg - user-confirmed rule, "Show All Items"
       // toggle bypasses this to see the unfiltered set.
-      const matchesWeightFilter = showAllItems || (it.unit_of_measure === "kg" && !PACKAGING_KEYWORDS.test(it.description || ""));
+      const matchesWeightFilter =
+        showAllItems || (it.unit_of_measure === "kg" && !PACKAGING_KEYWORDS.test(it.description || "") && !EXPLICIT_EXCLUDED_PRODUCT_IDS.has(it.product_id));
       return matchesLevel && matchesSearch && matchesWeightFilter;
     });
   }, [items, search, levelFilter, showAllItems]);
