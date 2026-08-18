@@ -18,7 +18,7 @@ from starlette.middleware.cors import CORSMiddleware
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_material_client import (
     SAPMaterialClient, SAPMaterialError, SAPMaterialAuthError, SAPMaterialWriteNotConfiguredError,
-    PHYSICAL_ATTRIBUTE_CODES,
+    SAPMaterialFieldNotConfiguredError, PHYSICAL_FIELD_CONFIG,
 )
 from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplierAuthError, SAPSupplierNotConfiguredError
 from sap_price_spec_client import SAPPriceSpecClient, SAPPriceSpecError, bulk_push_erp_prices_to_sap
@@ -505,6 +505,23 @@ async def get_bom_comments(product_ids: str = Query(..., description="Comma-sepa
         {"_id": {"$in": ids}, "comments": {"$exists": True, "$ne": []}}, {"_id": 1, "comments": 1}
     )
     return {doc["_id"]: doc["comments"] for doc in docs}
+
+
+@api_router.get("/bom/net-weight")
+async def get_bom_net_weight(product_ids: str = Query(..., description="Comma-separated product IDs")):
+    """Read-only lookup of each component's Net Weight (kg) for BOM
+    Explorer - served from the local `component_master` cache only (set
+    either manually via the Admin page's "Weight & Surface Area" dialog,
+    or pulled from SAP's custom "Item Net Weight" field once the SAP admin
+    links it to QueryMaterialIn - see SAP_MATERIAL_FIELD_SETUP_REQUEST.md).
+    Returns only product_ids that have a value set."""
+    ids = [p.strip() for p in product_ids.split(",") if p.strip()]
+    if not ids:
+        return {}
+    docs = db["component_master"].find(
+        {"_id": {"$in": ids}, "net_weight_kg": {"$ne": None}}, {"_id": 1, "net_weight_kg": 1}
+    )
+    return {doc["_id"]: doc["net_weight_kg"] for doc in docs}
 
 
 class RefreshAttachmentsRequest(BaseModel):
@@ -1644,12 +1661,7 @@ class ComponentMasterItem(BaseModel):
     sap_pushed_at: Optional[str] = None
     updated_at: Optional[str] = None
     net_weight_kg: Optional[float] = None
-    gross_weight_kg: Optional[float] = None
-    net_volume_cm3: Optional[float] = None
-    gross_volume_cm3: Optional[float] = None
-    length_mm: Optional[float] = None
-    width_mm: Optional[float] = None
-    height_mm: Optional[float] = None
+    surface_area_sqin: Optional[float] = None
     sap_physical_pushed_at: Optional[str] = None
 
 
@@ -1668,12 +1680,7 @@ def _to_component_master_item(doc: dict) -> ComponentMasterItem:
         sap_pushed_at=sap_pushed_at.isoformat() if sap_pushed_at else None,
         updated_at=updated_at.isoformat() if updated_at else None,
         net_weight_kg=doc.get("net_weight_kg"),
-        gross_weight_kg=doc.get("gross_weight_kg"),
-        net_volume_cm3=doc.get("net_volume_cm3"),
-        gross_volume_cm3=doc.get("gross_volume_cm3"),
-        length_mm=doc.get("length_mm"),
-        width_mm=doc.get("width_mm"),
-        height_mm=doc.get("height_mm"),
+        surface_area_sqin=doc.get("surface_area_sqin"),
         sap_physical_pushed_at=sap_physical_pushed_at.isoformat() if sap_physical_pushed_at else None,
     )
 
@@ -1702,12 +1709,7 @@ class UpdateComponentMasterRequest(BaseModel):
     msl: Optional[float] = None
     lead_time_days: Optional[float] = None
     net_weight_kg: Optional[float] = None
-    gross_weight_kg: Optional[float] = None
-    net_volume_cm3: Optional[float] = None
-    gross_volume_cm3: Optional[float] = None
-    length_mm: Optional[float] = None
-    width_mm: Optional[float] = None
-    height_mm: Optional[float] = None
+    surface_area_sqin: Optional[float] = None
 
 
 @api_router.patch("/admin/components/{product_id}", response_model=ComponentMasterItem)
@@ -1717,9 +1719,8 @@ async def update_admin_component(product_id: str, payload: UpdateComponentMaster
     its Minimum Stock Level, which the Purchasing Plan's netting math reads
     directly (see purchasing_plan.get_component_msl), and/or its Procurement
     Lead Time (used only by the SAP Push-to-SAP write-back), and/or its
-    physical attributes (Net/Gross Weight, Net/Gross Volume, Length/Width/
-    Height - local values used by the separate "Push Weight & Dimensions to
-    SAP" write-back)."""
+    Net Weight/Surface Area (local values used by the separate "Push
+    Weight & Surface Area to SAP" write-back)."""
     update = {}
     if payload.category is not None:
         update["category"] = payload.category
@@ -1729,7 +1730,7 @@ async def update_admin_component(product_id: str, payload: UpdateComponentMaster
         update["msl"] = payload.msl
     if payload.lead_time_days is not None:
         update["lead_time_days"] = payload.lead_time_days
-    for field in PHYSICAL_ATTRIBUTE_CODES:
+    for field in PHYSICAL_FIELD_CONFIG:
         value = getattr(payload, field)
         if value is not None:
             update[field] = value
@@ -1873,12 +1874,12 @@ class SapPhysicalAttributesResponse(BaseModel):
 
 @api_router.get("/admin/components/{product_id}/sap-physical-attributes", response_model=SapPhysicalAttributesResponse)
 async def get_sap_physical_attributes(product_id: str):
-    """Live-reads SAP's current Weight/Volume/Dimensions ("UoM Characteristics"
-    tab) for this component via the already-authorized QueryMaterialIn service -
-    used by the Admin page's "Weight & Dimensions" dialog to show Current SAP
-    vs Pushing before an operator decides to push. An empty `attributes` dict
-    is a NORMAL result on this tenant (live-confirmed 18 Aug 2026: only 2 of
-    11,092 materials have any value set), not an error."""
+    """Live-reads SAP's current Net Weight/Surface Area custom fields for
+    this component via QueryMaterialIn - used by the Admin page's
+    "Weight & Surface Area" dialog to show Current SAP vs Pushing before an
+    operator decides to push. An empty `attributes` dict is expected until
+    the SAP admin links these custom fields to QueryMaterialIn (see
+    SAP_MATERIAL_FIELD_SETUP_REQUEST.md) - not an error."""
     try:
         result = await asyncio.to_thread(sap_material_client.get_physical_attributes, product_id)
     except SAPMaterialAuthError as e:
@@ -1897,22 +1898,22 @@ class PushPhysicalAttributesResponse(BaseModel):
 
 @api_router.post("/admin/components/{product_id}/push-physical-attributes-to-sap", response_model=PushPhysicalAttributesResponse)
 async def push_physical_attributes_to_sap(product_id: str):
-    """Pushes this component's LOCAL Net/Gross Weight, Net/Gross Volume, and
-    Length/Width/Height -> SAP's Material master "UoM Characteristics" via
-    ManageMaterialIn. Requires the "Manage Materials" Communication
-    Arrangement to be activated on the tenant (separate from the read-only
-    "Query Materials" one already used elsewhere in this app) - raises a
-    clear, actionable error (see SAP_MATERIAL_WRITE_AUTHORIZATION_REQUEST.md)
-    if it isn't set up yet, rather than a generic failure."""
+    """Pushes this component's LOCAL Net Weight/Surface Area -> SAP's
+    custom Material fields via ManageMaterialIn. Requires (1) the "Manage
+    Materials" Communication Arrangement to be activated on the tenant, and
+    (2) both custom fields to be linked to QueryMaterialIn/ManageMaterialIn
+    by the SAP admin - raises a clear, actionable error (see
+    SAP_MATERIAL_FIELD_SETUP_REQUEST.md) if either isn't done yet, rather
+    than a generic failure."""
     doc = await asyncio.to_thread(db["component_master"].find_one, {"_id": product_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Unknown component")
     product_uuid = doc.get("product_uuid")
     if not product_uuid:
         raise HTTPException(status_code=404, detail="This component has no known SAP link yet - open it in BOM Explorer or a Purchasing Plan run first")
-    values = {field: doc.get(field) for field in PHYSICAL_ATTRIBUTE_CODES}
+    values = {field: doc.get(field) for field in PHYSICAL_FIELD_CONFIG}
     if not any(v is not None for v in values.values()):
-        raise HTTPException(status_code=400, detail="Set at least one of Net/Gross Weight, Net/Gross Volume, Length/Width/Height for this component before pushing")
+        raise HTTPException(status_code=400, detail="Set Net Weight and/or Surface Area for this component before pushing")
 
     try:
         current = await asyncio.to_thread(sap_material_client.get_physical_attributes, product_id)
@@ -1920,13 +1921,15 @@ async def push_physical_attributes_to_sap(product_id: str):
             raise HTTPException(status_code=404, detail="SAP has no material with this ID")
         await asyncio.to_thread(
             sap_material_client.push_physical_attributes,
-            product_id, current["uuid"], current["change_state_id"], current["existing_type_codes"], values,
+            product_id, current["uuid"], current["change_state_id"], values,
         )
     except SAPMaterialWriteNotConfiguredError:
         raise HTTPException(
             status_code=400,
-            detail="SAP hasn't authorized the Manage Materials write service yet - see SAP_MATERIAL_WRITE_AUTHORIZATION_REQUEST.md for the exact SAP admin steps needed",
+            detail="SAP hasn't authorized the Manage Materials write service yet - see SAP_MATERIAL_FIELD_SETUP_REQUEST.md for the exact SAP admin steps needed",
         )
+    except SAPMaterialFieldNotConfiguredError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except SAPMaterialAuthError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except SAPMaterialError as e:

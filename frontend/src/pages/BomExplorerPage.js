@@ -27,6 +27,7 @@ import {
   FileImage,
   PlayCircle,
   ArrowsClockwise,
+  Scales,
 } from "@phosphor-icons/react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -268,6 +269,7 @@ export default function BomExplorerPage() {
   const [categoriesLoaded, setCategoriesLoaded] = useState(false);
   const [drawingUrls, setDrawingUrls] = useState({});
   const [comments, setComments] = useState({});
+  const [netWeights, setNetWeights] = useState({});
   const [refreshingAttachments, setRefreshingAttachments] = useState(false);
   const [refreshProgress, setRefreshProgress] = useState("");
   const [treeSearch, setTreeSearch] = useState("");
@@ -375,12 +377,14 @@ export default function BomExplorerPage() {
     const productIds = collectAllProductIds(tree);
     if (productIds.length === 0) return;
     try {
-      const [drawingResponse, commentsResponse] = await Promise.all([
+      const [drawingResponse, commentsResponse, netWeightResponse] = await Promise.all([
         axios.get(`${API}/bom/drawing-urls`, { params: { product_ids: productIds.join(",") } }),
         axios.get(`${API}/bom/comments`, { params: { product_ids: productIds.join(",") } }),
+        axios.get(`${API}/bom/net-weight`, { params: { product_ids: productIds.join(",") } }),
       ]);
       setDrawingUrls(drawingResponse.data || {});
       setComments(commentsResponse.data || {});
+      setNetWeights(netWeightResponse.data || {});
     } catch {
       // Non-critical, read-only cache lookup - silently skip, drawings/comments just won't show this load.
     }
@@ -819,6 +823,16 @@ export default function BomExplorerPage() {
                               </div>
                             </PopoverContent>
                           </Popover>
+                        )}
+                        {netWeights[node.product_id] != null && (
+                          <span
+                            className="shrink-0 px-1 py-0.5 rounded border border-[#175CD3] text-[9px] font-bold text-[#175CD3] bg-[#EFF8FF] leading-none inline-flex items-center gap-0.5"
+                            title="Net Weight"
+                            data-testid={`bom-net-weight-${path}`}
+                          >
+                            <Scales size={9} weight="bold" />
+                            {netWeights[node.product_id]} kg
+                          </span>
                         )}
                       </span>
                     </td>

@@ -1,0 +1,52 @@
+{
+  "summary": "Tested the NEW Weight & Dimensions (physical-attributes) feature on the Admin page - 3 new backend endpoints + AdminPage dialog. 9/9 pytest backend tests pass (schema, GET sap-physical-attributes with real live SAP data, PATCH local save + persistence + partial-update, POST push returns the expected 400 'not authorized yet' error with 'Manage Materials' wording, unknown-product/unlinked-product 404 paths, admin/components list still exposes the 7 new fields as null on untouched rows, BOM search regression). Frontend UI: dialog opens with all 7 field rows (label + Current SAP + local input + unit), Pull from SAP works and correctly shows '—' for all 7 attributes on SPC5WM (expected - live-confirmed empty tenant data), Save Locally persists across dialog close/reopen. Regression: existing SAP-push button, categories, table still render. HOWEVER: a real backend error-handling bug was found - when SAP's Manage Materials service is slow/timing out (common on this tenant given the heavy background load), the push endpoint returns HTTP 500 with an unhandled requests.exceptions.ReadTimeout instead of a clean 4xx/5xx with the intended 'not authorized yet' or 'SAP unreachable' message. The user asked us to specifically verify this stays clean. The toast is still readable ('Push to SAP failed / Request failed with status code 500') so no raw stack in the UI, but the intended actionable message is lost and the endpoint leaks a 500.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/admin/components/{product_id}/push-physical-attributes-to-sap",
+        "issue": "Unhandled requests.exceptions.ReadTimeout from sap_material_client.get_physical_attributes bubbles up as HTTP 500 with an ugly ASGI stack in backend logs. When SAP is slow (which it currently is under the background jobs' load) the endpoint should return a clean 502/504 with an actionable message ('SAP is currently slow/unreachable, please retry'), not 500. The intended 'Manage Materials write service not authorized yet' branch never runs because the first read call times out before push_physical_attributes is even called. Live-reproduced from the browser: 500 response, real backend traceback in backend.err.log at line 1918 in server.py -> requests.exceptions.ReadTimeout (host='my431827.businessbydesign.cloud.sap', read timeout=45). Same risk exists on GET /api/admin/components/{product_id}/sap-physical-attributes (same client call, no timeout/connection error wrapper).",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "AdminPage - Weight/Dims dialog form map",
+        "issue": "React console error: 'Each child in a list should have a unique key prop' - inside PHYSICAL_FIELDS.map(...) the outer element is a Fragment (<>...</>) with keyed children instead of a single keyed wrapper. Non-fatal but pollutes the console on every dialog open.",
+        "selector": "frontend/src/pages/AdminPage.js lines ~1082-1100 (PHYSICAL_FIELDS.map)",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Weight/Dims -> Push to SAP",
+        "issue": "When the backend returns 500 (unhandled SAP timeout, see backend issue above), the toast reads 'Push to SAP failed / Request failed with status code 500' - it does NOT contain the intended 'Manage Materials write service' guidance. Once the backend catches the timeout properly, the frontend's err?.response?.data?.detail wiring will surface the correct message automatically.",
+        "affected_selectors": ["[data-testid=weight-dims-push-to-sap-button]"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_weight_dims.py",
+    "/app/test_reports/pytest/iteration_75_results.xml"
+  ],
+  "action_items": [
+    "Wrap SAP HTTP calls in sap_material_client.get_physical_attributes / push_physical_attributes with try/except on requests.exceptions.Timeout / ConnectionError / RequestException, and raise SAPMaterialError (or a new SAPMaterialUnavailableError) so the server.py endpoints return a clean 400/502/504 with a readable detail instead of leaking a 500 + traceback.",
+    "Fix the React key warning inside PHYSICAL_FIELDS.map in AdminPage.js (~line 1082) - wrap each iteration in a single keyed element instead of a Fragment with keyed children."
+  ],
+  "critical_code_review_comments": [
+    "sap_material_client.get_physical_attributes and push_physical_attributes make a direct requests.post() with a 45s timeout but only catch SAP-specific SOAP faults. Any transport-level exception (ReadTimeout, ConnectTimeout, ConnectionError, SSLError) escapes unwrapped and turns into a 500 from FastAPI. The MSL/lead-time push endpoint has the same underlying client pattern - please audit whether that one already wraps requests.RequestException at some layer (from prior sessions it appears the SAPSoapClient does, but the newly-added material client may not have been given the same treatment).",
+    "PATCH /api/admin/components/{product_id} uses upsert=True on update_one. This will silently create a component master row for a completely unknown product_id (no _id validation), which conflicts with the push endpoint's explicit 'Unknown component' 404 check. Consider tightening PATCH to only update existing rows, or explicitly documenting the upsert behavior."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_weight_dims.py"
+  ],
+  "success_rate": {"backend": "89% (8/9 code-path tests green; 1 integration path - SAP timeout handling - reveals an unhandled 500)", "frontend": "90% (dialog, fields, pull, save-locally all working; push error surfaces a generic 500 toast instead of the intended actionable message due to backend bug)"},
+  "seed_data_creation": "Inserted 1 synthetic super_admin auth_session + auth_user (both _id prefixed 'TEST_') for both pytest and browser tests. Also touched 2 real components (SPC5WM, RFID-WM1942) with test values for net_weight_kg/length_mm - these are real product_ids the main agent said were safe to overwrite. Cleaned up: 1 session, 1 user, 2 TEST_-prefixed component_master rows deleted. MongoDB confirmed 0 TEST_-prefixed rows remain.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend endpoint contract verified working (pytest all green including the 400 'not authorized' path when SAP responds quickly). The 500-on-SAP-timeout issue only manifests when SAP is slow (very common on this tenant right now due to background jobs). To reproduce in a browser: sign in via mock session, open Admin page, click Weight/Dims for SPC5WM, ensure at least one local value is set, click Push to SAP - if SAP replies in <45s you get the correct 400 with 'Manage Materials' message; if it times out you get 500 with 'Request failed with status code 500' toast. After the fix, the toast should always contain either 'not authorized' or 'unreachable/slow' wording, never a bare status-code string.",
+  "rca_of_the_issue": "sap_material_client.get_physical_attributes() at /app/backend/sap_material_client.py:172 calls requests.post(..., timeout=45) but only catches SOAP-level faults (parsed from a successful HTTP response). A transport-level requests.exceptions.ReadTimeout is never re-raised as an SAPMaterialError, so it propagates all the way to FastAPI's default 500 handler. The push endpoint in server.py:1918 calls this method BEFORE attempting the actual write, so a slow SAP response on the read blocks the code path that would have raised SAPMaterialWriteNotConfiguredError -> nice 400 detail. Fix: wrap the requests.post in try/except requests.exceptions.RequestException in sap_material_client.get_physical_attributes and push_physical_attributes and raise SAPMaterialError('SAP is currently unreachable - please retry'), which server.py's existing except SAPMaterialError branch already maps to HTTP 400 with the message."
+}

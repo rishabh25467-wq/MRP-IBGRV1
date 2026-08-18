@@ -32,12 +32,7 @@ const ADD_NEW_CATEGORY_VALUE = "__add_new_category__";
 
 const PHYSICAL_FIELDS = [
   { key: "net_weight_kg", label: "Net Weight", unit: "kg" },
-  { key: "gross_weight_kg", label: "Gross Weight", unit: "kg" },
-  { key: "net_volume_cm3", label: "Net Volume", unit: "cm³" },
-  { key: "gross_volume_cm3", label: "Gross Volume", unit: "cm³" },
-  { key: "length_mm", label: "Length", unit: "mm" },
-  { key: "width_mm", label: "Width", unit: "mm" },
-  { key: "height_mm", label: "Height", unit: "mm" },
+  { key: "surface_area_sqin", label: "Surface Area", unit: "in²" },
 ];
 
 const formatDate = (iso) => (iso ? new Date(iso).toLocaleString() : "—");
@@ -740,7 +735,7 @@ export default function AdminPage() {
                   SAP Push
                 </th>
                 <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
-                  Weight/Dims
+                  Weight/Area
                 </th>
               </tr>
             </thead>
@@ -868,7 +863,7 @@ export default function AdminPage() {
                         data-testid={`weight-dims-button-${it.product_id}`}
                       >
                         <Scales size={12} className="mr-1" />
-                        Weight/Dims
+                        Weight/Area
                       </Button>
                       {it.sap_physical_pushed_at && (
                         <span className="text-xs text-[#667085]" title={formatDate(it.sap_physical_pushed_at)}>
@@ -1054,7 +1049,7 @@ export default function AdminPage() {
       <Dialog open={!!physicalDialogItem} onOpenChange={(open) => !open && setPhysicalDialogItem(null)}>
         <DialogContent className="max-w-lg" data-testid="weight-dims-dialog">
           <DialogHeader>
-            <DialogTitle className="font-heading text-base">Weight &amp; Dimensions: {physicalDialogItem?.product_id}</DialogTitle>
+            <DialogTitle className="font-heading text-base">Weight &amp; Surface Area: {physicalDialogItem?.product_id}</DialogTitle>
           </DialogHeader>
           <div className="flex justify-end">
             <Button

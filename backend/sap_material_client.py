@@ -10,6 +10,7 @@ anywhere in the explored catalog.
 Authorized and working as of 08 Aug 2026 (the "materialquery" Communication
 Scenario / QueryMaterialIn service was activated for the _EMERGENTBOM
 business user)."""
+import os
 import re
 import uuid
 
@@ -31,6 +32,20 @@ class SAPMaterialAuthError(SAPMaterialError):
     pass
 
 
+class SAPMaterialFieldNotConfiguredError(SAPMaterialError):
+    """Raised when a custom field (Net Weight / Surface Area) isn't linked
+    to the QueryMaterialIn/ManageMaterialIn web service yet on the SAP side
+    (live-confirmed 18 Aug 2026: the SAP admin created "Item Net Weight"
+    and "Surface Area(Sq.Inch)" as custom fields directly on the Material's
+    General tab, e.g. Material 5989825-2.1 has Surface Area = 255 in the
+    SAP UI, but NEITHER field appears at all in the QueryMaterialIn SOAP
+    response - a custom field must be explicitly linked to a specific web
+    service via Key User Tools > adaptation mode > Further Usage >
+    Services > Add Field before it's exposed there, see
+    SAP_MATERIAL_FIELD_SETUP_REQUEST.md)."""
+    pass
+
+
 class SAPMaterialWriteNotConfiguredError(SAPMaterialError):
     """Raised when the write-back service (ManageMaterialIn) has no
     Communication Arrangement/Scenario set up on the tenant at all yet -
@@ -41,48 +56,23 @@ class SAPMaterialWriteNotConfiguredError(SAPMaterialError):
     pass
 
 
-# Quantity Characteristic type codes shown on the Material master's "UoM
-# Characteristics" tab (per SAP's QueryMaterialIn/ManageMaterialIn docs).
-# unit_code is the default unit this app writes/expects on read for each -
-# NOT a universal tenant guarantee, but matches SAP's own published examples
-# and this tenant's one live-confirmed real value (NET_WT in KGM).
-PHYSICAL_ATTRIBUTE_CODES = {
-    "net_weight_kg": ("NET_WT", "KGM"),
-    "gross_weight_kg": ("GROSS_WT", "KGM"),
-    "net_volume_cm3": ("NET_VOL", "MTQ"),
-    "gross_volume_cm3": ("GROSS_VOL", "MTQ"),
-    "length_mm": ("DIM_LENGTH", "MTR"),
-    "width_mm": ("BREADTH", "MTR"),
-    "height_mm": ("HEIGHT", "MTR"),
+# Net Weight and Surface Area are CUSTOM extension fields added by the SAP
+# admin directly on the Material's "General" tab (NOT SAP's standard
+# QuantityCharacteristic/"UoM Characteristics" node - live-confirmed 18 Aug
+# 2026 that tab is unpopulated tenant-wide). Custom fields show up in the
+# SOAP response under an arbitrary namespace prefix once (and only once)
+# the SAP admin links them to QueryMaterialIn/ManageMaterialIn - until then
+# these env vars are blank and the field is simply omitted (not an error).
+PHYSICAL_FIELD_CONFIG = {
+    "net_weight_kg": {
+        "tag": os.environ.get("SAP_MATERIAL_NET_WEIGHT_FIELD_TAG"),
+        "ns": os.environ.get("SAP_MATERIAL_NET_WEIGHT_FIELD_NS"),
+    },
+    "surface_area_sqin": {
+        "tag": os.environ.get("SAP_MATERIAL_SURFACE_AREA_FIELD_TAG"),
+        "ns": os.environ.get("SAP_MATERIAL_SURFACE_AREA_FIELD_NS"),
+    },
 }
-_VOLUME_FIELDS = {"net_volume_cm3", "gross_volume_cm3"}
-_LENGTH_FIELDS = {"length_mm", "width_mm", "height_mm"}
-
-
-def _sap_unit_to_app_value(field: str, value: float, unit_code: str) -> float:
-    """Converts a value SAP returned in its own unit_code into this app's
-    display unit (cm3 for volume, mm for length/width/height, kg unchanged
-    for weight) - only when unit_code matches the expected default (MTQ/
-    MTR); otherwise returns the raw SAP value unchanged (no silent
-    misrepresentation of an unexpected tenant unit)."""
-    _, expected_unit = PHYSICAL_ATTRIBUTE_CODES[field]
-    if unit_code != expected_unit:
-        return value
-    if field in _VOLUME_FIELDS:
-        return value * 1_000_000  # m^3 -> cm^3
-    if field in _LENGTH_FIELDS:
-        return value * 1000  # m -> mm
-    return value
-
-
-def _app_value_to_sap_unit(field: str, value: float) -> float:
-    """Inverse of _sap_unit_to_app_value - converts this app's display
-    value into the SAP default unit_code for that field before writing."""
-    if field in _VOLUME_FIELDS:
-        return value / 1_000_000  # cm^3 -> m^3
-    if field in _LENGTH_FIELDS:
-        return value / 1000  # mm -> m
-    return value
 
 
 def _tag_re(tag: str):
@@ -95,7 +85,6 @@ def _first_tag(xml: str, tag: str):
 
 
 _DOCUMENT_RE = re.compile(r"<(?:\w+:)?Document(?:\s[^>]*)?>(.*?)</(?:\w+:)?Document>", re.S)
-_QUANTITY_CHARACTERISTIC_RE = re.compile(r"<QuantityCharacteristic(?:\s[^>]*)?>(.*?)</QuantityCharacteristic>", re.S)
 
 # SAP ByDesign's standard Attachment Type codeset - only the ones actually
 # seen on this tenant so far are listed; anything else falls back to a
@@ -135,44 +124,22 @@ class SAPMaterialClient:
   </glob:MaterialByElementsQuery_sync>
  </soapenv:Body></soapenv:Envelope>"""
 
-    @staticmethod
-    def _physical_attributes_request_xml(internal_id: str) -> str:
-        return f"""<?xml version="1.0" encoding="UTF-8"?>
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
- xmlns:glob="http://sap.com/xi/SAPGlobal20/Global">
- <soapenv:Header/><soapenv:Body>
-  <glob:MaterialByElementsQuery_sync>
-   <MaterialSelectionByElements><SelectionByInternalID>
-    <InclusionExclusionCode>I</InclusionExclusionCode>
-    <IntervalBoundaryTypeCode>1</IntervalBoundaryTypeCode>
-    <LowerBoundaryInternalID>{internal_id}</LowerBoundaryInternalID>
-    <UpperBoundaryInternalID/>
-   </SelectionByInternalID></MaterialSelectionByElements>
-   <ProcessingConditions>
-    <QueryHitsMaximumNumberValue>1</QueryHitsMaximumNumberValue>
-    <QueryHitsUnlimitedIndicator>false</QueryHitsUnlimitedIndicator>
-   </ProcessingConditions>
-   <RequestedElements materialTransmissionRequestCode="2">
-    <Material quantityCharacteristicTransmissionRequestCode="2" />
-   </RequestedElements>
-  </glob:MaterialByElementsQuery_sync>
- </soapenv:Body></soapenv:Envelope>"""
-
     def get_physical_attributes(self, internal_id: str):
-        """Live-reads the Material master's "UoM Characteristics" data
-        (Net/Gross Weight, Net/Gross Volume, Length/Width/Height) via the
-        already-authorized QueryMaterialIn service, requesting the
-        QuantityCharacteristic node explicitly (empty by default - live-
-        confirmed 18 Aug 2026 across all 11,092 materials in this tenant,
-        only 2 have any value set at all, so an empty result here is normal,
-        not an error). Returns {"uuid", "change_state_id", "attributes":
-        {field_name: {"value": float (app units), "sap_value": float,
-        "sap_unit": str}}} or None if SAP has no material with that ID."""
+        """Live-reads the Material's custom "Item Net Weight" and "Surface
+        Area(Sq.Inch)" fields (added by the SAP admin directly on the
+        Material General tab - NOT SAP's standard "UoM Characteristics"
+        node) via QueryMaterialIn. Returns None for a field whose
+        SAP_MATERIAL_*_FIELD_TAG/_NS env vars aren't set yet (not linked to
+        this web service by the SAP admin yet - see
+        SAP_MATERIAL_FIELD_SETUP_REQUEST.md) - not an error. Returns
+        {"uuid", "change_state_id", "attributes": {field_name: {"value":
+        float, "unit": str|None}}} or None if SAP has no material with
+        that ID."""
         try:
             with sap_semaphore:
                 resp = requests.post(
                     self.endpoint,
-                    data=self._physical_attributes_request_xml(internal_id).encode("utf-8"),
+                    data=self._request_xml(internal_id).encode("utf-8"),
                     auth=self.auth,
                     headers={"Content-Type": "text/xml; charset=utf-8", "Accept": "text/xml", "SOAPAction": '""'},
                     timeout=45,
@@ -193,64 +160,60 @@ class SAPMaterialClient:
         if _first_tag(block, "InternalID") != internal_id:
             return None
 
-        by_type_code = {}
-        for qc_match in _QUANTITY_CHARACTERISTIC_RE.finditer(block):
-            qc_block = qc_match.group(1)
-            type_code = _first_tag(qc_block, "CharacteristicQuantityTypeCode")
-            value_str = _first_tag(qc_block, "CharacteristicQuantity")
-            unit_match = re.search(r'<CharacteristicQuantity\s+unitCode="([^"]*)"', qc_block)
-            if not type_code or value_str is None or not unit_match:
-                continue
-            by_type_code[type_code] = {"value": float(value_str), "unit": unit_match.group(1)}
-
         attributes = {}
-        for field, (type_code, _) in PHYSICAL_ATTRIBUTE_CODES.items():
-            hit = by_type_code.get(type_code)
-            if hit:
-                attributes[field] = {
-                    "value": _sap_unit_to_app_value(field, hit["value"], hit["unit"]),
-                    "sap_value": hit["value"],
-                    "sap_unit": hit["unit"],
-                }
+        for field, cfg in PHYSICAL_FIELD_CONFIG.items():
+            tag = cfg["tag"]
+            if not tag:
+                continue
+            m = _tag_re(tag).search(block)
+            if not m:
+                continue
+            unit_match = re.search(rf'<(?:\w+:)?{tag}\s[^>]*unitCode="([^"]*)"', block)
+            raw_value = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+            try:
+                attributes[field] = {"value": float(raw_value), "unit": unit_match.group(1) if unit_match else None}
+            except ValueError:
+                continue
+
         return {
             "uuid": _first_tag(block, "UUID"),
             "change_state_id": _first_tag(block, "ChangeStateID"),
             "attributes": attributes,
-            "existing_type_codes": set(by_type_code.keys()),
         }
 
-    def push_physical_attributes(self, internal_id: str, material_uuid: str, change_state_id: str,
-                                  existing_type_codes: set, values: dict):
-        """Writes physical attributes (values keyed by the PHYSICAL_ATTRIBUTE_CODES
-        field names, in app units) to SAP via ManageMaterialIn's MaintainBundle_V1.
-        Uses actionCode="01" (create) for a characteristic SAP doesn't have yet for
-        this material, "02" (update) for one it does - required by SAP (sending "02"
-        for a missing line is a business error per SAP's own docs). Raises
-        SAPMaterialWriteNotConfiguredError if the tenant has no Communication
-        Arrangement for this service yet (live-confirmed 18 Aug 2026 fault text)."""
+    def push_physical_attributes(self, internal_id: str, material_uuid: str, change_state_id: str, values: dict):
+        """Writes Net Weight / Surface Area (values keyed by
+        PHYSICAL_FIELD_CONFIG's field names) to SAP's custom Material
+        fields via ManageMaterialIn's MaintainBundle_V1 - simple scalar
+        extension fields, no actionCode needed (unlike a collection node).
+        Raises SAPMaterialFieldNotConfiguredError if a field's tag/ns env
+        vars aren't set, or SAPMaterialWriteNotConfiguredError if the
+        tenant has no Communication Arrangement for ManageMaterialIn at
+        all yet (live-confirmed 18 Aug 2026 'Web service processing
+        error' fault)."""
         if not self.manage_endpoint:
             raise SAPMaterialWriteNotConfiguredError("SAP_SOAP_MATERIAL_MANAGE_ENDPOINT is not configured")
         lines = []
+        skipped_unconfigured = []
         for field, value in values.items():
-            if value is None or field not in PHYSICAL_ATTRIBUTE_CODES:
+            if value is None or field not in PHYSICAL_FIELD_CONFIG:
                 continue
-            type_code, unit_code = PHYSICAL_ATTRIBUTE_CODES[field]
-            action = "02" if type_code in existing_type_codes else "01"
-            sap_value = _app_value_to_sap_unit(field, value)
-            lines.append(
-                f'<QuantityCharacteristic actionCode="{action}">'
-                f'<QuantityMeasureUnitCode>EA</QuantityMeasureUnitCode>'
-                f'<CharacteristicQuantity unitCode="{unit_code}">{sap_value}</CharacteristicQuantity>'
-                f'<CharacteristicQuantityTypeCode>{type_code}</CharacteristicQuantityTypeCode>'
-                f'</QuantityCharacteristic>'
-            )
+            cfg = PHYSICAL_FIELD_CONFIG[field]
+            if not cfg["tag"] or not cfg["ns"]:
+                skipped_unconfigured.append(field)
+                continue
+            lines.append(f'<n1:{cfg["tag"]} xmlns:n1="{cfg["ns"]}">{value}</n1:{cfg["tag"]}>')
         if not lines:
-            raise SAPMaterialError("Nothing to push - set at least one physical attribute first")
+            if skipped_unconfigured:
+                raise SAPMaterialFieldNotConfiguredError(
+                    f"These fields aren't linked to ManageMaterialIn on the SAP side yet: {', '.join(skipped_unconfigured)}"
+                )
+            raise SAPMaterialError("Nothing to push - set Net Weight and/or Surface Area first")
 
         xml_req = f"""<?xml version="1.0" encoding="UTF-8"?>
 <MaterialBundleMaintainRequest_sync_V1 xmlns="http://sap.com/xi/A1S/Global">
  <BasicMessageHeader><ID>{uuid.uuid4().hex}</ID></BasicMessageHeader>
- <Material actionCode="02" quantityCharacteristicListCompleteTransmissionIndicator="false">
+ <Material actionCode="02">
   <ChangeStateID>{change_state_id}</ChangeStateID>
   <InternalID>{internal_id}</InternalID>
   <UUID>{material_uuid}</UUID>
