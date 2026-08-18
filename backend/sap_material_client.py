@@ -211,22 +211,31 @@ class SAPMaterialClient:
             raise SAPMaterialError("Nothing to push - set Net Weight and/or Surface Area first")
 
         xml_req = f"""<?xml version="1.0" encoding="UTF-8"?>
-<MaterialBundleMaintainRequest_sync_V1 xmlns="http://sap.com/xi/A1S/Global">
- <BasicMessageHeader><ID>{uuid.uuid4().hex}</ID></BasicMessageHeader>
- <Material actionCode="02">
-  <ChangeStateID>{change_state_id}</ChangeStateID>
-  <InternalID>{internal_id}</InternalID>
-  <UUID>{material_uuid}</UUID>
-  {''.join(lines)}
- </Material>
-</MaterialBundleMaintainRequest_sync_V1>"""
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+ <soapenv:Header/>
+ <soapenv:Body>
+  <MaterialBundleMaintainRequest_sync_V1 xmlns="http://sap.com/xi/A1S/Global">
+   <BasicMessageHeader><ID>{uuid.uuid4().hex}</ID></BasicMessageHeader>
+   <Material actionCode="02">
+    <ChangeStateID>{change_state_id}</ChangeStateID>
+    <InternalID>{internal_id}</InternalID>
+    <UUID>{material_uuid}</UUID>
+    {''.join(lines)}
+   </Material>
+  </MaterialBundleMaintainRequest_sync_V1>
+ </soapenv:Body>
+</soapenv:Envelope>"""
         try:
             with sap_semaphore:
                 resp = requests.post(
                     self.manage_endpoint,
                     data=xml_req.encode("utf-8"),
                     auth=self.auth,
-                    headers={"Content-Type": "text/xml; charset=utf-8", "Accept": "text/xml", "SOAPAction": '""'},
+                    headers={
+                        "Content-Type": "text/xml; charset=utf-8",
+                        "Accept": "text/xml",
+                        "SOAPAction": '"http://sap.com/xi/A1S/Global/ManageMaterialIn/MaintainBundle_V1Request"',
+                    },
                     timeout=45,
                 )
         except requests.exceptions.RequestException as e:
