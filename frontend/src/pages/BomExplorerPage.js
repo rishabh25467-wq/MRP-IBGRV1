@@ -295,6 +295,16 @@ export default function BomExplorerPage() {
     checkConnection();
   }, [checkConnection]);
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const searchParam = params.get("search");
+    if (searchParam) {
+      setBomId(searchParam);
+      handleSearch({ preventDefault: () => {} }, searchParam);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const toggleKey = (key) => {
     setExpandedKeys((prev) => {
       const next = new Set(prev);
@@ -445,9 +455,10 @@ export default function BomExplorerPage() {
     }
   };
 
-  const handleSearch = async (e) => {
+  const handleSearch = async (e, overrideId) => {
     e.preventDefault();
-    if (!bomId.trim()) return;
+    const searchId = (overrideId ?? bomId).trim();
+    if (!searchId) return;
 
     setLoading(true);
     setError(null);
@@ -463,7 +474,7 @@ export default function BomExplorerPage() {
     setSortConfig({ field: null, direction: "asc" });
 
     try {
-      const response = await axios.get(`${API}/bom/search`, { params: { bom_id: bomId.trim() } });
+      const response = await axios.get(`${API}/bom/search`, { params: { bom_id: searchId } });
       if (response.data.has_bom === false) {
         setItemInfo(response.data.item_info);
         toast.info(`${response.data.item_info.product_id} has no BOM`, {

@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, Fragment } from "react";
 import "@/App.css";
 import axios from "axios";
+import { Link } from "react-router-dom";
 import {
   Package,
   MagnifyingGlass,
@@ -15,6 +16,7 @@ import {
   Sparkle,
   Tag,
   WarningCircle,
+  ArrowSquareOut,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Toaster, toast } from "@/components/ui/sonner";
@@ -606,6 +608,18 @@ export default function InventoryPage() {
                                   <WarningCircle size={11} weight="bold" />
                                   No BOM
                                 </span>
+                              )}
+                              {it.no_bom && (
+                                <Link
+                                  to={`/?search=${encodeURIComponent(it.product_id)}`}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="inline-flex items-center gap-0.5 text-[#004B87] hover:text-[#00365f] hover:underline text-[10px] font-semibold shrink-0"
+                                  data-testid={`inventory-no-bom-investigate-${it.product_id}`}
+                                  title="Investigate in BOM Explorer"
+                                >
+                                  <ArrowSquareOut size={11} weight="bold" />
+                                  Investigate
+                                </Link>
                               )}
                             </span>
                           </td>

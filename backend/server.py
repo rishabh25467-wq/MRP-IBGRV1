@@ -4,7 +4,7 @@ import os
 import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional
 
@@ -31,6 +31,7 @@ from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
 from inventory_service import get_cached_inventory, refresh_inventory_cache, deep_backfill_uuids
+import l1_l2_report_service
 from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids, categorize_full_inventory, backfill_drawing_urls, refresh_attachments_now, REFRESH_ATTACHMENTS_MAX_IDS
 from oms_client import OMSClient, OMSError
 from open_po_client import OpenPODemandClient, OpenPODemandError
@@ -919,6 +920,74 @@ async def get_deep_backfill_status(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id")
     return DeepBackfillJobStatus(job_id=job_id, **job)
+
+
+class L1L2ReportItem(BaseModel):
+    root_product_id: str
+    parent_product_id: str
+    level: int
+    product_id: str
+    description: Optional[str] = None
+    quantity: Optional[float] = None
+    unit_of_measure: Optional[str] = None
+
+
+class L1L2Report(BaseModel):
+    items: List[L1L2ReportItem]
+    roots_scanned: int
+    roots_with_bom: int
+    updated_at: Optional[datetime] = None
+
+
+class L1L2ReportJobStatus(BaseModel):
+    job_id: str
+    status: str  # "running" | "done" | "failed"
+    result: Optional[L1L2Report] = None
+    error: Optional[str] = None
+
+
+@api_router.get("/admin/l1-l2-report", response_model=L1L2Report)
+async def get_l1_l2_report():
+    """Instant read of the last-generated report - empty items/None
+    updated_at if it's never been generated yet."""
+    return l1_l2_report_service.get_cached_report(db)
+
+
+@api_router.post("/admin/l1-l2-report/generate")
+async def start_l1_l2_report_generation():
+    """Full fresh sweep: every material in SAP's own On-Hand Inventory feed
+    plus every already-known BOM root, expanding Level 1 and Level 2 line
+    items (cache-first, live SAP fallback only for anything never explored
+    before - see l1_l2_report_service.build_l1_l2_report). Runs as a
+    background job since a full live sweep of the catalog can take
+    several minutes."""
+    job_id = str(uuid.uuid4())
+    job_store.create_job(db, job_id, {"status": "running", "result": None, "error": None})
+
+    async def run():
+        try:
+            result = await asyncio.to_thread(l1_l2_report_service.build_l1_l2_report, sap_soap_client, sap_inventory_client, db)
+            job_store.update_job(db, job_id, {
+                "status": "done",
+                "result": {**result, "updated_at": result["updated_at"].isoformat()},
+                "error": None,
+            })
+        except SAPInventoryError as e:
+            job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
+        except Exception as e:
+            logger.error(f"L1/L2 report generation failed: {e}")
+            job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+@api_router.get("/admin/l1-l2-report/generate/{job_id}", response_model=L1L2ReportJobStatus)
+async def get_l1_l2_report_job(job_id: str):
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return L1L2ReportJobStatus(job_id=job_id, **job)
 
 
 class CategorizeAllResult(BaseModel):
@@ -2671,6 +2740,61 @@ async def start_inventory_cache_refresh_loop():
             except Exception as e:
                 logger.error(f"Inventory cache background refresh failed: {e}")
             await asyncio.sleep(INVENTORY_CACHE_REFRESH_INTERVAL_SECONDS)
+
+    asyncio.create_task(loop())
+
+
+# Background maintenance: a consolidated "Nightly Sync" scheduled for
+# 1 AM IST (a genuinely quiet window for this tenant, per user request) -
+# runs the heavier full-catalog jobs back-to-back, off business hours,
+# instead of at unpredictable/immediate-after-restart times:
+#   1. deep_expand_all_known_roots - full recursive re-walk of every known
+#      BOM root (see bom_cache_service.py) - closes deeply-nested "No BOM"
+#      false positives across the whole catalog over time.
+#   2. deep_backfill_uuids - resolves any inventory item still missing a
+#      product_uuid (needed for Standard Cost valuation).
+#   3. refresh_inventory_cache - live On-Hand Inventory + Standard Costs
+#      pull (also already runs every 2h during the day; redundant but
+#      harmless here, just guarantees a fresh number right after the
+#      nightly BOM/UUID work).
+# None of these raise concurrency beyond the existing sap_semaphore cap -
+# running them at 1 AM doesn't make any single call heavier, it just moves
+# the WHEN so nobody notices if it takes a while.
+IST_OFFSET = timedelta(hours=5, minutes=30)
+NIGHTLY_SYNC_HOUR_IST = 1
+
+
+def _seconds_until_next_nightly_sync() -> float:
+    now_ist = datetime.now(timezone.utc) + IST_OFFSET
+    next_run_ist = now_ist.replace(hour=NIGHTLY_SYNC_HOUR_IST, minute=0, second=0, microsecond=0)
+    if next_run_ist <= now_ist:
+        next_run_ist += timedelta(days=1)
+    return (next_run_ist - now_ist).total_seconds()
+
+
+@app.on_event("startup")
+async def start_nightly_sync_loop():
+    async def loop():
+        while True:
+            await asyncio.sleep(_seconds_until_next_nightly_sync())
+            started_at = datetime.now(timezone.utc)
+            logger.info("Nightly sync (1 AM IST) starting: deep BOM expansion -> UUID backfill -> inventory/cost refresh")
+            try:
+                bom_result = await asyncio.to_thread(bom_cache_service.deep_expand_all_known_roots, sap_soap_client, db)
+                logger.info(f"Nightly sync: deep BOM expansion complete: {bom_result}")
+            except Exception as e:
+                logger.error(f"Nightly sync: deep BOM expansion failed: {e}")
+            try:
+                uuid_result = await asyncio.to_thread(deep_backfill_uuids, db, sap_soap_client, sap_material_client)
+                logger.info(f"Nightly sync: UUID backfill complete: {uuid_result}")
+            except Exception as e:
+                logger.error(f"Nightly sync: UUID backfill failed: {e}")
+            try:
+                cached = await asyncio.to_thread(refresh_inventory_cache, db, sap_inventory_client, sap_valuation_client)
+                logger.info(f"Nightly sync: inventory/cost refresh complete: {len(cached['items'])} item(s)")
+            except Exception as e:
+                logger.error(f"Nightly sync: inventory/cost refresh failed: {e}")
+            logger.info(f"Nightly sync finished in {(datetime.now(timezone.utc) - started_at).total_seconds():.0f}s")
 
     asyncio.create_task(loop())
 

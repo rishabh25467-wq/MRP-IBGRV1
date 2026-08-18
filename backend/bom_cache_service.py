@@ -376,3 +376,32 @@ def refresh_stale_nodes(sap_soap_client, db) -> dict:
         if changed:
             stats["changed"] += 1
     return stats
+
+
+def deep_expand_all_known_roots(sap_soap_client, db) -> dict:
+    """Nightly (off-peak) full recursive re-walk of every already-known BOM
+    root via build_tree_from_cache. An already-fully-explored branch costs
+    nothing extra here (pure Mongo cache reads) - this only spends real SAP
+    calls discovering genuinely new/deeper connections that a previous,
+    SHALLOWER exploration never reached (e.g. a single BOM Explorer search
+    only walks what a user expanded on screen, a 2-level report only goes
+    2 levels deep, a Purchasing Plan run can be cut short by its own
+    per-call MAX_LOOKUPS budget). Confirmed live (Aug 2026): AMF319-B1's
+    true structure is 6 levels/95 components deep, but only a shallow
+    subset had ever been cached, silently orphaning a genuinely-used
+    component (6400-003550) 3 levels down through an intermediate
+    sub-assembly (6800-004025) nobody had ever explored on its own - this
+    function's whole purpose is to close exactly that class of gap across
+    the WHOLE catalog over time, not just page-load-time for one root.
+    Returns {"roots_processed": n, "roots_failed": n, "total_roots": n}."""
+    collection = db[COLLECTION_NAME]
+    root_ids = sorted({d["_id"] for d in collection.find({"found": True}, {"_id": 1})})
+    processed, failed = 0, 0
+    for root_id in root_ids:
+        try:
+            build_tree_from_cache(root_id, sap_soap_client, db)
+            processed += 1
+        except BomFetchError as e:
+            logger.warning(f"Nightly deep-expand: root '{root_id}' fetch failed, will retry next run: {e}")
+            failed += 1
+    return {"roots_processed": processed, "roots_failed": failed, "total_roots": len(root_ids)}
