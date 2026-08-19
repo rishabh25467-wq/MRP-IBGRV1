@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, Fragment } from "react";
 import "@/App.css";
 import axios from "axios";
+import * as XLSX from "xlsx";
 import { Link } from "react-router-dom";
 import {
   Package,
@@ -18,6 +19,7 @@ import {
   WarningCircle,
   ArrowSquareOut,
   ClockCounterClockwise,
+  DownloadSimple,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Toaster, toast } from "@/components/ui/sonner";
@@ -297,6 +299,41 @@ export default function InventoryPage() {
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const pagedItems = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
+  const exportExcel = () => {
+    const activeFilters = [
+      search.trim() && `Search: "${search.trim()}"`,
+      categoryFilter !== "all" && `Category: ${categoryFilter === "uncategorized" ? "Uncategorized" : categoryFilter}`,
+      siteFilter !== "all" && `Site: ${siteFilter}`,
+      entityFilter !== "all" && `Entity: ${entities.find(([code]) => code === entityFilter)?.[1] || entityFilter}`,
+      noBomOnly && "Show only items without BOM",
+    ]
+      .filter(Boolean)
+      .join(" | ") || "None";
+    const headerRows = [
+      [`Last Updated: ${updatedAt ? formatIST(updatedAt) : ""}`],
+      [`Filters Applied: ${activeFilters}`],
+      [],
+      ["Product ID", "Description", "Category", "On-Hand Qty", "UOM", "Unit Cost", "Currency", "Total Value", "No BOM", "Historical BOM", "Locations"],
+    ];
+    const dataRows = sorted.map((it) => [
+      it.product_id,
+      it.description || "",
+      it.category || "",
+      it.total_qty ?? "",
+      it.uom || "",
+      it.unit_cost ?? "",
+      it.currency || "",
+      it.total_value ?? "",
+      it.no_bom ? "Yes" : "No",
+      it.historical_bom ? "Yes" : "No",
+      (it.locations || []).map((loc) => `${loc.site}: ${loc.qty}`).join("; "),
+    ]);
+    const sheet = XLSX.utils.aoa_to_sheet([...headerRows, ...dataRows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "Inventory");
+    XLSX.writeFile(workbook, `inventory_export_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
   useEffect(() => {
     setPage(1);
   }, [search, categoryFilter, siteFilter, entityFilter, noBomOnly]);
@@ -375,6 +412,18 @@ export default function InventoryPage() {
             >
               <Sparkle size={13} className={`mr-1.5 ${backfillStatus === "running" ? "animate-pulse" : ""}`} />
               {backfillStatus === "running" ? "Resolving Links..." : "Resolve Missing Values"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={exportExcel}
+              disabled={sorted.length === 0}
+              className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
+              data-testid="inventory-export-excel-button"
+              title="Export the currently filtered/searched rows shown below to an Excel file"
+            >
+              <DownloadSimple size={13} className="mr-1.5" />
+              Export Excel
             </Button>
             <Button
               type="button"
