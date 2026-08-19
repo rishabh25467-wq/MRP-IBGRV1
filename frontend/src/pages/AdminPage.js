@@ -969,7 +969,10 @@ export default function AdminPage() {
         )}
         <div className="flex items-center justify-end gap-2 mt-6 pt-3 border-t border-[#EAECF0]" data-testid="admin-full-sync-footer">
           {fullSyncStatus === "done" && fullSyncResult && (
-            <span className="text-xs text-[#475467]">Last full sync: {fullSyncResult.inventory_items_refreshed ?? "?"} item(s) refreshed</span>
+            <span className="text-xs text-[#475467]">
+              Last full sync: {fullSyncResult.inventory_items_refreshed ?? "?"} item(s) refreshed
+              {fullSyncResult.catalog_prefetch?.found > 0 && `, ${fullSyncResult.catalog_prefetch.found} new BOM root(s) discovered`}
+            </span>
           )}
           <Button
             type="button"

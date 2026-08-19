@@ -2786,6 +2786,17 @@ async def start_inventory_cache_refresh_loop():
 # 1 AM IST (a genuinely quiet window for this tenant, per user request) -
 # runs the heavier full-catalog jobs back-to-back, off business hours,
 # instead of at unpredictable/immediate-after-restart times:
+#   0. catalog_prefetch - bulk_prefetch against EVERY current inventory
+#      item's product_id (see bom_cache_service.bulk_prefetch) - closes a
+#      real gap found live (Aug 2026): `deep_expand_all_known_roots` only
+#      ever re-walks roots ALREADY in the cache, so an item that's
+#      genuinely a BOM root in SAP but was NEVER individually looked up by
+#      any page (BOM Explorer/Purchasing Plan/MRP/L1L2 Report) stayed
+#      falsely flagged "No BOM" even after a full nightly/manual sync -
+#      this step is what actually discovers it for the first time. This is
+#      exactly why a freshly-deployed environment (little page-usage
+#      history yet) can show a much higher "No BOM" count than one that's
+#      been used for a while, even right after running this same job.
 #   1. deep_expand_all_known_roots - full recursive re-walk of every known
 #      BOM root (see bom_cache_service.py) - closes deeply-nested "No BOM"
 #      false positives across the whole catalog over time.
@@ -2813,13 +2824,14 @@ def _seconds_until_next_nightly_sync() -> float:
 
 
 async def _run_full_sync(trigger: str) -> dict:
-    """The actual "Nightly Sync" work (deep BOM re-expansion -> UUID
-    backfill -> inventory/cost refresh), shared by the 1 AM IST scheduled
-    loop below AND the manual "Run Full Sync Now" admin button - same job,
-    two ways to kick it off (e.g. right after a fresh Production deploy,
-    instead of waiting for the next 1 AM IST window). Persists progress to
-    a single `full_sync_status` doc so the button can show "already
-    running" instead of firing a duplicate overlapping run."""
+    """The actual "Nightly Sync" work (catalog-wide root prefetch -> deep
+    BOM re-expansion -> UUID backfill -> inventory/cost refresh), shared
+    by the 1 AM IST scheduled loop below AND the manual "Run Full Sync
+    Now" admin button - same job, two ways to kick it off (e.g. right
+    after a fresh Production deploy, instead of waiting for the next 1 AM
+    IST window). Persists progress to a single `full_sync_status` doc so
+    the button can show "already running" instead of firing a duplicate
+    overlapping run."""
     status_collection = db[FULL_SYNC_STATUS_COLLECTION]
     started_at = datetime.now(timezone.utc)
     status_collection.update_one(
@@ -2827,8 +2839,14 @@ async def _run_full_sync(trigger: str) -> dict:
         {"$set": {"status": "running", "trigger": trigger, "started_at": started_at, "finished_at": None, "result": None, "error": None}},
         upsert=True,
     )
-    logger.info(f"Full sync ({trigger}) starting: deep BOM expansion -> UUID backfill -> inventory/cost refresh")
+    logger.info(f"Full sync ({trigger}) starting: catalog prefetch -> deep BOM expansion -> UUID backfill -> inventory/cost refresh")
     result = {}
+    try:
+        catalog_product_ids = [it["product_id"] for it in get_cached_inventory(db)["items"]]
+        result["catalog_prefetch"] = await asyncio.to_thread(bom_cache_service.bulk_prefetch, catalog_product_ids, sap_soap_client, db)
+        logger.info(f"Full sync: catalog prefetch complete: {result['catalog_prefetch']}")
+    except Exception as e:
+        logger.error(f"Full sync: catalog prefetch failed: {e}")
     try:
         result["bom_expansion"] = await asyncio.to_thread(bom_cache_service.deep_expand_all_known_roots, sap_soap_client, db)
         logger.info(f"Full sync: deep BOM expansion complete: {result['bom_expansion']}")

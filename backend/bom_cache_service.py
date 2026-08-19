@@ -151,7 +151,7 @@ def _fetch_live_batch(sap_soap_client, product_ids: list, db=None) -> dict:
     return results
 
 
-def bulk_prefetch(product_ids: list, sap_soap_client, db) -> None:
+def bulk_prefetch(product_ids: list, sap_soap_client, db) -> dict:
     """Pre-warms the persistent cache for MANY product_ids in one batched
     pass - intended to be called ONCE upfront with every root candidate a
     Purchasing Plan/MRP run is about to explode (see purchasing_plan.py's
@@ -163,18 +163,32 @@ def bulk_prefetch(product_ids: list, sap_soap_client, db) -> None:
     leaves any id whose batch fetch failed uncached - it will raise
     BomFetchError as usual (and be reported as a "fetch_error" in the
     caller's missing/unresolved list) the first time build_tree_from_cache
-    actually reaches it, same as if bulk_prefetch had never run."""
+    actually reaches it, same as if bulk_prefetch had never run.
+
+    Also used (Aug 2026) by the "Full Sync" job's catalog-wide prefetch
+    step against EVERY inventory item - see inventory_service._compute_
+    no_bom_flags: `deep_expand_all_known_roots` alone only ever re-walks
+    roots ALREADY in this cache, it can't discover a genuine BOM root that
+    was NEVER individually looked up by any page (BOM Explorer/Purchasing
+    Plan/MRP/L1L2 Report). This is exactly the gap that made a freshly-
+    deployed environment's "No BOM" count much higher than one with a lot
+    of page-usage history behind it, even after re-running the nightly
+    sync. Returns {"checked", "newly_fetched", "found"} for visibility."""
     if not product_ids:
-        return
+        return {"checked": 0, "newly_fetched": 0, "found": 0}
     collection = db[COLLECTION_NAME]
     already_cached = {doc["_id"] for doc in collection.find({"_id": {"$in": list(product_ids)}}, {"_id": 1})}
     to_fetch = [pid for pid in product_ids if pid not in already_cached]
     if not to_fetch:
-        return
+        return {"checked": len(product_ids), "newly_fetched": 0, "found": 0}
     fetched = _fetch_live_batch(sap_soap_client, to_fetch, db)
+    found = 0
     for pid in to_fetch:
         if pid in fetched:
             _upsert(collection, pid, fetched[pid], changed=True)
+            if fetched[pid]:
+                found += 1
+    return {"checked": len(product_ids), "newly_fetched": len(to_fetch), "found": found}
 
 
 def _upsert(collection, product_id, raw_bom, changed):
