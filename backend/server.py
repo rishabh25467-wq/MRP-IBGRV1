@@ -2685,6 +2685,41 @@ async def get_bulk_push_erp_to_sap_status(job_id: str):
     return BulkPushErpJobStatus(job_id=job_id, **job)
 
 
+class FullSyncStatus(BaseModel):
+    status: str  # "idle" | "running" | "done"
+    trigger: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    result: Optional[dict] = None
+
+
+@api_router.get("/admin/full-sync-status", response_model=FullSyncStatus)
+async def get_full_sync_status():
+    doc = await asyncio.to_thread(db[FULL_SYNC_STATUS_COLLECTION].find_one, {"_id": FULL_SYNC_STATUS_ID})
+    if not doc:
+        return FullSyncStatus(status="idle")
+    return FullSyncStatus(
+        status=doc["status"], trigger=doc.get("trigger"),
+        started_at=doc["started_at"].isoformat() if doc.get("started_at") else None,
+        finished_at=doc["finished_at"].isoformat() if doc.get("finished_at") else None,
+        result=doc.get("result"),
+    )
+
+
+@api_router.post("/admin/run-full-sync")
+async def trigger_full_sync():
+    """Manual "Run Full Sync Now" button (Admin page) - same job the 1 AM
+    IST scheduler runs, useful right after a fresh deploy so a freshly-
+    provisioned environment's BOM/UUID/inventory caches don't have to wait
+    for the next scheduled window. Refuses to start a second overlapping
+    run if one is already in progress."""
+    existing = await asyncio.to_thread(db[FULL_SYNC_STATUS_COLLECTION].find_one, {"_id": FULL_SYNC_STATUS_ID})
+    if existing and existing.get("status") == "running":
+        return {"triggered": False, "already_running": True}
+    asyncio.create_task(_run_full_sync("manual"))
+    return {"triggered": True, "already_running": False}
+
+
 app.include_router(api_router)
 
 app.add_middleware(
@@ -2765,6 +2800,8 @@ async def start_inventory_cache_refresh_loop():
 # the WHEN so nobody notices if it takes a while.
 IST_OFFSET = timedelta(hours=5, minutes=30)
 NIGHTLY_SYNC_HOUR_IST = 1
+FULL_SYNC_STATUS_COLLECTION = "full_sync_status"
+FULL_SYNC_STATUS_ID = "latest"
 
 
 def _seconds_until_next_nightly_sync() -> float:
@@ -2775,29 +2812,54 @@ def _seconds_until_next_nightly_sync() -> float:
     return (next_run_ist - now_ist).total_seconds()
 
 
+async def _run_full_sync(trigger: str) -> dict:
+    """The actual "Nightly Sync" work (deep BOM re-expansion -> UUID
+    backfill -> inventory/cost refresh), shared by the 1 AM IST scheduled
+    loop below AND the manual "Run Full Sync Now" admin button - same job,
+    two ways to kick it off (e.g. right after a fresh Production deploy,
+    instead of waiting for the next 1 AM IST window). Persists progress to
+    a single `full_sync_status` doc so the button can show "already
+    running" instead of firing a duplicate overlapping run."""
+    status_collection = db[FULL_SYNC_STATUS_COLLECTION]
+    started_at = datetime.now(timezone.utc)
+    status_collection.update_one(
+        {"_id": FULL_SYNC_STATUS_ID},
+        {"$set": {"status": "running", "trigger": trigger, "started_at": started_at, "finished_at": None, "result": None, "error": None}},
+        upsert=True,
+    )
+    logger.info(f"Full sync ({trigger}) starting: deep BOM expansion -> UUID backfill -> inventory/cost refresh")
+    result = {}
+    try:
+        result["bom_expansion"] = await asyncio.to_thread(bom_cache_service.deep_expand_all_known_roots, sap_soap_client, db)
+        logger.info(f"Full sync: deep BOM expansion complete: {result['bom_expansion']}")
+    except Exception as e:
+        logger.error(f"Full sync: deep BOM expansion failed: {e}")
+    try:
+        result["uuid_backfill"] = await asyncio.to_thread(deep_backfill_uuids, db, sap_soap_client, sap_material_client)
+        logger.info(f"Full sync: UUID backfill complete: {result['uuid_backfill']}")
+    except Exception as e:
+        logger.error(f"Full sync: UUID backfill failed: {e}")
+    try:
+        cached = await asyncio.to_thread(refresh_inventory_cache, db, sap_inventory_client, sap_valuation_client)
+        result["inventory_items_refreshed"] = len(cached["items"])
+        logger.info(f"Full sync: inventory/cost refresh complete: {result['inventory_items_refreshed']} item(s)")
+    except Exception as e:
+        logger.error(f"Full sync: inventory/cost refresh failed: {e}")
+    finished_at = datetime.now(timezone.utc)
+    status_collection.update_one(
+        {"_id": FULL_SYNC_STATUS_ID},
+        {"$set": {"status": "done", "finished_at": finished_at, "result": result}},
+    )
+    logger.info(f"Full sync ({trigger}) finished in {(finished_at - started_at).total_seconds():.0f}s")
+    return result
+
+
 @app.on_event("startup")
 async def start_nightly_sync_loop():
     async def loop():
         while True:
             await asyncio.sleep(_seconds_until_next_nightly_sync())
-            started_at = datetime.now(timezone.utc)
-            logger.info("Nightly sync (1 AM IST) starting: deep BOM expansion -> UUID backfill -> inventory/cost refresh")
-            try:
-                bom_result = await asyncio.to_thread(bom_cache_service.deep_expand_all_known_roots, sap_soap_client, db)
-                logger.info(f"Nightly sync: deep BOM expansion complete: {bom_result}")
-            except Exception as e:
-                logger.error(f"Nightly sync: deep BOM expansion failed: {e}")
-            try:
-                uuid_result = await asyncio.to_thread(deep_backfill_uuids, db, sap_soap_client, sap_material_client)
-                logger.info(f"Nightly sync: UUID backfill complete: {uuid_result}")
-            except Exception as e:
-                logger.error(f"Nightly sync: UUID backfill failed: {e}")
-            try:
-                cached = await asyncio.to_thread(refresh_inventory_cache, db, sap_inventory_client, sap_valuation_client)
-                logger.info(f"Nightly sync: inventory/cost refresh complete: {len(cached['items'])} item(s)")
-            except Exception as e:
-                logger.error(f"Nightly sync: inventory/cost refresh failed: {e}")
-            logger.info(f"Nightly sync finished in {(datetime.now(timezone.utc) - started_at).total_seconds():.0f}s")
+            await _run_full_sync("scheduled")
 
     asyncio.create_task(loop())
 

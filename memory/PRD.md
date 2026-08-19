@@ -761,3 +761,15 @@ User decision on the pending business question: keep the "No BOM" flag logic sco
 - P3: SAP Cost Retry Alert banner when the Standard Costs feed is unreachable.
 - P3: SAP Push History Log - audit trail of every value written back to SAP.
 - P3: Incorporate Quality Failures/OTIF metrics into AI Quota Suggestion once GSA data is unblocked.
+
+
+## Feature: "Run Full Sync Now" Admin Button - COMPLETE (Aug 2026)
+User report: Production still shows 865 "No BOM" flagged items (vs Preview's 513) and no "Historical BOM" badge at all - confirmed as a PRODUCTION-ONLY issue (no code deployed yet + Production has its own separate database that hasn't been through any deep-expand cycle).
+- Refactored the existing 1 AM IST nightly sync body (deep_expand_all_known_roots -> deep_backfill_uuids -> refresh_inventory_cache) out of the scheduled loop into a shared `_run_full_sync(trigger)` helper in `server.py`, used by BOTH the scheduled loop and a new manual trigger - avoids duplicating the 3-step chain.
+- New single-doc `full_sync_status` Mongo collection tracks {status: idle|running|done, trigger: scheduled|manual, started_at, finished_at, result}. New endpoints: `GET /api/admin/full-sync-status`, `POST /api/admin/run-full-sync` (refuses a second overlapping run, returns `{triggered:false, already_running:true}` instead).
+- **Bug caught during self-testing**: the new `@api_router` endpoints were initially placed in the file AFTER `app.include_router(api_router)` - FastAPI copies routes at `include_router()` call time, so they 404'd. Fixed by moving the two endpoint definitions (and the `FullSyncStatus` model) above that line; the `_run_full_sync` helper/constants can stay below it since they're only referenced inside function bodies at request time, after the whole module has loaded.
+- `AdminPage.js`: small "Run Full Sync Now" button (`data-testid="admin-run-full-sync-button"`) at the bottom of the page, below pagination - shows spinner + "Full Sync Running..." while active (polls status every 10s), disabled during a run, shows last-refresh item count once done. Checks current status on mount too, so the button correctly shows "running" if the 1 AM IST scheduled job happens to be mid-flight when the page loads.
+- Verified live via curl (idle -> triggered -> running -> already_running=true on a second POST) and a screenshot confirming the button renders and shows the running state correctly.
+
+## No BOM / Historical BOM - Production rollout note
+Both the "No BOM" active-flag logic and the "Historical BOM" transparency badge require Production's OWN `bom_node_cache` to have gone through at least one full sync (deep_expand_all_known_roots re-parses and populates `historical_input_ids` for every cached node) - simply deploying the code is not enough by itself. After redeploying, click "Run Full Sync Now" (bottom of Admin page) once to catch Production's cache up without waiting for the next 1 AM IST window.

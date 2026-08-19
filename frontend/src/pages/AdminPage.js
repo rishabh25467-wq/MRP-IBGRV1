@@ -73,6 +73,8 @@ export default function AdminPage() {
   const [newCategoryName, setNewCategoryName] = useState("");
   const [addingCategory, setAddingCategory] = useState(false);
   const [deletingCategory, setDeletingCategory] = useState(null);
+  const [fullSyncStatus, setFullSyncStatus] = useState("idle"); // idle | running | done
+  const [fullSyncResult, setFullSyncResult] = useState(null);
 
   const loadComponents = async () => {
     setLoading(true);
@@ -381,6 +383,48 @@ export default function AdminPage() {
       toast.error("Backfill failed", { description: err?.response?.data?.detail || err.message });
     } finally {
       setBackfilling(false);
+    }
+  };
+
+  useEffect(() => {
+    axios
+      .get(`${API}/admin/full-sync-status`)
+      .then(({ data }) => setFullSyncStatus(data.status === "running" ? "running" : "idle"))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (fullSyncStatus !== "running") return;
+    const interval = setInterval(async () => {
+      try {
+        const { data } = await axios.get(`${API}/admin/full-sync-status`);
+        if (data.status !== "running") {
+          setFullSyncStatus("done");
+          setFullSyncResult(data.result);
+          toast.success("Full sync complete", {
+            description: "Deep BOM expansion, UUID backfill, and inventory/cost refresh all ran. Reload pages to see updated data.",
+          });
+        }
+      } catch (err) {
+        // transient poll failure - just try again next tick
+      }
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [fullSyncStatus]);
+
+  const runFullSyncNow = async () => {
+    setFullSyncStatus("running");
+    setFullSyncResult(null);
+    try {
+      const { data } = await axios.post(`${API}/admin/run-full-sync`);
+      if (!data.triggered) {
+        toast.info("Full sync already running", { description: "Check back in a while - this can take 20-40 minutes." });
+      } else {
+        toast.info("Full sync started", { description: "Deep BOM expansion -> UUID backfill -> inventory/cost refresh. This can take 20-40 minutes." });
+      }
+    } catch (err) {
+      setFullSyncStatus("idle");
+      toast.error("Could not start full sync", { description: err?.response?.data?.detail || err.message });
     }
   };
 
@@ -923,6 +967,24 @@ export default function AdminPage() {
             </div>
           </div>
         )}
+        <div className="flex items-center justify-end gap-2 mt-6 pt-3 border-t border-[#EAECF0]" data-testid="admin-full-sync-footer">
+          {fullSyncStatus === "done" && fullSyncResult && (
+            <span className="text-xs text-[#475467]">Last full sync: {fullSyncResult.inventory_items_refreshed ?? "?"} item(s) refreshed</span>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={runFullSyncNow}
+            disabled={fullSyncStatus === "running"}
+            className="h-7 text-xs rounded-sm border-[#D0D5DD] text-[#344054] px-2"
+            title="Runs the same job as the 1 AM IST nightly sync (deep BOM expansion, UUID backfill, inventory/cost refresh) right now instead of waiting"
+            data-testid="admin-run-full-sync-button"
+          >
+            <ArrowClockwise size={12} className={`mr-1.5 ${fullSyncStatus === "running" ? "animate-spin" : ""}`} />
+            {fullSyncStatus === "running" ? "Full Sync Running..." : "Run Full Sync Now"}
+          </Button>
+        </div>
       </main>
 
       <Dialog
