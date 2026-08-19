@@ -286,7 +286,35 @@ class SAPSoapBOMClient:
         # someone ELSE's ingredient) - carried on the winning revision's
         # own ProductionBillOfMaterialVariant, not per-item.
         variant_match = re.search(r"<ProductionBillOfMaterialVariant>(.*?)</ProductionBillOfMaterialVariant>", best_block, re.S)
-        root_uuid_match = re.search(r"<ProductUUID>([^<]*)</ProductUUID>", variant_match.group(1)) if variant_match else None
+        variant_block_text = variant_match.group(1) if variant_match else ""
+        root_uuid_match = re.search(r"<ProductUUID>([^<]*)</ProductUUID>", variant_block_text)
+
+        # Aug 2026 fix: the nested <ItemGroupItem><ProductionBillOfMaterial
+        # ItemGroupChangeState> records used below to build `groups` do NOT
+        # carry an EngineeringChangeOrderValidFromDate themselves - dates
+        # only live in a SEPARATE flat list directly under the variant,
+        # <ProductionBillOfMaterialVariantItemChangeState> (same ItemGroupID
+        # + ItemID + EngineeringChangeOrderID, just a different/summary view
+        # of the same underlying change). Cross-referencing this flat list
+        # gives an unambiguous chronological signal for picking the truly
+        # CURRENT input product on a line whose component was swapped over
+        # time - confirmed live on P26675's line 10/10: CS14X48X1.2 (ECO
+        # "CUST14X4812", ValidFrom 2023-08-01) is genuinely current, but the
+        # naming-convention heuristic alone picked the OLDER CUST14X48X1.2MM
+        # (ECO "P26675_1", ValidFrom 2023-06-01) just because that ECO name
+        # happened to match the parent product's own ID convention.
+        valid_from_by_key = {}
+        for flat_match in re.finditer(
+            r"<ProductionBillOfMaterialVariantItemChangeState>(.*?)</ProductionBillOfMaterialVariantItemChangeState>",
+            variant_block_text, re.S,
+        ):
+            flat_block = flat_match.group(1)
+            g_match = re.search(r"<ItemGroupID>([^<]*)</ItemGroupID>", flat_block)
+            i_match = re.search(r"<ItemID>([^<]*)</ItemID>", flat_block)
+            eco_match2 = re.search(r"<EngineeringChangeOrderID>([^<]*)</EngineeringChangeOrderID>", flat_block)
+            date_match = re.search(r"<EngineeringChangeOrderValidFromDate>([^<]*)</EngineeringChangeOrderValidFromDate>", flat_block)
+            if g_match and i_match and eco_match2 and date_match:
+                valid_from_by_key[(g_match.group(1), i_match.group(1), eco_match2.group(1))] = date_match.group(1).strip()
 
         bom = {
             "bom_id": best_id, "product_uuid": root_uuid_match.group(1) if root_uuid_match else None,
@@ -305,13 +333,19 @@ class SAPSoapBOMClient:
                 item_id_match = re.search(r"<ItemGroupItemID>([^<]*)</ItemGroupItemID>", item_block)
 
                 # An ItemGroupItem can carry MULTIPLE ChangeState entries (revision
-                # history for that specific line). Prefer whichever has an
-                # EngineeringChangeOrderID that follows SAP's part-specific
-                # naming convention ('{this item's own product ID}_{revision}') -
-                # that is the trustworthy signal of the currently applicable
-                # change, since unrelated/batch-style ECO counters can carry a
-                # higher numeric suffix without actually being more recent for
-                # this specific item. Ties are broken by highest revision number.
+                # history for that specific line). Aug 2026 fix: an item's
+                # EngineeringChangeOrderValidFromDate (an unambiguous ISO
+                # date straight from SAP) is compared FIRST - confirmed live
+                # on P26675's line 10/10: CS14X48X1.2 (ECO "CUST14X4812",
+                # ValidFrom 2023-08-01) is the genuinely CURRENT input, but
+                # the naming-convention heuristic below alone picked the
+                # OLDER CUST14X48X1.2MM (ECO "P26675_1", ValidFrom
+                # 2023-06-01) instead, purely because that ECO's name
+                # happened to match the parent product's own ID convention.
+                # The naming heuristic only serves as a tie-break now, for
+                # the (rarer) case a ValidFromDate is missing or genuinely
+                # identical - see _eco_matches_own_product's docstring for
+                # why it still matters then.
                 change_states = re.findall(
                     r"<ProductionBillOfMaterialItemGroupChangeState>(.*?)</ProductionBillOfMaterialItemGroupChangeState>",
                     item_block, re.S,
@@ -319,13 +353,16 @@ class SAPSoapBOMClient:
                 if not change_states:
                     continue
 
-                best_state, best_state_revision, best_state_self_matched = None, None, False
+                best_state, best_state_key = None, None
+                item_group_item_id = item_id_match.group(1) if item_id_match else None
                 for state_block in change_states:
                     eco_match = re.search(r"<EngineeringChangeOrderID>([^<]*)</EngineeringChangeOrderID>", state_block)
                     pid_match = re.search(r"<InputProductID>.*?<ProductID>([^<]*)</ProductID>", state_block, re.S)
                     eco_id = eco_match.group(1) if eco_match else None
                     revision = cls._revision_number(eco_id) if eco_id else -1.0
+                    valid_from = valid_from_by_key.get((group_id, item_group_item_id, eco_id), "")
                     self_matched = cls._eco_matches_own_product(eco_id, pid_match.group(1) if pid_match else None)
+                    state_key = (valid_from, self_matched, revision)
                     if pid_match:
                         # Every change-state's input product ID (not just the
                         # winning one) - a line whose input product itself
@@ -333,8 +370,8 @@ class SAPSoapBOMClient:
                         # part) leaves the OLD product ID only reachable
                         # here, never in the final `groups` below.
                         historical_input_ids.add(pid_match.group(1))
-                    if best_state is None or (self_matched, revision) > (best_state_self_matched, best_state_revision):
-                        best_state, best_state_revision, best_state_self_matched = state_block, revision, self_matched
+                    if best_state is None or state_key > best_state_key:
+                        best_state, best_state_key = state_block, state_key
 
                 product_id_match = re.search(r"<InputProductID>.*?<ProductID>([^<]*)</ProductID>", best_state, re.S)
                 if not product_id_match:
