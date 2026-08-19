@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import re
@@ -2813,6 +2814,29 @@ IST_OFFSET = timedelta(hours=5, minutes=30)
 NIGHTLY_SYNC_HOUR_IST = 1
 FULL_SYNC_STATUS_COLLECTION = "full_sync_status"
 FULL_SYNC_STATUS_ID = "latest"
+_EXTRA_ROOT_SEED_PATH = os.path.join(os.path.dirname(__file__), "data", "bom_extra_root_seed_ids.json")
+
+
+def _load_extra_root_seed_ids() -> list:
+    """Aug 2026: a big chunk of the "No BOM" gap between environments turned
+    out to be genuine top-level assemblies/sub-assemblies that are NOT
+    themselves tracked as stocked inventory items (e.g. `5989826`, the
+    assembled product, vs `5989826-10`/`5989826-9`, its physical component
+    parts which ARE inventory items) - so `catalog_prefetch` above, scoped
+    only to current inventory product_ids, can never discover them as
+    candidate roots on a lightly-used environment. This ships a one-time
+    snapshot of every product_id Preview's `bom_node_cache` had already
+    discovered as of Aug 2026 (4,679 ids, ~1,465 of them NOT in the
+    inventory catalog) so ANY environment's Full Sync can directly re-check
+    them all live against its OWN SAP tenant too - bulk_prefetch already
+    skips whatever's already cached, so this is safe/idempotent to keep
+    feeding in on every run."""
+    try:
+        with open(_EXTRA_ROOT_SEED_PATH) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        logger.warning(f"Full sync: could not load extra root seed ids ({e}), skipping")
+        return []
 
 
 def _seconds_until_next_nightly_sync() -> float:
@@ -2843,6 +2867,7 @@ async def _run_full_sync(trigger: str) -> dict:
     result = {}
     try:
         catalog_product_ids = [it["product_id"] for it in get_cached_inventory(db)["items"]]
+        catalog_product_ids = list(set(catalog_product_ids) | set(_load_extra_root_seed_ids()))
         result["catalog_prefetch"] = await asyncio.to_thread(bom_cache_service.bulk_prefetch, catalog_product_ids, sap_soap_client, db)
         logger.info(f"Full sync: catalog prefetch complete: {result['catalog_prefetch']}")
     except Exception as e:
