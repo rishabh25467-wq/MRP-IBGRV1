@@ -204,6 +204,13 @@ def _upsert(collection, product_id, raw_bom, changed):
         # BOM" flag logic never reads this, it only powers a separate
         # "found in historical BOM" transparency note on the Inventory page.
         "historical_input_ids": raw_bom.get("historical_input_ids", []) if raw_bom else [],
+        # Components of OTHER Consistent alternate revisions of this same
+        # parent (see sap_soap_client._build_bom_from_hit_blocks) - these
+        # ARE currently active/usable, just not part of the single
+        # canonical `groups` tree kept for cost rollup/explosion. Read by
+        # inventory_service._compute_no_bom_flags alongside `groups`'s own
+        # leaves so an alternate-only component never gets falsely flagged.
+        "active_alternate_ids": raw_bom.get("active_alternate_ids", []) if raw_bom else [],
         "found": bool(raw_bom and raw_bom.get("groups")),
         "last_checked_at": now,
     }

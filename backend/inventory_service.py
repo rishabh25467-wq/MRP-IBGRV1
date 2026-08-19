@@ -179,20 +179,27 @@ def _compute_no_bom_flags(db) -> dict:
     will show up as a leaf somewhere and won't be flagged; a Finished
     Good/Sub-Assembly missing its BOM (a real data gap) will be. This is
     deliberately "active BOM only" per user decision (Aug 2026) - a
-    component that only ever appeared in an OLD/superseded BOM revision
-    still gets flagged here (see historical_leaf_ids below for the
-    separate transparency note instead of silently clearing the flag).
+    component that only ever appeared in a genuinely SUPERSEDED (non-
+    Consistent) BOM revision still gets flagged here (see
+    historical_leaf_ids below for the separate transparency note instead
+    of silently clearing the flag). A component that's only used in an
+    ALTERNATE Consistent BOM (not the single canonical `groups` tree, see
+    sap_soap_client._build_bom_from_hit_blocks's active_alternate_ids) DOES
+    count as active per user confirmation (Aug 2026: "any item can have
+    multiple consistent BOMs, they are all active") - folded into
+    `leaf_ids` below, not `historical_leaf_ids`.
     Returns {product_id: bool}."""
     bom_cache = db[bom_cache_service.COLLECTION_NAME]
     roots_with_bom = {d["_id"] for d in bom_cache.find({"found": True}, {"_id": 1})}
     leaf_ids = set()
     historical_leaf_ids = set()
-    for doc in bom_cache.find({}, {"groups": 1, "historical_input_ids": 1}):
+    for doc in bom_cache.find({}, {"groups": 1, "historical_input_ids": 1, "active_alternate_ids": 1}):
         for group in doc.get("groups", []):
             for item in group.get("items", []):
                 pid = item.get("product_id")
                 if pid:
                     leaf_ids.add(pid)
+        leaf_ids.update(doc.get("active_alternate_ids") or [])
         historical_leaf_ids.update(doc.get("historical_input_ids") or [])
     return {"roots_with_bom": roots_with_bom, "leaf_ids": leaf_ids, "historical_leaf_ids": historical_leaf_ids}
 

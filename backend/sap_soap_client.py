@@ -247,15 +247,16 @@ class SAPSoapBOMClient:
         # "No BOM" transparency (Aug 2026, per user decision): the active-
         # BOM flag logic below stays untouched, but we ALSO want to surface
         # (as a separate, non-authoritative note) when a component only
-        # shows up in an OLD/superseded revision of this parent - so a user
-        # investigating a "No BOM" flag isn't left thinking SAP has zero
-        # record of the part ever being used here. `historical_input_ids`
-        # is a superset covering EVERY input product ID seen in ANY
-        # candidate revision (Consistent or not) - collected for free from
-        # data already parsed below, no extra SAP round-trip.
+        # shows up in a genuinely SUPERSEDED (non-Consistent) revision of
+        # this parent - so a user investigating a "No BOM" flag isn't left
+        # thinking SAP has zero record of the part ever being used here.
+        # `historical_input_ids` only covers NON-Consistent candidates -
+        # see `active_alternate_ids` below for Consistent ones, which are
+        # NOT historical.
         historical_input_ids = set()
         for c in candidates:
-            historical_input_ids.update(c["fingerprint"])
+            if not c["is_consistent"]:
+                historical_input_ids.update(c["fingerprint"])
 
         # Same consistency-first tie-break as always: only consider
         # non-Consistent candidates if NOTHING is Consistent at all.
@@ -278,6 +279,22 @@ class SAPSoapBOMClient:
             }
             for r in representatives
         ] if len(representatives) > 1 else []
+
+        # Aug 2026, per user (confirmed live via SAP's own "Bills of
+        # Material" screen: BK-0021_1/FLAT-BK21 and BK-0021_2/SH4.5HR both
+        # show ConsistencyStatus "Consistent" simultaneously): "any item can
+        # have multiple consistent BOMs, they are all active" - i.e. when
+        # SEVERAL distinct-content Consistent revisions exist for the same
+        # parent, only the highest-revision one (`best`) becomes the actual
+        # explorable `groups` tree (unchanged - still need exactly ONE
+        # canonical tree for cost rollup/explosion/drawings), but every
+        # OTHER Consistent representative's components are genuine current
+        # alternates too, not superseded - so they must count as "active"
+        # for the "No BOM" flag (no flag, no "Historical BOM" badge
+        # either), not lumped in with historical_input_ids above.
+        active_alternate_ids = set()
+        for r in representatives:
+            active_alternate_ids.update(r["fingerprint"])
 
         # The root product's OWN UUID (needed for Standard Costs / SAP
         # Planning lookups on items that are BOM roots themselves, e.g.
@@ -320,6 +337,7 @@ class SAPSoapBOMClient:
             "bom_id": best_id, "product_uuid": root_uuid_match.group(1) if root_uuid_match else None,
             "groups": [], "alternates": alternates,
             "historical_input_ids": list(historical_input_ids),
+            "active_alternate_ids": list(active_alternate_ids),
         }
 
         for group_match in re.finditer(r"<ProductionBillOfMaterialItemGroup>(.*?)</ProductionBillOfMaterialItemGroup>", best_block, re.S):
