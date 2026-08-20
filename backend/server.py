@@ -650,6 +650,19 @@ async def get_scrap_calc(product_id: str):
     component_doc = db["component_master"].find_one({"_id": product_id})
     net_weight_kg = (component_doc or {}).get("net_weight_kg")
     if net_weight_kg is None:
+        # Local cache never got this value - before giving up, check if SAP
+        # already has it set (common case: entered directly in SAP, or from
+        # an earlier Push for a different field) and adopt it automatically
+        # instead of forcing a manual Admin-page visit for every material.
+        try:
+            sap_result = await asyncio.to_thread(sap_material_physical_client.get_physical_attributes, product_id)
+        except SAPMaterialPhysicalError:
+            sap_result = None
+        sap_net_weight = (sap_result or {}).get("attributes", {}).get("net_weight_kg")
+        if sap_net_weight is not None:
+            net_weight_kg = sap_net_weight
+            db["component_master"].update_one({"_id": product_id}, {"$set": {"net_weight_kg": net_weight_kg}}, upsert=True)
+    if net_weight_kg is None:
         return {
             "available": False, "reason": "Net Weight not set for this item yet - set it on the Admin page first",
             "rm_product_id": rm_item["product_id"], "rm_description": rm_item.get("description"),

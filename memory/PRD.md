@@ -1,3 +1,8 @@
+## Session update (2026-08-20, part 7) - scrap-calc now auto-pulls Net Weight from SAP when local cache is empty
+
+- Bug: `/production-confirmation/scrap-calc/{product_id}` only checked the LOCAL `component_master.net_weight_kg` cache, which is only populated via a manual Admin-page entry or a manual "Push" (local->SAP, one-way). If SAP already had the value (e.g. entered directly in SAP, or from someone else's earlier Push) but nobody had visited the Admin page for THIS specific material, the Confirm Production Task dialog showed "Net Weight not set for this item yet" even though SAP had it - confirmed live for 5989829-1 (SAP had `net_weight_kg: 0.35` via `materialgeneralinfo` OData, local cache was empty).
+- Fix: when local cache is empty, the endpoint now does a live SAP read (`sap_material_physical_client.get_physical_attributes`) as a fallback and caches the result into `component_master` if found. Verified live: 5989829-1 now returns `available: true, gross_weight_kg: 0.49, net_weight_kg: 0.35, scrap_per_unit_kg: 0.14, scrap_family: CR Iron Scrap`.
+
 ## Session update (2026-08-20, part 6) - the REAL fix: orders stuck at "In Preparation" are now auto-detected and self-released, no more manual fallback needed
 
 **Root cause of "Ankit had to manually find & release 69960/69958/69959" - FIXED:**
