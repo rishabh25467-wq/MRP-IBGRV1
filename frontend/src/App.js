@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import BomExplorerPage from "@/pages/BomExplorerPage";
 import PurchasingPlanPage from "@/pages/PurchasingPlanPage";
 import ProductionPlanPage from "@/pages/ProductionPlanPage";
+import ProductionConfirmationPage from "@/pages/ProductionConfirmationPage";
 import AdminPage from "@/pages/AdminPage";
 import InventoryPage from "@/pages/InventoryPage";
 import SupplierMasterPage from "@/pages/SupplierMasterPage";
@@ -32,6 +33,7 @@ function App() {
             <Route path="/" element={<ProtectedRoute page="bom_explorer"><BomExplorerPage /></ProtectedRoute>} />
             <Route path="/purchasing-plan" element={<ProtectedRoute page="purchasing_plan"><PurchasingPlanPage /></ProtectedRoute>} />
             <Route path="/production-plan" element={<ProtectedRoute page="production_plan"><ProductionPlanPage /></ProtectedRoute>} />
+            <Route path="/production-confirmation" element={<ProtectedRoute page="production_confirmation"><ProductionConfirmationPage /></ProtectedRoute>} />
             <Route path="/inventory" element={<ProtectedRoute page="inventory"><InventoryPage /></ProtectedRoute>} />
             <Route path="/purchasing-strategy/supplier-master" element={<ProtectedRoute page="supplier_master"><SupplierMasterPage /></ProtectedRoute>} />
             <Route path="/purchasing-strategy/quota-allocation" element={<ProtectedRoute page="quota_allocation"><QuotaAllocationPage /></ProtectedRoute>} />

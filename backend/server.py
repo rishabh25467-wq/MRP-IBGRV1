@@ -18,6 +18,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_material_client import SAPMaterialClient, SAPMaterialError, SAPMaterialAuthError
+from sap_production_lot_client import SAPProductionLotClient, SAPProductionLotError, SAPProductionLotAuthError
 from sap_material_physical_client import (
     SAPMaterialPhysicalClient, SAPMaterialPhysicalError, PHYSICAL_FIELD_TO_SAP_PROPERTY,
 )
@@ -46,6 +47,7 @@ import production_plan_service
 import mrp_service
 import mps_service
 import po_selection_service
+import production_confirmation_service
 import mrp_plan_store
 import autosave_store
 import job_store
@@ -101,6 +103,13 @@ sap_soap_client = SAPSoapBOMClient(
 # module docstring: NOT YET AUTHORIZED on the tenant as of this writing.
 sap_material_client = SAPMaterialClient(
     endpoint=os.environ['SAP_SOAP_MATERIAL_ENDPOINT'],
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
+)
+
+sap_production_lot_client = SAPProductionLotClient(
+    query_endpoint=os.environ['SAP_SOAP_PRODUCTION_LOT_QUERY_ENDPOINT'],
+    manage_endpoint=os.environ['SAP_SOAP_PRODUCTION_LOT_MANAGE_ENDPOINT'],
     username=os.environ['SAP_SOAP_USERNAME'],
     password=os.environ['SAP_SOAP_PASSWORD'],
 )
@@ -1727,6 +1736,112 @@ async def po_selection_history(internal_pono: Optional[float] = Query(None), ite
         for d in docs
     ]
     return PoSelectionHistoryResponse(entries=entries)
+
+
+# ---------------------------------------------------------------------
+# Production Task Confirmation - new top-level page (Aug 2026). Reads open
+# Production Lots from SAP (QueryProductionLotISIIn) and posts confirmations
+# (ManageProductionLotsIn) at the Reporting Point level ONLY - Confirmed
+# Quantity, Confirmed Scrap, Deviation Reason, Finished indicator. Never
+# sends MaterialInput/component quantities - SAP's backflush auto-consumes
+# BOM components from the confirmed output, per the user's explicit
+# requirement.
+# ---------------------------------------------------------------------
+@api_router.get("/production-confirmation/open-lots")
+async def get_open_production_lots(status: str = Query("open", description="'open' (Released+Started), 'all', or comma-separated status codes"), site_id: Optional[str] = None, limit: int = 100):
+    if status == "open":
+        status_codes = None
+    elif status == "all":
+        status_codes = [str(c) for c in range(1, 7)]
+    else:
+        status_codes = [c.strip() for c in status.split(",") if c.strip()]
+    try:
+        rows = await asyncio.to_thread(sap_production_lot_client.find_open_lots, status_codes, site_id, limit)
+    except SAPProductionLotAuthError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except SAPProductionLotError as e:
+        raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+    return {"rows": rows}
+
+
+@api_router.get("/production-confirmation/lot/{production_lot_id}")
+async def get_production_lot_by_id(production_lot_id: str):
+    try:
+        rows = await asyncio.to_thread(sap_production_lot_client.find_lot_by_id, production_lot_id)
+    except SAPProductionLotAuthError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except SAPProductionLotError as e:
+        raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"No production lot found for ID '{production_lot_id}'")
+    return {"rows": rows}
+
+
+class ConfirmProductionRequest(BaseModel):
+    production_lot_id: str
+    production_lot_uuid: str
+    confirmation_group_uuid: str
+    reporting_point_uuid: str
+    reporting_point_id: Optional[str] = None
+    main_output_product: Optional[str] = None
+    unit_code: Optional[str] = None
+    production_task_id: Optional[str] = None
+    production_task_uuid: Optional[str] = None
+    confirmed_quantity: Optional[float] = None
+    confirmed_scrap: Optional[float] = None
+    deviation_reason_code: Optional[str] = None
+    confirmation_finished: Optional[bool] = None
+    actor: str
+
+
+@api_router.post("/production-confirmation/confirm")
+async def confirm_production(payload: ConfirmProductionRequest):
+    if not payload.actor.strip():
+        raise HTTPException(status_code=400, detail="actor (your name) is required")
+    try:
+        result = await asyncio.to_thread(
+            sap_production_lot_client.confirm_reporting_point,
+            production_lot_id=payload.production_lot_id, production_lot_uuid=payload.production_lot_uuid,
+            confirmation_group_uuid=payload.confirmation_group_uuid, reporting_point_uuid=payload.reporting_point_uuid,
+            unit_code=payload.unit_code, production_task_id=payload.production_task_id,
+            production_task_uuid=payload.production_task_uuid, confirmed_quantity=payload.confirmed_quantity,
+            confirmed_scrap=payload.confirmed_scrap, deviation_reason_code=payload.deviation_reason_code,
+            confirmation_finished=payload.confirmation_finished,
+        )
+    except SAPProductionLotAuthError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except SAPProductionLotError as e:
+        raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+    await asyncio.to_thread(production_confirmation_service.log_confirmation, db, payload.actor, payload.dict(), result)
+    return result
+
+
+@api_router.get("/production-confirmation/history")
+async def get_production_confirmation_history(production_lot_id: Optional[str] = None):
+    entries = await asyncio.to_thread(production_confirmation_service.get_confirmation_history, db, production_lot_id)
+    return {"entries": entries}
+
+
+@api_router.get("/production-confirmation/deviation-reasons")
+async def list_deviation_reasons():
+    return {"reasons": await asyncio.to_thread(production_confirmation_service.get_deviation_reasons, db)}
+
+
+class DeviationReasonRequest(BaseModel):
+    code: str
+    label: str
+
+
+@api_router.post("/production-confirmation/deviation-reasons")
+async def create_deviation_reason(payload: DeviationReasonRequest):
+    reasons = await asyncio.to_thread(production_confirmation_service.add_deviation_reason, db, payload.code, payload.label)
+    return {"reasons": reasons}
+
+
+@api_router.delete("/production-confirmation/deviation-reasons/{code}")
+async def remove_deviation_reason(code: str):
+    reasons = await asyncio.to_thread(production_confirmation_service.delete_deviation_reason, db, code)
+    return {"reasons": reasons}
 
 
 class ComponentMasterItem(BaseModel):

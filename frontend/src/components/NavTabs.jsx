@@ -32,6 +32,7 @@ const TABS = [
   { to: "/", label: "BOM Management", testId: "nav-bom-explorer", page: "bom_explorer" },
   { to: "/purchasing-plan", label: "Procurement Planning", testId: "nav-purchasing-plan", page: "purchasing_plan" },
   { to: "/production-plan", label: "Production Planning", testId: "nav-production-plan", page: "production_plan" },
+  { to: "/production-confirmation", label: "Production Confirmation", testId: "nav-production-confirmation", page: "production_confirmation" },
   { to: "/inventory", label: "Inventory Management", testId: "nav-inventory", page: "inventory" },
 ];
 

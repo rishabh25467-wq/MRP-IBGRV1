@@ -1,0 +1,38 @@
+{
+  "summary": "Frontend-only test of the new Production Confirmation page (Materials Hub). Used a synthetic vms_session cookie (token from /tmp/test_token.txt) with Playwright context.add_cookies. Verified: nav tab (desktop pill + mobile drawer) routing to /production-confirmation, page renders without crash, amber 'SAP Authorization Required' banner renders with full readable SAP fault text + admin activation steps (expected, SAP tenant not yet authorized), status filter (Open/All Statuses) triggers refetch, Refresh button, manual Lot ID lookup via button and Enter key (both return the same 403 auth banner, no crash), open-lots table header shows all 10 required columns + action column, Manage Reasons dialog CRUD (12 seeded codes 001..Z10 listed, ADD Z99 persisted and list refreshed, inputs cleared, duplicate code upserts label rather than duplicating a row, empty add is a no-op, DELETE Z99 refreshed list back to 12, persisted across page reload), History dialog opens with correct 8-column table and 'No confirmations submitted yet.' empty state, actor-name input accepts text and persists in localStorage across reload, and access control (401 without cookie, 403 + 'Access Denied' screen for a user lacking the production_confirmation page key). Mobile 390x844 and tablet 820x1180 show no horizontal overflow (scrollWidth == clientWidth). Confirm dialog internals not testable (no SAP rows) - known session limitation. Synthetic auth_users/auth_sessions docs deleted after testing; deviation_reason_master left at the original 12 seeded rows, history collection empty.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/production-confirmation/open-lots", "issue": "Returns 403 with SAP 'Authorization role missing for QueryProductionLotISIIn/FindByElements' - expected external SAP authorization gap, not a code bug. Verified handled gracefully (no 500)."},
+      {"endpoint": "/api/auth/me (transient)", "issue": "One-off external 502 after ~60s observed during a backend hot-reload window; resolved immediately on retry (local 200 in 2ms). Also noted repeated sap_valuation_client connect-timeouts to my431827.businessbydesign.cloud.sap in backend logs from background jobs (pre-existing, unrelated to this feature)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Production Confirmation toolbar (desktop)", "issues": ["Status filter trigger (w-44) truncates the option label to 'Open (Released/Start' - widen to w-52 or shorten the label", "Empty lots table renders only a header row with no body cell, so it looks like a stray strip; when authError is set the table shows no explanatory row (the empty-state row is suppressed by !authError) - consider showing a muted 'Blocked by SAP authorization' row inside the table for clarity"]},
+      {"screen": "Manage Reasons dialog", "issues": ["Adding a code that already exists silently overwrites the existing label with no confirmation/toast; no toast on add/delete success or on API failure (add/remove have no try/catch, so a failed POST/DELETE would throw an unhandled promise rejection with no user feedback)"]}
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_81.json"],
+  "action_items": [
+    "Widen the status-filter SelectTrigger so 'Open (Released/Started)' is not truncated",
+    "Add try/catch + toast (success and error) to ManageReasonsDialog add()/remove(); currently an API failure produces an unhandled rejection and no UI feedback",
+    "Consider rendering an in-table message row when authError is set so the empty table is self-explanatory",
+    "External blocker (SAP admin, not code): activate 'Query Production Lots' / 'Manage Production Lots' Communication Scenarios for _EMERGENTBOM so open-lots + confirm can be end-to-end verified"
+  ],
+  "critical_code_review_comments": [
+    "ProductionConfirmationPage.js ManageReasonsDialog.add/remove lack error handling (no try/catch, no toast) - only place in the page without it.",
+    "ConfirmDialog cannot be reached at all right now (only entry point is a table row Confirm button); once SAP auth lands, its validation (negative qty, qty > open qty, non-numeric) is completely untested - add client-side numeric/range validation before posting to SAP.",
+    "confirmation_finished is sent as `finished || null`; sending null for false relies on SAP treating absent as not-finished - verify that is intended."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (frontend-only round; supporting endpoints deviation-reasons/history/auth verified 200)", "frontend": "100% of testable flows passed (confirm dialog internals blocked by SAP auth)"},
+  "seed_data_creation": "Temporarily added deviation reason Z99 'QA Test Reason' and deleted it; auth_users/auth_sessions synthetic docs (testtid:testoid-prodconf) deleted after testing. deviation_reason_master back to the original 12 rows.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "Synthetic vms_session cookie (now deleted). A new synthetic auth_users/auth_sessions pair must be created for the next round.",
+  "context_for_next_testing_agent": "Production Confirmation page is functionally solid. Only remaining untested area is the Confirm dialog (needs at least one SAP open lot => needs the SAP Communication Scenario authorization for _EMERGENTBOM). Re-test once that lands: confirm-qty-input/confirm-scrap-input/confirm-deviation-reason-select/confirm-finished-checkbox/confirm-submit-button, the 'Enter your name first' toast when actor name is empty, and that a posted confirmation appears in the History dialog. Auth technique: insert auth_users {_id:'<tid>:<oid>', role, allowed_pages:['production_confirmation']} + auth_sessions {_id: token, user_id, expires_at} into Mongo and set cookie vms_session for host sap-data-sync.preview.emergentagent.com; use wait_until='domcontentloaded' (networkidle times out because of slow SAP background calls).",
+  "rca_of_the_issue": "The empty lots table + amber banner is caused by the SAP tenant not authorizing QueryProductionLotISIIn/FindByElements for _EMERGENTBOM (HTTP 403, SAP fault 'Authorization role missing'). Backend converts this into a clean 403 with a readable detail and the UI surfaces it as an amber banner - correct behavior, external blocker."
+}
