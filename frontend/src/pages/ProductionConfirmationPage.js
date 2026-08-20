@@ -73,7 +73,10 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
       setConfirmedScrap("0");
       setScrapCalc(null);
       setReason("none");
-      setFinished(false);
+      // Matches updateConfirmedQty's smart default: qty defaults to the
+      // full Open Quantity, so "finished" defaults to checked too - it
+      // only unchecks itself if the qty is later reduced to a partial.
+      setFinished((row.open_quantity ?? "") !== "");
       setAvailability(null);
       if (row.main_output_product) {
         axios.get(`${API}/production-confirmation/scrap-calc/${encodeURIComponent(row.main_output_product)}`)
@@ -117,6 +120,19 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
   const byproductQty = scrapCalc?.available && confirmedQty !== "" && !Number.isNaN(qtyNum)
     ? Math.round(scrapCalc.scrap_per_unit_kg * qtyNum * 1e6) / 1e6
     : null;
+
+  // Smart default: auto-check "finished" only when this confirmation
+  // covers the FULL remaining Open Quantity (i.e. actually completes it) -
+  // partial confirmations stay unchecked, since checking it locks the lot
+  // permanently (confirmed live: a locked lot's by-product can never be
+  // corrected again).
+  const updateConfirmedQty = (value) => {
+    setConfirmedQty(value);
+    const num = Number(value);
+    setFinished(value !== "" && !Number.isNaN(num) && num === row.open_quantity);
+  };
+
+  const qtyExceedsOpen = confirmedQty !== "" && !Number.isNaN(qtyNum) && qtyNum > row.open_quantity;
 
   const submit = async () => {
     if (!actorName.trim()) {
@@ -198,7 +214,12 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
           </div>
           <div>
             <Label className="text-xs font-bold text-[#344054]">Confirmed Output Quantity</Label>
-            <Input type="number" value={confirmedQty} onChange={(e) => setConfirmedQty(e.target.value)} data-testid="confirm-qty-input" />
+            <Input type="number" value={confirmedQty} onChange={(e) => updateConfirmedQty(e.target.value)} data-testid="confirm-qty-input" />
+            {qtyExceedsOpen && (
+              <p className="text-xs text-[#B54708] mt-1" data-testid="confirm-qty-exceeds-open-warning">
+                Note: {confirmedQty} exceeds the Open Quantity ({row.open_quantity} {row.unit_code}) - double-check before posting if this isn't intentional over-production.
+              </p>
+            )}
           </div>
 
           {checkingAvailability && <p className="text-xs text-[#98A2B3]">Checking component stock...</p>}
