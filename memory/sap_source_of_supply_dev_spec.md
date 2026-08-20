@@ -54,6 +54,59 @@ communication arrangement scoped for this service - please provide:
 - Confirm the `UNEECOPSTEAM` business user (already used for our other OData actions) has read
   access, or advise which technical/business user we should use
 
+## Step-by-step for your developer (Option A - Proposal-level, preferred)
+
+This follows the exact same pattern already used to build the existing `Release` action on
+`productionproposalemergent`, so your developer should recognize the workflow. Done in SAP Cloud
+Application Studio (PDI) against this tenant.
+
+1. **Find the real internal action first (Repository Explorer)**
+   - Open Repository Explorer, search for the standard Production Proposal / Supply Planning BO
+     (likely under `AP.SupplyChainPlanning` or `AP.PSM.SupplyPlanning` namespace - node commonly
+     named `ProductionProposal` or `SupplyPlanningExecutionOrder`).
+   - Look for an existing BOPF action/method equivalent to "Change Source of Supply" - it's a
+     standard UI button, so a corresponding action node method should exist (search action names
+     containing "SourceOfSupply" or "ProductionModel"). This confirms the exact input it expects
+     (almost certainly `ObjectID` + `ProductionModelUUID`, possibly also a `SupplyPlanningAreaID`).
+   - This step is the main unknown - if no such action exists on the standard BO (only reachable via
+     UI event, not BOPF action), fall back to Option B (below) or flag back to us so we can adjust.
+
+2. **Extend the existing custom OData service project** (same PDI project as `Release`)
+   - Add either:
+     - a new **extension field** on `ProductionPlanningOrder`, e.g.
+       `Z_SourceOfSupplyProductionModelUUID`, type GUID, and in its "before-save"/determination
+       logic call the BOPF action found in step 1 with the field's new value; or
+     - a new **custom Function Import**, e.g. `SETSOURCEOFSUPPLY`, with input parameters
+       `ObjectID (Edm.String)` and `ProductionModelUUID (Edm.Guid)`, whose ABSL implementation calls
+       the same BOPF action directly (mirrors how `Release` already wraps SAP's release logic).
+   - Function Import is usually simpler/cleaner here since this is a one-shot command, not a
+     persisted field - recommend this unless the field approach is already the established pattern
+     in this PDI project.
+
+3. **Mark it correctly in the OData Service Definition editor**
+   - If a field: set `Creatable`/`Updatable` = true for `Z_SourceOfSupplyProductionModelUUID` on
+     `ProductionPlanningOrderCollection`.
+   - If a Function Import: `HttpMethod = POST`, `EntitySet = ProductionPlanningOrderCollection`,
+     `ReturnType = cust.ProductionPlanningOrder`, parameters as in step 2.
+
+4. **Assign to the same Communication Scenario / Business User** already used for `Release`
+   (`UNEECOPSTEAM`) - no new communication arrangement needed if it's added to the same service.
+
+5. **Activate and redeploy** the OData service (Studio -> Activate, then re-scope/redeploy the
+   communication arrangement if the service definition itself was changed, not just its content).
+
+6. **Test directly** against a real Proposal ObjectID before handing back to us, e.g.:
+   ```
+   POST https://my431827.businessbydesign.cloud.sap/sap/byd/odata/cust/v1/productionproposalemergent/SETSOURCEOFSUPPLY
+   ?ObjectID='<Proposal ObjectID>'&ProductionModelUUID=guid'<model uuid>'
+   ```
+   (Basic Auth with `UNEECOPSTEAM`, `X-CSRF-Token` fetched first same as the existing `Release` calls.)
+   Confirm the Proposal's resulting Production Model actually changes (check the same field/behavior
+   your Interactive Planning UI's "Change Source of Supply" produces).
+
+7. **Report back to us**: the exact field or Function Import name that ended up working, and
+   whether it needs to be called before or after the existing `Release` call in the flow.
+
 ## Once both are available
 We will:
 1. On "Create Production Order", look up available Production Models for the entered material.
