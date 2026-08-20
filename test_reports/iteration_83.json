@@ -1,0 +1,34 @@
+{
+  "summary": "Tested the new 'Source of Supply (Production Model)' picker on /production-confirmation -> 'Create Production Order' tab (backend + frontend, live SAP tenant, synthetic vms_session cookie, deleted after test). BACKEND (10/10 pytest passed, /app/backend/tests/test_source_of_supply.py): GET /api/production-confirmation/source-of-supply-options/{material}?site_id= returns exactly 2 distinct options for BK-0021 @P2 (BK-0021_1 lr=FA163ED8-D8C6-1FD0-B5B0-BE0C99908134, BK-0021_2 lr=FA163E48-7A8A-1FE0-BAF4-6EC96A115E0F, both is_active=true, distinct logistic_relationship_uuids); 1 option for HTBS-SPAIN @P2; {material_uuid:null, options:[]} (HTTP 200, not an error) for bogus material ZZZ-DOES-NOT-EXIST; site scoping verified (no site_id -> 2 options for HTBS-SPAIN vs 1 at P2); endpoint is auth-protected (401 without cookie); bogus site_id -> 502 with SAP 'Supply Planning Area not found' (frontend swallows it, picker stays hidden). Regression endpoints OK: proposal-history 200, deviation-reasons 200, open-lots 200 (113 reporting points/100 lots), create-and-release-order rejects blank actor with 400. FRONTEND: BK-0021+P2 (product-first and site-first orders both re-trigger the lookup) shows data-testid=source-of-supply-picker with warning 'This material has 2 valid Production Models - pick one so SAP doesn't auto-default to the wrong recipe.', defaults to the Active BK-0021_1, and switching to source-of-supply-option-BK-0021_2 works. Picker correctly hidden for HTBS-SPAIN/P2 (single valid model) and for the bogus product (no visible error, no toast, no console error). WRITE PATH VERIFIED: with BK-0021_2 explicitly selected, POST /api/production-confirmation/create-and-release-order carried logistic_relationship_uuid='FA163E48-7A8A-1FE0-BAF4-6EC96A115E0F' (correct alternate model, not null) - backend returned the expected 400 component-stock pre-check for BK-0021@P2 (known real data issue, not treated as a bug). No-picker path unaffected: MAZ42117272-TA/P2 shows no picker and sends logistic_relationship_uuid=null (verified via intercepted/stubbed POST so no real SAP write was made). Smoke: Confirm dialog (confirm-button-0 -> confirm-production-dialog), Manage Reasons dialog, Confirmation History dialog and the Open lots list all still work, zero console errors.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/production-confirmation/source-of-supply-options/{material_id}", "issue": "An invalid/unknown site_id (e.g. 'ZZZZ') returns HTTP 502 'SAP error: Supply Planning Area ... not found'. Functionally harmless (frontend catches and hides the picker) but 400/404 would be the semantically correct code for bad user input, and 502s pollute logs/monitoring."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Source of Supply lookup before Site is entered", "issue": "Blurring Product ID while Site is still empty fires the UNSCOPED lookup, so the picker can appear for a false conflict - e.g. HTBS-SPAIN with empty Site shows a 2-option picker (HTBS-SPAIN_1 @P2 and HTBS-SPAIN_2 @P3, which are different sites, i.e. not a real choice). It self-corrects and hides once Site=P2 is entered, but for a few seconds the user sees a warning banner saying the material has 2 valid Production Models when at their site it has 1. Suggest skipping checkSourceOfSupply() until both materialId and siteId are non-empty (and clearing sosOptions/sosChecked when Site changes, same as is already done for Product ID).", "affected_selectors": ["source-of-supply-picker", "create-proposal-product-input", "create-proposal-site-input"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_source_of_supply.py", "/app/test_reports/pytest/sos_results.xml"],
+  "action_items": [
+    "Only run the Source-of-Supply lookup when BOTH Product ID and Site are filled (prevents the transient false-conflict picker, e.g. HTBS-SPAIN with empty Site) and reset sosChecked/sosOptions on Site onChange as is done for Product ID.",
+    "Optional: return 400/404 instead of 502 from the source-of-supply-options endpoint when the site_id doesn't exist in SAP."
+  ],
+  "critical_code_review_comments": [
+    "CreateOrderTab: siteId onChange does not reset sosChecked/sosOptions (Product ID onChange does), so a stale picker from a previous site can remain visible until the next blur completes.",
+    "checkSourceOfSupply() swallows all errors silently - fine for the fallback UX, but consider a console.warn so genuine 502s from the custom OData service are diagnosable in the field.",
+    "ProductionConfirmationPage.js is ~800 lines with 4 dialogs + 2 tabs in one file; splitting CreateOrderTab into its own module would keep this maintainable."
+  ],
+  "updated_files": ["/app/backend/tests/test_source_of_supply.py"],
+  "success_rate": {"backend": "100%", "frontend": "95%"},
+  "seed_data_creation": "Temporary auth user/session (testtid:testoid-prodconf2, page grant production_confirmation) created via /app/tests/setup_session_prodconf2.py and deleted afterwards. No SAP master data created; the only real SAP write attempt (BK-0021/P2 with the alternate model) was blocked by the expected component-stock pre-check, so no new proposal was created.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "No end-user login; Entra SSO session simulated with a synthetic vms_session cookie (script: /app/tests/setup_session_prodconf2.py create|clean).",
+  "context_for_next_testing_agent": "Feature works end-to-end on the read side and the payload side. Regression suite for it: /app/backend/tests/test_source_of_supply.py (needs /tmp/test_token2.txt written by /app/tests/setup_session_prodconf2.py create). NOTE: writing/editing files inside /app/backend triggers uvicorn watchfiles reload -> transient 502s from the ingress; create test files first, then run pytest. BK-0021@P2 always fails the component-stock pre-check with 400 (real tenant data issue, expected). The full create+release job with logistic_relationship_uuid set could therefore still not be exercised end-to-end through the job pipeline; only the request payload was verified. Also observed in backend logs: intermittent connect timeouts to my431827.businessbydesign.cloud.sap from the background Standard-Costs valuation refresh (unrelated to this feature).",
+  "rca_of_the_issue": "False-conflict picker: checkSourceOfSupply() runs on Product ID blur regardless of whether Site is filled; with no site_id the backend intentionally returns all models for the material (unscoped), and the UI shows the picker whenever options.length > 1, so materials whose models live at different sites briefly appear ambiguous. Gate the call on siteId being present."
+}

@@ -577,6 +577,46 @@ async def get_bom_net_weight(product_ids: str = Query(..., description="Comma-se
     return {doc["_id"]: doc["net_weight_kg"] for doc in docs}
 
 
+@api_router.get("/production-confirmation/scrap-calc/{product_id}")
+async def get_scrap_calc(product_id: str):
+    """Auto-calculates the expected scrap-per-unit for an output product:
+    Gross Weight (the raw-material BOM child's own consumption quantity,
+    already captured during BOM exploration - the RM child is the BOM
+    item with unit_of_measure "MASS" and the largest quantity, since
+    smaller MASS-unit items are usually paint/coating, not the structural
+    raw material) minus Net Weight (the finished item's own weight,
+    already captured via the Admin page's Net Weight tool). Returns
+    {"available": False, "reason": ...} if either side is missing."""
+    bom_doc = db["bom_node_cache"].find_one({"_id": product_id})
+    mass_items = [
+        item for group in (bom_doc or {}).get("groups", []) for item in group.get("items", [])
+        if item.get("unit_of_measure") == "MASS" and item.get("quantity") is not None
+    ]
+    if not mass_items:
+        return {"available": False, "reason": "No raw-material (mass-based) BOM component found for this item"}
+    rm_item = max(mass_items, key=lambda i: i["quantity"])
+
+    component_doc = db["component_master"].find_one({"_id": product_id})
+    net_weight_kg = (component_doc or {}).get("net_weight_kg")
+    if net_weight_kg is None:
+        return {
+            "available": False, "reason": "Net Weight not set for this item yet - set it on the Admin page first",
+            "rm_product_id": rm_item["product_id"], "rm_description": rm_item.get("description"),
+            "gross_weight_kg": rm_item["quantity"],
+        }
+
+    gross_weight_kg = rm_item["quantity"]
+    scrap_per_unit_kg = max(0, round(gross_weight_kg - net_weight_kg, 6))
+    return {
+        "available": True,
+        "rm_product_id": rm_item["product_id"],
+        "rm_description": rm_item.get("description"),
+        "gross_weight_kg": gross_weight_kg,
+        "net_weight_kg": net_weight_kg,
+        "scrap_per_unit_kg": scrap_per_unit_kg,
+    }
+
+
 class RefreshAttachmentsRequest(BaseModel):
     product_ids: List[str]
 
@@ -1917,19 +1957,22 @@ class CreateProductionProposalRequest(BaseModel):
 
 
 @api_router.get("/production-confirmation/source-of-supply-options/{material_id}")
-async def get_source_of_supply_options(material_id: str):
+async def get_source_of_supply_options(material_id: str, site_id: str = None):
     """Lists the available Production Models (Source of Supply) for a
-    material with multiple valid BOMs, so the user can pick one before
-    creating a Production Order instead of SAP auto-defaulting. Returns an
-    empty list (not an error) if the material's product_uuid hasn't been
-    captured yet or SAP reports only a single model - the frontend simply
-    hides the picker in that case."""
+    material with multiple valid BOMs at the given site, so the user can
+    pick one before creating a Production Order instead of SAP
+    auto-defaulting. Scoped by site_id because a material's multiple
+    models are often valid at different sites (not a real conflict) -
+    only models sharing the SAME site's Supply Planning Area are surfaced
+    as genuine choices. Returns an empty list (not an error) if the
+    material's product_uuid hasn't been captured yet or there's only one
+    valid model at this site - the frontend hides the picker in that case."""
     doc = db["component_master"].find_one({"_id": material_id}) or db["bom_node_cache"].find_one({"_id": material_id})
     material_uuid = (doc or {}).get("product_uuid")
     if not material_uuid:
         return {"material_uuid": None, "options": []}
     try:
-        options = await asyncio.to_thread(sap_production_model_client.get_source_of_supply_options, material_uuid)
+        options = await asyncio.to_thread(sap_production_model_client.get_source_of_supply_options, material_uuid, site_id)
     except SAPProductionModelError as e:
         raise HTTPException(status_code=502, detail=f"SAP error: {e}")
     return {"material_uuid": material_uuid, "options": options}
@@ -1979,39 +2022,50 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
     the action silently missing the just-created Proposal."""
     try:
         job_store.update_job(db, job_id, {"status": "creating_proposal"})
-        proposal_result = None
-        for attempt in range(3):
-            try:
-                proposal_result = await asyncio.to_thread(
-                    sap_production_proposal_client.create_proposal,
-                    payload.material_id, payload.site_id, payload.quantity, payload.unit_code, avail_dt,
-                )
-                break
-            except SAPProductionProposalError as e:
-                if attempt == 2:
-                    raise
-                logger.warning(f"create-and-release job {job_id}: proposal creation attempt {attempt + 1}/3 hit a transient SAP error, retrying: {e}")
-                await asyncio.sleep(10)
-        proposal_id = proposal_result["production_proposal_id"]
+        proposal_id = None
+        if payload.logistic_relationship_uuid:
+            # User explicitly picked a non-default Production Model - this
+            # can ONLY be set at creation time (SAP rejects it on PATCH of
+            # an existing Proposal), so this bypasses the normal SOAP path
+            # entirely and goes through the custom OData Create action.
+            doc = db["component_master"].find_one({"_id": payload.material_id}) or db["bom_node_cache"].find_one({"_id": payload.material_id})
+            material_uuid = (doc or {}).get("product_uuid")
+            if not material_uuid:
+                raise SAPProductionOrderReleaseError(f"Could not resolve product_uuid for material '{payload.material_id}'")
+            spa_uuid = await asyncio.to_thread(sap_production_model_client.get_supply_planning_area_uuid, payload.site_id)
+            for attempt in range(3):
+                try:
+                    proposal_id = await asyncio.to_thread(
+                        sap_production_proposal_release_client.create_with_source_of_supply,
+                        material_uuid, spa_uuid, payload.quantity, payload.unit_code, avail_dt, payload.logistic_relationship_uuid,
+                    )
+                    break
+                except SAPProductionOrderReleaseError as e:
+                    if attempt == 2:
+                        raise
+                    logger.warning(f"create-and-release job {job_id}: create-with-source-of-supply attempt {attempt + 1}/3 hit a transient SAP error, retrying: {e}")
+                    await asyncio.sleep(10)
+        else:
+            proposal_result = None
+            for attempt in range(3):
+                try:
+                    proposal_result = await asyncio.to_thread(
+                        sap_production_proposal_client.create_proposal,
+                        payload.material_id, payload.site_id, payload.quantity, payload.unit_code, avail_dt,
+                    )
+                    break
+                except SAPProductionProposalError as e:
+                    if attempt == 2:
+                        raise
+                    logger.warning(f"create-and-release job {job_id}: proposal creation attempt {attempt + 1}/3 hit a transient SAP error, retrying: {e}")
+                    await asyncio.sleep(10)
+            proposal_id = proposal_result["production_proposal_id"]
         await asyncio.to_thread(
             production_confirmation_service.log_proposal_creation, db, payload.actor, payload.dict(),
             {"production_proposal_id": proposal_id},
         )
         job_store.update_job(db, job_id, {"status": "waiting_for_order", "production_proposal_id": proposal_id})
         await asyncio.sleep(SAP_SETTLE_DELAY_SECONDS)  # let SAP fully commit the new Proposal before anything reads/acts on it
-
-        if payload.logistic_relationship_uuid:
-            job_store.update_job(db, job_id, {"status": "setting_source_of_supply"})
-            try:
-                await asyncio.to_thread(
-                    sap_production_proposal_release_client.set_source_of_supply, proposal_id, payload.logistic_relationship_uuid,
-                )
-            except SAPProductionOrderReleaseError as e:
-                # Non-fatal - SAP already auto-picked a default model, worst
-                # case the user's explicit choice didn't stick and they'll
-                # notice on the resulting Order; don't block the whole flow.
-                logger.warning(f"create-and-release job {job_id}: failed to set Source of Supply on proposal {proposal_id}: {e}")
-            await asyncio.sleep(SAP_SETTLE_DELAY_SECONDS)
 
         open_statuses = ["1", "2", "3"]
         baseline_ids = None

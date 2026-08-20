@@ -60,6 +60,8 @@ const STATUS_TONE = {
 const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
   const [confirmedQty, setConfirmedQty] = useState(row ? (row.open_quantity ?? "") : "");
   const [confirmedScrap, setConfirmedScrap] = useState("0");
+  const [scrapTouched, setScrapTouched] = useState(false);
+  const [scrapCalc, setScrapCalc] = useState(null);
   const [reason, setReason] = useState("none");
   const [finished, setFinished] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -70,11 +72,28 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
     if (row) {
       setConfirmedQty(row.open_quantity ?? "");
       setConfirmedScrap("0");
+      setScrapTouched(false);
+      setScrapCalc(null);
       setReason("none");
       setFinished(false);
       setAvailability(null);
+      if (row.main_output_product) {
+        axios.get(`${API}/production-confirmation/scrap-calc/${encodeURIComponent(row.main_output_product)}`)
+          .then(({ data }) => setScrapCalc(data))
+          .catch(() => setScrapCalc(null));
+      }
     }
   }, [row]);
+
+  // Auto-fills Confirmed Scrap = scrap-per-unit x qty whenever the qty
+  // changes, as long as the user hasn't manually typed into the Scrap
+  // field themselves (scrapTouched) - keeps it a suggestion, not a lock.
+  useEffect(() => {
+    if (!scrapCalc?.available || scrapTouched) return;
+    const qty = Number(confirmedQty);
+    if (confirmedQty === "" || Number.isNaN(qty)) return;
+    setConfirmedScrap(String(Math.round(scrapCalc.scrap_per_unit_kg * qty * 1e6) / 1e6));
+  }, [scrapCalc, confirmedQty, scrapTouched]);
 
   useEffect(() => {
     if (!row || confirmedQty === "" || Number.isNaN(Number(confirmedQty))) {
@@ -192,9 +211,20 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
             <p className="text-[11px] text-[#98A2B3]">{availability.reason}</p>
           )}
 
+          {scrapCalc?.available && (
+            <div className="text-xs text-[#344054] bg-[#F9FAFB] border border-[#EAECF0] rounded-sm px-3 py-2" data-testid="scrap-calc-info">
+              <div className="font-bold font-heading uppercase tracking-wide text-[10px] text-[#667085] mb-1">Auto-calculated from {scrapCalc.rm_product_id}{scrapCalc.rm_description ? ` (${scrapCalc.rm_description})` : ""}</div>
+              Gross Weight: <strong data-testid="scrap-calc-gross">{scrapCalc.gross_weight_kg}</strong> kg ·
+              {" "}Net Weight: <strong data-testid="scrap-calc-net">{scrapCalc.net_weight_kg}</strong> kg ·
+              {" "}Scrap/unit: <strong data-testid="scrap-calc-per-unit">{scrapCalc.scrap_per_unit_kg}</strong> kg
+            </div>
+          )}
+          {scrapCalc && !scrapCalc.available && (
+            <p className="text-[11px] text-[#667085]" data-testid="scrap-calc-unavailable">Scrap auto-calc unavailable: {scrapCalc.reason}</p>
+          )}
           <div>
             <Label className="text-xs font-bold text-[#344054]">Confirmed Scrap</Label>
-            <Input type="number" value={confirmedScrap} onChange={(e) => setConfirmedScrap(e.target.value)} data-testid="confirm-scrap-input" />
+            <Input type="number" value={confirmedScrap} onChange={(e) => { setConfirmedScrap(e.target.value); setScrapTouched(true); }} data-testid="confirm-scrap-input" />
           </div>
           <div>
             <Label className="text-xs font-bold text-[#344054]">Deviation Reason</Label>
@@ -354,14 +384,21 @@ const CreateOrderTab = ({ actorName }) => {
   const [sosOptions, setSosOptions] = useState([]);
   const [sosLoading, setSosLoading] = useState(false);
   const [sosChecked, setSosChecked] = useState(false);
-  const [selectedLogisticRelationshipUuid, setSelectedLogisticRelationshipUuid] = useState("");
+  const [selectedSosKey, setSelectedSosKey] = useState("");
 
   const PHASE_LABELS = {
     running: "Starting...",
     creating_proposal: "Creating Proposal in SAP...",
     waiting_for_order: "Waiting for SAP to convert Proposal to Order...",
-    setting_source_of_supply: "Applying Source of Supply choice...",
     releasing_order: "Releasing Order in SAP...",
+  };
+
+  const selectedSosOption = sosOptions[Number(selectedSosKey)];
+
+  const chooseSosOption = (key) => {
+    setSelectedSosKey(key);
+    const option = sosOptions[Number(key)];
+    if (option) setSiteId(option.site_id); // model determines site in SAP, not the other way around
   };
 
   const checkSourceOfSupply = async () => {
@@ -369,12 +406,18 @@ const CreateOrderTab = ({ actorName }) => {
     if (!id) return;
     setSosLoading(true);
     setSosOptions([]);
-    setSelectedLogisticRelationshipUuid("");
+    setSelectedSosKey("");
     try {
-      const { data } = await axios.get(`${API}/production-confirmation/source-of-supply-options/${encodeURIComponent(id)}`);
-      setSosOptions(data.options || []);
-      const active = (data.options || []).find((o) => o.is_active) || (data.options || [])[0];
-      if (active) setSelectedLogisticRelationshipUuid(active.logistic_relationship_uuid);
+      const { data } = await axios.get(`${API}/production-confirmation/source-of-supply-options/${encodeURIComponent(id)}`, {
+        params: siteId.trim() ? { site_id: siteId.trim().toUpperCase() } : {},
+      });
+      const options = data.options || [];
+      setSosOptions(options);
+      const currentSite = siteId.trim().toUpperCase();
+      const preferred = options.findIndex((o) => o.is_active && (!currentSite || o.site_id === currentSite));
+      const fallback = options.findIndex((o) => o.is_active);
+      const idx = preferred >= 0 ? preferred : fallback;
+      if (idx >= 0) chooseSosOption(String(idx));
     } catch (e) {
       // Non-fatal - proceeding without an explicit choice just leaves SAP's own default in place
       setSosOptions([]);
@@ -414,7 +457,7 @@ const CreateOrderTab = ({ actorName }) => {
         unit_code: unitCode.trim().toUpperCase() || "EA",
         availability_datetime: requestedEndDate ? new Date(requestedEndDate).toISOString() : null,
         actor: actorName.trim(),
-        logistic_relationship_uuid: sosOptions.length > 1 ? (selectedLogisticRelationshipUuid || null) : null,
+        logistic_relationship_uuid: selectedSosOption ? selectedSosOption.logistic_relationship_uuid : null,
       });
       const jobId = data.job_id;
 
@@ -437,7 +480,7 @@ const CreateOrderTab = ({ actorName }) => {
             toast.error(result.note || "Proposal created but the Order hasn't appeared yet - it keeps retrying automatically, check history shortly");
           }
           setMaterialId(""); setQuantity("1"); setRequestedEndDate("");
-          setSosOptions([]); setSosChecked(false); setSelectedLogisticRelationshipUuid("");
+          setSosOptions([]); setSosChecked(false); setSelectedSosKey("");
           loadHistory();
           break;
         }
@@ -498,28 +541,32 @@ const CreateOrderTab = ({ actorName }) => {
             />
           </div>
           {sosLoading && <p className="text-xs text-[#667085]" data-testid="sos-loading-text">Checking available Production Models...</p>}
-          {sosChecked && sosOptions.length > 1 && (
+          {sosChecked && sosOptions.length > 0 && (
             <div data-testid="source-of-supply-picker">
               <Label className="text-xs font-bold text-[#344054]">Source of Supply (Production Model)</Label>
-              <Select value={selectedLogisticRelationshipUuid} onValueChange={setSelectedLogisticRelationshipUuid}>
+              <Select value={selectedSosKey} onValueChange={chooseSosOption}>
                 <SelectTrigger data-testid="source-of-supply-select-trigger">
                   <SelectValue placeholder="Choose a Production Model" />
                 </SelectTrigger>
                 <SelectContent>
-                  {sosOptions.map((o) => (
-                    <SelectItem key={o.logistic_relationship_uuid} value={o.logistic_relationship_uuid} data-testid={`source-of-supply-option-${o.production_model_id}`}>
-                      {o.production_model_id}{o.is_active ? "" : " (Obsolete)"}
+                  {sosOptions.map((o, idx) => (
+                    <SelectItem key={`${o.production_model_id}-${o.site_id}`} value={String(idx)} data-testid={`source-of-supply-option-${o.production_model_id}-${o.site_id}`}>
+                      {o.production_model_id}{o.description ? ` — ${o.description}` : ""} (Site {o.site_id}){o.is_active ? "" : " (Obsolete)"}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-xs text-[#B54708] mt-1">This material has {sosOptions.length} valid Production Models - pick one so SAP doesn't auto-default to the wrong recipe.</p>
+              <p className="text-xs text-[#B54708] mt-1">
+                {sosOptions.length > 1
+                  ? `This material has ${sosOptions.length} valid Production Model/Site combinations - pick one, it sets the Site for you.`
+                  : "Picking this confirms the Production Model - and its Site - SAP will use."}
+              </p>
             </div>
           )}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label className="text-xs font-bold text-[#344054]">Site</Label>
-              <Input value={siteId} onChange={(e) => setSiteId(e.target.value.toUpperCase())} placeholder="e.g. P2" data-testid="create-proposal-site-input" />
+              <Input value={siteId} onChange={(e) => setSiteId(e.target.value.toUpperCase())} onBlur={checkSourceOfSupply} placeholder="e.g. P2" data-testid="create-proposal-site-input" />
             </div>
             <div>
               <Label className="text-xs font-bold text-[#344054]">UoM</Label>

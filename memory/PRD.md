@@ -1,3 +1,19 @@
+## Session update (2026-08-20)
+
+**Source of Supply (Production Model) picker - DONE, tested 100% (iteration_83, iteration_84):**
+- New custom SAP OData services: `productionmodelemergent` (ProductionModel/ReleasedPlanningProductionModel/SourceOfSupplyLogisticRelationship/ProductionModelSupplyPlanningArea/SupplyPlanningArea entities) and a new Function Import `ProductionPlanningOrderCreate` added to `productionproposalemergent` (exposes the BO's native Create action with SourceOfSupplyLogisticRelationshipUUID).
+- KEY LEARNING: `SourceOfSupplyLogisticRelationshipUUID` can ONLY be set at Proposal creation time in SAP - PATCH on an existing Proposal is hard-rejected ("Update not allowed for properties"), confirmed via live testing. All overrides go through `sap_production_order_release_client.create_with_source_of_supply()` (new OData Create action), not the old SOAP path, only when the user explicitly picks a non-default model.
+- KEY LEARNING: a material's multiple Production Models are often valid at DIFFERENT sites (not a real conflict - SAP's auto-pick is already correct); real ambiguity only exists when 2+ models share the same site's Supply Planning Area (confirmed real case: `BK-0021_1`/`BK-0021_2` both valid at P2).
+- Design: Site is NOT an independent filter - picking a Model+Site option in the picker auto-fills the Site field (model determines site per SAP's own design, per user).
+- New files: `backend/sap_production_model_client.py`. Modified: `backend/sap_production_order_release_client.py` (added `create_with_source_of_supply`, removed the blocked `set_source_of_supply` PATCH method), `backend/server.py` (`GET /production-confirmation/source-of-supply-options/{material_id}?site_id=`, job branching in create-and-release-order), `frontend/ProductionConfirmationPage.js` (CreateOrderTab picker).
+- New endpoint returns options with `production_model_id`, `description` (SAP standard Description field, now exposed), `site_id`, `logistic_relationship_uuid`, `is_active`.
+
+**Scrap auto-calculation from Gross/Net weight - DONE, tested 100% (iteration_85):**
+- Confirm dialog on Production Confirmation page now shows read-only Gross Weight (BOM's raw-material child's own consumption quantity, the BOM item with `unit_of_measure == "MASS"` and max quantity) / Net Weight (existing `component_master.net_weight_kg`, from the earlier Net-Weight-write tool) / Scrap-per-unit, and auto-fills "Confirmed Scrap" = scrap_per_unit x Confirmed Qty (editable, stops auto-updating once user manually edits it).
+- New endpoint: `GET /production-confirmation/scrap-calc/{product_id}` in `backend/server.py`.
+- Verified live for MAZ42117272-TA: gross 0.49kg (HRCOIL1.9X80.5), net 0.19kg, scrap/unit 0.3kg exactly as expected.
+- Known minor/optional polish items (not yet done): distinguish "BOM not cached" vs "no MASS component" in the unavailable reason; wrap scrap-calc mongo reads in `asyncio.to_thread` for consistency.
+
 # SAP BOM Lookup Tool
 
 ## Original Problem Statement

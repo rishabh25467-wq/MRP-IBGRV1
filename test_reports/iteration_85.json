@@ -1,0 +1,45 @@
+{
+  "summary": "Tested the new Production Confirmation scrap auto-calc feature (GET /api/production-confirmation/scrap-calc/{product_id} + ConfirmDialog auto-fill). Backend: 10/10 pytest cases pass (MAZ42117272-TA returns gross 0.49 / net 0.19 / scrap_per_unit 0.3 exactly; both 'unavailable' branches; unknown/odd product ids return 200 with a reason, no 500s; 401 without session; open-lots/history/deviation-reasons/source-of-supply regression smoke all 200). Frontend: verified the unavailable paths for lot 24168 (632163-1, 'Net Weight not set...') and lot 24517 (F041811, 'No raw-material (mass-based) BOM component found') - info block hidden, note shown, Confirmed Scrap stays '0', layout intact. Verified the available path end-to-end by temporarily setting net_weight_kg=0.015 on 632163-1 (RM ZINC-ING gross 0.026): info block showed Gross 0.026 / Net 0.015 / Scrap-per-unit 0.011, auto-fill matched qty*per-unit for qty 10 (0.11), 100 (1.1) and 3 (0.033), a manual scrap edit (7.5) survived two subsequent quantity changes, and reopening the dialog reset the touched flag so auto-fill resumed (qty 20 -> 0.22). Temporary net_weight_kg override was reverted and re-verified via API. No 'Post Confirmation' was ever clicked - every dialog was closed with Cancel.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/production-confirmation/scrap-calc/{product_id}", "issue": "For a product id that does not exist in bom_node_cache at all, the response reason is 'No raw-material (mass-based) BOM component found for this item' - indistinguishable from a real BOM with no MASS line. A 'BOM not explored/cached for this item yet' reason would be clearer for users."},
+      {"endpoint": "/api/production-confirmation/scrap-calc/{product_id}", "issue": "Handler is `async def` but uses the synchronous pymongo client (db[...].find_one) directly, so it blocks the event loop. Both are indexed _id lookups so impact is tiny, but it is inconsistent with the asyncio.to_thread pattern used elsewhere in server.py."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Confirm Production Task dialog", "issues": ["The 'Scrap auto-calc unavailable: ...' note uses #98A2B3 on white (~2.5:1 contrast) at 11px - below WCAG AA for small text; consider #667085."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_scrap_calc.py",
+    "/app/backend/tests/_setup_test_session.py",
+    "/app/backend/tests/_temp_net_weight.py",
+    "/app/test_reports/pytest/scrap_calc.xml"
+  ],
+  "action_items": [
+    "Optional: distinguish 'BOM not cached for this item' from 'BOM has no MASS component' in the scrap-calc unavailable reason.",
+    "Optional: raise the contrast of the scrap-calc-unavailable note text (currently #98A2B3 at 11px).",
+    "Optional: wrap the scrap-calc mongo reads in asyncio.to_thread for consistency with the rest of server.py."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 3417 lines - well past the 700-line guideline; the production-confirmation endpoints (scrap-calc, open-lots, confirm, proposals) are a natural router module to split out.",
+    "scrap_per_unit is correctly clamped with max(0, ...) so a net weight larger than gross can never produce a negative pre-filled scrap - good defensive behaviour, keep it.",
+    "The scrap auto-fill useEffect depends on [scrapCalc, confirmedQty, scrapTouched] and bails on scrapTouched, which correctly makes the value a suggestion; dialog remount resets both states, verified live."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_scrap_calc.py",
+    "/app/backend/tests/_setup_test_session.py",
+    "/app/backend/tests/_temp_net_weight.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Created a synthetic Entra session (auth_users/auth_sessions, user qa.scrapcalc@example.test, super_admin) for API+UI auth - deleted after testing. Temporarily set component_master['632163-1'].net_weight_kg=0.015 to exercise the available UI path - reverted and verified (endpoint again reports 'Net Weight not set').",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "No end-user auth; Entra SSO simulated via a temporary Mongo auth_sessions doc + vms_session cookie (see /app/backend/tests/_setup_test_session.py, which prints the token and supports --cleanup).",
+  "context_for_next_testing_agent": "MAZ42117272-TA has NO open/all production lot in SAP right now (only MAZ42117272-WP appears), so its UI path cannot be exercised - its math was verified via the API (0.49-0.19=0.3). Use /app/backend/tests/_setup_test_session.py to mint a vms_session cookie, and note the app's SPA deep-link: navigate to '/' then click data-testid=nav-production-confirmation (a direct load of /production-confirmation during a backend hot-reload showed a blank page because /api/auth/me 502'd; it renders fine when the backend is up). Creating files under /app/backend/tests triggers a uvicorn hot reload and 502s the preview URL for ~30-60s - write test files first, wait, then run. pytest.ini runs -n 2 so any session fixture must be worker-unique (already handled).",
+  "rca_of_the_issue": "No product defect found. Earlier apparent failures (6 pytest timeouts, one blank page render) were environment artefacts: writing files into /app/backend/tests triggers a backend hot reload, which 502s the public URL mid-request; re-running after the reload settled gave 10/10 passes."
+}
