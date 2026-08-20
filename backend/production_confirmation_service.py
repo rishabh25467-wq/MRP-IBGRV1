@@ -170,7 +170,10 @@ def check_component_availability(db, main_output_product: str, confirmed_quantit
             if locations is None:
                 available_qty = None
             else:
-                available_qty = sum(loc["qty"] for loc in locations if loc.get("site") == site_id)
+                # inventory_cache stores full site names like "RADISH TECHNOLOGY-P2"
+                # (company name + site code), never the bare site code - match on
+                # the "-{site_id}" suffix, not exact equality (was always 0 before).
+                available_qty = sum(loc["qty"] for loc in locations if loc.get("site", "").endswith(f"-{site_id}"))
             components.append({
                 "product_id": item["product_id"],
                 "description": item.get("description"),

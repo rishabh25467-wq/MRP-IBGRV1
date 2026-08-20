@@ -1,3 +1,10 @@
+## Session update (2026-08-20, part 3) - stock pre-check bug fix
+
+**Stock pre-check bug - FIXED:**
+- Root cause: `check_component_availability()` in `production_confirmation_service.py` compared `loc["site"] == site_id` (e.g. `== "P2"`), but `inventory_cache` stores full location names like `"RADISH TECHNOLOGY-P2"` (company + site code), never the bare code - so the comparison always failed and reported 0 available regardless of real stock. Fixed to `loc["site"].endswith(f"-{site_id}")`. Verified live: BK-0021 at P2 now correctly shows 4836kg available (was showing 0 -> false "insufficient stock" block), and successfully created + progressed a real SAP proposal (223832) through the full create-and-release pipeline.
+- Not yet started: "Missing By-Product Creation" (auto-add the correct scrap by-product line to a Production Model's Bill of Operations when missing) - user's next requested target, needs scoping (SAP read for existing by-products + new write action).
+
+
 ## Session update (2026-08-20)
 
 **Source of Supply (Production Model) picker - DONE, tested 100% (iteration_83, iteration_84):**
