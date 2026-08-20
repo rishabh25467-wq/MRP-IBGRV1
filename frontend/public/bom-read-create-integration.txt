@@ -56,9 +56,14 @@ Response includes <Status><LifeCycleStatusCode> and, critically,
 YOU NEED THIS EXACT VALUE for the StartProcessing/Complete action calls
 below, it's not something you can construct yourself.
 
-NEXT STEP (not yet live-tested, from SAP docs) - Service
-EngineeringChangeOrderActionIn, operation START_PROCESSING, moves
-LifeCycleStatusCode 1 ("In Preparation") -> 2 ("In Process"):
+LIVE-CONFIRMED WORKING (20 Aug 2026) - Service EngineeringChangeOrderActionIn,
+operation START_PROCESSING, endpoint .../engineeringchangeorderactionin,
+SOAPAction "http://sap.com/xi/A1S/Global/EngineeringChangeOrderActionIn/StartProcessingRequest".
+Moves LifeCycleStatusCode 1 ("In Preparation") -> 2 ("In Process") -
+confirmed via a follow-up READ_ECO showing LifeCycleStatusName "In Process"
+(note: ChangeStateID also changes after this action - re-READ_ECO to get
+the fresh one before your next call, don't reuse the pre-StartProcessing
+value):
 <n0:EngineeringChangeOrderStartProcessingRequest_sync xmlns:n0="http://sap.com/xi/SAPGlobal20/Global">
   <BasicMessageHeader></BasicMessageHeader>
   <EngineeringChangeOrder>
@@ -66,6 +71,9 @@ LifeCycleStatusCode 1 ("In Preparation") -> 2 ("In Process"):
     <ChangeStateID>{ChangeStateID from READ_ECO}</ChangeStateID>
   </EngineeringChangeOrder>
 </n0:EngineeringChangeOrderStartProcessingRequest_sync>
+
+Success response: <Log> with a SeverityCode=1 Note "Action START_PROCESSING
+executed" (no EngineeringChangeOrder echo node, unlike Create/Read).
 
 Only once the ECO is "In Process" can it be referenced in a BOM
 MaintainBOM call (Part C) - SAP auto-transitions it to "Completed" the
