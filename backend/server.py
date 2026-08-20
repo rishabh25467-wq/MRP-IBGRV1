@@ -2078,13 +2078,22 @@ async def get_source_of_supply_options(material_id: str, site_id: str = None):
     valid model at this site - the frontend hides the picker in that case."""
     doc = db["component_master"].find_one({"_id": material_id}) or db["bom_node_cache"].find_one({"_id": material_id})
     material_uuid = (doc or {}).get("product_uuid")
+    base_uom = (doc or {}).get("base_uom")
+    if base_uom is None:
+        try:
+            sap_result = await asyncio.to_thread(sap_material_physical_client.get_physical_attributes, material_id)
+        except SAPMaterialPhysicalError:
+            sap_result = None
+        base_uom = (sap_result or {}).get("base_uom")
+        if base_uom:
+            db["component_master"].update_one({"_id": material_id}, {"$set": {"base_uom": base_uom}}, upsert=True)
     if not material_uuid:
-        return {"material_uuid": None, "options": []}
+        return {"material_uuid": None, "options": [], "base_uom": base_uom}
     try:
         options = await asyncio.to_thread(sap_production_model_client.get_source_of_supply_options, material_uuid, site_id)
     except SAPProductionModelError as e:
         raise HTTPException(status_code=502, detail=f"SAP error: {e}")
-    return {"material_uuid": material_uuid, "options": options}
+    return {"material_uuid": material_uuid, "options": options, "base_uom": base_uom}
 
 
 @api_router.post("/production-confirmation/create-proposal")

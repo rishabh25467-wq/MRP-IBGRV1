@@ -55,9 +55,10 @@ class SAPMaterialPhysicalClient:
         self.password = password
 
     def get_physical_attributes(self, internal_id: str):
-        """Returns {"object_id": str, "attributes": {field_name: float}}
-        (only fields with a non-zero/non-empty value included), or None if
-        SAP has no material with that InternalID."""
+        """Returns {"object_id": str, "attributes": {field_name: float},
+        "base_uom": str|None} (attributes only includes fields with a
+        non-zero/non-empty value), or None if SAP has no material with
+        that InternalID."""
         with sap_semaphore:
             resp = requests.get(
                 f"{self.base_url}/{COLLECTION}",
@@ -82,7 +83,13 @@ class SAPMaterialPhysicalClient:
                     continue
                 if value != 0:
                     attributes[field] = value
-        return {"object_id": row.get("ObjectID"), "attributes": attributes}
+        # Standard field (not a custom Key User Tool field like the ones
+        # above) - exposed Aug 2026 on materialgeneralinfo per user's SAP
+        # admin, same OData row, no extra round trip. Used to auto-lock
+        # the Create Production Order form's UoM picker against the
+        # material's real base unit instead of leaving it a free choice.
+        base_uom = row.get("BaseMeasureUnitCode") or None
+        return {"object_id": row.get("ObjectID"), "attributes": attributes, "base_uom": base_uom}
 
     def push_physical_attributes(self, internal_id: str, values: dict):
         """Writes Net Weight/Surface Area (values keyed by

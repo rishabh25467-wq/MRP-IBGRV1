@@ -433,6 +433,7 @@ const CreateOrderTab = ({ actorName }) => {
   const [sosChecked, setSosChecked] = useState(false);
   const [selectedSosKey, setSelectedSosKey] = useState("");
   const [siteAutoFilled, setSiteAutoFilled] = useState(false);
+  const [unitCodeAutoFilled, setUnitCodeAutoFilled] = useState(false);
   const [materialUuid, setMaterialUuid] = useState(null);
   const [productSuggestions, setProductSuggestions] = useState([]);
   const [showProductSuggestions, setShowProductSuggestions] = useState(false);
@@ -524,6 +525,17 @@ const CreateOrderTab = ({ actorName }) => {
         setSiteId(""); // clear a stale auto-filled site from a previous material - but never clobber a site the user typed themselves
         setSiteAutoFilled(false);
       }
+      // Base UoM (SAP's real base unit for this material, exposed Aug
+      // 2026) - lock the picker to it, same UX pattern as Site locking
+      // from the chosen Production Model, so the previously-free UoM
+      // choice can no longer silently mismatch SAP's own unit.
+      if (data.base_uom) {
+        setUnitCode(data.base_uom);
+        setUnitCodeAutoFilled(true);
+      } else if (unitCodeAutoFilled) {
+        setUnitCode("EA");
+        setUnitCodeAutoFilled(false);
+      }
     } catch (e) {
       // A transient network/5xx error is NOT the same as "material doesn't
       // exist" - don't show the red not-recognized warning or block submit
@@ -602,6 +614,7 @@ const CreateOrderTab = ({ actorName }) => {
           }
           setMaterialId(""); setQuantity("1"); setRequestedEndDate("");
           setSosOptions([]); setSosChecked(false); setSelectedSosKey(""); setSiteAutoFilled(false);
+          setUnitCode("EA"); setUnitCodeAutoFilled(false);
           loadHistory();
           break;
         }
@@ -729,17 +742,19 @@ const CreateOrderTab = ({ actorName }) => {
             </div>
             <div>
               <Label className="text-xs font-bold text-[#344054]">UoM</Label>
-              <Select value={unitCode} onValueChange={setUnitCode}>
+              <Select value={unitCode} onValueChange={setUnitCode} disabled={unitCodeAutoFilled}>
                 <SelectTrigger data-testid="create-proposal-uom-select-trigger">
                   <SelectValue placeholder="EA" />
                 </SelectTrigger>
                 <SelectContent>
-                  {COMMON_UOM_CODES.map((code) => (
+                  {(COMMON_UOM_CODES.includes(unitCode) ? COMMON_UOM_CODES : [unitCode, ...COMMON_UOM_CODES]).map((code) => (
                     <SelectItem key={code} value={code} data-testid={`create-proposal-uom-option-${code}`}>{code}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              {unitCode !== "EA" && (
+              {unitCodeAutoFilled ? (
+                <p className="text-[11px] text-[#667085] mt-0.5" data-testid="uom-locked-helper">Locked - SAP's base unit for this material</p>
+              ) : unitCode !== "EA" && (
                 <p className="text-[11px] text-[#B54708] mt-0.5" data-testid="uom-not-ea-warning">
                   Not verified against SAP's base unit for this material yet - double-check it's correct before submitting.
                 </p>

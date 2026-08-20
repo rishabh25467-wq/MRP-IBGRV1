@@ -10,6 +10,10 @@
 
 **Not pursued this session**: Missing By-Product Creation - user confirmed this is already considered DONE (existing Production Model by-product rows are sufficient), removed from active backlog.
 
+**UoM auto-lock - DONE**: user's SAP admin exposed `Common.BaseMeasureUnitCode` (standard field) on `materialgeneralinfo` and activated it. `sap_material_physical_client.get_physical_attributes()` now also returns `base_uom` from the same OData row (no extra call). `GET /production-confirmation/source-of-supply-options/{material_id}` caches it into `component_master.base_uom` and returns it; frontend's `checkSourceOfSupply()` auto-fills + locks (disables) the UoM Select the same way Site locks from the Production Model, with a "Locked - SAP's base unit for this material" helper. Falls back to the EA-default + warning behavior only when SAP has no base UoM captured for that material yet. Verified live: BK-0021 -> `BaseMeasureUnitCode: "EA"`, screenshot-confirmed UoM select shows disabled + "EA" + locked helper.
+
+**New endpoint**: `GET /api/docs/sap-integrations` serves `/app/memory/SAP_INTEGRATIONS.md` as plain text (behind the same SSO session) so the user can read the full SAP integration reference in-browser.
+
 ## Session update (2026-08-20, part 9) - correction: ConfirmedScrap is rejection qty, unrelated to by-product weight
 
 User clarified: `confirmed_scrap` (the "Confirmed Scrap" input) is a manually-entered REJECTED QUANTITY (defective units) - a completely separate, legitimate concept from the physical by-product material weight built in part 8. It SHOULD be written to SAP's ConfirmedScrap field (re-enabled, undoing part 8's removal). Fixed the conflation:

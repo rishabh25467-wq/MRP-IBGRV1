@@ -84,6 +84,6 @@ Two integration styles are used throughout this app:
 - `sap_gsa_client.py`, `sap_cost_estimate_client.py`, `sap_price_spec_client.py`, `sap_supplier_client.py`, `sap_supplier_invoice_client.py` - power the Price Explorer / supplier-facing pages, unrelated to BOM/Production.
 
 ## Open items / known gaps
-- **UoM not validated against SAP** (flagged Aug 2026): the Create Production Order form's UoM picker is a free choice of 8 common codes, not checked against the material's real base UoM in SAP before submitting. Fix in progress: SAP admin needs to expose the standard `BaseUnitOfMeasureCode` field on `materialgeneralinfo` (same one-time Key User OData step as the Net Weight fields) so the app can auto-lock UoM the same way Site is already locked from the Production Model. Until then: UoM defaults to EA with a warning if changed, and SAP validation-error messages are now clarified when they look unit/quantity-related.
+- **UoM auto-lock - DONE (2026-08-20)**: SAP admin exposed `Common.BaseMeasureUnitCode` on `materialgeneralinfo` (activated). The Create Production Order form now auto-fills + locks UoM from this field the same way Site locks from the Production Model, falling back to EA-default + warning only if SAP has no value for that material.
 - **Live SAP Inventory OData 500 error** (blocked on SAP Basis team) - app falls back to the cached DB snapshot.
 - **Missing By-Product Creation on a Production Model** - deprioritized by user (existing model by-product rows are sufficient for current use).
