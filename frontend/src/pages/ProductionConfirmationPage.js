@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import "@/App.css";
 import axios from "axios";
 import {
@@ -433,12 +433,58 @@ const CreateOrderTab = ({ actorName }) => {
   const [sosChecked, setSosChecked] = useState(false);
   const [selectedSosKey, setSelectedSosKey] = useState("");
   const [siteAutoFilled, setSiteAutoFilled] = useState(false);
+  const [materialUuid, setMaterialUuid] = useState(null);
+  const [productSuggestions, setProductSuggestions] = useState([]);
+  const [showProductSuggestions, setShowProductSuggestions] = useState(false);
+  const productInputWrapperRef = useRef(null);
+  const suggestionDebounceRef = useRef(null);
+  const suggestionRequestRef = useRef(null);
+
+  const COMMON_UOM_CODES = ["EA", "KGM", "MTR", "LTR", "PC", "SET", "BOX", "TO"];
+
+  useEffect(() => {
+    if (suggestionDebounceRef.current) clearTimeout(suggestionDebounceRef.current);
+    const q = materialId.trim();
+    if (q.length < 2) {
+      setProductSuggestions([]);
+      return;
+    }
+    suggestionDebounceRef.current = setTimeout(async () => {
+      const requestId = q;
+      suggestionRequestRef.current = requestId;
+      try {
+        const { data } = await axios.get(`${API}/products/search`, { params: { q, limit: 10 } });
+        if (suggestionRequestRef.current === requestId) setProductSuggestions(data);
+      } catch {
+        if (suggestionRequestRef.current === requestId) setProductSuggestions([]);
+      }
+    }, 250);
+    return () => clearTimeout(suggestionDebounceRef.current);
+  }, [materialId]);
+
+  useEffect(() => {
+    const onClickOutside = (e) => {
+      if (productInputWrapperRef.current && !productInputWrapperRef.current.contains(e.target)) {
+        setShowProductSuggestions(false);
+      }
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, []);
 
   const PHASE_LABELS = {
     running: "Starting...",
     creating_proposal: "Creating Proposal in SAP...",
     waiting_for_order: "Waiting for SAP to convert Proposal to Order...",
     releasing_order: "Releasing Order in SAP...",
+  };
+
+  const STEP_ORDER = ["running", "creating_proposal", "waiting_for_order", "releasing_order"];
+  const STEP_TITLES = {
+    running: "Submitting request to SAP",
+    creating_proposal: "Creating Production Proposal in SAP",
+    waiting_for_order: "Waiting for SAP to convert Proposal → Order",
+    releasing_order: "Releasing the Order in SAP",
   };
 
   const selectedSosOption = sosOptions[Number(selectedSosKey)];
@@ -449,14 +495,23 @@ const CreateOrderTab = ({ actorName }) => {
     if (option) { setSiteId(option.site_id); setSiteAutoFilled(true); } // model determines site in SAP, not the other way around
   };
 
-  const checkSourceOfSupply = async () => {
-    const id = materialId.trim();
-    if (!id) return;
+  const [lastCheckedId, setLastCheckedId] = useState(null);
+  const [sosCheckFailed, setSosCheckFailed] = useState(false);
+
+  const checkSourceOfSupply = async (idOverride) => {
+    const id = (idOverride ?? materialId).trim();
+    if (!id || (id === lastCheckedId && !sosCheckFailed)) return;  // avoid redundant re-lookups (e.g. blur right before a submit click) that would reset materialUuid/site mid-flow - unless the last attempt failed and this is a retry
+    setMaterialId(id);
+    setLastCheckedId(id);
+    setShowProductSuggestions(false);
     setSosLoading(true);
+    setSosCheckFailed(false);
     setSosOptions([]);
     setSelectedSosKey("");
+    setMaterialUuid(null);
     try {
       const { data } = await axios.get(`${API}/production-confirmation/source-of-supply-options/${encodeURIComponent(id)}`);
+      setMaterialUuid(data.material_uuid || null);
       const options = data.options || [];
       setSosOptions(options);
       const preferred = options.findIndex((o) => o.is_active);
@@ -470,8 +525,11 @@ const CreateOrderTab = ({ actorName }) => {
         setSiteAutoFilled(false);
       }
     } catch (e) {
-      // Non-fatal - proceeding without an explicit choice just leaves SAP's own default in place
+      // A transient network/5xx error is NOT the same as "material doesn't
+      // exist" - don't show the red not-recognized warning or block submit
+      // for a real product just because one lookup attempt failed.
       setSosOptions([]);
+      setSosCheckFailed(true);
     } finally {
       setSosLoading(false);
       setSosChecked(true);
@@ -496,10 +554,23 @@ const CreateOrderTab = ({ actorName }) => {
       toast.error("Product, Site and Quantity are required");
       return;
     }
+    if (sosLoading) {
+      toast.error("Still checking this Product ID with SAP - wait a moment and try again");
+      return;
+    }
+    if (sosChecked && !materialUuid && !sosCheckFailed) {
+      toast.error("Product ID not recognized in SAP - pick one from the suggestions or check the spelling");
+      return;
+    }
     setCreating(true);
     setElapsedSeconds(0);
     setCreatePhase("running");
     const startedAt = Date.now();
+    // Live per-second ticker, independent of the 4s poll interval below -
+    // purely cosmetic, never drives any actual logic.
+    const tickTimer = setInterval(() => {
+      setElapsedSeconds(Math.round((Date.now() - startedAt) / 1000));
+    }, 1000);
     try {
       const { data } = await axios.post(`${API}/production-confirmation/create-and-release-order`, {
         material_id: materialId.trim(),
@@ -518,7 +589,6 @@ const CreateOrderTab = ({ actorName }) => {
       // eslint-disable-next-line no-constant-condition
       while (true) {
         await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-        setElapsedSeconds(Math.round((Date.now() - startedAt) / 1000));
         const { data: job } = await axios.get(`${API}/production-confirmation/create-and-release-order/status/${jobId}`);
         setCreatePhase(job.status);
         if (job.status === "done") {
@@ -545,6 +615,7 @@ const CreateOrderTab = ({ actorName }) => {
     } catch (e) {
       toast.error(e.response?.data?.detail || e.message || "Failed to create Production Order in SAP");
     } finally {
+      clearInterval(tickTimer);
       setCreating(false);
       setCreatePhase("");
     }
@@ -581,47 +652,98 @@ const CreateOrderTab = ({ actorName }) => {
         <div className="bg-white border border-[#D0D5DD] rounded-sm p-4 space-y-3" data-testid="create-proposal-card">
           <h3 className="font-heading text-sm font-bold text-[#1D2939] uppercase tracking-wide">Create Production Order</h3>
           <p className="text-xs text-[#667085]">Creates and releases a Production Order in SAP - fully automated, retries in the background until SAP converts it. Checks component stock first and blocks with a clear reason if a raw material is out of stock (no orphaned Proposals).</p>
-          <div>
+          <div ref={productInputWrapperRef} className="relative">
             <Label className="text-xs font-bold text-[#344054]">Product ID</Label>
             <Input
               value={materialId}
-              onChange={(e) => { setMaterialId(e.target.value); setSosChecked(false); setSosOptions([]); }}
-              onBlur={checkSourceOfSupply}
+              onChange={(e) => { setMaterialId(e.target.value); setSosChecked(false); setSosOptions([]); setMaterialUuid(null); setLastCheckedId(null); setShowProductSuggestions(true); }}
+              onFocus={() => setShowProductSuggestions(true)}
+              onBlur={() => checkSourceOfSupply()}
               placeholder="e.g. MAZ42117272-TA"
               data-testid="create-proposal-product-input"
+              autoComplete="off"
             />
-          </div>
-          {sosLoading && <p className="text-xs text-[#667085]" data-testid="sos-loading-text">Checking available Production Models...</p>}
-          {sosChecked && sosOptions.length > 0 && (
-            <div data-testid="source-of-supply-picker">
-              <Label className="text-xs font-bold text-[#344054]">Source of Supply (Production Model)</Label>
-              <Select value={selectedSosKey} onValueChange={chooseSosOption}>
-                <SelectTrigger data-testid="source-of-supply-select-trigger">
-                  <SelectValue placeholder="Choose a Production Model" />
-                </SelectTrigger>
-                <SelectContent>
-                  {sosOptions.map((o, idx) => (
-                    <SelectItem key={`${o.production_model_id}-${o.site_id}`} value={String(idx)} data-testid={`source-of-supply-option-${o.production_model_id}-${o.site_id}`}>
-                      {o.production_model_id}{o.description ? ` — ${o.description}` : ""} (Site {o.site_id}){o.is_active ? "" : " (Obsolete)"}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-[#B54708] mt-1">
-                {sosOptions.length > 1
-                  ? `This material has ${sosOptions.length} valid Production Model/Site combinations - pick one, it sets the Site for you.`
-                  : "Picking this confirms the Production Model - and its Site - SAP will use."}
+            {showProductSuggestions && productSuggestions.length > 0 && (
+              <div className="absolute z-10 mt-1 w-full bg-white border border-[#D0D5DD] rounded-sm shadow-md max-h-56 overflow-y-auto" data-testid="product-suggestions-dropdown">
+                {productSuggestions.map((s) => (
+                  <button
+                    key={s.product_id}
+                    type="button"
+                    className="w-full text-left px-3 py-2 text-sm hover:bg-[#F9FAFB] border-b border-[#EAECF0] last:border-0"
+                    onMouseDown={(e) => { e.preventDefault(); checkSourceOfSupply(s.product_id); }}
+                    data-testid={`product-suggestion-${s.product_id}`}
+                  >
+                    <div className="font-medium text-[#1D2939]">{s.product_id}</div>
+                    {s.description && <div className="text-xs text-[#667085]">{s.description}</div>}
+                  </button>
+                ))}
+              </div>
+            )}
+            {sosChecked && !sosLoading && !materialUuid && !sosCheckFailed && (
+              <p className="text-xs text-[#B42318] mt-1" data-testid="product-not-recognized-warning">
+                Product ID not recognized in SAP - pick a suggestion above or check the spelling.
               </p>
-            </div>
-          )}
+            )}
+            {sosCheckFailed && (
+              <p className="text-xs text-[#B54708] mt-1" data-testid="product-lookup-failed-warning">
+                Could not verify this Product ID with SAP just now (network hiccup) - you can still proceed, or blur the field again to retry.
+              </p>
+            )}
+          </div>
+          <div className="min-h-[26px]">
+            {sosLoading && <p className="text-xs text-[#667085]" data-testid="sos-loading-text">Checking available Production Models...</p>}
+            {sosChecked && sosOptions.length > 0 && (
+              <div data-testid="source-of-supply-picker">
+                <Label className="text-xs font-bold text-[#344054]">Source of Supply (Production Model)</Label>
+                <Select value={selectedSosKey} onValueChange={chooseSosOption}>
+                  <SelectTrigger data-testid="source-of-supply-select-trigger">
+                    <SelectValue placeholder="Choose a Production Model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {sosOptions.map((o, idx) => (
+                      <SelectItem key={`${o.production_model_id}-${o.site_id}`} value={String(idx)} data-testid={`source-of-supply-option-${o.production_model_id}-${o.site_id}`}>
+                        {o.production_model_id}{o.description ? ` — ${o.description}` : ""} (Site {o.site_id}){o.is_active ? "" : " (Obsolete)"}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-[#B54708] mt-1">
+                  {sosOptions.length > 1
+                    ? `This material has ${sosOptions.length} valid Production Model/Site combinations - pick one, it sets the Site for you.`
+                    : "Picking this confirms the Production Model - and its Site - SAP will use."}
+                </p>
+              </div>
+            )}
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label className="text-xs font-bold text-[#344054]">Site</Label>
-              <Input value={siteId} onChange={(e) => { setSiteId(e.target.value.toUpperCase()); setSiteAutoFilled(false); }} placeholder="e.g. P2" data-testid="create-proposal-site-input" />
+              <Input
+                value={siteId}
+                onChange={(e) => { setSiteId(e.target.value.toUpperCase()); setSiteAutoFilled(false); }}
+                placeholder="e.g. P2"
+                disabled={siteAutoFilled}
+                data-testid="create-proposal-site-input"
+              />
+              {siteAutoFilled && <p className="text-[11px] text-[#667085] mt-0.5">Locked - set by the chosen Production Model above</p>}
             </div>
             <div>
               <Label className="text-xs font-bold text-[#344054]">UoM</Label>
-              <Input value={unitCode} onChange={(e) => setUnitCode(e.target.value)} placeholder="EA" data-testid="create-proposal-uom-input" />
+              <Select value={unitCode} onValueChange={setUnitCode}>
+                <SelectTrigger data-testid="create-proposal-uom-select-trigger">
+                  <SelectValue placeholder="EA" />
+                </SelectTrigger>
+                <SelectContent>
+                  {COMMON_UOM_CODES.map((code) => (
+                    <SelectItem key={code} value={code} data-testid={`create-proposal-uom-option-${code}`}>{code}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {unitCode !== "EA" && (
+                <p className="text-[11px] text-[#B54708] mt-0.5" data-testid="uom-not-ea-warning">
+                  Not verified against SAP's base unit for this material yet - double-check it's correct before submitting.
+                </p>
+              )}
             </div>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -637,6 +759,28 @@ const CreateOrderTab = ({ actorName }) => {
           <Button onClick={createProposal} disabled={creating} className="w-full" data-testid="create-proposal-submit-button">
             {creating ? `${PHASE_LABELS[createPhase] || "Working..."} (${elapsedSeconds}s)` : "Create Production Order"}
           </Button>
+          {creating && (
+            <div className="bg-[#F9FAFB] border border-[#EAECF0] rounded-sm p-3 space-y-2" data-testid="create-proposal-progress-steps">
+              {STEP_ORDER.map((step, idx) => {
+                const currentIdx = STEP_ORDER.indexOf(createPhase);
+                const isDone = currentIdx > idx;
+                const isCurrent = currentIdx === idx;
+                return (
+                  <div key={step} className="flex items-center gap-2 text-xs" data-testid={`create-proposal-step-${step}`}>
+                    <span className={`flex-none w-4 h-4 rounded-full flex items-center justify-center text-[10px] ${
+                      isDone ? "bg-[#027A48] text-white" : isCurrent ? "bg-[#B54708] text-white animate-pulse" : "bg-[#E4E7EC] text-[#98A2B3]"
+                    }`}>
+                      {isDone ? "✓" : idx + 1}
+                    </span>
+                    <span className={isCurrent ? "text-[#B54708] font-medium" : isDone ? "text-[#027A48]" : "text-[#98A2B3]"}>
+                      {STEP_TITLES[step]}
+                    </span>
+                  </div>
+                );
+              })}
+              <p className="text-[11px] text-[#98A2B3] pt-1">Elapsed: {elapsedSeconds}s - this runs in the background, feel free to keep working elsewhere on this page.</p>
+            </div>
+          )}
         </div>
 
         <div className="bg-white border border-[#D0D5DD] rounded-sm p-4 space-y-3" data-testid="release-order-card">
@@ -785,7 +929,7 @@ export default function ProductionConfirmationPage() {
       </header>
 
       <main className="flex-1 overflow-auto p-4 space-y-4">
-        <Tabs defaultValue="confirm" className="space-y-4">
+        <Tabs defaultValue="create" className="space-y-4">
           <TabsList data-testid="page-tabs">
             <TabsTrigger value="create" data-testid="tab-create-order">Create Production Order</TabsTrigger>
             <TabsTrigger value="confirm" data-testid="tab-confirm-production">Production Confirmation</TabsTrigger>

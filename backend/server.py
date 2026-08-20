@@ -2101,9 +2101,39 @@ async def create_production_proposal(payload: CreateProductionProposalRequest):
 
 
 CREATE_RELEASE_MAX_WAIT_SECONDS = 20 * 60  # keep polling for the resulting Order for up to 20 min
-CREATE_RELEASE_POLL_INTERVAL_SECONDS = 10
+CREATE_RELEASE_POLL_INTERVAL_SECONDS = 4  # tightened from 10s so a newly-created Order/Lot is detected sooner
 CREATE_RELEASE_RETRIGGER_EVERY_SECONDS = 90  # re-fire the Release action periodically in case the first call needs a nudge
-SAP_SETTLE_DELAY_SECONDS = 8  # deliberate pause so SAP fully commits/indexes the previous write before the next action reads/acts on it
+SAP_SETTLE_DELAY_SECONDS = 3  # tightened from 8s - still gives SAP a beat to commit before the next read, without wasting time
+
+# Phrases SAP uses when a Proposal is rejected for a genuine data/input
+# problem (wrong Unit of Measure, bad quantity literal, unknown material,
+# etc) rather than a transient network/session hiccup - retrying the exact
+# same request 3x for one of these just wastes ~20s, it will never succeed
+# without the user changing something on the form first.
+_SAP_PERMANENT_ERROR_MARKERS = (
+    "invalid", "not valid", "malformed", "does not exist", "not found",
+    "not defined", "not allowed", "unauthorized", "authorization role missing",
+)
+
+
+def _clarify_sap_error(raw_error: str, unit_code: str, material_id: str) -> str:
+    """Wraps a raw SAP fault string with a clearer, actionable hint when it
+    looks like a Unit of Measure / Quantity data problem - the most likely
+    cause given the UoM picker is currently a free choice, not validated
+    against the material's actual base UoM in SAP."""
+    lower = raw_error.lower()
+    if "unit" in lower or "uom" in lower or "quantitytype" in lower or "quantity" in lower:
+        return (
+            f"SAP rejected this request - '{unit_code}' may not be a valid Unit of Measure for "
+            f"material '{material_id}'. Try EA (or check with SAP what units this material supports). "
+            f"SAP's own message: {raw_error}"
+        )
+    return raw_error
+
+
+def _is_permanent_sap_error(raw_error: str) -> bool:
+    lower = raw_error.lower()
+    return any(marker in lower for marker in _SAP_PERMANENT_ERROR_MARKERS)
 
 
 async def _run_create_and_release_job(job_id: str, payload: "CreateProductionProposalRequest", avail_dt):
@@ -2140,8 +2170,8 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
                     )
                     break
                 except SAPProductionOrderReleaseError as e:
-                    if attempt == 2:
-                        raise
+                    if attempt == 2 or _is_permanent_sap_error(str(e)):
+                        raise SAPProductionOrderReleaseError(_clarify_sap_error(str(e), payload.unit_code, payload.material_id))
                     logger.warning(f"create-and-release job {job_id}: create-with-source-of-supply attempt {attempt + 1}/3 hit a transient SAP error, retrying: {e}")
                     await asyncio.sleep(10)
         else:
@@ -2154,8 +2184,8 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
                     )
                     break
                 except SAPProductionProposalError as e:
-                    if attempt == 2:
-                        raise
+                    if attempt == 2 or _is_permanent_sap_error(str(e)):
+                        raise SAPProductionProposalError(_clarify_sap_error(str(e), payload.unit_code, payload.material_id))
                     logger.warning(f"create-and-release job {job_id}: proposal creation attempt {attempt + 1}/3 hit a transient SAP error, retrying: {e}")
                     await asyncio.sleep(10)
             proposal_id = proposal_result["production_proposal_id"]

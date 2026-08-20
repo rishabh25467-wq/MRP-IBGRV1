@@ -1,3 +1,15 @@
+## Session update (2026-08-20, part 10) - iteration_88 fixes verified + UoM risk fix + SAP integration docs
+
+**iteration_89 (testing_agent): all 3 iteration_88 defects CLOSED, 100% pass** - swallowed first click, false "not recognized" block, and the elapsed-timer-only-ticking-every-4s issue are all fixed and re-verified live (mocked SAP write, real read-only lookups). `createProposal()` now runs a separate 1s `setInterval` ticker (cleared in `finally`) independent of the 4s status-poll loop.
+
+**UoM risk identified + partially fixed**: confirmed via code read that `unit_code` is sent to SAP with zero validation against the material's real base UoM (unlike Site, which locks from the chosen Production Model) - a wrong-but-technically-valid UoM pick could silently create a mis-quantified Order. User confirmed: (1) pursue exposing SAP's standard `BaseUnitOfMeasureCode` field on `materialgeneralinfo` via SAP admin (NOT YET DONE - needs SAP-side Key User OData step, same pattern as the Net Weight custom fields), (2) meanwhile UoM defaults to EA with a non-blocking amber warning if changed (`uom-not-ea-warning`, done), (3) SAP rejection errors are now clarified when they look unit/quantity-related (`_clarify_sap_error`/`_is_permanent_sap_error` in `server.py` - also skips the pointless 3x retry loop for permanent/validation-type SAP faults instead of retrying a doomed request for ~20s).
+
+**Default tab changed**: `/production-confirmation` now opens on the "Create Production Order" tab by default (was "Production Confirmation") - one-line `Tabs defaultValue` change, user-requested.
+
+**New reference doc**: `/app/memory/SAP_INTEGRATIONS.md` - full catalog of every SAP SOAP/OData integration in the app (BOM read, Material UUID lookup, Net Weight r/w, Production Model lookup, Proposal/Order create+release, Lot confirmation + by-product write, WIP Clearing, MSL/Lead Time r/w, Standard Cost, On-Hand Inventory), with endpoints, env vars, and known gaps.
+
+**Not pursued this session**: Missing By-Product Creation - user confirmed this is already considered DONE (existing Production Model by-product rows are sufficient), removed from active backlog.
+
 ## Session update (2026-08-20, part 9) - correction: ConfirmedScrap is rejection qty, unrelated to by-product weight
 
 User clarified: `confirmed_scrap` (the "Confirmed Scrap" input) is a manually-entered REJECTED QUANTITY (defective units) - a completely separate, legitimate concept from the physical by-product material weight built in part 8. It SHOULD be written to SAP's ConfirmedScrap field (re-enabled, undoing part 8's removal). Fixed the conflation:
