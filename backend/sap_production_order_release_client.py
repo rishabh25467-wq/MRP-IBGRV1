@@ -51,6 +51,32 @@ class SAPProductionOrderReleaseClient:
             raise SAPProductionOrderReleaseError(self._error_message(resp))
         return {"success": True, "id": order_or_proposal_id, "object_id": object_id}
 
+    def set_source_of_supply(self, proposal_id: str, logistic_relationship_uuid: str) -> dict:
+        """Writes the chosen Source of Supply (Production Model) onto a
+        Production Proposal before it gets converted into a Request/Order -
+        PATCHes SourceOfSupplyLogisticRelationshipUUID + sets
+        SourceOfSupplyFixedIndicator=true (a manually-chosen source of
+        supply must be marked Fixed or SAP's planning run can recalculate
+        and silently override it). Verified working via direct OData PATCH -
+        see /app/memory/sap_source_of_supply_dev_spec.md."""
+        object_id = self.resolve_object_id(proposal_id)
+        session = requests.Session()
+        session.auth = self.auth
+        token_resp = session.get(f"{self.base_url}/$metadata", headers={"X-CSRF-Token": "Fetch"}, timeout=30)
+        csrf_token = token_resp.headers.get("X-CSRF-Token")
+        resp = session.patch(
+            f"{self.base_url}/{self.entity_set}('{object_id}')",
+            headers={"X-CSRF-Token": csrf_token, "Content-Type": "application/json", "Accept": "application/json"},
+            json={
+                "SourceOfSupplyLogisticRelationshipUUID": logistic_relationship_uuid,
+                "SourceOfSupplyFixedIndicator": True,
+            },
+            timeout=30,
+        )
+        if resp.status_code not in (200, 204):
+            raise SAPProductionOrderReleaseError(self._error_message(resp))
+        return {"success": True, "object_id": object_id, "logistic_relationship_uuid": logistic_relationship_uuid}
+
     @staticmethod
     def _error_message(resp) -> str:
         try:

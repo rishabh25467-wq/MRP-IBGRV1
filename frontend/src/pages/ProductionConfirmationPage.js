@@ -351,12 +351,37 @@ const CreateOrderTab = ({ actorName }) => {
   const [releasing, setReleasing] = useState(false);
   const [history, setHistory] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
+  const [sosOptions, setSosOptions] = useState([]);
+  const [sosLoading, setSosLoading] = useState(false);
+  const [sosChecked, setSosChecked] = useState(false);
+  const [selectedLogisticRelationshipUuid, setSelectedLogisticRelationshipUuid] = useState("");
 
   const PHASE_LABELS = {
     running: "Starting...",
     creating_proposal: "Creating Proposal in SAP...",
     waiting_for_order: "Waiting for SAP to convert Proposal to Order...",
+    setting_source_of_supply: "Applying Source of Supply choice...",
     releasing_order: "Releasing Order in SAP...",
+  };
+
+  const checkSourceOfSupply = async () => {
+    const id = materialId.trim();
+    if (!id) return;
+    setSosLoading(true);
+    setSosOptions([]);
+    setSelectedLogisticRelationshipUuid("");
+    try {
+      const { data } = await axios.get(`${API}/production-confirmation/source-of-supply-options/${encodeURIComponent(id)}`);
+      setSosOptions(data.options || []);
+      const active = (data.options || []).find((o) => o.is_active) || (data.options || [])[0];
+      if (active) setSelectedLogisticRelationshipUuid(active.logistic_relationship_uuid);
+    } catch (e) {
+      // Non-fatal - proceeding without an explicit choice just leaves SAP's own default in place
+      setSosOptions([]);
+    } finally {
+      setSosLoading(false);
+      setSosChecked(true);
+    }
   };
   const POLL_INTERVAL_MS = 4000;
   const MAX_POLL_MS = 22 * 60 * 1000; // job itself gives up after 20 min, add a small buffer
@@ -389,6 +414,7 @@ const CreateOrderTab = ({ actorName }) => {
         unit_code: unitCode.trim().toUpperCase() || "EA",
         availability_datetime: requestedEndDate ? new Date(requestedEndDate).toISOString() : null,
         actor: actorName.trim(),
+        logistic_relationship_uuid: sosOptions.length > 1 ? (selectedLogisticRelationshipUuid || null) : null,
       });
       const jobId = data.job_id;
 
@@ -411,6 +437,7 @@ const CreateOrderTab = ({ actorName }) => {
             toast.error(result.note || "Proposal created but the Order hasn't appeared yet - it keeps retrying automatically, check history shortly");
           }
           setMaterialId(""); setQuantity("1"); setRequestedEndDate("");
+          setSosOptions([]); setSosChecked(false); setSelectedLogisticRelationshipUuid("");
           loadHistory();
           break;
         }
@@ -462,8 +489,33 @@ const CreateOrderTab = ({ actorName }) => {
           <p className="text-xs text-[#667085]">Creates and releases a Production Order in SAP - fully automated, retries in the background until SAP converts it. Checks component stock first and blocks with a clear reason if a raw material is out of stock (no orphaned Proposals).</p>
           <div>
             <Label className="text-xs font-bold text-[#344054]">Product ID</Label>
-            <Input value={materialId} onChange={(e) => setMaterialId(e.target.value)} placeholder="e.g. MAZ42117272-TA" data-testid="create-proposal-product-input" />
+            <Input
+              value={materialId}
+              onChange={(e) => { setMaterialId(e.target.value); setSosChecked(false); setSosOptions([]); }}
+              onBlur={checkSourceOfSupply}
+              placeholder="e.g. MAZ42117272-TA"
+              data-testid="create-proposal-product-input"
+            />
           </div>
+          {sosLoading && <p className="text-xs text-[#667085]" data-testid="sos-loading-text">Checking available Production Models...</p>}
+          {sosChecked && sosOptions.length > 1 && (
+            <div data-testid="source-of-supply-picker">
+              <Label className="text-xs font-bold text-[#344054]">Source of Supply (Production Model)</Label>
+              <Select value={selectedLogisticRelationshipUuid} onValueChange={setSelectedLogisticRelationshipUuid}>
+                <SelectTrigger data-testid="source-of-supply-select-trigger">
+                  <SelectValue placeholder="Choose a Production Model" />
+                </SelectTrigger>
+                <SelectContent>
+                  {sosOptions.map((o) => (
+                    <SelectItem key={o.logistic_relationship_uuid} value={o.logistic_relationship_uuid} data-testid={`source-of-supply-option-${o.production_model_id}`}>
+                      {o.production_model_id}{o.is_active ? "" : " (Obsolete)"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-[#B54708] mt-1">This material has {sosOptions.length} valid Production Models - pick one so SAP doesn't auto-default to the wrong recipe.</p>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label className="text-xs font-bold text-[#344054]">Site</Label>

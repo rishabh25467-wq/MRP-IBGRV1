@@ -22,6 +22,7 @@ from sap_material_client import SAPMaterialClient, SAPMaterialError, SAPMaterial
 from sap_production_lot_client import SAPProductionLotClient, SAPProductionLotError, SAPProductionLotAuthError
 from sap_wip_clearing_client import SAPWipClearingClient, SAPWipClearingError
 from sap_production_proposal_client import SAPProductionProposalClient, SAPProductionProposalError
+from sap_production_model_client import SAPProductionModelClient, SAPProductionModelError
 from sap_production_order_release_client import SAPProductionOrderReleaseClient, SAPProductionOrderReleaseError
 from sap_material_physical_client import (
     SAPMaterialPhysicalClient, SAPMaterialPhysicalError, PHYSICAL_FIELD_TO_SAP_PROPERTY,
@@ -142,6 +143,12 @@ sap_production_proposal_release_client = SAPProductionOrderReleaseClient(
     username=os.environ['SAP_ODATA_BUSINESS_USER'],
     password=os.environ['SAP_ODATA_BUSINESS_PASSWORD'],
     entity_set="ProductionPlanningOrderCollection",
+)
+
+sap_production_model_client = SAPProductionModelClient(
+    base_url=os.environ['SAP_ODATA_PRODUCTION_MODEL_BASE_URL'],
+    username=os.environ['SAP_ODATA_USERNAME'],
+    password=os.environ['SAP_ODATA_PASSWORD'],
 )
 
 sap_material_physical_client = SAPMaterialPhysicalClient(
@@ -1906,6 +1913,26 @@ class CreateProductionProposalRequest(BaseModel):
     unit_code: str
     availability_datetime: Optional[str] = None
     actor: str
+    logistic_relationship_uuid: Optional[str] = None
+
+
+@api_router.get("/production-confirmation/source-of-supply-options/{material_id}")
+async def get_source_of_supply_options(material_id: str):
+    """Lists the available Production Models (Source of Supply) for a
+    material with multiple valid BOMs, so the user can pick one before
+    creating a Production Order instead of SAP auto-defaulting. Returns an
+    empty list (not an error) if the material's product_uuid hasn't been
+    captured yet or SAP reports only a single model - the frontend simply
+    hides the picker in that case."""
+    doc = db["component_master"].find_one({"_id": material_id}) or db["bom_node_cache"].find_one({"_id": material_id})
+    material_uuid = (doc or {}).get("product_uuid")
+    if not material_uuid:
+        return {"material_uuid": None, "options": []}
+    try:
+        options = await asyncio.to_thread(sap_production_model_client.get_source_of_supply_options, material_uuid)
+    except SAPProductionModelError as e:
+        raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+    return {"material_uuid": material_uuid, "options": options}
 
 
 @api_router.post("/production-confirmation/create-proposal")
@@ -1972,6 +1999,19 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
         )
         job_store.update_job(db, job_id, {"status": "waiting_for_order", "production_proposal_id": proposal_id})
         await asyncio.sleep(SAP_SETTLE_DELAY_SECONDS)  # let SAP fully commit the new Proposal before anything reads/acts on it
+
+        if payload.logistic_relationship_uuid:
+            job_store.update_job(db, job_id, {"status": "setting_source_of_supply"})
+            try:
+                await asyncio.to_thread(
+                    sap_production_proposal_release_client.set_source_of_supply, proposal_id, payload.logistic_relationship_uuid,
+                )
+            except SAPProductionOrderReleaseError as e:
+                # Non-fatal - SAP already auto-picked a default model, worst
+                # case the user's explicit choice didn't stick and they'll
+                # notice on the resulting Order; don't block the whole flow.
+                logger.warning(f"create-and-release job {job_id}: failed to set Source of Supply on proposal {proposal_id}: {e}")
+            await asyncio.sleep(SAP_SETTLE_DELAY_SECONDS)
 
         open_statuses = ["1", "2", "3"]
         baseline_ids = None
