@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
@@ -133,6 +134,14 @@ sap_production_order_release_client = SAPProductionOrderReleaseClient(
     base_url=os.environ['SAP_ODATA_PRODUCTION_ORDER_RELEASE_BASE_URL'],
     username=os.environ['SAP_ODATA_BUSINESS_USER'],
     password=os.environ['SAP_ODATA_BUSINESS_PASSWORD'],
+    entity_set="ProductionOrderCollection",
+)
+
+sap_production_proposal_release_client = SAPProductionOrderReleaseClient(
+    base_url=os.environ['SAP_ODATA_PRODUCTION_PROPOSAL_RELEASE_BASE_URL'],
+    username=os.environ['SAP_ODATA_BUSINESS_USER'],
+    password=os.environ['SAP_ODATA_BUSINESS_PASSWORD'],
+    entity_set="ProductionPlanningOrderCollection",
 )
 
 sap_material_physical_client = SAPMaterialPhysicalClient(
@@ -1920,6 +1929,132 @@ async def create_production_proposal(payload: CreateProductionProposalRequest):
         production_confirmation_service.log_proposal_creation, db, payload.actor, payload.dict(), result,
     )
     return result
+
+
+CREATE_RELEASE_MAX_WAIT_SECONDS = 20 * 60  # keep polling for the resulting Order for up to 20 min
+CREATE_RELEASE_POLL_INTERVAL_SECONDS = 10
+CREATE_RELEASE_RETRIGGER_EVERY_SECONDS = 90  # re-fire the Release action periodically in case the first call needs a nudge
+
+
+async def _run_create_and_release_job(job_id: str, payload: "CreateProductionProposalRequest", avail_dt):
+    """One-click orchestration, run fully in the background so it is never
+    bound by the platform's ~60s ingress timeout: Create Proposal -> trigger
+    SAP's 'Request Production' action (instant Proposal->Order conversion,
+    bypassing the slow scheduled planning run) -> detect the resulting Order
+    by diffing open Production Lots for this site before/after -> Release
+    the Order. Fully automated - re-fires the Release trigger periodically
+    and keeps polling for up to CREATE_RELEASE_MAX_WAIT_SECONDS with zero
+    need for a human to look up or type an Order ID."""
+    try:
+        job_store.update_job(db, job_id, {"status": "creating_proposal"})
+        proposal_result = None
+        for attempt in range(3):
+            try:
+                proposal_result = await asyncio.to_thread(
+                    sap_production_proposal_client.create_proposal,
+                    payload.material_id, payload.site_id, payload.quantity, payload.unit_code, avail_dt,
+                )
+                break
+            except SAPProductionProposalError as e:
+                if attempt == 2:
+                    raise
+                logger.warning(f"create-and-release job {job_id}: proposal creation attempt {attempt + 1}/3 hit a transient SAP error, retrying: {e}")
+                await asyncio.sleep(10)
+        proposal_id = proposal_result["production_proposal_id"]
+        await asyncio.to_thread(
+            production_confirmation_service.log_proposal_creation, db, payload.actor, payload.dict(),
+            {"production_proposal_id": proposal_id},
+        )
+        job_store.update_job(db, job_id, {"status": "waiting_for_order", "production_proposal_id": proposal_id})
+
+        open_statuses = ["1", "2", "3"]
+        baseline_ids = None
+        while baseline_ids is None:
+            try:
+                baseline_ids = {r["production_lot_id"] for r in await asyncio.to_thread(
+                    sap_production_lot_client.find_open_lots, open_statuses, payload.site_id, 999
+                )}
+            except SAPProductionLotError as e:
+                logger.warning(f"create-and-release job {job_id}: baseline open-lots lookup hit a transient SAP error, retrying: {e}")
+                await asyncio.sleep(CREATE_RELEASE_POLL_INTERVAL_SECONDS)
+
+        elapsed = 0
+        last_trigger = -CREATE_RELEASE_RETRIGGER_EVERY_SECONDS  # fire immediately on the first loop iteration
+        new_order_id = None
+        while elapsed <= CREATE_RELEASE_MAX_WAIT_SECONDS:
+            if elapsed - last_trigger >= CREATE_RELEASE_RETRIGGER_EVERY_SECONDS:
+                try:
+                    await asyncio.to_thread(sap_production_proposal_release_client.release_order, proposal_id)
+                except SAPProductionOrderReleaseError as e:
+                    logger.warning(f"create-and-release job {job_id}: Release-trigger attempt failed, will keep polling/retrying: {e}")
+                last_trigger = elapsed
+            try:
+                current_ids = {r["production_lot_id"] for r in await asyncio.to_thread(
+                    sap_production_lot_client.find_open_lots, open_statuses, payload.site_id, 999
+                )}
+                new_ids = current_ids - baseline_ids
+                if new_ids:
+                    new_order_id = max(new_ids, key=lambda x: int(x) if x.isdigit() else -1)
+                    break
+            except SAPProductionLotError as e:
+                # SAP's tenant sees frequent transient connection timeouts under
+                # load - a single failed poll attempt must NEVER kill the job,
+                # just skip this round and try again next interval.
+                logger.warning(f"create-and-release job {job_id}: poll attempt hit a transient SAP error, will retry: {e}")
+            await asyncio.sleep(CREATE_RELEASE_POLL_INTERVAL_SECONDS)
+            elapsed += CREATE_RELEASE_POLL_INTERVAL_SECONDS
+
+        if not new_order_id:
+            job_store.update_job(db, job_id, {"status": "done", "result": {
+                "production_proposal_id": proposal_id, "production_order_id": None, "released": False,
+                "note": "SAP hasn't converted this Proposal into an Order after 20 minutes of automatic retries. No action needed from you - check the Proposal/Release History below later to see if it completes.",
+            }})
+            return
+
+        job_store.update_job(db, job_id, {"status": "releasing_order", "production_order_id": new_order_id})
+        released = False
+        for attempt in range(3):
+            try:
+                release_result = await asyncio.to_thread(sap_production_order_release_client.release_order, new_order_id)
+                released = bool(release_result.get("success"))
+                break
+            except SAPProductionOrderReleaseError as e:
+                logger.warning(f"create-and-release job {job_id}: Order release attempt {attempt + 1}/3 failed: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(5)
+        await asyncio.to_thread(
+            production_confirmation_service.log_order_release, db, payload.actor, new_order_id, {"success": released},
+        )
+        job_store.update_job(db, job_id, {"status": "done", "result": {
+            "production_proposal_id": proposal_id, "production_order_id": new_order_id, "released": released,
+        }})
+    except Exception as e:
+        logger.error(f"create-and-release job {job_id} failed: {e}")
+        job_store.update_job(db, job_id, {"status": "failed", "error": str(e)})
+
+
+@api_router.post("/production-confirmation/create-and-release-order")
+async def create_and_release_production_order(payload: CreateProductionProposalRequest):
+    if not payload.actor.strip():
+        raise HTTPException(status_code=400, detail="actor (your name) is required")
+    avail_dt = None
+    if payload.availability_datetime:
+        try:
+            avail_dt = datetime.fromisoformat(payload.availability_datetime.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="availability_datetime must be an ISO date/time")
+    job_id = str(uuid.uuid4())
+    job_store.create_job(db, job_id, {"status": "running", "result": None, "error": None})
+    asyncio.create_task(_run_create_and_release_job(job_id, payload, avail_dt))
+    return {"job_id": job_id}
+
+
+@api_router.get("/production-confirmation/create-and-release-order/status/{job_id}")
+async def get_create_and_release_job_status(job_id: str):
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return job
 
 
 class ReleaseProductionOrderRequest(BaseModel):

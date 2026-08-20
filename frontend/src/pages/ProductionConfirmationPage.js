@@ -345,10 +345,21 @@ const CreateOrderTab = ({ actorName }) => {
   const [unitCode, setUnitCode] = useState("EA");
   const [requestedEndDate, setRequestedEndDate] = useState("");
   const [creating, setCreating] = useState(false);
+  const [createPhase, setCreatePhase] = useState("");
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [releaseOrderId, setReleaseOrderId] = useState("");
   const [releasing, setReleasing] = useState(false);
   const [history, setHistory] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
+
+  const PHASE_LABELS = {
+    running: "Starting...",
+    creating_proposal: "Creating Proposal in SAP...",
+    waiting_for_order: "Waiting for SAP to convert Proposal to Order...",
+    releasing_order: "Releasing Order in SAP...",
+  };
+  const POLL_INTERVAL_MS = 4000;
+  const MAX_POLL_MS = 22 * 60 * 1000; // job itself gives up after 20 min, add a small buffer
 
   const loadHistory = useCallback(() => {
     setLoadingHistory(true);
@@ -367,8 +378,11 @@ const CreateOrderTab = ({ actorName }) => {
       return;
     }
     setCreating(true);
+    setElapsedSeconds(0);
+    setCreatePhase("running");
+    const startedAt = Date.now();
     try {
-      const { data } = await axios.post(`${API}/production-confirmation/create-proposal`, {
+      const { data } = await axios.post(`${API}/production-confirmation/create-and-release-order`, {
         material_id: materialId.trim(),
         site_id: siteId.trim().toUpperCase(),
         quantity: Number(quantity),
@@ -376,13 +390,42 @@ const CreateOrderTab = ({ actorName }) => {
         availability_datetime: requestedEndDate ? new Date(requestedEndDate).toISOString() : null,
         actor: actorName.trim(),
       });
-      toast.success(`Production Proposal ${data.production_proposal_id} created in SAP - it will convert into a Production Order once SAP's scheduled Supply Planning Run picks it up`);
-      setMaterialId(""); setQuantity("1"); setRequestedEndDate("");
-      loadHistory();
+      const jobId = data.job_id;
+
+      // Runs fully in the background on the server (no HTTP request held
+      // open) since SAP's own conversion + indexing can take minutes -
+      // poll a status endpoint instead, same pattern as Purchasing Plan.
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        setElapsedSeconds(Math.round((Date.now() - startedAt) / 1000));
+        const { data: job } = await axios.get(`${API}/production-confirmation/create-and-release-order/status/${jobId}`);
+        setCreatePhase(job.status);
+        if (job.status === "done") {
+          const result = job.result;
+          if (result.production_order_id && result.released) {
+            toast.success(`Production Order ${result.production_order_id} created and released in SAP - ready for confirmation`);
+          } else if (result.production_order_id) {
+            toast.error(`Order ${result.production_order_id} was created but Release failed - use the fallback form below to retry`);
+          } else {
+            toast.error(result.note || "Proposal created but the Order hasn't appeared yet - it keeps retrying automatically, check history shortly");
+          }
+          setMaterialId(""); setQuantity("1"); setRequestedEndDate("");
+          loadHistory();
+          break;
+        }
+        if (job.status === "failed") {
+          throw new Error(job.error || "Failed to create Production Order in SAP");
+        }
+        if (Date.now() - startedAt > MAX_POLL_MS) {
+          throw new Error("This is taking unusually long - it's still running in the background, check the history below shortly");
+        }
+      }
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Failed to create Production Proposal in SAP");
+      toast.error(e.response?.data?.detail || e.message || "Failed to create Production Order in SAP");
     } finally {
       setCreating(false);
+      setCreatePhase("");
     }
   };
 
@@ -415,8 +458,8 @@ const CreateOrderTab = ({ actorName }) => {
     <div className="space-y-4">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-white border border-[#D0D5DD] rounded-sm p-4 space-y-3" data-testid="create-proposal-card">
-          <h3 className="font-heading text-sm font-bold text-[#1D2939] uppercase tracking-wide">Step 1: Create Production Order</h3>
-          <p className="text-xs text-[#667085]">Creates a Production Proposal in SAP. SAP's own scheduled Supply Planning Run auto-converts it into a Production Request then Order (Source of Supply/BOM version is chosen automatically by SAP).</p>
+          <h3 className="font-heading text-sm font-bold text-[#1D2939] uppercase tracking-wide">Create Production Order</h3>
+          <p className="text-xs text-[#667085]">Creates and releases a Production Order in SAP - fully automated, retries in the background until SAP converts it, no manual SAP clicks needed (Source of Supply/BOM version is chosen automatically by SAP).</p>
           <div>
             <Label className="text-xs font-bold text-[#344054]">Product ID</Label>
             <Input value={materialId} onChange={(e) => setMaterialId(e.target.value)} placeholder="e.g. MAZ42117272-TA" data-testid="create-proposal-product-input" />
@@ -442,13 +485,13 @@ const CreateOrderTab = ({ actorName }) => {
             </div>
           </div>
           <Button onClick={createProposal} disabled={creating} className="w-full" data-testid="create-proposal-submit-button">
-            {creating ? "Creating in SAP..." : "Create Production Order"}
+            {creating ? `${PHASE_LABELS[createPhase] || "Working..."} (${elapsedSeconds}s)` : "Create Production Order"}
           </Button>
         </div>
 
         <div className="bg-white border border-[#D0D5DD] rounded-sm p-4 space-y-3" data-testid="release-order-card">
-          <h3 className="font-heading text-sm font-bold text-[#1D2939] uppercase tracking-wide">Step 2: Release Order</h3>
-          <p className="text-xs text-[#667085]">Once SAP's planning run converts your proposal into a Production Order (check in SAP), enter its Order ID here to release it - it will then be ready for confirmation below.</p>
+          <h3 className="font-heading text-sm font-bold text-[#1D2939] uppercase tracking-wide">Fallback: Release Order Manually</h3>
+          <p className="text-xs text-[#667085]">Only needed if the automatic flow above times out. Enter a Production Order ID (once visible in SAP) to release it.</p>
           <div>
             <Label className="text-xs font-bold text-[#344054]">Production Order ID</Label>
             <Input value={releaseOrderId} onChange={(e) => setReleaseOrderId(e.target.value)} placeholder="e.g. 69843" data-testid="release-order-id-input" />

@@ -18,25 +18,26 @@ class SAPProductionOrderReleaseError(Exception):
 
 
 class SAPProductionOrderReleaseClient:
-    def __init__(self, base_url: str, username: str, password: str):
+    def __init__(self, base_url: str, username: str, password: str, entity_set: str = "ProductionOrderCollection"):
         self.base_url = base_url.rstrip("/")
         self.auth = HTTPBasicAuth(username, password)
+        self.entity_set = entity_set
 
-    def resolve_object_id(self, production_order_id: str) -> str:
+    def resolve_object_id(self, order_or_proposal_id: str) -> str:
         resp = requests.get(
-            f"{self.base_url}/ProductionOrderCollection",
-            params={"$filter": f"ID eq '{production_order_id}'"},
+            f"{self.base_url}/{self.entity_set}",
+            params={"$filter": f"ID eq '{order_or_proposal_id}'"},
             auth=self.auth, headers={"Accept": "application/json"}, timeout=30,
         )
         if resp.status_code != 200:
             raise SAPProductionOrderReleaseError(self._error_message(resp))
         results = resp.json().get("d", {}).get("results", [])
         if not results:
-            raise SAPProductionOrderReleaseError(f"Production Order '{production_order_id}' not found")
+            raise SAPProductionOrderReleaseError(f"'{order_or_proposal_id}' not found in {self.entity_set}")
         return results[0]["ObjectID"]
 
-    def release_order(self, production_order_id: str) -> dict:
-        object_id = self.resolve_object_id(production_order_id)
+    def release_order(self, order_or_proposal_id: str) -> dict:
+        object_id = self.resolve_object_id(order_or_proposal_id)
         session = requests.Session()
         session.auth = self.auth
         token_resp = session.get(f"{self.base_url}/$metadata", headers={"X-CSRF-Token": "Fetch"}, timeout=30)
@@ -48,7 +49,7 @@ class SAPProductionOrderReleaseClient:
         )
         if resp.status_code != 200:
             raise SAPProductionOrderReleaseError(self._error_message(resp))
-        return {"success": True, "production_order_id": production_order_id, "object_id": object_id}
+        return {"success": True, "id": order_or_proposal_id, "object_id": object_id}
 
     @staticmethod
     def _error_message(resp) -> str:
