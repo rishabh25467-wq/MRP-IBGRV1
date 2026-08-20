@@ -1934,6 +1934,9 @@ class ConfirmProductionRequest(BaseModel):
     confirmed_scrap: Optional[float] = None
     deviation_reason_code: Optional[str] = None
     confirmation_finished: Optional[bool] = None
+    byproduct_material_output_uuid: Optional[str] = None
+    byproduct_confirmed_quantity: Optional[float] = None
+    byproduct_unit_code: Optional[str] = None
     actor: str
 
 
@@ -1948,13 +1951,40 @@ async def confirm_production(payload: ConfirmProductionRequest):
             confirmation_group_uuid=payload.confirmation_group_uuid, reporting_point_uuid=payload.reporting_point_uuid,
             unit_code=payload.unit_code, production_task_id=payload.production_task_id,
             production_task_uuid=payload.production_task_uuid, confirmed_quantity=payload.confirmed_quantity,
-            confirmed_scrap=payload.confirmed_scrap, deviation_reason_code=payload.deviation_reason_code,
+            # confirmed_scrap here is a manually-entered REJECTED QUANTITY
+            # (defective units), unrelated to the physical by-product
+            # material weight - it IS written to SAP's own ConfirmedScrap
+            # field on this ReportingPoint, same as before. The physical
+            # by-product output line (e.g. IRON-SCR) is confirmed
+            # separately below via confirm_material_output, using our own
+            # gross-minus-net weight calculation - a completely independent
+            # value from whatever the user enters here.
+            confirmed_scrap=payload.confirmed_scrap,
+            deviation_reason_code=payload.deviation_reason_code,
             confirmation_finished=payload.confirmation_finished,
         )
     except SAPProductionLotAuthError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except SAPProductionLotError as e:
         raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+
+    # Confirms the by-product's own Output Products grid line quantity
+    # (e.g. IRON-SCR) - a SEPARATE SOAP call, since MaterialOutput and
+    # ReportingPoint nodes cannot be combined in one request. Best-effort:
+    # a failure here doesn't undo the main confirmation above, it's just
+    # surfaced back for visibility.
+    if payload.byproduct_material_output_uuid and payload.byproduct_confirmed_quantity is not None and result.get("success"):
+        try:
+            byproduct_result = await asyncio.to_thread(
+                sap_production_lot_client.confirm_material_output,
+                production_lot_id=payload.production_lot_id, production_lot_uuid=payload.production_lot_uuid,
+                confirmation_group_uuid=payload.confirmation_group_uuid,
+                material_output_uuid=payload.byproduct_material_output_uuid,
+                confirmed_quantity=payload.byproduct_confirmed_quantity, unit_code=payload.byproduct_unit_code,
+            )
+            result["byproduct_confirmation"] = byproduct_result
+        except SAPProductionLotError as e:
+            result["byproduct_confirmation"] = {"success": False, "logs": [{"note": str(e)}]}
 
     # Per user's explicit choice, a WIP Clearing Run auto-fires right after a
     # task is successfully marked Finished - so period-end WIP is cleared

@@ -149,6 +149,19 @@ class SAPProductionLotClient:
             task_id = _first_tag(first_task, "ProductionTaskID") if first_task else None
             task_uuid = _first_tag(first_task, "ProducionTaskUUID") if first_task else None
 
+            # Output Products grid (main output + any by-products already
+            # planned on this lot, e.g. IRON-SCR) - each carries its own
+            # MaterialOutputUUID, needed to confirm ITS quantity separately
+            # via confirm_material_output (ActionCode 02, cannot be combined
+            # with the ReportingPoint call in the same request).
+            material_outputs = [{
+                "product_id": _first_tag(mo_block, "ProductID"),
+                "material_output_uuid": _first_tag(mo_block, "MaterialOutputUUID"),
+                "unit_code": _first_tag_attr(mo_block, "PlannedQuantity", "unitCode") or _first_tag_attr(mo_block, "OpenQuantity", "unitCode"),
+                "planned_quantity": _to_float(_first_tag(mo_block, "PlannedQuantity")),
+                "open_quantity": _to_float(_first_tag(mo_block, "OpenQuantity")),
+            } for mo_block in _all_blocks(group_block, "MaterialOutput")]
+
             for rp_block in _all_blocks(group_block, "ReportingPoint"):
                 unit_code = (
                     _first_tag_attr(rp_block, "PlannedQuantity", "unitCode")
@@ -175,6 +188,7 @@ class SAPProductionLotClient:
                     "total_confirmed_scrap": _to_float(_first_tag(rp_block, "TotalConfirmedScrap")),
                     "open_quantity": _to_float(_first_tag(rp_block, "OpenQuantity")),
                     "confirmation_finished": finished_raw == "true",
+                    "material_outputs": material_outputs,
                 })
         return rows
 
@@ -315,6 +329,41 @@ class SAPProductionLotClient:
       <ExecutionDateTime>{execution_dt}</ExecutionDateTime>
       <ConfirmationCompletedRequiredIndicator>true</ConfirmationCompletedRequiredIndicator>
      </ProductionTask>
+    </ConfirmationGroup>
+   </ProductionLot>
+  </n0:ProductionLotsBundleMaintainRequest_sync_V1>
+ </soapenv:Body>
+</soapenv:Envelope>"""
+        xml = self._post(self.manage_endpoint, body, MANAGE_SOAP_ACTION)
+        logs = self._parse_confirm_logs(xml)
+        success = not any(l["severity"] == "E" for l in logs)
+        return {"success": success, "logs": logs}
+
+    def confirm_material_output(
+        self, production_lot_id: str, production_lot_uuid: str, confirmation_group_uuid: str,
+        material_output_uuid: str, confirmed_quantity: float, unit_code: str,
+    ) -> dict:
+        """Confirms the quantity of an EXISTING, already-planned Output
+        Products grid line (e.g. a by-product like IRON-SCR that's already
+        on the lot from its Production Model) - ActionCode="02" (Change),
+        referencing the existing MaterialOutputUUID. Per SAP docs this must
+        be its own isolated request: a MaterialOutput node cannot be
+        combined with a ReportingPoint node in the same call (same
+        constraint as finish_task's ProductionTask-only isolation above)."""
+        body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+ <soapenv:Body>
+  <n0:ProductionLotsBundleMaintainRequest_sync_V1 xmlns:n0="http://sap.com/xi/SAPGlobal20/Global">
+   <BasicMessageHeader/>
+   <ProductionLot>
+    <ProductionLotID>{production_lot_id}</ProductionLotID>
+    <ProductionLotUUID>{production_lot_uuid}</ProductionLotUUID>
+    <ConfirmationGroup>
+     <ConfirmationGroupUUID>{confirmation_group_uuid}</ConfirmationGroupUUID>
+     <MaterialOutput ActionCode="02">
+      <MaterialOutputUUID>{material_output_uuid}</MaterialOutputUUID>
+      <ConfirmedQuantity unitCode="{unit_code or ''}">{confirmed_quantity}</ConfirmedQuantity>
+     </MaterialOutput>
     </ConfirmationGroup>
    </ProductionLot>
   </n0:ProductionLotsBundleMaintainRequest_sync_V1>

@@ -70,6 +70,10 @@ def log_confirmation(db, actor: str, request_payload: dict, result: dict) -> Non
         "success": result.get("success"),
         "logs": result.get("logs"),
         "wip_clearing": result.get("wip_clearing"),
+        "byproduct_material_output_uuid": request_payload.get("byproduct_material_output_uuid"),
+        "byproduct_confirmed_quantity": request_payload.get("byproduct_confirmed_quantity"),
+        "byproduct_unit_code": request_payload.get("byproduct_unit_code"),
+        "byproduct_confirmation": result.get("byproduct_confirmation"),
         "at": datetime.now(timezone.utc),
     })
 
@@ -92,6 +96,9 @@ def get_confirmation_history(db, production_lot_id: str = None, limit: int = 200
             "success": d.get("success"),
             "logs": d.get("logs"),
             "wip_clearing": d.get("wip_clearing"),
+            "byproduct_confirmed_quantity": d.get("byproduct_confirmed_quantity"),
+            "byproduct_unit_code": d.get("byproduct_unit_code"),
+            "byproduct_confirmation": d.get("byproduct_confirmation"),
             "at": d["at"].isoformat(),
         }
         for d in docs

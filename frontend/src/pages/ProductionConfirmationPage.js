@@ -60,7 +60,6 @@ const STATUS_TONE = {
 const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
   const [confirmedQty, setConfirmedQty] = useState(row ? (row.open_quantity ?? "") : "");
   const [confirmedScrap, setConfirmedScrap] = useState("0");
-  const [scrapTouched, setScrapTouched] = useState(false);
   const [scrapCalc, setScrapCalc] = useState(null);
   const [reason, setReason] = useState("none");
   const [finished, setFinished] = useState(false);
@@ -72,7 +71,6 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
     if (row) {
       setConfirmedQty(row.open_quantity ?? "");
       setConfirmedScrap("0");
-      setScrapTouched(false);
       setScrapCalc(null);
       setReason("none");
       setFinished(false);
@@ -85,15 +83,10 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
     }
   }, [row]);
 
-  // Auto-fills Confirmed Scrap = scrap-per-unit x qty whenever the qty
-  // changes, as long as the user hasn't manually typed into the Scrap
-  // field themselves (scrapTouched) - keeps it a suggestion, not a lock.
-  useEffect(() => {
-    if (!scrapCalc?.available || scrapTouched) return;
-    const qty = Number(confirmedQty);
-    if (confirmedQty === "" || Number.isNaN(qty)) return;
-    setConfirmedScrap(String(Math.round(scrapCalc.scrap_per_unit_kg * qty * 1e6) / 1e6));
-  }, [scrapCalc, confirmedQty, scrapTouched]);
+  // NOTE: Confirmed Scrap is a manually-entered REJECTED QUANTITY (defective
+  // units the operator is reporting), unrelated to the physical by-product
+  // material weight below - it is written to SAP's own ConfirmedScrap field.
+  // It must NEVER auto-fill from the weight-based scrap calc.
 
   useEffect(() => {
     if (!row || confirmedQty === "" || Number.isNaN(Number(confirmedQty))) {
@@ -110,6 +103,20 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
   }, [row, confirmedQty]);
 
   if (!row) return null;
+
+  // Match on the LOT's real Output Products grid, not our own AI-guessed
+  // scrap-family code - confirmed live that SAP's actual by-product line
+  // (e.g. IRON-SCR) doesn't always match our classifier's expected code
+  // (e.g. CR-SCRAP guessed from the RM description). Any output line that
+  // isn't the main product IS the by-product to confirm.
+  const byproductMatch = row.material_outputs?.find((mo) => mo.product_id !== row.main_output_product) || null;
+
+  // Weight-based by-product quantity - fully independent of the manual
+  // Confirmed Scrap (rejection) field above.
+  const qtyNum = Number(confirmedQty);
+  const byproductQty = scrapCalc?.available && confirmedQty !== "" && !Number.isNaN(qtyNum)
+    ? Math.round(scrapCalc.scrap_per_unit_kg * qtyNum * 1e6) / 1e6
+    : null;
 
   const submit = async () => {
     if (!actorName.trim()) {
@@ -143,10 +150,20 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
         deviation_reason_code: reason === "none" ? null : reason,
         confirmation_finished: finished,
         site_id: row.site_id,
+        byproduct_material_output_uuid: byproductMatch?.material_output_uuid || null,
+        byproduct_confirmed_quantity: byproductMatch ? byproductQty : null,
+        byproduct_unit_code: byproductMatch?.unit_code || null,
         actor: actorName.trim(),
       });
       if (data.success) {
         toast.success(`Confirmation posted to SAP for Lot ${row.production_lot_id}`);
+        if (data.byproduct_confirmation) {
+          if (data.byproduct_confirmation.success) {
+            toast.success(`By-product ${byproductMatch?.product_id || "quantity"} (${byproductQty ?? 0} ${byproductMatch?.unit_code || ""}) posted to SAP`);
+          } else {
+            toast.error(`By-product quantity failed to post: ${data.byproduct_confirmation.logs?.map((l) => l.note).join("; ") || "see history for details"}`);
+          }
+        }
         if (finished && data.wip_clearing) {
           if (data.wip_clearing.success) {
             toast.success(`WIP Clearing Run triggered for Lot ${row.production_lot_id}`);
@@ -220,6 +237,9 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
               {scrapCalc.scrap_family && (
                 <div className="mt-1 text-[#667085]" data-testid="scrap-calc-family">
                   Expected by-product: {scrapCalc.scrap_family.family} ({scrapCalc.scrap_family.expected_byproduct_code})
+                  {byproductMatch
+                    ? <span className="text-[#027A48]" data-testid="byproduct-match-found"> · will post {byproductQty ?? 0} {byproductMatch.unit_code} of {byproductMatch.product_id} to SAP</span>
+                    : <span className="text-[#B54708]" data-testid="byproduct-match-missing"> · no by-product output line found on this lot - only Confirmed Quantity will be posted</span>}
                 </div>
               )}
             </div>
@@ -228,8 +248,9 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
             <p className="text-[11px] text-[#667085]" data-testid="scrap-calc-unavailable">Scrap auto-calc unavailable: {scrapCalc.reason}</p>
           )}
           <div>
-            <Label className="text-xs font-bold text-[#344054]">Confirmed Scrap</Label>
-            <Input type="number" value={confirmedScrap} onChange={(e) => { setConfirmedScrap(e.target.value); setScrapTouched(true); }} data-testid="confirm-scrap-input" />
+            <Label className="text-xs font-bold text-[#344054]">Confirmed Scrap (Rejected Qty)</Label>
+            <Input type="number" value={confirmedScrap} onChange={(e) => setConfirmedScrap(e.target.value)} data-testid="confirm-scrap-input" />
+            <p className="text-[11px] text-[#98A2B3] mt-0.5">Manually enter rejected/defective units, if any. Unrelated to the by-product weight below.</p>
           </div>
           <div>
             <Label className="text-xs font-bold text-[#344054]">Deviation Reason</Label>
@@ -837,7 +858,7 @@ export default function ProductionConfirmationPage() {
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">{r.unit_code || "—"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{r.confirmation_finished ? "Yes" : "No"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
-                      <Button size="sm" onClick={() => setConfirmRow(r)} data-testid={`confirm-button-${i}`}>Confirm</Button>
+                      <Button size="sm" disabled={loading} onClick={() => setConfirmRow(r)} data-testid={`confirm-button-${i}`}>Confirm</Button>
                     </td>
                   </tr>
                 ))}
