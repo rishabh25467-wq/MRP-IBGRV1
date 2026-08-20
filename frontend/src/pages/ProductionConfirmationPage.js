@@ -105,10 +105,18 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
         confirmed_scrap: scrap,
         deviation_reason_code: reason === "none" ? null : reason,
         confirmation_finished: finished,
+        site_id: row.site_id,
         actor: actorName.trim(),
       });
       if (data.success) {
         toast.success(`Confirmation posted to SAP for Lot ${row.production_lot_id}`);
+        if (finished && data.wip_clearing) {
+          if (data.wip_clearing.success) {
+            toast.success(`WIP Clearing Run triggered for Lot ${row.production_lot_id}`);
+          } else {
+            toast.error(`WIP Clearing Run failed: ${data.wip_clearing.log || "see history for details"}`);
+          }
+        }
         onConfirmed(row);
       } else {
         toast.error(`SAP reported an issue: ${data.logs?.map((l) => l.note).join("; ") || "see history for details"}`);
@@ -250,7 +258,7 @@ const HistoryDialog = ({ open, onClose }) => {
             <table className="w-full text-[12px] border-collapse" data-testid="confirmation-history-table">
               <thead>
                 <tr>
-                  {["When", "By", "Lot", "Product", "Qty", "Scrap", "Finished", "Result"].map((h) => (
+                  {["When", "By", "Lot", "Product", "Qty", "Scrap", "Finished", "Result", "WIP Clearing"].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">{h}</th>
                   ))}
                 </tr>
@@ -268,9 +276,12 @@ const HistoryDialog = ({ open, onClose }) => {
                     <td className="border border-[#D0D5DD] px-2 py-1">
                       {e.success ? <Badge className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Success</Badge> : <Badge className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>}
                     </td>
+                    <td className="border border-[#D0D5DD] px-2 py-1">
+                      {!e.wip_clearing ? "—" : e.wip_clearing.success ? <Badge className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Cleared</Badge> : <Badge className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>}
+                    </td>
                   </tr>
                 ))}
-                {entries.length === 0 && <tr><td colSpan={8} className="text-center py-6 text-[#98A2B3] border border-[#D0D5DD]">No confirmations submitted yet.</td></tr>}
+                {entries.length === 0 && <tr><td colSpan={9} className="text-center py-6 text-[#98A2B3] border border-[#D0D5DD]">No confirmations submitted yet.</td></tr>}
               </tbody>
             </table>
           </div>

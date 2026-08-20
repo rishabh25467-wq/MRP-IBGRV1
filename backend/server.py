@@ -19,6 +19,7 @@ from starlette.middleware.cors import CORSMiddleware
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_material_client import SAPMaterialClient, SAPMaterialError, SAPMaterialAuthError
 from sap_production_lot_client import SAPProductionLotClient, SAPProductionLotError, SAPProductionLotAuthError
+from sap_wip_clearing_client import SAPWipClearingClient, SAPWipClearingError
 from sap_material_physical_client import (
     SAPMaterialPhysicalClient, SAPMaterialPhysicalError, PHYSICAL_FIELD_TO_SAP_PROPERTY,
 )
@@ -110,6 +111,12 @@ sap_material_client = SAPMaterialClient(
 sap_production_lot_client = SAPProductionLotClient(
     query_endpoint=os.environ['SAP_SOAP_PRODUCTION_LOT_QUERY_ENDPOINT'],
     manage_endpoint=os.environ['SAP_SOAP_PRODUCTION_LOT_MANAGE_ENDPOINT'],
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
+)
+
+sap_wip_clearing_client = SAPWipClearingClient(
+    endpoint=os.environ['SAP_SOAP_WIP_CLEARING_ENDPOINT'],
     username=os.environ['SAP_SOAP_USERNAME'],
     password=os.environ['SAP_SOAP_PASSWORD'],
 )
@@ -1784,6 +1791,7 @@ class ConfirmProductionRequest(BaseModel):
     reporting_point_uuid: str
     reporting_point_id: Optional[str] = None
     main_output_product: Optional[str] = None
+    site_id: Optional[str] = None
     unit_code: Optional[str] = None
     production_task_id: Optional[str] = None
     production_task_uuid: Optional[str] = None
@@ -1812,6 +1820,19 @@ async def confirm_production(payload: ConfirmProductionRequest):
         raise HTTPException(status_code=403, detail=str(e))
     except SAPProductionLotError as e:
         raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+
+    # Per user's explicit choice, a WIP Clearing Run auto-fires right after a
+    # task is successfully marked Finished - so period-end WIP is cleared
+    # without a separate manual step.
+    if payload.confirmation_finished and result.get("success") and payload.site_id:
+        try:
+            wip_result = await asyncio.to_thread(
+                sap_wip_clearing_client.run_wip_clearing, payload.production_lot_id, payload.site_id,
+            )
+            result["wip_clearing"] = wip_result
+        except SAPWipClearingError as e:
+            result["wip_clearing"] = {"success": False, "log": str(e)}
+
     await asyncio.to_thread(production_confirmation_service.log_confirmation, db, payload.actor, payload.dict(), result)
     return result
 
