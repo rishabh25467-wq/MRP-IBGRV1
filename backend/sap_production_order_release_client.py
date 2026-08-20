@@ -19,6 +19,16 @@ class SAPProductionOrderReleaseError(Exception):
     pass
 
 
+ORDER_LIFECYCLE_LABELS = {
+    "1": "In Preparation", "2": "Released", "3": "Started",
+    "4": "Finished", "5": "Closed", "6": "Canceled",
+}
+# Codes from which "Released" is already true (a Started/Finished/Closed
+# order was necessarily Released at some point) - used to verify the
+# Release action's real effect instead of trusting a bare HTTP 200.
+RELEASED_OR_LATER_CODES = {"2", "3", "4", "5"}
+
+
 class SAPProductionOrderReleaseClient:
     def __init__(self, base_url: str, username: str, password: str, entity_set: str = "ProductionOrderCollection"):
         self.base_url = base_url.rstrip("/")
@@ -38,7 +48,7 @@ class SAPProductionOrderReleaseClient:
             raise SAPProductionOrderReleaseError(f"'{order_or_proposal_id}' not found in {self.entity_set}")
         return results[0]["ObjectID"]
 
-    def release_order(self, order_or_proposal_id: str) -> dict:
+    def release_order(self, order_or_proposal_id: str, verify_status: bool = False) -> dict:
         object_id = self.resolve_object_id(order_or_proposal_id)
         session = requests.Session()
         session.auth = self.auth
@@ -51,7 +61,65 @@ class SAPProductionOrderReleaseClient:
         )
         if resp.status_code != 200:
             raise SAPProductionOrderReleaseError(self._error_message(resp))
-        return {"success": True, "id": order_or_proposal_id, "object_id": object_id}
+        released = True
+        if verify_status:
+            # A 200 here only means SAP accepted the call - it does NOT
+            # guarantee the order's actual status flipped (confirmed by real
+            # testing: a stale UI screenshot showed "In Preparation" right
+            # after a "successful" call). Verify the real LifeCycleStatusCode
+            # (only meaningful on the real ProductionOrder entity, i.e. the
+            # final-order-release call site - not the earlier Proposal
+            # "Request Production" trigger, which has no such field).
+            try:
+                status = self.get_life_cycle_status(order_or_proposal_id)
+                released = status["code"] in RELEASED_OR_LATER_CODES
+            except SAPProductionOrderReleaseError:
+                pass  # status field not available - fall back to trusting the 200
+        return {"success": released, "id": order_or_proposal_id, "object_id": object_id}
+
+    def get_life_cycle_status(self, order_id: str) -> dict:
+        """Real, authoritative order status (verified live against SAP's
+        source of truth - matches the SOAP Production Lot status exactly,
+        unlike the separate, staler "list" status on
+        ProductionOrderRequestSegmentReference). Returns {"code", "label"}."""
+        resp = requests.get(
+            f"{self.base_url}/{self.entity_set}",
+            params={"$filter": f"ID eq '{order_id}'", "$format": "json"},
+            auth=self.auth, headers={"Accept": "application/json"}, timeout=30,
+        )
+        if resp.status_code != 200:
+            raise SAPProductionOrderReleaseError(self._error_message(resp))
+        results = resp.json().get("d", {}).get("results", [])
+        if not results or not results[0].get("LifeCycleStatusCode"):
+            raise SAPProductionOrderReleaseError(f"LifeCycleStatusCode not available for '{order_id}'")
+        code = results[0]["LifeCycleStatusCode"]
+        return {"code": code, "label": ORDER_LIFECYCLE_LABELS.get(code, code)}
+
+    def is_released(self, order_id: str) -> bool:
+        """True if the order's real status is Released or any later stage
+        (Started/Finished/Closed all imply it was Released at some point).
+        Raises SAPProductionOrderReleaseError if the status field itself is
+        unavailable - callers should treat that as "unknown", not False."""
+        return self.get_life_cycle_status(order_id)["code"] in RELEASED_OR_LATER_CODES
+
+    def tag_with_proposal_id(self, order_id: str, proposal_id: str) -> None:
+        """Best-effort: writes the source Proposal ID onto the Order's own
+        Z_ProductionProposalID custom field (added Aug 2026) so it's
+        visible directly in SAP's native UI, and so future lookups of
+        "which Order did Proposal X become" are instant instead of
+        needing the polling fallback. Never raises - a failure here must
+        never break the create-and-release job, this is pure traceability."""
+        object_id = self.resolve_object_id(order_id)
+        session = requests.Session()
+        session.auth = self.auth
+        token_resp = session.get(f"{self.base_url}/$metadata", headers={"X-CSRF-Token": "Fetch"}, timeout=30)
+        csrf_token = token_resp.headers.get("X-CSRF-Token")
+        session.patch(
+            f"{self.base_url}/{self.entity_set}('{object_id}')",
+            json={"Z_ProductionProposalIDcontent_SDK": str(proposal_id)},
+            headers={"X-CSRF-Token": csrf_token, "Accept": "application/json", "Content-Type": "application/json"},
+            timeout=30,
+        )
 
     def create_with_source_of_supply(self, material_uuid: str, supply_planning_area_uuid: str, quantity: float,
                                       unit_code: str, availability_datetime, logistic_relationship_uuid: str,

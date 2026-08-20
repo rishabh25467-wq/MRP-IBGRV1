@@ -2176,13 +2176,26 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
         released = False
         for attempt in range(3):
             try:
-                release_result = await asyncio.to_thread(sap_production_order_release_client.release_order, new_order_id)
+                release_result = await asyncio.to_thread(sap_production_order_release_client.release_order, new_order_id, True)
                 released = bool(release_result.get("success"))
                 break
             except SAPProductionOrderReleaseError as e:
                 logger.warning(f"create-and-release job {job_id}: Order release attempt {attempt + 1}/3 failed: {e}")
                 if attempt < 2:
                     await asyncio.sleep(5)
+                else:
+                    # All 3 attempts raised (e.g. SAP rejects a repeat Release
+                    # call on an already-released order) - check the real
+                    # status directly before giving up, since SAP rejecting a
+                    # REPEAT call is often a false negative, not a real failure.
+                    try:
+                        released = await asyncio.to_thread(sap_production_order_release_client.is_released, new_order_id)
+                    except SAPProductionOrderReleaseError:
+                        pass
+        try:
+            await asyncio.to_thread(sap_production_order_release_client.tag_with_proposal_id, new_order_id, proposal_id)
+        except Exception as e:
+            logger.warning(f"create-and-release job {job_id}: tagging order {new_order_id} with proposal_id {proposal_id} failed (non-fatal): {e}")
         await asyncio.to_thread(
             production_confirmation_service.log_order_release, db, payload.actor, new_order_id, {"success": released}, job_id,
         )
@@ -2243,7 +2256,7 @@ async def release_production_order(payload: ReleaseProductionOrderRequest):
     if not payload.actor.strip():
         raise HTTPException(status_code=400, detail="actor (your name) is required")
     try:
-        result = await asyncio.to_thread(sap_production_order_release_client.release_order, payload.production_order_id)
+        result = await asyncio.to_thread(sap_production_order_release_client.release_order, payload.production_order_id, True)
     except SAPProductionOrderReleaseError as e:
         raise HTTPException(status_code=502, detail=f"SAP error: {e}")
     await asyncio.to_thread(
