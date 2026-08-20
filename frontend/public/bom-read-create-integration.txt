@@ -11,6 +11,66 @@ without explicit sign-off first. Treat the CREATE/UPDATE section as
 "documented but unverified on your tenant" and test cautiously (a brand
 new, harmless-looking test BOM ID first) before relying on it.
 
+UPDATE (20 Aug 2026): Engineering Change Order CREATE_ECO and READ_ECO are
+now LIVE-CONFIRMED working (needed as a prerequisite for BOM create/update
+- see Part C). Endpoint: managengineeringchangeorderin (Communication
+Scenario "Manage Engineering Change Order"). GOTCHA FOUND: EngineeringChangeOrder
+ID has a MAX LENGTH OF 12 CHARACTERS - exceeding it returns a generic,
+unhelpful SOAP Fault ("Web service processing error... more details in
+the web service error log on provider side") with NO indication in the
+fault itself that it's a length problem - the real cause only surfaced in
+SAP's own Application Log / Web Service Error Log work center view. If you
+hit this exact generic fault on ANY of these services, check field length
+limits first before assuming it's an authorization/config issue.
+
+===============================================================================
+PART A2 - ENGINEERING CHANGE ORDER LIFECYCLE (prerequisite for BOM writes)
+===============================================================================
+Service: ManageEngineeringChangeOrderIn
+Namespace (body): http://sap.com/xi/SAPGlobal20/Global
+Endpoint pattern: .../sap/bc/srt/scs/sap/manageengineeringchangeorderin?sap-vhost=...
+
+CREATE_ECO - SOAPAction: "http://sap.com/xi/A1S/Global/ManageEngineeringChangeOrderIn/CreateRequest"
+<n0:EngineeringChangeOrderCreateRequest_sync xmlns:n0="http://sap.com/xi/SAPGlobal20/Global">
+  <BasicMessageHeader><ID>{unique-msg-id}</ID></BasicMessageHeader>
+  <EngineeringChangeOrder>
+    <ID>{ECO_ID}</ID>                 <!-- MAX 12 CHARS, see gotcha above -->
+    <TypeCode>5</TypeCode>            <!-- 5 = "Single-date Order", confirmed valid -->
+    <Validity>
+      <StartDate>{YYYY-MM-DD}</StartDate>
+      <CancelledIndicator>false</CancelledIndicator>
+    </Validity>
+  </EngineeringChangeOrder>
+</n0:EngineeringChangeOrderCreateRequest_sync>
+
+Success response confirms <UUID> + <ID>, empty/low-severity <Log>. New ECO
+starts at LifeCycleStatusCode=1 ("In Preparation").
+
+READ_ECO - SOAPAction: "http://sap.com/xi/A1S/Global/ManageEngineeringChangeOrderIn/ReadRequest"
+<n0:EngineeringChangeOrderByIDQuery_sync xmlns:n0="http://sap.com/xi/SAPGlobal20/Global">
+  <EngineeringChangeOrder><ID>{ECO_ID}</ID></EngineeringChangeOrder>
+</n0:EngineeringChangeOrderByIDQuery_sync>
+
+Response includes <Status><LifeCycleStatusCode> and, critically,
+<ChangeStateID> (a timestamp-like value, e.g. "20260820214756.4546610") -
+YOU NEED THIS EXACT VALUE for the StartProcessing/Complete action calls
+below, it's not something you can construct yourself.
+
+NEXT STEP (not yet live-tested, from SAP docs) - Service
+EngineeringChangeOrderActionIn, operation START_PROCESSING, moves
+LifeCycleStatusCode 1 ("In Preparation") -> 2 ("In Process"):
+<n0:EngineeringChangeOrderStartProcessingRequest_sync xmlns:n0="http://sap.com/xi/SAPGlobal20/Global">
+  <BasicMessageHeader></BasicMessageHeader>
+  <EngineeringChangeOrder>
+    <ID>{ECO_ID}</ID>
+    <ChangeStateID>{ChangeStateID from READ_ECO}</ChangeStateID>
+  </EngineeringChangeOrder>
+</n0:EngineeringChangeOrderStartProcessingRequest_sync>
+
+Only once the ECO is "In Process" can it be referenced in a BOM
+MaintainBOM call (Part C) - SAP auto-transitions it to "Completed" the
+moment that BOM call executes successfully.
+
 ===============================================================================
 PART A - READING A BOM (live-tested, this is what powers the app's own
 BOM Explorer / multi-level explosion)
