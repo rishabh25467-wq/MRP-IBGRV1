@@ -1944,6 +1944,26 @@ class ConfirmProductionRequest(BaseModel):
 async def confirm_production(payload: ConfirmProductionRequest):
     if not payload.actor.strip():
         raise HTTPException(status_code=400, detail="actor (your name) is required")
+
+    # The by-product's Output Products line (e.g. IRON-SCR) MUST be
+    # confirmed BEFORE the main ReportingPoint call when
+    # confirmation_finished=True - confirm_reporting_point internally also
+    # calls finish_task() in that case, which fully closes the lot/task, and
+    # SAP then rejects ANY further MaterialOutput update with "Processing
+    # not possible due to status Finished" (reproduced live on Lot 69962).
+    byproduct_confirmation = None
+    if payload.byproduct_material_output_uuid and payload.byproduct_confirmed_quantity is not None:
+        try:
+            byproduct_confirmation = await asyncio.to_thread(
+                sap_production_lot_client.confirm_material_output,
+                production_lot_id=payload.production_lot_id, production_lot_uuid=payload.production_lot_uuid,
+                confirmation_group_uuid=payload.confirmation_group_uuid,
+                material_output_uuid=payload.byproduct_material_output_uuid,
+                confirmed_quantity=payload.byproduct_confirmed_quantity, unit_code=payload.byproduct_unit_code,
+            )
+        except SAPProductionLotError as e:
+            byproduct_confirmation = {"success": False, "logs": [{"note": str(e)}]}
+
     try:
         result = await asyncio.to_thread(
             sap_production_lot_client.confirm_reporting_point,
@@ -1954,11 +1974,10 @@ async def confirm_production(payload: ConfirmProductionRequest):
             # confirmed_scrap here is a manually-entered REJECTED QUANTITY
             # (defective units), unrelated to the physical by-product
             # material weight - it IS written to SAP's own ConfirmedScrap
-            # field on this ReportingPoint, same as before. The physical
-            # by-product output line (e.g. IRON-SCR) is confirmed
-            # separately below via confirm_material_output, using our own
-            # gross-minus-net weight calculation - a completely independent
-            # value from whatever the user enters here.
+            # field on this ReportingPoint. The physical by-product output
+            # line (e.g. IRON-SCR) was already confirmed ABOVE, using our
+            # own gross-minus-net weight calculation - a completely
+            # independent value from whatever the user enters here.
             confirmed_scrap=payload.confirmed_scrap,
             deviation_reason_code=payload.deviation_reason_code,
             confirmation_finished=payload.confirmation_finished,
@@ -1968,23 +1987,8 @@ async def confirm_production(payload: ConfirmProductionRequest):
     except SAPProductionLotError as e:
         raise HTTPException(status_code=502, detail=f"SAP error: {e}")
 
-    # Confirms the by-product's own Output Products grid line quantity
-    # (e.g. IRON-SCR) - a SEPARATE SOAP call, since MaterialOutput and
-    # ReportingPoint nodes cannot be combined in one request. Best-effort:
-    # a failure here doesn't undo the main confirmation above, it's just
-    # surfaced back for visibility.
-    if payload.byproduct_material_output_uuid and payload.byproduct_confirmed_quantity is not None and result.get("success"):
-        try:
-            byproduct_result = await asyncio.to_thread(
-                sap_production_lot_client.confirm_material_output,
-                production_lot_id=payload.production_lot_id, production_lot_uuid=payload.production_lot_uuid,
-                confirmation_group_uuid=payload.confirmation_group_uuid,
-                material_output_uuid=payload.byproduct_material_output_uuid,
-                confirmed_quantity=payload.byproduct_confirmed_quantity, unit_code=payload.byproduct_unit_code,
-            )
-            result["byproduct_confirmation"] = byproduct_result
-        except SAPProductionLotError as e:
-            result["byproduct_confirmation"] = {"success": False, "logs": [{"note": str(e)}]}
+    if byproduct_confirmation is not None:
+        result["byproduct_confirmation"] = byproduct_confirmation
 
     # Per user's explicit choice, a WIP Clearing Run auto-fires right after a
     # task is successfully marked Finished - so period-end WIP is cleared
