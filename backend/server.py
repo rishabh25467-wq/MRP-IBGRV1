@@ -2130,11 +2130,12 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
                 logger.warning(f"create-and-release job {job_id}: baseline open-lots lookup hit a transient SAP error, retrying: {e}")
                 await asyncio.sleep(CREATE_RELEASE_POLL_INTERVAL_SECONDS)
 
-        elapsed = 0
+        elapsed_start = time.monotonic()
         last_trigger = None  # force an immediate first trigger below
         trigger_count = 0
         new_order_id = None
-        while elapsed <= CREATE_RELEASE_MAX_WAIT_SECONDS:
+        while time.monotonic() - elapsed_start <= CREATE_RELEASE_MAX_WAIT_SECONDS:
+            elapsed = time.monotonic() - elapsed_start
             if last_trigger is None or elapsed - last_trigger >= CREATE_RELEASE_RETRIGGER_EVERY_SECONDS:
                 trigger_count += 1
                 trigger_ok = False
@@ -2147,9 +2148,8 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
                     "last_release_trigger_at": datetime.now(timezone.utc).isoformat(),
                     "release_trigger_count": trigger_count, "last_release_trigger_ok": trigger_ok,
                 })
-                last_trigger = elapsed
+                last_trigger = time.monotonic() - elapsed_start
                 await asyncio.sleep(SAP_SETTLE_DELAY_SECONDS)  # give SAP a beat to act on the trigger before the very next lookup
-                elapsed += SAP_SETTLE_DELAY_SECONDS
             try:
                 current_ids = {r["production_lot_id"] for r in await asyncio.to_thread(
                     sap_production_lot_client.find_open_lots, open_statuses, payload.site_id, 999
@@ -2164,7 +2164,6 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
                 # just skip this round and try again next interval.
                 logger.warning(f"create-and-release job {job_id}: poll attempt hit a transient SAP error, will retry: {e}")
             await asyncio.sleep(CREATE_RELEASE_POLL_INTERVAL_SECONDS)
-            elapsed += CREATE_RELEASE_POLL_INTERVAL_SECONDS
 
         if not new_order_id:
             job_store.update_job(db, job_id, {"status": "done", "result": {
