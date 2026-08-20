@@ -13,6 +13,7 @@ from typing import List, Optional
 import requests
 from dotenv import load_dotenv
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ValidationError
 from pymongo import MongoClient
 from starlette.middleware.cors import CORSMiddleware
@@ -73,6 +74,15 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
+
+
+@api_router.get("/docs/sap-integrations")
+async def get_sap_integrations_doc():
+    """Serves the SAP integration reference doc (read-only, plain text)."""
+    doc_path = Path(__file__).parent.parent / "memory" / "SAP_INTEGRATIONS.md"
+    if not doc_path.exists():
+        raise HTTPException(status_code=404, detail="Documentation not found")
+    return PlainTextResponse(doc_path.read_text(), media_type="text/plain; charset=utf-8")
 
 
 @app.on_event("startup")
