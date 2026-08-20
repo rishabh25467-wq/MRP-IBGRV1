@@ -23,6 +23,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { NavTabs } from "@/components/NavTabs";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -291,6 +292,159 @@ const HistoryDialog = ({ open, onClose }) => {
   );
 };
 
+// -------------------- Create Production Order tab --------------------
+const CreateOrderTab = ({ actorName }) => {
+  const [materialId, setMaterialId] = useState("");
+  const [siteId, setSiteId] = useState("");
+  const [quantity, setQuantity] = useState("1");
+  const [unitCode, setUnitCode] = useState("EA");
+  const [requestedEndDate, setRequestedEndDate] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [releaseOrderId, setReleaseOrderId] = useState("");
+  const [releasing, setReleasing] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+
+  const loadHistory = useCallback(() => {
+    setLoadingHistory(true);
+    axios.get(`${API}/production-confirmation/proposal-history`).then(({ data }) => setHistory(data.entries)).finally(() => setLoadingHistory(false));
+  }, []);
+
+  useEffect(() => { loadHistory(); }, [loadHistory]);
+
+  const createProposal = async () => {
+    if (!actorName.trim()) {
+      toast.error("Enter your name first (top-right of the page)");
+      return;
+    }
+    if (!materialId.trim() || !siteId.trim() || !quantity) {
+      toast.error("Product, Site and Quantity are required");
+      return;
+    }
+    setCreating(true);
+    try {
+      const { data } = await axios.post(`${API}/production-confirmation/create-proposal`, {
+        material_id: materialId.trim(),
+        site_id: siteId.trim().toUpperCase(),
+        quantity: Number(quantity),
+        unit_code: unitCode.trim().toUpperCase() || "EA",
+        availability_datetime: requestedEndDate ? new Date(requestedEndDate).toISOString() : null,
+        actor: actorName.trim(),
+      });
+      toast.success(`Production Proposal ${data.production_proposal_id} created in SAP - it will convert into a Production Order once SAP's scheduled Supply Planning Run picks it up`);
+      setMaterialId(""); setQuantity("1"); setRequestedEndDate("");
+      loadHistory();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to create Production Proposal in SAP");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const releaseOrder = async () => {
+    if (!actorName.trim()) {
+      toast.error("Enter your name first (top-right of the page)");
+      return;
+    }
+    if (!releaseOrderId.trim()) {
+      toast.error("Enter the Production Order ID to release");
+      return;
+    }
+    setReleasing(true);
+    try {
+      await axios.post(`${API}/production-confirmation/release-order`, {
+        production_order_id: releaseOrderId.trim(),
+        actor: actorName.trim(),
+      });
+      toast.success(`Production Order ${releaseOrderId.trim()} released in SAP`);
+      setReleaseOrderId("");
+      loadHistory();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to release Production Order in SAP");
+    } finally {
+      setReleasing(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="bg-white border border-[#D0D5DD] rounded-sm p-4 space-y-3" data-testid="create-proposal-card">
+          <h3 className="font-heading text-sm font-bold text-[#1D2939] uppercase tracking-wide">Step 1: Create Production Order</h3>
+          <p className="text-xs text-[#667085]">Creates a Production Proposal in SAP. SAP's own scheduled Supply Planning Run auto-converts it into a Production Request then Order (Source of Supply/BOM version is chosen automatically by SAP).</p>
+          <div>
+            <Label className="text-xs font-bold text-[#344054]">Product ID</Label>
+            <Input value={materialId} onChange={(e) => setMaterialId(e.target.value)} placeholder="e.g. MAZ42117272-TA" data-testid="create-proposal-product-input" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs font-bold text-[#344054]">Site</Label>
+              <Input value={siteId} onChange={(e) => setSiteId(e.target.value)} placeholder="e.g. P2" data-testid="create-proposal-site-input" />
+            </div>
+            <div>
+              <Label className="text-xs font-bold text-[#344054]">UoM</Label>
+              <Input value={unitCode} onChange={(e) => setUnitCode(e.target.value)} placeholder="EA" data-testid="create-proposal-uom-input" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs font-bold text-[#344054]">Quantity</Label>
+              <Input type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)} data-testid="create-proposal-qty-input" />
+            </div>
+            <div>
+              <Label className="text-xs font-bold text-[#344054]">Requested End Date</Label>
+              <Input type="date" value={requestedEndDate} onChange={(e) => setRequestedEndDate(e.target.value)} data-testid="create-proposal-date-input" />
+            </div>
+          </div>
+          <Button onClick={createProposal} disabled={creating} className="w-full" data-testid="create-proposal-submit-button">
+            {creating ? "Creating in SAP..." : "Create Production Order"}
+          </Button>
+        </div>
+
+        <div className="bg-white border border-[#D0D5DD] rounded-sm p-4 space-y-3" data-testid="release-order-card">
+          <h3 className="font-heading text-sm font-bold text-[#1D2939] uppercase tracking-wide">Step 2: Release Order</h3>
+          <p className="text-xs text-[#667085]">Once SAP's planning run converts your proposal into a Production Order (check in SAP), enter its Order ID here to release it - it will then be ready for confirmation below.</p>
+          <div>
+            <Label className="text-xs font-bold text-[#344054]">Production Order ID</Label>
+            <Input value={releaseOrderId} onChange={(e) => setReleaseOrderId(e.target.value)} placeholder="e.g. 69843" data-testid="release-order-id-input" />
+          </div>
+          <Button onClick={releaseOrder} disabled={releasing} className="w-full" data-testid="release-order-submit-button">
+            {releasing ? "Releasing in SAP..." : "Release Production Order"}
+          </Button>
+        </div>
+      </div>
+
+      <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-auto">
+        <table className="w-full text-[12px] border-collapse" data-testid="proposal-history-table">
+          <thead>
+            <tr>
+              {["When", "By", "Action", "Product/Order", "Site", "Qty", "Result"].map((h) => (
+                <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {history.map((h, i) => (
+              <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`proposal-history-row-${i}`}>
+                <td className="border border-[#D0D5DD] px-2 py-1">{new Date(h.at).toLocaleString("en-IN")}</td>
+                <td className="border border-[#D0D5DD] px-2 py-1">{h.actor}</td>
+                <td className="border border-[#D0D5DD] px-2 py-1">{h.type === "proposal_created" ? "Proposal Created" : "Order Released"}</td>
+                <td className="border border-[#D0D5DD] px-2 py-1">{h.type === "proposal_created" ? `${h.material_id} (Proposal ${h.production_proposal_id})` : h.production_order_id}</td>
+                <td className="border border-[#D0D5DD] px-2 py-1">{h.site_id || "—"}</td>
+                <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums">{h.quantity ?? "—"}</td>
+                <td className="border border-[#D0D5DD] px-2 py-1">
+                  {h.type === "proposal_created" ? <Badge className="bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]">Created</Badge> : h.success ? <Badge className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Released</Badge> : <Badge className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>}
+                </td>
+              </tr>
+            ))}
+            {!loadingHistory && history.length === 0 && <tr><td colSpan={7} className="text-center py-6 text-[#98A2B3] border border-[#D0D5DD]">No Production Orders created yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
 // -------------------- Main page --------------------
 export default function ProductionConfirmationPage() {
   const [actorName, setActorName] = useActorName();
@@ -381,6 +535,17 @@ export default function ProductionConfirmationPage() {
       </header>
 
       <main className="flex-1 overflow-auto p-4 space-y-4">
+        <Tabs defaultValue="confirm" className="space-y-4">
+          <TabsList data-testid="page-tabs">
+            <TabsTrigger value="create" data-testid="tab-create-order">Create Production Order</TabsTrigger>
+            <TabsTrigger value="confirm" data-testid="tab-confirm-production">Production Confirmation</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="create">
+            <CreateOrderTab actorName={actorName} />
+          </TabsContent>
+
+          <TabsContent value="confirm" className="space-y-4">
         {authError && (
           <Alert className="bg-[#FFFAEB] border-[#FEDF89]" data-testid="auth-error-banner">
             <WarningCircle size={16} className="text-[#B54708]" />
@@ -478,6 +643,8 @@ export default function ProductionConfirmationPage() {
             </table>
           </div>
         )}
+          </TabsContent>
+        </Tabs>
       </main>
 
       <ConfirmDialog row={confirmRow} actorName={actorName} onClose={() => setConfirmRow(null)} onConfirmed={onConfirmed} reasons={reasons} />

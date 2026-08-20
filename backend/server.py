@@ -20,6 +20,8 @@ from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_material_client import SAPMaterialClient, SAPMaterialError, SAPMaterialAuthError
 from sap_production_lot_client import SAPProductionLotClient, SAPProductionLotError, SAPProductionLotAuthError
 from sap_wip_clearing_client import SAPWipClearingClient, SAPWipClearingError
+from sap_production_proposal_client import SAPProductionProposalClient, SAPProductionProposalError
+from sap_production_order_release_client import SAPProductionOrderReleaseClient, SAPProductionOrderReleaseError
 from sap_material_physical_client import (
     SAPMaterialPhysicalClient, SAPMaterialPhysicalError, PHYSICAL_FIELD_TO_SAP_PROPERTY,
 )
@@ -119,6 +121,18 @@ sap_wip_clearing_client = SAPWipClearingClient(
     endpoint=os.environ['SAP_SOAP_WIP_CLEARING_ENDPOINT'],
     username=os.environ['SAP_SOAP_USERNAME'],
     password=os.environ['SAP_SOAP_PASSWORD'],
+)
+
+sap_production_proposal_client = SAPProductionProposalClient(
+    endpoint=os.environ['SAP_SOAP_PRODUCTION_PROPOSAL_ENDPOINT'],
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
+)
+
+sap_production_order_release_client = SAPProductionOrderReleaseClient(
+    base_url=os.environ['SAP_ODATA_PRODUCTION_ORDER_RELEASE_BASE_URL'],
+    username=os.environ['SAP_ODATA_BUSINESS_USER'],
+    password=os.environ['SAP_ODATA_BUSINESS_PASSWORD'],
 )
 
 sap_material_physical_client = SAPMaterialPhysicalClient(
@@ -1863,6 +1877,73 @@ async def create_deviation_reason(payload: DeviationReasonRequest):
 async def remove_deviation_reason(code: str):
     reasons = await asyncio.to_thread(production_confirmation_service.delete_deviation_reason, db, code)
     return {"reasons": reasons}
+
+
+# ---------------------------------------------------------------------
+# Create Production Order (Aug 2026). SAP has no direct "create order" API,
+# so this creates a Production Proposal (ManageProductionProposalIn) which
+# SAP's own scheduled Supply Planning Run converts into a Production
+# Request then Order (A010 auto-creation strategy, confirmed by user). SAP
+# also has no standard Release API, so a custom OData action
+# ("productionorderemergent") was built by the user's SAP admin exposing
+# the BO's PSM-released "Release" action - called with a dedicated SAP
+# Business User (custom OData actions reject technical/communication
+# users).
+# ---------------------------------------------------------------------
+class CreateProductionProposalRequest(BaseModel):
+    material_id: str
+    site_id: str
+    quantity: float
+    unit_code: str
+    availability_datetime: Optional[str] = None
+    actor: str
+
+
+@api_router.post("/production-confirmation/create-proposal")
+async def create_production_proposal(payload: CreateProductionProposalRequest):
+    if not payload.actor.strip():
+        raise HTTPException(status_code=400, detail="actor (your name) is required")
+    avail_dt = None
+    if payload.availability_datetime:
+        try:
+            avail_dt = datetime.fromisoformat(payload.availability_datetime.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="availability_datetime must be an ISO date/time")
+    try:
+        result = await asyncio.to_thread(
+            sap_production_proposal_client.create_proposal,
+            payload.material_id, payload.site_id, payload.quantity, payload.unit_code, avail_dt,
+        )
+    except SAPProductionProposalError as e:
+        raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+    await asyncio.to_thread(
+        production_confirmation_service.log_proposal_creation, db, payload.actor, payload.dict(), result,
+    )
+    return result
+
+
+class ReleaseProductionOrderRequest(BaseModel):
+    production_order_id: str
+    actor: str
+
+
+@api_router.post("/production-confirmation/release-order")
+async def release_production_order(payload: ReleaseProductionOrderRequest):
+    if not payload.actor.strip():
+        raise HTTPException(status_code=400, detail="actor (your name) is required")
+    try:
+        result = await asyncio.to_thread(sap_production_order_release_client.release_order, payload.production_order_id)
+    except SAPProductionOrderReleaseError as e:
+        raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+    await asyncio.to_thread(
+        production_confirmation_service.log_order_release, db, payload.actor, payload.production_order_id, result,
+    )
+    return result
+
+
+@api_router.get("/production-confirmation/proposal-history")
+async def get_proposal_and_release_history():
+    return {"entries": await asyncio.to_thread(production_confirmation_service.get_proposal_and_release_history, db)}
 
 
 class ComponentMasterItem(BaseModel):

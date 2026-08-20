@@ -96,3 +96,48 @@ def get_confirmation_history(db, production_lot_id: str = None, limit: int = 200
         }
         for d in docs
     ]
+
+
+PROPOSAL_HISTORY_COLLECTION = "production_order_creation_history"
+
+
+def log_proposal_creation(db, actor: str, request_payload: dict, result: dict) -> None:
+    db[PROPOSAL_HISTORY_COLLECTION].insert_one({
+        "type": "proposal_created",
+        "actor": actor,
+        "material_id": request_payload.get("material_id"),
+        "site_id": request_payload.get("site_id"),
+        "quantity": request_payload.get("quantity"),
+        "unit_code": request_payload.get("unit_code"),
+        "production_proposal_id": result.get("production_proposal_id"),
+        "at": datetime.now(timezone.utc),
+    })
+
+
+def log_order_release(db, actor: str, production_order_id: str, result: dict) -> None:
+    db[PROPOSAL_HISTORY_COLLECTION].insert_one({
+        "type": "order_released",
+        "actor": actor,
+        "production_order_id": production_order_id,
+        "success": result.get("success"),
+        "at": datetime.now(timezone.utc),
+    })
+
+
+def get_proposal_and_release_history(db, limit: int = 200) -> list:
+    docs = db[PROPOSAL_HISTORY_COLLECTION].find({}).sort("at", -1).limit(limit)
+    return [
+        {
+            "type": d.get("type"),
+            "actor": d.get("actor"),
+            "material_id": d.get("material_id"),
+            "site_id": d.get("site_id"),
+            "quantity": d.get("quantity"),
+            "unit_code": d.get("unit_code"),
+            "production_proposal_id": d.get("production_proposal_id"),
+            "production_order_id": d.get("production_order_id"),
+            "success": d.get("success"),
+            "at": d["at"].isoformat(),
+        }
+        for d in docs
+    ]
