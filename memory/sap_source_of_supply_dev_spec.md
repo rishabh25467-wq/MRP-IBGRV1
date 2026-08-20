@@ -47,7 +47,22 @@ the service):
      "Production Model X" -> its Logistic Relationship UUID before writing it here.
 6. Once confirmed, report back the read API/location so we can finish wiring the picker.
 
-## Once available, we will
+## CONFIRMED LIVE (this session) - writes work
+User activated the service with both fields selected. Verified live with real MERGE/PATCH calls
+against a real Proposal (223822):
+- `SourceOfSupplyFixedIndicator` - write succeeded (204), value persisted.
+- `SourceOfSupplyLogisticRelationshipUUID` - write succeeded (204) with its own current value
+  (safe no-op test), value persisted.
+- Metadata still SHOWS `sap:updatable="false"` on these two fields (likely a stale/cosmetic
+  metadata annotation, not an enforced restriction) - the collection-level `updatable="true"` is
+  what actually governs it. Not blocking - writes work regardless of what `$metadata` displays.
+
+**Still needed before the picker can be built**: a real alternate Logistic Relationship UUID to test
+with (we've only ever seen the ONE default value SAP auto-assigns), and a way to look up/list the
+valid alternates for a given material. This is the one remaining open item - see "Open question" in
+the UPDATE section above (where these Fixed Source of Supply / Logistic Relationship records are
+maintained, and whether there's a read API to list them per material).
+
 1. On "Create Production Order", look up the available Production Models (and their Logistic
    Relationship UUIDs) for the entered material.
 2. If more than one exists, show a picker in the UI before submitting.
