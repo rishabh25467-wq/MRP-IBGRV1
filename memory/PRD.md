@@ -1,3 +1,13 @@
+## Session update (2026-08-20, part 4) - strftime crash + hidden Malformed URI bug, both FIXED
+
+**Bug 1 - `'NoneType' object has no attribute 'strftime'` on Production Order creation - FIXED:**
+- Root cause: `create_with_source_of_supply()` in `sap_production_order_release_client.py` (used only when the user explicitly picks an alternate Source of Supply model) called `availability_datetime.strftime(...)` directly with no None-fallback, unlike its sibling `create_proposal()` (default SAP auto-pick path) which already had `availability_datetime = availability_datetime or datetime.now(timezone.utc)`. Crashed whenever the optional date field on the Create Order form was left blank. Fixed by adding the same fallback.
+
+**Bug 2 (found while live-verifying Bug 1's fix) - `"Malformed URI literal syntax"` from SAP - FIXED:**
+- Once the strftime crash was gone, the SAME create_with_source_of_supply call still failed 100% of the time against real SAP with `Malformed URI literal syntax`. Root-caused via live curl isolation: `MainMaterialOutputQuantity` was sent as a bare decimal literal (e.g. `"1.0"`, since `payload.quantity` is a Python float) - confirmed SAP OData v2 rejects any literal containing a decimal point unless suffixed with `m`/`M` (e.g. `"1.0m"` works, `"1.0"` doesn't; a plain integer string like `"1"` with no decimal point happens to also work, which is why this was never caught in earlier testing that likely used whole-number test quantities). Fixed by always appending `"m"` to the quantity literal.
+- Both fixes verified live end-to-end via curl against the real SAP tenant (bypassing the UI, using a synthetic super_admin session per the test_credentials.md technique): `POST /production-confirmation/create-and-release-order` for BK-0021 at P2 with the alternate model `BK-0021_2` (`logistic_relationship_uuid=FA163E48-...`) and `availability_datetime: null` now correctly creates a real SAP Proposal (ID 223835) instead of erroring - job reached `"waiting_for_order"` status. Did not wait out the full ~20min SAP-side Proposal->Order conversion polling window (unrelated to either bug fix - that's SAP's own scheduled Supply Planning Run timing, already proven working in the Session part-3 update).
+- User confirmed curl-only verification was sufficient (no testing_agent regression pass requested this round). "Missing By-Product Creation" (P1) remains NOT STARTED, explicitly deferred per user - do not start without further scoping conversation.
+
 ## Session update (2026-08-20, part 3) - stock pre-check bug fix
 
 **Stock pre-check bug - FIXED:**

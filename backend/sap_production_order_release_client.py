@@ -9,6 +9,7 @@ SAP Business User (not the SOAP technical user) - a dedicated business
 user was created for this (see SAP_ODATA_BUSINESS_USER/PASSWORD)."""
 import re
 import time
+from datetime import datetime, timezone
 
 import requests
 from requests.auth import HTTPBasicAuth
@@ -70,6 +71,7 @@ class SAPProductionOrderReleaseClient:
         object reference) - the new Proposal is located by diffing the
         entity set filtered by SourceOfSupplyLogisticRelationshipUUID
         before/after the call. Returns the new Proposal's SAP ID (string)."""
+        availability_datetime = availability_datetime or datetime.now(timezone.utc)
         avail_str = availability_datetime.strftime("%Y-%m-%dT%H:%M:%SZ")
         explosion_str = availability_datetime.strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -99,7 +101,12 @@ class SAPProductionOrderReleaseClient:
             "MainMaterialOutputMaterialUUID": f"guid'{material_uuid}'",
             "MainMaterialOutputAvailabilityDateTime": f"datetimeoffset'{avail_str}'",
             "MainMaterialOutputQuantityTypeCode": f"'{unit_code}'",
-            "MainMaterialOutputQuantity": str(quantity),
+            # SAP OData v2 rejects a bare decimal literal like "1.0" with
+            # "Malformed URI literal syntax" (confirmed via live testing) -
+            # Edm.Decimal literals require the 'm' suffix whenever a
+            # decimal point is present. Always appending it is safe for
+            # whole numbers too (e.g. "1m" is accepted, same as "1").
+            "MainMaterialOutputQuantity": f"{quantity}m",
             "SourceOfSupplyExplosionDate": f"datetime'{explosion_str}'",
             "FixedIndicator": "true",
         }
