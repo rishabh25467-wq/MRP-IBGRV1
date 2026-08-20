@@ -1,4 +1,19 @@
-## Session update (2026-08-20, part 12) - Create Material feature (new SAP write capability)
+## Session update (2026-08-20, part 13) - Full BOM create chain (ECO + BOM) live-confirmed for "another app"
+
+User needed a working "read/create BOM" integration for a DIFFERENT app (not this one) - confirmed step-by-step live against this SAP tenant, using 3 newly-created Communication Arrangements (`ManageEngineeringChangeOrderIn`, `EngineeringChangeOrderActionIn`, `ProductionBillOfMaterialManagementIn`, new `.env` vars `SAP_SOAP_ECO_MANAGE_ENDPOINT`/`SAP_SOAP_ECO_ACTION_ENDPOINT`/`SAP_SOAP_BOM_MANAGE_ENDPOINT`):
+
+1. **CREATE_ECO** worked - but ECO ID has an undocumented **12-character max length**; exceeding it produces a generic unhelpful SOAP Fault ("more details in the web service error log on provider side") with zero indication it's a length problem - only surfaced via SAP's own Application Log (user's Basis team checked it).
+2. **READ_ECO** confirmed - returns `ChangeStateID`, needed for `START_PROCESSING`.
+3. **START_PROCESSING** (`EngineeringChangeOrderActionIn`) confirmed - moves ECO "In Preparation" -> "In Process".
+4. **MaintainBOM create** (`ProductionBillOfMaterialManagementIn`) confirmed - created real BOM `ZQABOM001` (throwaway materials `ZQABOMIN01`/`ZQABOMOUT1`, created via the existing Create Material feature for this test) using ECO `ZQAECOTST1`. Got 2 non-blocking warnings ("Active assignment of supply planning area... does not exist" - expected since test materials have no site assignment). Confirmed the ECO auto-completed (`LifeCycleStatusCode` 1->2->5) and the BOM is readable via the app's own existing `QueryProductionBillofMaterialsIn` read path.
+
+**Permanent test data left behind** (by design, cannot be cleaned up - no delete-whole-BOM action exists in SAP): ECO `ZQAECOTST1`, materials `ZQABOMIN01`/`ZQABOMOUT1`, BOM `ZQABOM001`. All harmless/unused test records, flagged to user.
+
+Full guide published (no login needed): `https://sap-data-sync.preview.emergentagent.com/bom-read-create-integration.txt` (also saved as `/app/memory/BOM_CREATE_INTEGRATION.md`). Also published earlier this session: `https://sap-data-sync.preview.emergentagent.com/create-material-integration.txt` and `https://sap-data-sync.preview.emergentagent.com/sap-integrations.txt` (full existing-integrations catalog, served via new `GET /api/docs/sap-integrations` backend endpoint + static copy in `frontend/public/`).
+
+This session did NOT build any new feature INSIDE this app for BOM creation (no new page/endpoint) - purely research + live verification to hand off a working integration guide to a separate app. `sap_material_create_client.py`/`/admin/create-material` (Create Material feature) remains the only new in-app feature built this session.
+
+
 
 Investigated whether `ManageMaterialIn` (SAP's standard "Manage Materials" communication scenario) was already used in the app - it wasn't (dormant `.env` var `SAP_SOAP_MATERIAL_MANAGE_ENDPOINT` from an earlier abandoned attempt at writing Net Weight via this service, before pivoting to the custom OData `materialgeneralinfo` approach).
 
