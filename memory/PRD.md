@@ -14,6 +14,22 @@
 - Verified live for MAZ42117272-TA: gross 0.49kg (HRCOIL1.9X80.5), net 0.19kg, scrap/unit 0.3kg exactly as expected.
 - Known minor/optional polish items (not yet done): distinguish "BOM not cached" vs "no MASS component" in the unavailable reason; wrap scrap-calc mongo reads in `asyncio.to_thread` for consistency.
 
+## Session update (2026-08-20, part 2) - bug fixes + scrap classification refinement
+
+**Source of Supply picker - 3 real bugs found & fixed (iteration_86):**
+- Site wasn't auto-filling (stale-closure bug reading old `sosOptions` state instead of freshly-fetched list) - fixed.
+- Picker would reset/disappear on any interaction (Site field's `onBlur` re-triggered the whole lookup unnecessarily) - `onBlur` handler removed entirely from Site input; Site is now purely derived from the model picker, never an independent filter that re-fetches.
+- Switching Product ID while a stale Site value lingered caused the new material's valid options to be wrongly filtered out - fixed by never passing `site_id` as a filter from the frontend at all; added `siteAutoFilled` tracking flag so a stale auto-filled site gets cleared on material switch, but a site the user typed manually is never clobbered.
+
+**Scrap classification refinement (iteration_86 findings, fixed):**
+- Removed a duplicate `scrap_per_unit_kg` key in the API response dict.
+- Classification matching upgraded from raw substring to token-prefix matching (`_tokenize()` splits on non-alphanumeric chars, keyword must be a token PREFIX) - fixes false positives like SCREW/MICRO/PRESSED/SECURE/VALUE matching CR/SS/CU/ALU. Still correctly matches real compound codes like "HRCOIL1.9X80.5" (token "HRCOIL1.9X80.5" starts with "HR") and "ZINC-ING" (token "ZINC" starts with "ZN"/"ZINC").
+- Real SAP scrap codes confirmed via user-provided screenshot (not guessed): Brass/CDA→`BRASS-SCR`, Copper/Cu→`COPPSC`, Aluminium→`ALU-SCRAP`, Stainless(SS)→`SSSCRAP`, Cold-Rolled(CR)→`CR-SCRAP`, Hot-Rolled/generic Steel/Coil/Sheet/Flat→`IRON-SCR`. Zinc/Zn always excluded from RM candidacy (galvanization/coating consumable, never structural RM) regardless of quantity.
+
+**Not yet built (deferred, needs scoping):** "Auto-create missing by-product on SAP's Bill of Operations if the right one isn't configured" - requires (1) a new SAP read for a Production Model's currently-configured by-products (not captured anywhere yet), (2) a new SAP write action to add a by-product line. User has not yet confirmed priority for this (asked, no response yet on that specific sub-item - only responded with the scrap code table). Do not build until explicitly scoped.
+
+**Unrelated one-off:** granted `ankit.sharma@rampgroup.co.in` (existing `auth_users` doc, role stayed `user`) access to all 9 pages via direct DB update - no code change.
+
 # SAP BOM Lookup Tool
 
 ## Original Problem Statement

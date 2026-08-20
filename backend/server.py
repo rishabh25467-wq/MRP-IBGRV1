@@ -577,24 +577,75 @@ async def get_bom_net_weight(product_ids: str = Query(..., description="Comma-se
     return {doc["_id"]: doc["net_weight_kg"] for doc in docs}
 
 
+SCRAP_FAMILY_RULES = [
+    # (family label, expected SAP byproduct code, keywords to match in RM product_id/description)
+    # Codes + categories confirmed against the actual scrap materials already in SAP - order matters,
+    # more specific keywords are checked before generic ones (e.g. Stainless before generic Steel,
+    # CR before generic HR/Steel).
+    ("Brass Scrap", "BRASS-SCR", ["CDA", "BRASS"]),
+    ("Copper Scrap", "COPPSC", ["CU", "COPPER"]),
+    ("Aluminium Scrap", "ALU-SCRAP", ["ALU", "ALUMINIUM", "ALUMINUM"]),
+    ("SS Scrap", "SSSCRAP", ["SS", "STAINLESS"]),
+    ("CR Iron Scrap", "CR-SCRAP", ["CR"]),
+    ("Iron Scrap", "IRON-SCR", ["HR", "STEEL", "COIL", "SHEET", "FLAT"]),
+]
+ZINC_KEYWORDS = ["ZN", "ZINC"]  # never a structural raw material - galvanization/coating only, always excluded
+
+
+def _tokenize(text: str) -> list:
+    return [t for t in re.split(r"[^A-Z0-9]+", text.upper()) if t]
+
+
+def _classify_scrap_family(product_id: str, description: str):
+    tokens = _tokenize(f"{product_id} {description or ''}")
+    for label, code, keywords in SCRAP_FAMILY_RULES:
+        if any(tok.startswith(k) for tok in tokens for k in keywords):
+            return {"family": label, "expected_byproduct_code": code}
+    return None
+
+
+def _pick_rm_item(mass_items: list) -> dict:
+    """Picks the real structural raw material among a BOM's mass-based
+    components. Zinc is NEVER the RM (galvanization/coating only, per
+    user's explicit rule) - always excluded. Among the rest, prefers an
+    item that matches a known scrap family (Iron/Brass/Copper keywords);
+    falls back to the largest-quantity remaining item if none match a
+    known family (e.g. paint/coating consumables like "MAT" are usually
+    much smaller by weight than the actual structural material anyway).
+
+    Keyword matching is token-prefix based (not raw substring) - e.g.
+    "SCREW"/"MICRO" no longer false-match "CR", "CUT"/"SECURE" no longer
+    false-match "CU" - a token must START WITH the keyword to count."""
+    candidates = [
+        i for i in mass_items
+        if not any(tok.startswith(k) for tok in _tokenize(f"{i['product_id']} {i.get('description') or ''}") for k in ZINC_KEYWORDS)
+    ]
+    if not candidates:
+        return None
+    classified = [(i, _classify_scrap_family(i["product_id"], i.get("description"))) for i in candidates]
+    matched = [i for i, cls in classified if cls]
+    pool = matched or candidates
+    return max(pool, key=lambda i: i["quantity"])
+
+
 @api_router.get("/production-confirmation/scrap-calc/{product_id}")
 async def get_scrap_calc(product_id: str):
     """Auto-calculates the expected scrap-per-unit for an output product:
     Gross Weight (the raw-material BOM child's own consumption quantity,
-    already captured during BOM exploration - the RM child is the BOM
-    item with unit_of_measure "MASS" and the largest quantity, since
-    smaller MASS-unit items are usually paint/coating, not the structural
-    raw material) minus Net Weight (the finished item's own weight,
-    already captured via the Admin page's Net Weight tool). Returns
+    already captured during BOM exploration) minus Net Weight (the
+    finished item's own weight, already captured via the Admin page's Net
+    Weight tool). The RM child is picked via _pick_rm_item (excludes Zn,
+    prefers Iron/Brass/Copper family keyword matches). Returns
     {"available": False, "reason": ...} if either side is missing."""
     bom_doc = db["bom_node_cache"].find_one({"_id": product_id})
     mass_items = [
         item for group in (bom_doc or {}).get("groups", []) for item in group.get("items", [])
         if item.get("unit_of_measure") == "MASS" and item.get("quantity") is not None
     ]
-    if not mass_items:
+    rm_item = _pick_rm_item(mass_items)
+    if not rm_item:
         return {"available": False, "reason": "No raw-material (mass-based) BOM component found for this item"}
-    rm_item = max(mass_items, key=lambda i: i["quantity"])
+    scrap_family = _classify_scrap_family(rm_item["product_id"], rm_item.get("description"))
 
     component_doc = db["component_master"].find_one({"_id": product_id})
     net_weight_kg = (component_doc or {}).get("net_weight_kg")
@@ -602,7 +653,7 @@ async def get_scrap_calc(product_id: str):
         return {
             "available": False, "reason": "Net Weight not set for this item yet - set it on the Admin page first",
             "rm_product_id": rm_item["product_id"], "rm_description": rm_item.get("description"),
-            "gross_weight_kg": rm_item["quantity"],
+            "gross_weight_kg": rm_item["quantity"], "scrap_family": scrap_family,
         }
 
     gross_weight_kg = rm_item["quantity"]
@@ -614,6 +665,7 @@ async def get_scrap_calc(product_id: str):
         "gross_weight_kg": gross_weight_kg,
         "net_weight_kg": net_weight_kg,
         "scrap_per_unit_kg": scrap_per_unit_kg,
+        "scrap_family": scrap_family,
     }
 
 

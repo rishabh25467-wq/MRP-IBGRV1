@@ -217,6 +217,11 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
               Gross Weight: <strong data-testid="scrap-calc-gross">{scrapCalc.gross_weight_kg}</strong> kg ·
               {" "}Net Weight: <strong data-testid="scrap-calc-net">{scrapCalc.net_weight_kg}</strong> kg ·
               {" "}Scrap/unit: <strong data-testid="scrap-calc-per-unit">{scrapCalc.scrap_per_unit_kg}</strong> kg
+              {scrapCalc.scrap_family && (
+                <div className="mt-1 text-[#667085]" data-testid="scrap-calc-family">
+                  Expected by-product: {scrapCalc.scrap_family.family} ({scrapCalc.scrap_family.expected_byproduct_code})
+                </div>
+              )}
             </div>
           )}
           {scrapCalc && !scrapCalc.available && (
@@ -385,6 +390,7 @@ const CreateOrderTab = ({ actorName }) => {
   const [sosLoading, setSosLoading] = useState(false);
   const [sosChecked, setSosChecked] = useState(false);
   const [selectedSosKey, setSelectedSosKey] = useState("");
+  const [siteAutoFilled, setSiteAutoFilled] = useState(false);
 
   const PHASE_LABELS = {
     running: "Starting...",
@@ -398,7 +404,7 @@ const CreateOrderTab = ({ actorName }) => {
   const chooseSosOption = (key) => {
     setSelectedSosKey(key);
     const option = sosOptions[Number(key)];
-    if (option) setSiteId(option.site_id); // model determines site in SAP, not the other way around
+    if (option) { setSiteId(option.site_id); setSiteAutoFilled(true); } // model determines site in SAP, not the other way around
   };
 
   const checkSourceOfSupply = async () => {
@@ -408,16 +414,19 @@ const CreateOrderTab = ({ actorName }) => {
     setSosOptions([]);
     setSelectedSosKey("");
     try {
-      const { data } = await axios.get(`${API}/production-confirmation/source-of-supply-options/${encodeURIComponent(id)}`, {
-        params: siteId.trim() ? { site_id: siteId.trim().toUpperCase() } : {},
-      });
+      const { data } = await axios.get(`${API}/production-confirmation/source-of-supply-options/${encodeURIComponent(id)}`);
       const options = data.options || [];
       setSosOptions(options);
-      const currentSite = siteId.trim().toUpperCase();
-      const preferred = options.findIndex((o) => o.is_active && (!currentSite || o.site_id === currentSite));
-      const fallback = options.findIndex((o) => o.is_active);
-      const idx = preferred >= 0 ? preferred : fallback;
-      if (idx >= 0) chooseSosOption(String(idx));
+      const preferred = options.findIndex((o) => o.is_active);
+      const idx = preferred >= 0 ? preferred : (options.length > 0 ? 0 : -1);
+      if (idx >= 0) {
+        setSelectedSosKey(String(idx));
+        setSiteId(options[idx].site_id); // model determines site - always overwritten here, never an independent pre-filter
+        setSiteAutoFilled(true);
+      } else if (siteAutoFilled) {
+        setSiteId(""); // clear a stale auto-filled site from a previous material - but never clobber a site the user typed themselves
+        setSiteAutoFilled(false);
+      }
     } catch (e) {
       // Non-fatal - proceeding without an explicit choice just leaves SAP's own default in place
       setSosOptions([]);
@@ -480,7 +489,7 @@ const CreateOrderTab = ({ actorName }) => {
             toast.error(result.note || "Proposal created but the Order hasn't appeared yet - it keeps retrying automatically, check history shortly");
           }
           setMaterialId(""); setQuantity("1"); setRequestedEndDate("");
-          setSosOptions([]); setSosChecked(false); setSelectedSosKey("");
+          setSosOptions([]); setSosChecked(false); setSelectedSosKey(""); setSiteAutoFilled(false);
           loadHistory();
           break;
         }
@@ -566,7 +575,7 @@ const CreateOrderTab = ({ actorName }) => {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label className="text-xs font-bold text-[#344054]">Site</Label>
-              <Input value={siteId} onChange={(e) => setSiteId(e.target.value.toUpperCase())} onBlur={checkSourceOfSupply} placeholder="e.g. P2" data-testid="create-proposal-site-input" />
+              <Input value={siteId} onChange={(e) => { setSiteId(e.target.value.toUpperCase()); setSiteAutoFilled(false); }} placeholder="e.g. P2" data-testid="create-proposal-site-input" />
             </div>
             <div>
               <Label className="text-xs font-bold text-[#344054]">UoM</Label>
