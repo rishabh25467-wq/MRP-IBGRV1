@@ -268,6 +268,65 @@ class SAPProductionLotClient:
 </soapenv:Envelope>"""
         xml = self._post(self.manage_endpoint, body, MANAGE_SOAP_ACTION)
 
+        logs = self._parse_confirm_logs(xml)
+        success = not any(l["severity"] == "E" for l in logs)
+
+        # Per SAP docs, marking a Reporting Point's ConfirmationFinishedIndicator only
+        # closes that checkpoint - it does NOT transition the underlying Production
+        # Task's own life cycle status (shown as In Process/Finished in SAP's Task
+        # Control UI). That requires a SEPARATE, standalone "Finish Task" request
+        # (ProductionTask node only - no ReportingPoint/Material nodes allowed in it).
+        if confirmation_finished and success and (production_task_id or production_task_uuid):
+            task_result = self.finish_task(
+                production_lot_id=production_lot_id, production_lot_uuid=production_lot_uuid,
+                confirmation_group_uuid=confirmation_group_uuid,
+                production_task_id=production_task_id, production_task_uuid=production_task_uuid,
+            )
+            logs.extend(task_result["logs"])
+            success = success and task_result["success"]
+
+        return {"success": success, "logs": logs}
+
+    def finish_task(
+        self, production_lot_id: str, production_lot_uuid: str, confirmation_group_uuid: str,
+        production_task_id: str = None, production_task_uuid: str = None, processor_employee_id: str = None,
+    ) -> dict:
+        """Standalone 'Finish Task' action - transitions the Production Task's own
+        life cycle status (SAP Task Control: In Process -> Finished). Per SAP docs
+        this request must contain ONLY the ProductionTask node (no ReportingPoint,
+        MaterialInput/Output, or Activity/Resource nodes)."""
+        from datetime import datetime, timezone
+        execution_dt = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
+        processor_xml = f"<ProcessorEmployeeID>{processor_employee_id}</ProcessorEmployeeID>" if processor_employee_id else ""
+        body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+ <soapenv:Body>
+  <n0:ProductionLotsBundleMaintainRequest_sync_V1 xmlns:n0="http://sap.com/xi/SAPGlobal20/Global">
+   <BasicMessageHeader/>
+   <ProductionLot>
+    <ProductionLotID>{production_lot_id}</ProductionLotID>
+    <ProductionLotUUID>{production_lot_uuid}</ProductionLotUUID>
+    <ConfirmationGroup>
+     <ConfirmationGroupUUID>{confirmation_group_uuid}</ConfirmationGroupUUID>
+     <ProductionTask>
+      <ProductionTaskID>{production_task_id or ''}</ProductionTaskID>
+      <ProducionTaskUUID>{production_task_uuid or ''}</ProducionTaskUUID>
+      {processor_xml}
+      <ExecutionDateTime>{execution_dt}</ExecutionDateTime>
+      <ConfirmationCompletedRequiredIndicator>true</ConfirmationCompletedRequiredIndicator>
+     </ProductionTask>
+    </ConfirmationGroup>
+   </ProductionLot>
+  </n0:ProductionLotsBundleMaintainRequest_sync_V1>
+ </soapenv:Body>
+</soapenv:Envelope>"""
+        xml = self._post(self.manage_endpoint, body, MANAGE_SOAP_ACTION)
+        logs = self._parse_confirm_logs(xml)
+        success = not any(l["severity"] == "E" for l in logs)
+        return {"success": success, "logs": logs}
+
+    @staticmethod
+    def _parse_confirm_logs(xml: str) -> list:
         logs = []
         lot_response = _first_block(xml, "ProductionLotResponse")
         if lot_response:
@@ -277,5 +336,4 @@ class SAPProductionLotClient:
                     "severity": _first_tag(log_block, "SeverityCode"),
                     "note": _first_tag(log_block, "Note"),
                 })
-        success = not any(l["severity"] == "E" for l in logs)
-        return {"success": success, "logs": logs}
+        return logs
