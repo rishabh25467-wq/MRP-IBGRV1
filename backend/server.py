@@ -2121,19 +2121,24 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
 
         open_statuses = ["1", "2", "3"]
         baseline_ids = None
-        while baseline_ids is None:
+        baseline_prep_ids = None
+        while baseline_ids is None or baseline_prep_ids is None:
             try:
-                baseline_ids = {r["production_lot_id"] for r in await asyncio.to_thread(
-                    sap_production_lot_client.find_open_lots, open_statuses, payload.site_id, 999
-                )}
-            except SAPProductionLotError as e:
-                logger.warning(f"create-and-release job {job_id}: baseline open-lots lookup hit a transient SAP error, retrying: {e}")
+                if baseline_ids is None:
+                    baseline_ids = {r["production_lot_id"] for r in await asyncio.to_thread(
+                        sap_production_lot_client.find_open_lots, open_statuses, payload.site_id, 999
+                    )}
+                if baseline_prep_ids is None:
+                    baseline_prep_ids = await asyncio.to_thread(sap_production_order_release_client.list_ids_by_status, "1")
+            except (SAPProductionLotError, SAPProductionOrderReleaseError) as e:
+                logger.warning(f"create-and-release job {job_id}: baseline lookup hit a transient SAP error, retrying: {e}")
                 await asyncio.sleep(CREATE_RELEASE_POLL_INTERVAL_SECONDS)
 
         elapsed_start = time.monotonic()
         last_trigger = None  # force an immediate first trigger below
         trigger_count = 0
         new_order_id = None
+        order_self_released = False
         while time.monotonic() - elapsed_start <= CREATE_RELEASE_MAX_WAIT_SECONDS:
             elapsed = time.monotonic() - elapsed_start
             if last_trigger is None or elapsed - last_trigger >= CREATE_RELEASE_RETRIGGER_EVERY_SECONDS:
@@ -2163,6 +2168,25 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
                 # load - a single failed poll attempt must NEVER kill the job,
                 # just skip this round and try again next interval.
                 logger.warning(f"create-and-release job {job_id}: poll attempt hit a transient SAP error, will retry: {e}")
+            try:
+                # SAP does NOT auto-assign a Production Lot (so the poll
+                # above alone never fires) until the Order is actually
+                # Released - confirmed live. If a brand-new "In
+                # Preparation" order shows up, release it ourselves right
+                # away instead of waiting on a Lot that will never appear
+                # on its own.
+                current_prep_ids = await asyncio.to_thread(sap_production_order_release_client.list_ids_by_status, "1")
+                new_prep_ids = current_prep_ids - baseline_prep_ids
+                if new_prep_ids:
+                    candidate_id = max(new_prep_ids, key=lambda x: int(x) if x.isdigit() else -1)
+                    release_result = await asyncio.to_thread(sap_production_order_release_client.release_order, candidate_id, True)
+                    if release_result.get("success"):
+                        new_order_id = candidate_id
+                        order_self_released = True
+                        break
+                    baseline_prep_ids = current_prep_ids  # don't retry the same non-releasable candidate every loop
+            except SAPProductionOrderReleaseError as e:
+                logger.warning(f"create-and-release job {job_id}: In-Preparation-order poll/self-release hit a transient SAP error, will retry: {e}")
             await asyncio.sleep(CREATE_RELEASE_POLL_INTERVAL_SECONDS)
 
         if not new_order_id:
@@ -2173,25 +2197,26 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
             return
 
         job_store.update_job(db, job_id, {"status": "releasing_order", "production_order_id": new_order_id})
-        released = False
-        for attempt in range(3):
-            try:
-                release_result = await asyncio.to_thread(sap_production_order_release_client.release_order, new_order_id, True)
-                released = bool(release_result.get("success"))
-                break
-            except SAPProductionOrderReleaseError as e:
-                logger.warning(f"create-and-release job {job_id}: Order release attempt {attempt + 1}/3 failed: {e}")
-                if attempt < 2:
-                    await asyncio.sleep(5)
-                else:
-                    # All 3 attempts raised (e.g. SAP rejects a repeat Release
-                    # call on an already-released order) - check the real
-                    # status directly before giving up, since SAP rejecting a
-                    # REPEAT call is often a false negative, not a real failure.
-                    try:
-                        released = await asyncio.to_thread(sap_production_order_release_client.is_released, new_order_id)
-                    except SAPProductionOrderReleaseError:
-                        pass
+        released = order_self_released
+        if not released:
+            for attempt in range(3):
+                try:
+                    release_result = await asyncio.to_thread(sap_production_order_release_client.release_order, new_order_id, True)
+                    released = bool(release_result.get("success"))
+                    break
+                except SAPProductionOrderReleaseError as e:
+                    logger.warning(f"create-and-release job {job_id}: Order release attempt {attempt + 1}/3 failed: {e}")
+                    if attempt < 2:
+                        await asyncio.sleep(5)
+                    else:
+                        # All 3 attempts raised (e.g. SAP rejects a repeat Release
+                        # call on an already-released order) - check the real
+                        # status directly before giving up, since SAP rejecting a
+                        # REPEAT call is often a false negative, not a real failure.
+                        try:
+                            released = await asyncio.to_thread(sap_production_order_release_client.is_released, new_order_id)
+                        except SAPProductionOrderReleaseError:
+                            pass
         try:
             await asyncio.to_thread(sap_production_order_release_client.tag_with_proposal_id, new_order_id, proposal_id)
         except Exception as e:

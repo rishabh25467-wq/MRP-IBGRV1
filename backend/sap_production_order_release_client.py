@@ -77,6 +77,24 @@ class SAPProductionOrderReleaseClient:
                 pass  # status field not available - fall back to trusting the 200
         return {"success": released, "id": order_or_proposal_id, "object_id": object_id}
 
+    def list_ids_by_status(self, life_cycle_status_code: str) -> set:
+        """Global (not site-scoped - this entity doesn't expose Site) list
+        of Order IDs currently at a given LifeCycleStatusCode. Used to
+        detect brand-new "In Preparation" orders that our own
+        create-and-release job must actively Release itself - confirmed
+        live that SAP does NOT auto-assign a Production Lot (and therefore
+        never shows up in the SOAP open-lots poll) until an order is
+        actually released, so relying on Lot-polling alone can wait
+        forever on an order stuck at "In Preparation"."""
+        resp = requests.get(
+            f"{self.base_url}/{self.entity_set}",
+            params={"$filter": f"LifeCycleStatusCode eq '{life_cycle_status_code}'", "$format": "json", "$select": "ID"},
+            auth=self.auth, headers={"Accept": "application/json"}, timeout=60,
+        )
+        if resp.status_code != 200:
+            raise SAPProductionOrderReleaseError(self._error_message(resp))
+        return {r["ID"] for r in resp.json().get("d", {}).get("results", [])}
+
     def get_life_cycle_status(self, order_id: str) -> dict:
         """Real, authoritative order status (verified live against SAP's
         source of truth - matches the SOAP Production Lot status exactly,
