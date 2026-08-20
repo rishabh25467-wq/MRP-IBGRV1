@@ -8,6 +8,7 @@ import InventoryPage from "@/pages/InventoryPage";
 import SupplierMasterPage from "@/pages/SupplierMasterPage";
 import QuotaAllocationPage from "@/pages/QuotaAllocationPage";
 import SapWritePage from "@/pages/SapWritePage";
+import CreateMaterialPage from "@/pages/CreateMaterialPage";
 import L1L2ReportPage from "@/pages/L1L2ReportPage";
 import LoginPage from "@/pages/LoginPage";
 import PendingAccessPage from "@/pages/PendingAccessPage";
@@ -39,6 +40,7 @@ function App() {
             <Route path="/purchasing-strategy/quota-allocation" element={<ProtectedRoute page="quota_allocation"><QuotaAllocationPage /></ProtectedRoute>} />
             <Route path="/admin" element={<ProtectedRoute page="admin"><AdminPage /></ProtectedRoute>} />
             <Route path="/admin/sap-write" element={<ProtectedRoute page="admin_sap_write"><SapWritePage /></ProtectedRoute>} />
+            <Route path="/admin/create-material" element={<ProtectedRoute page="admin_create_material"><CreateMaterialPage /></ProtectedRoute>} />
             <Route path="/admin/l1-l2-report" element={<ProtectedRoute page="admin"><L1L2ReportPage /></ProtectedRoute>} />
             <Route path="/admin/access-management" element={<ProtectedRoute superAdminOnly><AccessManagementPage /></ProtectedRoute>} />
           </Routes>

@@ -71,6 +71,7 @@ PAGE_CATALOG = [
     {"key": "quota_allocation", "label": "Quota Allocation"},
     {"key": "admin", "label": "Admin"},
     {"key": "admin_sap_write", "label": "Admin - SAP Write"},
+    {"key": "admin_create_material", "label": "Admin - Create Material"},
 ]
 PAGE_KEYS = {p["key"] for p in PAGE_CATALOG}
 
@@ -102,6 +103,8 @@ PAGE_ROUTE_RULES = [
     ("/api/quota-arrangements/", {"quota_allocation"}),
     ("/api/admin/components", {"admin"}),
     ("/api/admin/categories", {"admin"}),
+    ("/api/admin/create-material", {"admin_create_material"}),
+    ("/api/admin/delete-material", {"admin_create_material"}),
 ]
 
 # Paths the auth middleware never gates - login must stay reachable while

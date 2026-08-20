@@ -20,6 +20,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_material_client import SAPMaterialClient, SAPMaterialError, SAPMaterialAuthError
+from sap_material_create_client import SAPMaterialCreateClient, SAPMaterialCreateError
 from sap_production_lot_client import SAPProductionLotClient, SAPProductionLotError, SAPProductionLotAuthError
 from sap_wip_clearing_client import SAPWipClearingClient, SAPWipClearingError
 from sap_production_proposal_client import SAPProductionProposalClient, SAPProductionProposalError
@@ -118,6 +119,12 @@ sap_soap_client = SAPSoapBOMClient(
 # module docstring: NOT YET AUTHORIZED on the tenant as of this writing.
 sap_material_client = SAPMaterialClient(
     endpoint=os.environ['SAP_SOAP_MATERIAL_ENDPOINT'],
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
+)
+
+sap_material_create_client = SAPMaterialCreateClient(
+    endpoint=os.environ['SAP_SOAP_MATERIAL_MANAGE_ENDPOINT'],
     username=os.environ['SAP_SOAP_USERNAME'],
     password=os.environ['SAP_SOAP_PASSWORD'],
 )
@@ -2773,6 +2780,59 @@ async def delete_admin_category(name: str):
     assigned to it are left untouched (see bom_categorizer.delete_category)."""
     categories = await asyncio.to_thread(delete_category, db, name)
     return AddCategoryResponse(categories=categories)
+
+
+class CreateMaterialRequest(BaseModel):
+    material_id: str
+    product_category_id: str
+    base_uom: str
+    description: str
+
+
+class CreateMaterialResponse(BaseModel):
+    material_id: str
+    uuid: str
+
+
+@api_router.post("/admin/create-material", response_model=CreateMaterialResponse)
+async def create_material(payload: CreateMaterialRequest):
+    """Creates a brand-new Material master record directly in SAP
+    (ManageMaterialIn/MaintainBundle_V1, actionCode 01). Checks first via
+    QueryMaterialIn that no material with this ID already exists - SAP's
+    own create behavior for a colliding ID isn't something we want to
+    discover live."""
+    material_id = payload.material_id.strip()
+    if not material_id:
+        raise HTTPException(status_code=400, detail="material_id is required")
+    try:
+        existing_uuid = await asyncio.to_thread(sap_material_client.resolve_uuid, material_id)
+    except SAPMaterialError as e:
+        raise HTTPException(status_code=502, detail=f"Could not verify material_id is free: {e}")
+    if existing_uuid:
+        raise HTTPException(status_code=409, detail=f"Material '{material_id}' already exists in SAP (UUID {existing_uuid})")
+    try:
+        result = await asyncio.to_thread(
+            sap_material_create_client.create_material,
+            material_id, payload.product_category_id.strip(), payload.base_uom.strip(), payload.description.strip(),
+        )
+    except SAPMaterialCreateError as e:
+        raise HTTPException(status_code=502, detail=f"SAP rejected the material creation: {e}")
+    return CreateMaterialResponse(**result)
+
+
+class DeleteMaterialRequest(BaseModel):
+    material_id: str
+
+
+@api_router.post("/admin/delete-material")
+async def delete_material(payload: DeleteMaterialRequest):
+    """Deletes an unused ('In Preparation') Material - intended for
+    undoing an accidental/mistaken create, not general-purpose deletion."""
+    try:
+        await asyncio.to_thread(sap_material_create_client.delete_material, payload.material_id.strip())
+    except SAPMaterialCreateError as e:
+        raise HTTPException(status_code=502, detail=f"SAP rejected the deletion: {e}")
+    return {"deleted": payload.material_id.strip()}
 
 
 class BackfillSapLinksResponse(BaseModel):

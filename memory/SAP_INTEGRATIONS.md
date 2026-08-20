@@ -80,6 +80,12 @@ Two integration styles are used throughout this app:
 - **Critical quirk**: MUST fetch full, un-`$select`'d rows - selecting only a subset of fields makes `CMATERIAL_UUID` return an internal numeric surrogate key instead of the real Material ID. Paginates via `$top=5000`/`$skip`. Read-only.
 - **Used by**: Purchasing Plan's inventory netting, Inventory page's cached snapshot (refreshed every 2h).
 
+## 12. Creating new Materials (`sap_material_create_client.py`)
+- **Service**: `ManageMaterialIn` (standard "Manage Materials" scenario), operation `MaintainBundle_V1` (create, actionCode 01) / delete (actionCode 03).
+- **Endpoint env var**: `SAP_SOAP_MATERIAL_MANAGE_ENDPOINT`.
+- **UI**: `/admin/create-material` (passcode-gated + `admin_create_material` permission).
+- **IMPORTANT**: `CheckMaintainBundle_V1` (SAP's documented dry-run) does NOT dry-run on this tenant - it executes a real create regardless of the SOAPAction sent. Never attempt to use it for validation; the backend instead checks via `QueryMaterialIn` that the ID is free before creating. Delete (actionCode 03) works for cleaning up an unused/"In Preparation" material.
+
 ## Not BOM/Production related (other app pages, listed for completeness)
 - `sap_gsa_client.py`, `sap_cost_estimate_client.py`, `sap_price_spec_client.py`, `sap_supplier_client.py`, `sap_supplier_invoice_client.py` - power the Price Explorer / supplier-facing pages, unrelated to BOM/Production.
 
