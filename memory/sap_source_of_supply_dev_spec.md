@@ -63,6 +63,35 @@ valid alternates for a given material. This is the one remaining open item - see
 the UPDATE section above (where these Fixed Source of Supply / Logistic Relationship records are
 maintained, and whether there's a read API to list them per material).
 
+## CONFIRMED via official BO Documentation (user downloaded it directly from SAP via the "Download Business Object Documentation" button)
+The `ProductionPlanningOrder` BO's own `Create` action parameter list explicitly includes
+`SourceOfSupplyLogisticRelationshipUUID` and `SourceOfSupplyExplosionDate` (alongside
+`FixedIndicator`) - confirming this is a first-class, intended input at creation time in SAP's own
+design, not a workaround. Our existing SOAP `create_proposal()` call may not expose this exact
+parameter in its simplified WSDL (the SOAP interface uses its own curated field names, e.g.
+`MaterialID`/`SUPPLY_PLANNING_AREA_ID`, which don't necessarily mirror every BO action parameter
+1:1) - but that doesn't matter in practice: we already proved live that PATCHing
+`SourceOfSupplyLogisticRelationshipUUID` + `SourceOfSupplyFixedIndicator` via the OData service
+right after creation works (204, persisted) - that remains our path, no need to touch the working
+SOAP client.
+
+The doc also confirms "Logistic Relationship" is a genuinely separate referenced object (not just
+an alias for the Production Model's own UUID - already proven distinct: Proposal's
+`SourceOfSupplyLogisticRelationshipUUID` != Request's `ReleasedExecutionProductionModelUUID` for
+the same order, different UUIDs). The doc does not define what that Logistic Relationship object
+itself is or how to query it per material - still the one open gap.
+
+### Next concrete step
+Ask the developer to use the SAME "Download Business Object Documentation" button (visible in the
+OData Editor screenshot, top of the Entity Types panel) on whatever BO represents **"Logistic
+Relationship"** - search Repository Explorer for that exact name - or on the standard **"Production
+Model"** BO (likely exposed via `ManageProdModelIn`/`ReadProductionModel`) and download ITS
+documentation the same way. That should reveal either: a query to list Logistic Relationship
+records per material, or a field on Production Model that itself carries/links to the Logistic
+Relationship UUID we need. Upload that HTML doc the same way this one was and we can finish wiring
+the picker.
+
+## Once available, we will
 1. On "Create Production Order", look up the available Production Models (and their Logistic
    Relationship UUIDs) for the entered material.
 2. If more than one exists, show a picker in the UI before submitting.
