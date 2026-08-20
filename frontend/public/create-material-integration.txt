@@ -1,0 +1,157 @@
+SAP Business ByDesign - "Create Material" Integration Guide
+(For reuse in another application. Live-confirmed working 20 Aug 2026.)
+
+===============================================================================
+1. OVERVIEW
+===============================================================================
+Service name:      ManageMaterialIn  ("Manage Materials" Communication Scenario)
+Namespace:          http://sap.com/xi/SAPGlobal20/Global
+Operations exposed: MaintainBundle_V1 (create/update/delete), CheckMaintainBundle_V1 (documented as dry-run)
+Transport:           SOAP 1.1, HTTP Basic Auth
+Endpoint pattern:    https://<tenant>.businessbydesign.cloud.sap/sap/bc/srt/scs/sap/managematerialin1?sap-vhost=<tenant>.businessbydesign.cloud.sap
+
+===============================================================================
+2. SAP-SIDE SETUP (one-time, done by the SAP admin)
+===============================================================================
+1. Application and User Management work center -> Communication Arrangements
+2. New arrangement -> pick Communication Scenario "Manage Materials"
+3. Select/create a Communication System representing the external app
+4. Set authentication method to User ID / Password, pick a Business User
+   (this Business User needs the right authorization role, e.g. the
+   standard "Material Master Data" work-center-view access)
+5. Finish the arrangement - this generates the live endpoint URL above
+6. (Optional) Download the WSDL from the arrangement screen if you want
+   full schema validation client-side - GET ?wsdl on the raw endpoint URL
+   returns HTTP 415 on this tenant, so the WSDL must be downloaded via the
+   Communication Arrangement UI, not fetched programmatically.
+
+===============================================================================
+3. CRITICAL GOTCHA - CheckMaintainBundle_V1 does NOT dry-run
+===============================================================================
+SAP's official docs (help.sap.com) describe CheckMaintainBundle_V1 as a
+"simulate-only" operation using the same request/response shape as
+MaintainBundle_V1, distinguished only by a different SOAPAction header.
+
+CONFIRMED LIVE ON THIS TENANT: sending the CheckMaintainBundle_V1
+SOAPAction still executed a REAL create. There is no safe way to validate
+a Material creation payload before committing it on this tenant/endpoint
+configuration. Do not rely on the Check operation - always assume
+MaintainBundle_V1 is a REAL, permanent write, regardless of which
+SOAPAction header you send to this endpoint.
+
+Practical mitigation used: check for ID collision first via a separate
+read-only service (QueryMaterialIn / MaterialByElementsQuery_sync) before
+ever calling create, so you at least never accidentally overwrite/collide
+with an existing material.
+
+===============================================================================
+4. REQUEST XML - CREATE (actionCode="01")
+===============================================================================
+SOAPAction header: "http://sap.com/xi/A1S/Global/ManageMaterialIn/MaintainBundle_V1Request"
+Content-Type: text/xml; charset=utf-8
+
+<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+ xmlns:n0="http://sap.com/xi/SAPGlobal20/Global">
+ <soapenv:Header/>
+ <soapenv:Body>
+  <n0:MaterialBundleMaintainRequest_sync_V1>
+    <BasicMessageHeader>
+        <ID>{unique-32-char-hex-id}</ID>
+    </BasicMessageHeader>
+    <Material actionCode="01">
+        <InternalID>{MATERIAL_ID}</InternalID>
+        <ProductCategoryID>{CATEGORY_CODE}</ProductCategoryID>
+        <BaseMeasureUnitCode>{UOM_CODE}</BaseMeasureUnitCode>
+        <Description actionCode="01">
+            <Description languageCode="EN">{DESCRIPTION}</Description>
+        </Description>
+    </Material>
+  </n0:MaterialBundleMaintainRequest_sync_V1>
+ </soapenv:Body>
+</soapenv:Envelope>
+
+Notes:
+- ProductCategoryID is tenant-specific taxonomy (Product Category
+  Hierarchy must already exist in SAP) - "SFG" (Semi-Finished Good) is
+  confirmed valid on this tenant. Ask the SAP admin for the full valid
+  list, or look up an existing similar material's category via
+  QueryMaterialIn first.
+- BaseMeasureUnitCode: standard UN/CEFACT unit codes, e.g. EA, KGM, MTR,
+  LTR, TNE, BOX, SET, PC.
+- UUID is NEVER sent - SAP generates and returns it, read-only.
+- Material defaults to LifeCycleStatus "In Preparation" (not yet usable
+  for purchasing/sales/production) since no Purchasing/Sales/Logistics/
+  Valuation sub-nodes are sent - see help.sap.com's full example for how
+  to also activate those in the same request if needed.
+
+SUCCESS RESPONSE:
+<nm:MaterialBundleMaintainConfirmation_sync_V1 xmlns:nm="http://sap.com/xi/SAPGlobal20/Global">
+    <Material>
+        <ChangeStateID>...</ChangeStateID>
+        <InternalID>{MATERIAL_ID}</InternalID>
+        <UUID>{new-material-uuid}</UUID>
+    </Material>
+    <Log/>   <!-- empty Log = no errors -->
+</nm:MaterialBundleMaintainConfirmation_sync_V1>
+
+If SAP rejects the request, HTTP 200 is still returned but with SOAP
+<Fault> content, or a populated <Log> node with error Items - check both,
+don't rely on HTTP status code alone.
+
+===============================================================================
+5. REQUEST XML - DELETE (actionCode="03") - for cleanup/undo only
+===============================================================================
+Same SOAPAction and envelope shape as create, just a minimal Material node:
+
+    <Material actionCode="03">
+        <InternalID>{MATERIAL_ID}</InternalID>
+    </Material>
+
+Confirmed working ONLY for materials that are still unused/"In
+Preparation" (never activated for Purchasing/Sales/Logistics/Valuation).
+SAP will reject this once the material has been referenced anywhere
+(BOM, PO, stock, etc).
+
+===============================================================================
+6. READ-ONLY LOOKUP (to check for ID collisions before creating)
+===============================================================================
+Separate service: QueryMaterialIn, operation MaterialByElementsQuery_sync
+(no SOAPAction header needed - send empty string '""').
+
+<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+ xmlns:glob="http://sap.com/xi/SAPGlobal20/Global">
+ <soapenv:Header/><soapenv:Body>
+  <glob:MaterialByElementsQuery_sync>
+   <MaterialSelectionByElements><SelectionByInternalID>
+    <InclusionExclusionCode>I</InclusionExclusionCode>
+    <IntervalBoundaryTypeCode>1</IntervalBoundaryTypeCode>
+    <LowerBoundaryInternalID>{MATERIAL_ID}</LowerBoundaryInternalID>
+    <UpperBoundaryInternalID/>
+   </SelectionByInternalID></MaterialSelectionByElements>
+   <ProcessingConditions>
+    <QueryHitsMaximumNumberValue>1</QueryHitsMaximumNumberValue>
+    <QueryHitsUnlimitedIndicator>false</QueryHitsUnlimitedIndicator>
+   </ProcessingConditions>
+  </glob:MaterialByElementsQuery_sync>
+ </soapenv:Body></soapenv:Envelope>
+
+A response containing a <Material> block with a matching <InternalID> and
+a populated <UUID> means the material already exists. 0 hits (empty
+ProcessingConditions, no Material block) means the ID is free to create.
+
+===============================================================================
+7. IMPLEMENTATION CHECKLIST FOR THE OTHER APP
+===============================================================================
+[ ] Get a Communication Arrangement created for "Manage Materials" scenario
+[ ] Get a Communication Arrangement created for "Query Materials"
+    (read-only lookup scenario) if collision-checking is desired
+[ ] Store endpoint URL + Business User credentials as env vars, never hardcode
+[ ] ALWAYS check for existing Material ID before calling create (see #6)
+[ ] NEVER call CheckMaintainBundle_V1 expecting a safe dry run - it isn't one
+[ ] Parse both HTTP-level SOAP Faults AND the response's <Log> node for errors
+[ ] Confirm ProductCategoryID values with the SAP admin (tenant-specific)
+[ ] If materials need to be immediately usable (not just "In Preparation"),
+    add Purchasing/Sales/Logistics/Valuation nodes per help.sap.com's full
+    example (search "PSM_ISI_R_II_MANAGE_MATERIAL_IN" on help.sap.com)
