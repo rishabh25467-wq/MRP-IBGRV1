@@ -2399,6 +2399,26 @@ async def get_component_availability(main_output_product: str, confirmed_quantit
     return result
 
 
+class ComponentAvailabilityBatchRow(BaseModel):
+    main_output_product: Optional[str] = None
+    quantity: float
+    site_id: Optional[str] = None
+
+
+class ComponentAvailabilityBatchRequest(BaseModel):
+    rows: List[ComponentAvailabilityBatchRow]
+
+
+@api_router.post("/production-confirmation/component-availability-batch")
+async def get_component_availability_batch(payload: ComponentAvailabilityBatchRequest):
+    """Powers the open-lots list's per-row stock badge - one Mongo round
+    trip for all rows instead of one HTTP call per row."""
+    results = await asyncio.to_thread(
+        production_confirmation_service.check_component_availability_batch, db, [r.dict() for r in payload.rows],
+    )
+    return {"results": results}
+
+
 class ComponentMasterItem(BaseModel):
     product_id: str
     description: Optional[str] = None

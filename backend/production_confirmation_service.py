@@ -175,23 +175,9 @@ def get_proposal_and_release_history(db, limit: int = 200) -> list:
     ]
 
 
-def check_component_availability(db, main_output_product: str, confirmed_quantity: float, site_id: str) -> dict:
-    """Compares BOM component requirements (from the app's own bom_node_cache,
-    scaled to the quantity about to be confirmed) against cached on-hand
-    stock at the lot's site (inventory_cache) - lets a user see BEFORE
-    confirming whether SAP's backflush is likely to reject the confirmation
-    for insufficient component stock (see production_confirmation_history
-    for a real example of that SAP rejection). Uses only already-cached
-    data (no live SAP calls) so it's instant."""
-    bom_doc = db["bom_node_cache"].find_one({"_id": main_output_product})
+def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, confirmed_quantity: float, site_id: str) -> dict:
     if not bom_doc or not bom_doc.get("groups"):
         return {"checked": False, "reason": "No cached BOM found locally for this product - cannot check component availability.", "components": []}
-
-    inventory_doc = db["inventory_cache"].find_one({"_id": "latest"})
-    stock_by_product = {}
-    for item in (inventory_doc or {}).get("items", []):
-        stock_by_product[item["product_id"]] = item.get("locations", [])
-
     components = []
     for group in bom_doc["groups"]:
         for item in group["items"]:
@@ -212,6 +198,55 @@ def check_component_availability(db, main_output_product: str, confirmed_quantit
                 "unit_of_measure": item.get("unit_of_measure"),
                 "required_qty": required_qty,
                 "available_qty": available_qty,
-                "sufficient": available_qty is not None and available_qty >= required_qty,
+                # Needing 0 of a component (e.g. Open Quantity is already 0 -
+                # a fully-confirmed row) is never "short", regardless of
+                # whether we happen to have on-hand data for it.
+                "sufficient": required_qty <= 0 or (available_qty is not None and available_qty >= required_qty),
             })
     return {"checked": True, "reason": None, "components": components}
+
+
+def check_component_availability(db, main_output_product: str, confirmed_quantity: float, site_id: str) -> dict:
+    """Compares BOM component requirements (from the app's own bom_node_cache,
+    scaled to the quantity about to be confirmed) against cached on-hand
+    stock at the lot's site (inventory_cache) - lets a user see BEFORE
+    confirming whether SAP's backflush is likely to reject the confirmation
+    for insufficient component stock (see production_confirmation_history
+    for a real example of that SAP rejection). Uses only already-cached
+    data (no live SAP calls) so it's instant."""
+    bom_doc = db["bom_node_cache"].find_one({"_id": main_output_product})
+    inventory_doc = db["inventory_cache"].find_one({"_id": "latest"})
+    stock_by_product = {}
+    for item in (inventory_doc or {}).get("items", []):
+        stock_by_product[item["product_id"]] = item.get("locations", [])
+    return _check_availability_against_stock(bom_doc, stock_by_product, confirmed_quantity, site_id)
+
+
+def check_component_availability_batch(db, rows: list) -> list:
+    """Batch counterpart of check_component_availability() for the open-lots
+    list - fetches inventory_cache and every needed bom_node_cache doc ONCE
+    (not once per row) so a 100+ row list stays instant. `rows` is a list
+    of {main_output_product, quantity, site_id}; returns a same-length list
+    of {checked, reason, sufficient_all, short_components} - a compact
+    summary (not the full component list) since the list view only needs a
+    badge + the short ones for a tooltip, not every sufficient component."""
+    inventory_doc = db["inventory_cache"].find_one({"_id": "latest"})
+    stock_by_product = {}
+    for item in (inventory_doc or {}).get("items", []):
+        stock_by_product[item["product_id"]] = item.get("locations", [])
+
+    product_ids = {r["main_output_product"] for r in rows if r.get("main_output_product")}
+    bom_docs = {d["_id"]: d for d in db["bom_node_cache"].find({"_id": {"$in": list(product_ids)}})}
+
+    results = []
+    for r in rows:
+        bom_doc = bom_docs.get(r.get("main_output_product"))
+        result = _check_availability_against_stock(bom_doc, stock_by_product, r.get("quantity") or 0, r.get("site_id"))
+        short = [c for c in result["components"] if not c["sufficient"]]
+        results.append({
+            "checked": result["checked"],
+            "reason": result["reason"],
+            "sufficient_all": result["checked"] and len(short) == 0,
+            "short_components": short,
+        })
+    return results

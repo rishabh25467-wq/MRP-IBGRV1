@@ -15,6 +15,7 @@ import {
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Toaster, toast } from "@/components/ui/sonner";
@@ -867,10 +868,25 @@ export default function ProductionConfirmationPage() {
   const [reasons, setReasons] = useState([]);
   const [showReasons, setShowReasons] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [stockByRow, setStockByRow] = useState({});
 
   const loadReasons = useCallback(() => {
     axios.get(`${API}/production-confirmation/deviation-reasons`).then(({ data }) => setReasons(data.reasons)).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (rows.length === 0) {
+      setStockByRow({});
+      return;
+    }
+    axios.post(`${API}/production-confirmation/component-availability-batch`, {
+      rows: rows.map((r) => ({ main_output_product: r.main_output_product, quantity: r.open_quantity || 0, site_id: r.site_id })),
+    }).then(({ data }) => {
+      const map = {};
+      rows.forEach((r, i) => { map[rowKey(r)] = data.results[i]; });
+      setStockByRow(map);
+    }).catch(() => {});
+  }, [rows]);
 
   const loadOpenLots = useCallback(async () => {
     setLoading(true);
@@ -1017,13 +1033,15 @@ export default function ProductionConfirmationPage() {
             <table className="w-full text-[13px] border-collapse" data-testid="production-lots-table">
               <thead>
                 <tr>
-                  {["Lot ID", "Output Product", "Site", "Status", "Reporting Point", "Planned", "Confirmed So Far", "Open", "UOM", "Finished", ""].map((h) => (
+                  {["Lot ID", "Output Product", "Site", "Status", "Reporting Point", "Planned", "Confirmed So Far", "Open", "UOM", "Finished", "Stock", ""].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r, i) => (
+                {rows.map((r, i) => {
+                  const stock = stockByRow[rowKey(r)];
+                  return (
                   <tr key={rowKey(r)} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`lot-row-${i}`}>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium text-[#101828]">{r.production_lot_id}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{r.main_output_product || "—"}</td>
@@ -1038,15 +1056,42 @@ export default function ProductionConfirmationPage() {
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">{r.unit_code || "—"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{r.confirmation_finished ? "Yes" : "No"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
+                      {!stock ? (
+                        <span className="text-[11px] text-[#98A2B3]" data-testid={`stock-badge-loading-${i}`}>…</span>
+                      ) : !stock.checked ? (
+                        <span className="text-[11px] text-[#98A2B3]" data-testid={`stock-badge-unknown-${i}`}>No BOM cached</span>
+                      ) : stock.sufficient_all ? (
+                        <Badge className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6] border" data-testid={`stock-badge-ok-${i}`}>OK</Badge>
+                      ) : (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Badge className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA] border cursor-help" data-testid={`stock-badge-short-${i}`}>
+                                Short ({stock.short_components.length})
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent data-testid={`stock-tooltip-${i}`}>
+                              {stock.short_components.map((c) => (
+                                <div key={c.product_id}>
+                                  {c.product_id}: need {formatQty(c.required_qty)}, have {c.available_qty === null ? "no data" : formatQty(c.available_qty)} {c.unit_of_measure || ""}
+                                </div>
+                              ))}
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      )}
+                    </td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5">
                       <Button size="sm" disabled={loading} onClick={() => setConfirmRow(r)} data-testid={`confirm-button-${i}`}>Confirm</Button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
                 {rows.length === 0 && authError && (
-                  <tr><td colSpan={11} className="text-center py-8 text-[#B54708] bg-[#FFFAEB] border border-[#D0D5DD]" data-testid="blocked-state">Blocked by SAP authorization - see banner above.</td></tr>
+                  <tr><td colSpan={12} className="text-center py-8 text-[#B54708] bg-[#FFFAEB] border border-[#D0D5DD]" data-testid="blocked-state">Blocked by SAP authorization - see banner above.</td></tr>
                 )}
                 {rows.length === 0 && !authError && !loadError && (
-                  <tr><td colSpan={11} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="empty-state">No open production lots found.</td></tr>
+                  <tr><td colSpan={12} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="empty-state">No open production lots found.</td></tr>
                 )}
               </tbody>
             </table>
