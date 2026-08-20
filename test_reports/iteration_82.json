@@ -1,0 +1,31 @@
+{
+  "summary": "Frontend-only test of the NEW 'Create Production Order' tab on /production-confirmation (synthetic vms_session cookie for super_admin with allowed_pages=['production_confirmation'], docs deleted after test). Verified: both tabs render (tab-create-order + tab-confirm-production, 'Production Confirmation' is the default active tab), tab switching works with no crash/console errors. Step 1 card renders all 5 inputs (product/site/uom/qty/date, defaults UoM=EA, Qty=1) + submit button. Validation: submit with empty actor name -> toast 'Enter your name first (top-right of the page)' and ZERO network requests; submit with name filled but Site empty -> toast 'Product, Site and Quantity are required', ZERO network requests. Step 2 Release card renders (release-order-id-input + release-order-submit-button); submitting with EMPTY id -> toast 'Enter the Production Order ID to release' and NO API call (real release intentionally NOT executed). END-TO-END REAL SAP WRITE: submitted MAZ42117272-TA / site 'p2' (lowercase, correctly uppercased to P2 by the client) / Qty 1 / EA / end date 2026-09-15 -> POST /api/production-confirmation/create-proposal returned 200, button showed 'Creating in SAP...' disabled loading state, success toast 'Production Proposal 223789 created in SAP...', history auto-refreshed and the new row appeared at the top with correct When/By(QA Tester2)/Action(Proposal Created)/MAZ42117272-TA (Proposal 223789)/P2/1/Created badge. proposal-history-table renders all 7 headers (When/By/Action/Product-Order/Site/Qty/Result) and 2 real rows (223828 from main agent + 223789 created by this test). Smoke check of the existing 'Production Confirmation' tab: renders fine and SAP auth now works - 113 reporting points / 100 distinct lots load, filter/Refresh/Look Up/History/Manage Reasons controls all present. Responsive: 390x844 and 820x1180 both stack Step1/Step2 to one column with zero page horizontal overflow (scrollWidth == clientWidth).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Create Production Order tab - mobile 390x844", "issues": ["'Requested End Date' native date input is slightly clipped inside its half-width grid cell (scrollWidth 158 > clientWidth 154) so the native calendar icon sits flush against/partly outside the field edge; consider making the Quantity/Date row full-width (grid-cols-1) below sm breakpoint"]},
+      {"screen": "Create Production Order tab - date field", "issues": ["Uses the browser's native <input type=date> picker instead of the shadcn Calendar/Popover used elsewhere in the app - inconsistent look and mm/dd/yyyy format while the rest of the app displays en-IN dates"]}
+    ]
+  },
+  "test_report_links": ["/app/tests/setup_session_prodconf2.py"],
+  "action_items": [
+    "Optional polish: stack Quantity/Requested End Date to full width on mobile so the date input isn't clipped",
+    "Optional polish: replace native date input with the shadcn Calendar component for consistency",
+    "Optional: clear the Site field (or normalize it to uppercase in the input) after a successful proposal creation - Product/Qty/Date are cleared but Site keeps the raw lowercase value the user typed",
+    "Optional: show a loading placeholder row in proposal-history-table while loadingHistory is true (currently the table body is briefly empty with no indicator)"
+  ],
+  "critical_code_review_comments": [
+    "loadHistory() in CreateOrderTab has no .catch() - if GET /proposal-history fails, the promise rejects unhandled and the user gets no error feedback (same pattern previously flagged for ManageReasonsDialog in iteration_81)",
+    "ProductionConfirmationPage.js is now 656 lines with 3+ distinct feature components; consider splitting CreateOrderTab / ManageReasonsDialog / HistoryDialog into separate files"
+  ],
+  "updated_files": ["/app/tests/setup_session_prodconf2.py"],
+  "success_rate": {"backend": "N/A (frontend-only round; create-proposal + proposal-history returned 200 live)", "frontend": "100% of tested flows passed"},
+  "seed_data_creation": "One REAL SAP Production Proposal 223789 created via the UI (MAZ42117272-TA, P2, qty 1, EA) plus its Mongo history entry in production_order_creation_history (actor 'QA Tester2'). Synthetic auth_users/auth_sessions docs for testtid:testoid-prodconf2 were deleted after testing.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "Synthetic vms_session (deleted). Recreate with /app/tests/setup_session_prodconf2.py create (writes token to /tmp/test_token2.txt); clean up with 'python setup_session_prodconf2.py clean'.",
+  "context_for_next_testing_agent": "Create Production Order tab is fully functional including a live SAP write. Release flow was NOT executed against a real order (irreversible) - only its empty-field validation was verified. Production Confirmation tab's SAP authorization is now working (100 open lots visible), so the Confirm dialog internals (confirm-qty-input/confirm-scrap-input/confirm-deviation-reason-select/confirm-finished-checkbox/confirm-submit-button) are now testable and remain UNTESTED - that is the main open gap. Use wait_until='domcontentloaded'; toasts are sonner ([data-sonner-toast]).",
+  "rca_of_the_issue": "No functional defects found. Only two cosmetic/mobile-polish design items and two non-blocking code-quality notes."
+}

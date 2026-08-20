@@ -838,3 +838,33 @@ User pointed out (via SAP's own "Bills of Material" screen) that BK-0021_1 (FLAT
 
 
 
+
+## Session Update - Aug 27, 2026: Create Production Order + full automation chain + Component Availability Check
+User requested a "Create Production Order" step before confirmation, matching a screenshot flow (New Production Order screen), plus wanted the whole thing fully automatic (no manual SAP clicks). This required extensive live SAP research this session:
+
+- **SAP platform findings (in order discovered)**:
+  - `ManageProductionOrderIn` CANNOT create new orders - confirmed via SAP docs/advisors, it can only update material inputs/outputs on an order that already exists.
+  - Correct creation path: `ManageProductionProposalIn`/`CreateBundle` creates a Production Proposal (Material/Site/Qty/Date only - no manual Source of Supply/BOM version control possible via this API, SAP always auto-picks it).
+  - Business Configuration "Production Order Creation Strategy" fine-tuning activity set to **A010 (Automatic)** by user - required for the Request->Order step to be automatic once a planning run processes it.
+  - Proposal -> Request -> Order conversion is normally gated by SAP's own scheduled Supply Planning Run (slow/unpredictable timing, no API to trigger it synchronously). SAP recommends >=4hr intervals for broad planning runs (not officially "safe" at 30 min).
+  - **Breakthrough**: found 3 PSM-Released custom-exposable actions via SAP's BO Documentation export + Custom OData Services (OData Modeler) - the SAME no-code key-user tool (Application and User Management -> OData Services) used for all 3:
+    1. `ProductionOrder` BO -> action **"Release"** -> exposed as custom OData service `productionorderemergent` -> Function Import `Release(ObjectID)`. Releases an existing Order (In Preparation -> Released).
+    2. `ProductionPlanningOrder` BO (= "Production Proposal" in the UI) -> action **"Request Production"** (UI label "Release") -> exposed as custom OData service `productionproposalemergent` -> Function Import `Release(ObjectID)`. THIS is the key one - triggers the ENTIRE Proposal->Request->Order conversion INSTANTLY via API, bypassing the scheduled planning run entirely. Verified live: Proposal 223819 -> Order 69847 created purely via API with zero manual SAP clicks.
+    3. `ProductionRequest`/`ProductionRequestProductionSegment` BO -> action "Create Production Order" -> exposed as `productionrequestemergent` (built but NOT used in final flow since #2 already does the full job in one call - kept for reference/future use).
+  - Custom OData services can ONLY be called by a real SAP Business User (not the SOAP technical user `_EMERGENTBOM`) - a dedicated user `UNEECOPSTEAM` was created/authorized (Work Center Views: "Production Requests" under Production Control, plus "Planning Runs" under Supply Planning) and its credentials stored in `.env` as `SAP_ODATA_BUSINESS_USER`/`SAP_ODATA_BUSINESS_PASSWORD`.
+  - Custom OData write calls need CSRF token handshake (`GET $metadata` with `X-CSRF-Token: Fetch` header, then reuse token+session cookies on the POST).
+
+- **New backend files**: `sap_production_proposal_client.py` (CreateBundle SOAP), `sap_production_order_release_client.py` (custom OData Release action, resolve ID->ObjectID then POST with CSRF).
+- **New .env**: `SAP_SOAP_PRODUCTION_PROPOSAL_ENDPOINT`, `SAP_ODATA_PRODUCTION_ORDER_RELEASE_BASE_URL`, `SAP_ODATA_BUSINESS_USER`, `SAP_ODATA_BUSINESS_PASSWORD`.
+- **New routes**: `POST /api/production-confirmation/create-proposal`, `POST /api/production-confirmation/release-order`, `GET /api/production-confirmation/proposal-history` (audit log in new `production_order_creation_history` Mongo collection).
+- **Frontend**: `/production-confirmation` page now has 2 tabs - "Create Production Order" (Step 1: create Proposal form; Step 2: manual Release form by Order ID; history table) and "Production Confirmation" (pre-existing).
+- **NOTE for full automation**: the app currently only builds the "Create Proposal" (Step 1) and "Release Order" (Step 2, by manually-typed Order ID) flows. The instant "Request Production" trick (Proposal->Order in one API call, service `productionproposalemergent`) was proven live but is **NOT yet wired into the frontend/backend routes** - next step is to add this as an automatic follow-up call right after `create-proposal` succeeds (removing the need for the user to wait for a planning run or manually find the Order ID at all). This is the clear next task.
+- **Tested**: testing_agent iteration_82 - Create Production Order tab UI/UX fully passed (both tabs render, validation, real live proposal creation via UI, responsive layout). Fixed 4 minor polish items after: mobile grid clipping on Qty/Date row, missing .catch() on history load, Site field auto-uppercase. Did NOT test the Release form's actual SAP write via testing_agent (irreversible real action) - validated directly by main agent via script instead (Order 69847 released successfully, confirmed by user in SAP UI).
+
+## Session Update - Aug 27, 2026 (cont'd): Component Stock Availability Check
+User asked: can the app show which BOM components have sufficient stock BEFORE confirming (to predict/avoid the SAP backflush rejection seen earlier with Lot 43712 "Negative stock not permitted...")? Implemented using EXISTING cached data only (no new SAP calls, instant):
+- New `production_confirmation_service.check_component_availability(db, main_output_product, confirmed_quantity, site_id)`: reads the product's `bom_node_cache` doc for direct/active components, scales each by the quantity about to be confirmed, cross-references `inventory_cache` (site-filtered on-hand qty), returns per-component required vs available + sufficient flag.
+- New route: `GET /api/production-confirmation/component-availability`.
+- Frontend: Confirm dialog now shows a live "Component Stock Check" panel (debounced 400ms on quantity change) with green check/red X per component, and an amber warning banner if any are short. Verified live against real data (product 632163-1 correctly showed 3 components all currently out of stock at site P2, matching real inventory_cache).
+- NOT yet tested by testing_agent - should be included in next testing round along with the Proposal->Order auto-wiring task.
+

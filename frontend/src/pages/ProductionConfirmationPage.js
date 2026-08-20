@@ -63,6 +63,8 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
   const [reason, setReason] = useState("none");
   const [finished, setFinished] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [availability, setAvailability] = useState(null);
+  const [checkingAvailability, setCheckingAvailability] = useState(false);
 
   useEffect(() => {
     if (row) {
@@ -70,8 +72,23 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
       setConfirmedScrap("0");
       setReason("none");
       setFinished(false);
+      setAvailability(null);
     }
   }, [row]);
+
+  useEffect(() => {
+    if (!row || confirmedQty === "" || Number.isNaN(Number(confirmedQty))) {
+      setAvailability(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      setCheckingAvailability(true);
+      axios.get(`${API}/production-confirmation/component-availability`, {
+        params: { main_output_product: row.main_output_product, confirmed_quantity: Number(confirmedQty), site_id: row.site_id },
+      }).then(({ data }) => setAvailability(data)).catch(() => setAvailability(null)).finally(() => setCheckingAvailability(false));
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [row, confirmedQty]);
 
   if (!row) return null;
 
@@ -147,6 +164,34 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
             <Label className="text-xs font-bold text-[#344054]">Confirmed Output Quantity</Label>
             <Input type="number" value={confirmedQty} onChange={(e) => setConfirmedQty(e.target.value)} data-testid="confirm-qty-input" />
           </div>
+
+          {checkingAvailability && <p className="text-xs text-[#98A2B3]">Checking component stock...</p>}
+          {availability?.checked && (
+            <div className="border border-[#EAECF0] rounded-sm overflow-hidden" data-testid="component-availability-panel">
+              <div className="bg-[#F9FAFB] px-3 py-1.5 text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
+                Component Stock Check {row.site_id ? `(Site ${row.site_id})` : ""}
+              </div>
+              <div className="max-h-32 overflow-y-auto divide-y divide-[#EAECF0]">
+                {availability.components.map((c) => (
+                  <div key={c.product_id} className="flex items-center justify-between px-3 py-1 text-xs" data-testid={`component-row-${c.product_id}`}>
+                    <span className="text-[#344054] truncate mr-2">{c.product_id}{c.description ? ` - ${c.description}` : ""}</span>
+                    <span className={`shrink-0 tabular-nums ${c.sufficient ? "text-[#027A48]" : c.available_qty === null ? "text-[#98A2B3]" : "text-[#B42318] font-bold"}`}>
+                      {c.available_qty === null ? "no stock data" : `${formatQty(c.available_qty)} / ${formatQty(c.required_qty)} ${c.unit_of_measure || ""}`}
+                      {c.sufficient ? " ✓" : c.available_qty !== null ? " ✗" : ""}
+                    </span>
+                  </div>
+                ))}
+                {availability.components.length === 0 && <div className="px-3 py-1.5 text-xs text-[#98A2B3]">No active components in cached BOM.</div>}
+              </div>
+              {availability.components.some((c) => !c.sufficient && c.available_qty !== null) && (
+                <div className="bg-[#FFFAEB] px-3 py-1.5 text-[11px] text-[#B54708]">Some components may be short - SAP's backflush could reject this confirmation.</div>
+              )}
+            </div>
+          )}
+          {availability && !availability.checked && (
+            <p className="text-[11px] text-[#98A2B3]">{availability.reason}</p>
+          )}
+
           <div>
             <Label className="text-xs font-bold text-[#344054]">Confirmed Scrap</Label>
             <Input type="number" value={confirmedScrap} onChange={(e) => setConfirmedScrap(e.target.value)} data-testid="confirm-scrap-input" />
@@ -307,7 +352,7 @@ const CreateOrderTab = ({ actorName }) => {
 
   const loadHistory = useCallback(() => {
     setLoadingHistory(true);
-    axios.get(`${API}/production-confirmation/proposal-history`).then(({ data }) => setHistory(data.entries)).finally(() => setLoadingHistory(false));
+    axios.get(`${API}/production-confirmation/proposal-history`).then(({ data }) => setHistory(data.entries)).catch(() => toast.error("Failed to load Proposal/Release history")).finally(() => setLoadingHistory(false));
   }, []);
 
   useEffect(() => { loadHistory(); }, [loadHistory]);
@@ -379,14 +424,14 @@ const CreateOrderTab = ({ actorName }) => {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label className="text-xs font-bold text-[#344054]">Site</Label>
-              <Input value={siteId} onChange={(e) => setSiteId(e.target.value)} placeholder="e.g. P2" data-testid="create-proposal-site-input" />
+              <Input value={siteId} onChange={(e) => setSiteId(e.target.value.toUpperCase())} placeholder="e.g. P2" data-testid="create-proposal-site-input" />
             </div>
             <div>
               <Label className="text-xs font-bold text-[#344054]">UoM</Label>
               <Input value={unitCode} onChange={(e) => setUnitCode(e.target.value)} placeholder="EA" data-testid="create-proposal-uom-input" />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <Label className="text-xs font-bold text-[#344054]">Quantity</Label>
               <Input type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)} data-testid="create-proposal-qty-input" />

@@ -141,3 +141,42 @@ def get_proposal_and_release_history(db, limit: int = 200) -> list:
         }
         for d in docs
     ]
+
+
+def check_component_availability(db, main_output_product: str, confirmed_quantity: float, site_id: str) -> dict:
+    """Compares BOM component requirements (from the app's own bom_node_cache,
+    scaled to the quantity about to be confirmed) against cached on-hand
+    stock at the lot's site (inventory_cache) - lets a user see BEFORE
+    confirming whether SAP's backflush is likely to reject the confirmation
+    for insufficient component stock (see production_confirmation_history
+    for a real example of that SAP rejection). Uses only already-cached
+    data (no live SAP calls) so it's instant."""
+    bom_doc = db["bom_node_cache"].find_one({"_id": main_output_product})
+    if not bom_doc or not bom_doc.get("groups"):
+        return {"checked": False, "reason": "No cached BOM found locally for this product - cannot check component availability.", "components": []}
+
+    inventory_doc = db["inventory_cache"].find_one({"_id": "latest"})
+    stock_by_product = {}
+    for item in (inventory_doc or {}).get("items", []):
+        stock_by_product[item["product_id"]] = item.get("locations", [])
+
+    components = []
+    for group in bom_doc["groups"]:
+        for item in group["items"]:
+            if not item.get("active") or item.get("quantity") is None:
+                continue
+            required_qty = round(item["quantity"] * confirmed_quantity, 4)
+            locations = stock_by_product.get(item["product_id"])
+            if locations is None:
+                available_qty = None
+            else:
+                available_qty = sum(loc["qty"] for loc in locations if loc.get("site") == site_id)
+            components.append({
+                "product_id": item["product_id"],
+                "description": item.get("description"),
+                "unit_of_measure": item.get("unit_of_measure"),
+                "required_qty": required_qty,
+                "available_qty": available_qty,
+                "sufficient": available_qty is not None and available_qty >= required_qty,
+            })
+    return {"checked": True, "reason": None, "components": components}

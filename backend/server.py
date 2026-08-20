@@ -1946,6 +1946,14 @@ async def get_proposal_and_release_history():
     return {"entries": await asyncio.to_thread(production_confirmation_service.get_proposal_and_release_history, db)}
 
 
+@api_router.get("/production-confirmation/component-availability")
+async def get_component_availability(main_output_product: str, confirmed_quantity: float, site_id: str):
+    result = await asyncio.to_thread(
+        production_confirmation_service.check_component_availability, db, main_output_product, confirmed_quantity, site_id,
+    )
+    return result
+
+
 class ComponentMasterItem(BaseModel):
     product_id: str
     description: Optional[str] = None
