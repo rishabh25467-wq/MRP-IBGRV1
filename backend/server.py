@@ -2114,7 +2114,7 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
             proposal_id = proposal_result["production_proposal_id"]
         await asyncio.to_thread(
             production_confirmation_service.log_proposal_creation, db, payload.actor, payload.dict(),
-            {"production_proposal_id": proposal_id},
+            {"production_proposal_id": proposal_id}, job_id,
         )
         job_store.update_job(db, job_id, {"status": "waiting_for_order", "production_proposal_id": proposal_id})
         await asyncio.sleep(SAP_SETTLE_DELAY_SECONDS)  # let SAP fully commit the new Proposal before anything reads/acts on it
@@ -2185,7 +2185,7 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
                 if attempt < 2:
                     await asyncio.sleep(5)
         await asyncio.to_thread(
-            production_confirmation_service.log_order_release, db, payload.actor, new_order_id, {"success": released},
+            production_confirmation_service.log_order_release, db, payload.actor, new_order_id, {"success": released}, job_id,
         )
         job_store.update_job(db, job_id, {"status": "done", "result": {
             "production_proposal_id": proposal_id, "production_order_id": new_order_id, "released": released,

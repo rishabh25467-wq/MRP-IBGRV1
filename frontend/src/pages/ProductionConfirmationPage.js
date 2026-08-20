@@ -624,12 +624,24 @@ const CreateOrderTab = ({ actorName }) => {
               <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`proposal-history-row-${i}`}>
                 <td className="border border-[#D0D5DD] px-2 py-1">{new Date(h.at).toLocaleString("en-IN")}</td>
                 <td className="border border-[#D0D5DD] px-2 py-1">{h.actor}</td>
-                <td className="border border-[#D0D5DD] px-2 py-1">{h.type === "proposal_created" ? "Proposal Created" : "Order Released"}</td>
-                <td className="border border-[#D0D5DD] px-2 py-1">{h.type === "proposal_created" ? `${h.material_id} (Proposal ${h.production_proposal_id})` : h.production_order_id}</td>
+                <td className="border border-[#D0D5DD] px-2 py-1">
+                  {h.type !== "proposal_created" ? "Order Released" : h.production_order_id ? "Proposal → Order" : "Proposal Created"}
+                </td>
+                <td className="border border-[#D0D5DD] px-2 py-1">
+                  {h.type !== "proposal_created"
+                    ? h.production_order_id
+                    : h.production_order_id
+                      ? `${h.material_id} (Proposal ${h.production_proposal_id} \u2192 Order ${h.production_order_id})`
+                      : `${h.material_id} (Proposal ${h.production_proposal_id})`}
+                </td>
                 <td className="border border-[#D0D5DD] px-2 py-1">{h.site_id || "—"}</td>
                 <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums">{h.quantity ?? "—"}</td>
                 <td className="border border-[#D0D5DD] px-2 py-1">
-                  {h.type === "proposal_created" ? <Badge className="bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]">Created</Badge> : h.success ? <Badge className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Released</Badge> : <Badge className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>}
+                  {h.type !== "proposal_created"
+                    ? h.success ? <Badge className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Released</Badge> : <Badge className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>
+                    : h.production_order_id
+                      ? h.released ? <Badge className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Released</Badge> : <Badge className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Release Failed</Badge>
+                      : <Badge className="bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]">Created</Badge>}
                 </td>
               </tr>
             ))}

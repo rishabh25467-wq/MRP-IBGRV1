@@ -101,9 +101,15 @@ def get_confirmation_history(db, production_lot_id: str = None, limit: int = 200
 PROPOSAL_HISTORY_COLLECTION = "production_order_creation_history"
 
 
-def log_proposal_creation(db, actor: str, request_payload: dict, result: dict) -> None:
+def log_proposal_creation(db, actor: str, request_payload: dict, result: dict, job_id: str = None) -> None:
+    """job_id (when this came from the one-click create-and-release job, not
+    the standalone create-proposal-only endpoint) is stored so a later
+    log_order_release call for the SAME job can update this exact row
+    in-place instead of appearing as a disconnected second row - lets the
+    history table show "Proposal 223835 -> Order 69959" together."""
     db[PROPOSAL_HISTORY_COLLECTION].insert_one({
         "type": "proposal_created",
+        "job_id": job_id,
         "actor": actor,
         "material_id": request_payload.get("material_id"),
         "site_id": request_payload.get("site_id"),
@@ -114,7 +120,24 @@ def log_proposal_creation(db, actor: str, request_payload: dict, result: dict) -
     })
 
 
-def log_order_release(db, actor: str, production_order_id: str, result: dict) -> None:
+def log_order_release(db, actor: str, production_order_id: str, result: dict, job_id: str = None) -> None:
+    """When job_id matches the same one-click job's proposal_created row,
+    update that row in-place with the order outcome instead of inserting a
+    disconnected second row. Falls back to a standalone insert (previous
+    behavior) for the manual/standalone Release-an-existing-Order form,
+    which has no job_id."""
+    if job_id:
+        updated = db[PROPOSAL_HISTORY_COLLECTION].update_one(
+            {"job_id": job_id, "type": "proposal_created"},
+            {"$set": {
+                "production_order_id": production_order_id,
+                "released": result.get("success"),
+                "released_at": datetime.now(timezone.utc),
+                "released_by": actor,
+            }},
+        )
+        if updated.matched_count:
+            return
     db[PROPOSAL_HISTORY_COLLECTION].insert_one({
         "type": "order_released",
         "actor": actor,
@@ -136,6 +159,8 @@ def get_proposal_and_release_history(db, limit: int = 200) -> list:
             "unit_code": d.get("unit_code"),
             "production_proposal_id": d.get("production_proposal_id"),
             "production_order_id": d.get("production_order_id"),
+            "released": d.get("released"),
+            "released_by": d.get("released_by"),
             "success": d.get("success"),
             "at": d["at"].isoformat(),
         }
