@@ -1934,17 +1934,22 @@ async def create_production_proposal(payload: CreateProductionProposalRequest):
 CREATE_RELEASE_MAX_WAIT_SECONDS = 20 * 60  # keep polling for the resulting Order for up to 20 min
 CREATE_RELEASE_POLL_INTERVAL_SECONDS = 10
 CREATE_RELEASE_RETRIGGER_EVERY_SECONDS = 90  # re-fire the Release action periodically in case the first call needs a nudge
+SAP_SETTLE_DELAY_SECONDS = 8  # deliberate pause so SAP fully commits/indexes the previous write before the next action reads/acts on it
 
 
 async def _run_create_and_release_job(job_id: str, payload: "CreateProductionProposalRequest", avail_dt):
     """One-click orchestration, run fully in the background so it is never
-    bound by the platform's ~60s ingress timeout: Create Proposal -> trigger
-    SAP's 'Request Production' action (instant Proposal->Order conversion,
-    bypassing the slow scheduled planning run) -> detect the resulting Order
-    by diffing open Production Lots for this site before/after -> Release
-    the Order. Fully automated - re-fires the Release trigger periodically
-    and keeps polling for up to CREATE_RELEASE_MAX_WAIT_SECONDS with zero
-    need for a human to look up or type an Order ID."""
+    bound by the platform's ~60s ingress timeout: Create Proposal -> (settle
+    delay) -> trigger SAP's 'Request Production' action (instant
+    Proposal->Order conversion, bypassing the slow scheduled planning run)
+    -> (settle delay) -> detect the resulting Order by diffing open
+    Production Lots for this site before/after -> Release the Order. Fully
+    automated - re-fires the Release trigger periodically and keeps polling
+    for up to CREATE_RELEASE_MAX_WAIT_SECONDS with zero need for a human to
+    look up or type an Order ID. The settle delays exist because SAP's own
+    indexing needs a beat after each write before the very next call reads
+    reliably - calling Release immediately after Create (0s apart) risked
+    the action silently missing the just-created Proposal."""
     try:
         job_store.update_job(db, job_id, {"status": "creating_proposal"})
         proposal_result = None
@@ -1966,6 +1971,7 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
             {"production_proposal_id": proposal_id},
         )
         job_store.update_job(db, job_id, {"status": "waiting_for_order", "production_proposal_id": proposal_id})
+        await asyncio.sleep(SAP_SETTLE_DELAY_SECONDS)  # let SAP fully commit the new Proposal before anything reads/acts on it
 
         open_statuses = ["1", "2", "3"]
         baseline_ids = None
@@ -1979,15 +1985,25 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
                 await asyncio.sleep(CREATE_RELEASE_POLL_INTERVAL_SECONDS)
 
         elapsed = 0
-        last_trigger = -CREATE_RELEASE_RETRIGGER_EVERY_SECONDS  # fire immediately on the first loop iteration
+        last_trigger = None  # force an immediate first trigger below
+        trigger_count = 0
         new_order_id = None
         while elapsed <= CREATE_RELEASE_MAX_WAIT_SECONDS:
-            if elapsed - last_trigger >= CREATE_RELEASE_RETRIGGER_EVERY_SECONDS:
+            if last_trigger is None or elapsed - last_trigger >= CREATE_RELEASE_RETRIGGER_EVERY_SECONDS:
+                trigger_count += 1
+                trigger_ok = False
                 try:
-                    await asyncio.to_thread(sap_production_proposal_release_client.release_order, proposal_id)
+                    trigger_result = await asyncio.to_thread(sap_production_proposal_release_client.release_order, proposal_id)
+                    trigger_ok = bool(trigger_result.get("success"))
                 except SAPProductionOrderReleaseError as e:
-                    logger.warning(f"create-and-release job {job_id}: Release-trigger attempt failed, will keep polling/retrying: {e}")
+                    logger.warning(f"create-and-release job {job_id}: Release-trigger attempt #{trigger_count} failed, will keep polling/retrying: {e}")
+                job_store.update_job(db, job_id, {
+                    "last_release_trigger_at": datetime.now(timezone.utc).isoformat(),
+                    "release_trigger_count": trigger_count, "last_release_trigger_ok": trigger_ok,
+                })
                 last_trigger = elapsed
+                await asyncio.sleep(SAP_SETTLE_DELAY_SECONDS)  # give SAP a beat to act on the trigger before the very next lookup
+                elapsed += SAP_SETTLE_DELAY_SECONDS
             try:
                 current_ids = {r["production_lot_id"] for r in await asyncio.to_thread(
                     sap_production_lot_client.find_open_lots, open_statuses, payload.site_id, 999
@@ -2043,6 +2059,21 @@ async def create_and_release_production_order(payload: CreateProductionProposalR
             avail_dt = datetime.fromisoformat(payload.availability_datetime.replace("Z", "+00:00"))
         except ValueError:
             raise HTTPException(status_code=400, detail="availability_datetime must be an ISO date/time")
+
+    # Pre-flight stock check (cached inventory, instant) - SAP's own "Full
+    # Quantity" action on the Production Request Segment silently disables
+    # itself when a required component is out of stock, orphaning the
+    # Proposal with no clear reason. Catching that here, before creating
+    # anything in SAP, gives an immediate, specific error instead.
+    availability = await asyncio.to_thread(
+        production_confirmation_service.check_component_availability, db, payload.material_id, payload.quantity, payload.site_id,
+    )
+    if availability["checked"]:
+        short = [c for c in availability["components"] if not c["sufficient"]]
+        if short:
+            names = ", ".join(f"{c['product_id']} (need {c['required_qty']}, have {c['available_qty'] if c['available_qty'] is not None else 'unknown'})" for c in short)
+            raise HTTPException(status_code=400, detail=f"Can't auto-release - insufficient component stock at {payload.site_id}: {names}")
+
     job_id = str(uuid.uuid4())
     job_store.create_job(db, job_id, {"status": "running", "result": None, "error": None})
     asyncio.create_task(_run_create_and_release_job(job_id, payload, avail_dt))

@@ -459,7 +459,7 @@ const CreateOrderTab = ({ actorName }) => {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-white border border-[#D0D5DD] rounded-sm p-4 space-y-3" data-testid="create-proposal-card">
           <h3 className="font-heading text-sm font-bold text-[#1D2939] uppercase tracking-wide">Create Production Order</h3>
-          <p className="text-xs text-[#667085]">Creates and releases a Production Order in SAP - fully automated, retries in the background until SAP converts it, no manual SAP clicks needed (Source of Supply/BOM version is chosen automatically by SAP).</p>
+          <p className="text-xs text-[#667085]">Creates and releases a Production Order in SAP - fully automated, retries in the background until SAP converts it. Checks component stock first and blocks with a clear reason if a raw material is out of stock (no orphaned Proposals).</p>
           <div>
             <Label className="text-xs font-bold text-[#344054]">Product ID</Label>
             <Input value={materialId} onChange={(e) => setMaterialId(e.target.value)} placeholder="e.g. MAZ42117272-TA" data-testid="create-proposal-product-input" />
