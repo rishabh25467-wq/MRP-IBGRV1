@@ -1,0 +1,249 @@
+SAP Business ByDesign - BOM Read + Create/Update Integration Guide
+(For reuse in another application.)
+
+STATUS: The READ section below is LIVE-TESTED and running in production in
+this app. The CREATE/UPDATE (MaintainBOM) section is sourced directly from
+SAP's official help.sap.com documentation but has NOT been live-tested by
+us - BOM writes revolve around Engineering Change Orders that auto-complete
+on execution (not easily reversible, unlike the Material creation guide's
+simple delete-undo), so we deliberately did not test-write a real BOM
+without explicit sign-off first. Treat the CREATE/UPDATE section as
+"documented but unverified on your tenant" and test cautiously (a brand
+new, harmless-looking test BOM ID first) before relying on it.
+
+===============================================================================
+PART A - READING A BOM (live-tested, this is what powers the app's own
+BOM Explorer / multi-level explosion)
+===============================================================================
+
+Service name:      QueryProductionBillofMaterialsIn
+Operation:         QueryProductionBillOfMaterialByElementsRequest (sync)
+Namespace (body):  http://sap.com/xi/SAPGlobal20/Global
+SOAPAction header: "http://sap.com/xi/A1S/Global/QueryProductionBillofMaterialsIn/QueryProductionBillOfMaterialByElementsRequest"
+Auth:              HTTP Basic (technical/communication user)
+Content-Type:      text/xml; charset=utf-8
+
+Request - lookup by BOM ID:
+<?xml version="1.0" encoding="utf-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+  <soapenv:Body>
+    <n0:ProductionBillsOfMaterialsQueryByElementsMessage xmlns:n0="http://sap.com/xi/SAPGlobal20/Global">
+      <ProcessingConditions>
+        <QueryHitsMaximumNumberValue>500</QueryHitsMaximumNumberValue>
+        <QueryHitsUnlimitedIndicator>false</QueryHitsUnlimitedIndicator>
+      </ProcessingConditions>
+      <ProductionBillOfMaterials>
+        <SelectionByProductionBillOfMaterialID>
+          <InclusionExclusionCode>I</InclusionExclusionCode>
+          <IntervalBoundaryTypeCode>1</IntervalBoundaryTypeCode>
+          <LowerBoundaryIdentifier>{BOM_ID}</LowerBoundaryIdentifier>
+        </SelectionByProductionBillOfMaterialID>
+      </ProductionBillOfMaterials>
+    </n0:ProductionBillsOfMaterialsQueryByElementsMessage>
+  </soapenv:Body>
+</soapenv:Envelope>
+
+Request - lookup by OUTPUT product ID instead (more useful in practice -
+most callers have a product ID, not a BOM ID; a product can have several
+BOM revisions/alternates, this returns all of them):
+      <ProductionBillOfMaterials>
+        <SelectionByOutputProductID>
+          <InclusionExclusionCode>I</InclusionExclusionCode>
+          <IntervalBoundaryTypeCode>1</IntervalBoundaryTypeCode>
+          <LowerBoundaryIdentifier>{PRODUCT_ID}</LowerBoundaryIdentifier>
+        </SelectionByOutputProductID>
+      </ProductionBillOfMaterials>
+
+Both selection types can be batched - the request accepts MULTIPLE
+<SelectionByOutputProductID> blocks in one call (confirmed live, big
+performance win when exploding a multi-level BOM tree: batch all of one
+level's product IDs into a single request instead of one call per
+product). Keep batches to ~60 products (QueryHitsMaximumNumberValue=500,
+and some products have 3-6 BOM revisions each).
+
+Response contains one or more <ProductionBillOfMaterial> nodes, each with
+nested ItemGroup > Item > EngineeringChangeOrder-scoped item data (input
+materials, quantities, active/current-revision flags) - parse similarly to
+Part C's ReadBOM response shape (same underlying data, slightly different
+XML nesting since it's the batch/query variant vs single-ID read variant).
+
+Practical notes learned running this in production:
+- A product can have multiple BOM revisions over time (same recipe,
+  different Engineering Change Order) - pick the one matching the
+  material's CURRENT EngineeringChangeOrderValidFromDate, not just the
+  first result.
+- A product can ALSO have genuine "alternate BOMs" - a different recipe
+  entirely producing the same output - detect this by looking at whether
+  the item sets are substantively different, not just a revision bump.
+- No live authorization issues seen; this technical user's role has
+  always had read access to this service.
+
+===============================================================================
+PART B - THE SIMPLER SINGLE-BOM READ (documented by SAP, NOT the one this
+app uses, but simpler if you just need one BOM by its exact ID and don't
+need the OutputProductID lookup or batching)
+===============================================================================
+Service name:      ProductionBillOfMaterialManagementIn
+Operation:          ReadBOM (sync)
+Same namespace/auth pattern as above.
+
+Request:
+<n0:ProductionBillOfMaterialQueryRequest_sync xmlns:n0="http://sap.com/xi/SAPGlobal20/Global">
+  <ProductionBillOfMaterial>
+    <ID schemeAgencyID="Token 1">{BOM_ID}</ID>
+  </ProductionBillOfMaterial>
+</n0:ProductionBillOfMaterialQueryRequest_sync>
+
+Response (abridged): <ProductionBillOfMaterial> containing ID,
+SystemAdministrativeData, Description, one or more <ItemGroup> (each with
+ItemGroupID and nested <Item> > <ChangeState> holding UUID,
+EngineeringChangeOrderID, ValidFromDate, StatusCode, MaterialKey.ProductID,
+Quantity, QuantityTypeCode), and one or more <Variant> (VariantID,
+output MaterialKey.ProductID, Quantity, Status.ConsistencyStatusCode, and
+<ItemChangeStateAssignment> entries tying variant -> item group -> item).
+
+StatusCode on a ChangeState: 1=In Preparation, 2=In Process, 3=Blocked,
+4=Changes Completed, 5=Completed.
+ConsistencyStatusCode on a Variant: 1=Check Pending, 2=Inconsistent, 3=Consistent.
+
+IMPORTANT if you plan to UPDATE a BOM afterward: this ReadBOM response is
+where you get the <ChangeState><UUID> values you'll need to pass back on
+an update/delete (see Part C) - Update/Delete requires that UUID, Create
+does not.
+
+===============================================================================
+PART C - CREATE / UPDATE A BOM (from SAP docs, NOT live-tested by us -
+test cautiously)
+===============================================================================
+Service name:      ProductionBillOfMaterialManagementIn
+Operation:          MaintainBOM (sync)
+Prereqs:            input material(s) AND output material must already
+                    exist in SAP; an Engineering Change Order (ECO) ID
+                    must already exist and be in "In Process" status
+                    before you call this - SAP auto-marks it "Completed"
+                    when the call executes.
+
+Action codes used throughout the payload: 01=Create, 02=Update,
+03=Delete(-flag, see below), 04=Save (create-or-update, SAP figures out
+which). Different SAP docs vary slightly on numbering - Update Request
+XML 1 below actually uses 04 at every node level while individual child
+ChangeState/ItemChangeStateAssignment nodes use 01/02/03 - MIRROR the
+worked examples below exactly rather than assuming a fixed meaning per
+level.
+
+HARD RULES (from SAP's own docs - don't violate these):
+1. Duplicate BOM ID is prohibited - a BOM ID, once created, is permanent.
+2. Group ID / Item ID cannot be renamed once created.
+3. There is NO real delete of a Group/Item/ChangeState. To remove a line,
+   ADD A NEW ChangeState under the same Group/Item/ECO with
+   DeletedIndicator=true and Product/Quantity left EMPTY - this is how
+   "deletion" actually works in this API.
+4. UUID of the ChangeState is MANDATORY for Update/Delete, and must be
+   read first via ReadBOM (Part B) - Create does not need/accept a UUID.
+5. No recursion allowed - a product cannot (even indirectly) be its own
+   input material.
+6. A BOM must have at least one Variant, and that Variant must have at
+   least one ItemChangeStateAssignment (i.e. an empty/headerless BOM with
+   no actual items is rejected).
+7. Use a SEPARATE, DEDICATED ECO per BOM change - the item-change-state
+   limit per ECO is 500 lines, and completing an ECO with huge numbers of
+   lines can cause SAP-side performance issues. Don't reuse one big ECO
+   across many unrelated BOM edits.
+8. This is master data - avoid frequent/repeated updates; batch your
+   intended final BOM state into as few MaintainBOM calls as practical.
+
+Request - CREATE a brand-new BOM (2 item groups, 1 variant, one ECO):
+<n0:ProductionBillOfMaterialMaintRequest_sync xmlns:n0="http://sap.com/xi/SAPGlobal20/Global">
+  <BasicMessageHeader><ID/><UUID/></BasicMessageHeader>
+  <ProductionBillOfMaterial ActionCode="01">
+    <ID>{NEW_BOM_ID}</ID>
+    <Description ActionCode="04">
+      <Description languageCode="EN">{BOM_DESCRIPTION}</Description>
+    </Description>
+    <ItemGroup ActionCode="01">
+      <ID>GRP01</ID>
+      <MultipleSelectionAllowedIndicator>true</MultipleSelectionAllowedIndicator>
+      <Description ActionCode="04"><Description languageCode="EN">GRP01</Description></Description>
+      <Item ActionCode="01">
+        <ID>10</ID>
+        <ChangeState ActionCode="01">
+          <EngineeringChangeOrderID>{ECO_ID}</EngineeringChangeOrderID>
+          <MaterialKey><ProductID>{INPUT_PRODUCT_ID}</ProductID></MaterialKey>
+          <Quantity unitCode="EA">{QTY}</Quantity>
+          <QuantityTypeCode>EA</QuantityTypeCode>
+        </ChangeState>
+      </Item>
+    </ItemGroup>
+    <Variant ActionCode="01">
+      <ID>1</ID>
+      <MaterialKey><ProductID>{OUTPUT_PRODUCT_ID}</ProductID></MaterialKey>
+      <Quantity unitCode="EA">{OUTPUT_QTY}</Quantity>
+      <QuantityTypeCode>EA</QuantityTypeCode>
+      <Description ActionCode="04"><Description languageCode="EN">{VARIANT_DESC}</Description></Description>
+      <ItemChangeStateAssignment ActionCode="01">
+        <EngineeringChangeOrderID>{ECO_ID}</EngineeringChangeOrderID>
+        <BillOfMaterialItemGroupKey><BillOfMaterialItemGroupID>GRP01</BillOfMaterialItemGroupID></BillOfMaterialItemGroupKey>
+        <BillOfMaterialItemGroupItemKey><BillOfMaterialItemGroupItemID>10</BillOfMaterialItemGroupItemID></BillOfMaterialItemGroupItemKey>
+      </ItemChangeStateAssignment>
+    </Variant>
+  </ProductionBillOfMaterial>
+</n0:ProductionBillOfMaterialMaintRequest_sync>
+
+Success response:
+<n0:ProductionBillOfMaterialMaintConfirmation_sync xmlns:n0="http://sap.com/xi/SAPGlobal20/Global">
+  <ProductionBillOfMaterial>
+    <ChangeStateID>...</ChangeStateID>
+    <ID>{NEW_BOM_ID}</ID>
+    <UUID>{new-bom-uuid}</UUID>
+  </ProductionBillOfMaterial>
+  <Log/>   <!-- empty Log = no errors, same convention as ManageMaterialIn -->
+</n0:ProductionBillOfMaterialMaintConfirmation_sync>
+
+Request - UPDATE an existing Item's quantity (needs the ChangeState UUID
+from a prior ReadBOM call, and a NEW EngineeringChangeOrderID that's
+currently "In Process"):
+  <ProductionBillOfMaterial ActionCode="04">
+    <ID>{EXISTING_BOM_ID}</ID>
+    <ItemGroup ActionCode="04">
+      <ID>GRP01</ID>
+      <Item ActionCode="04">
+        <ID>10</ID>
+        <ChangeState ActionCode="02">
+          <UUID>{change-state-uuid-from-ReadBOM}</UUID>
+          <EngineeringChangeOrderID>{NEW_ECO_ID}</EngineeringChangeOrderID>
+          <MaterialKey><ProductID>{INPUT_PRODUCT_ID}</ProductID></MaterialKey>
+          <Quantity unitCode="EA">{NEW_QTY}</Quantity>
+          <QuantityTypeCode>EA</QuantityTypeCode>
+        </ChangeState>
+      </Item>
+    </ItemGroup>
+  </ProductionBillOfMaterial>
+
+Request - "DELETE" a line (per rule 3 above - add a new ChangeState,
+DeletedIndicator=true, no product/quantity):
+        <ChangeState ActionCode="01">
+          <EngineeringChangeOrderID>{NEW_ECO_ID}</EngineeringChangeOrderID>
+          <DeletedIndicator>true</DeletedIndicator>
+        </ChangeState>
+
+===============================================================================
+PART D - IMPLEMENTATION CHECKLIST
+===============================================================================
+[ ] Communication Arrangement for "QueryProductionBillofMaterialsIn" (read)
+[ ] Communication Arrangement for "ProductionBillOfMaterialManagementIn"
+    (read single + write) if you need Create/Update, separate from above
+[ ] Confirm the input/output materials already exist (see the companion
+    create-material-integration.txt doc if you need to create them first)
+[ ] Have a real Engineering Change Order ID ready, status "In Process",
+    BEFORE calling MaintainBOM - this app has no existing ECO-creation
+    client; you likely create/manage ECOs through the SAP UI or a
+    separate ECO web service, not covered here
+[ ] ReadBOM first if updating/deleting anything - you need the
+    ChangeState UUID, there's no way to update blind
+[ ] Test Create on a throwaway, obviously-named test BOM ID first -
+    remember rule 1: a BOM ID can never be reused/duplicated once created
+[ ] Never assume Check-only/dry-run behavior on any of these operations
+    unless you've explicitly live-tested it not committing data (see the
+    ManageMaterialIn CheckMaintainBundle_V1 gotcha in the companion doc -
+    SAP's documented "safe" operations have NOT always turned out to
+    actually be dry-run on this tenant's Communication Arrangement setup)
