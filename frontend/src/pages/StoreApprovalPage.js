@@ -49,7 +49,7 @@ const STATUS_BADGE = {
 const matchesSearch = (r, term) => {
   if (!term) return true;
   const haystack = [
-    r.material_id, r.site_id, r.requester, r.production_proposal_id, r.status,
+    r._id, r.material_id, r.site_id, r.requester, r.production_proposal_id, r.status,
     r.store_actor, r.planner_actor,
     ...(r.components || []).flatMap((c) => [c.product_id, c.description]),
   ].filter(Boolean).join(" ").toLowerCase();
@@ -249,6 +249,7 @@ export default function StoreApprovalPage() {
             <table className="w-full text-[13px] border-collapse" data-testid="store-requests-table">
               <thead>
                 <tr>
+                  <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">Request ID</th>
                   <SortableHeader label="Requested" field="created_at" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                   <SortableHeader label="Material" field="material_id" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                   <SortableHeader label="Site" field="site_id" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
@@ -262,6 +263,7 @@ export default function StoreApprovalPage() {
               <tbody>
                 {displayedRequests.map((r, i) => (
                   <tr key={r._id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`store-request-row-${i}`}>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono font-bold text-[#175CD3]" data-testid={`store-request-id-${i}`}>{r._id}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{new Date(r.created_at).toLocaleString("en-IN")}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium">{r.material_id}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{r.site_id}</td>
@@ -279,7 +281,7 @@ export default function StoreApprovalPage() {
                   </tr>
                 ))}
                 {!loading && displayedRequests.length === 0 && (
-                  <tr><td colSpan={8} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="store-requests-empty-state">
+                  <tr><td colSpan={9} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="store-requests-empty-state">
                     {rawList.length === 0 ? (viewMode === "journal" ? "No requests recorded yet." : "No pending stock requests right now.") : "No requests match your filters."}
                   </td></tr>
                 )}
@@ -345,7 +347,10 @@ export default function StoreApprovalPage() {
           <div className="flex items-start justify-between gap-3">
             <div>
               <h3 className="font-heading text-sm font-bold text-[#1D2939] uppercase tracking-wide">{selected.material_id} &middot; {formatQty(selected.quantity)} {selected.unit_code}</h3>
-              <p className="text-xs text-[#667085]">Site {selected.site_id} &middot; Requested by {selected.requester} &middot; Proposal {selected.production_proposal_id}</p>
+              <p className="text-xs text-[#667085]">
+                Request ID <span className="font-mono font-bold text-[#175CD3]" data-testid="store-request-detail-id">{selected._id}</span>
+                {" "}&middot; Site {selected.site_id} &middot; Requested by {selected.requester} &middot; Proposal {selected.production_proposal_id}
+              </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
               {isPending && (

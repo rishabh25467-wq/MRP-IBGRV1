@@ -1,0 +1,37 @@
+{
+  "summary": "Tested this session's two UX changes: (1) short 'SR-XXXXXX' store request IDs + /storeapproval Request ID column/search/detail header, (2) per-warehouse+stock-status location sub-lines in the Production Confirmation dialog's Component Stock Check panel. Backend: 8/8 pytest tests pass (new /app/backend/tests/test_short_request_id.py) covering _generate_short_id() format/entropy/ambiguous-char exclusion, create_request() persisting an SR- id (verified via GET by id), queue+journal endpoints serving both new short and legacy uuid4 ids, 404 on unknown id, auth enforcement on component-availability, and the locations[] shape ({warehouse, stock_status, qty}) with available_qty == sum(locations). Frontend: /storeapproval Request ID column renders for legacy uuid4 rows and a newly created SR-QBSYD9 row, full/partial/lowercase ID search filters correctly (1 row), no-match shows the empty state, detail panel shows the ID prominently; /production-confirmation Confirm dialog now shows per-location sub-lines ('P7 / RAW MATERIAL GODOWN-P7 (Not Assigned): 16,030 MASS'), and a component with no stock gracefully shows only 'no stock data' with no sub-lines. Regression: Active Orders expanded short-components table + 'Share this Request ID' text still render correctly (legacy uuid shown for the old job).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "all /api/* (observed on /api/store-requests)", "issue": "Intermittent API stalls: while the SAP valuation/BOM background refresh jobs are running (SAP host my431827.businessbydesign.cloud.sap connect-timeouts repeatedly in backend.err.log), a trivial Mongo-only endpoint took 10.2s locally and the public URL returned curl code=000 (ingress timeout) for ~1 min. The browser then silently rendered an empty /storeapproval queue. Pre-existing/environmental (SAP OData unreachable for materialvaluationdata), but the blocking background work starves live requests."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "/storeapproval list load failure", "issue": "When GET /api/store-requests fails/times out, the table renders 0 rows with neither the empty-state row nor a persistent error banner (only a transient toast) - looks like 'no requests' instead of 'load failed'. Low priority.", "affected_selectors": ["store-requests-table", "store-requests-empty-state"]}
+    ],
+    "design_issues": [
+      {"screen": "Production Confirmation > Confirm dialog > Component Stock Check", "issues": ["Location line duplicates the site: SAP's logistics_area already ends with the site code, so lines read 'P7 / RAW MATERIAL GODOWN-P7 (Not Assigned)'. Also, real SAP data returns full warehouse names ('RAW MATERIAL GODOWN-P7', 'SEMI-FINISH GODOWN-P7', 'SCRAP GODOWN-P4'), not the short RM/SFG/FG codes the request assumed - worth confirming with the user that the redundant site prefix is acceptable (no parsing was requested)."]},
+      {"screen": "/storeapproval detail 'In Stock' cell", "issues": ["'no stock at this site' uses #98A2B3 on white (~2.6:1 contrast) - below WCAG AA for small text. Pre-existing."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_short_request_id.py", "/app/test_reports/pytest/pytest_short_id.xml"],
+  "action_items": [
+    "Optional: decide whether to drop the redundant site prefix (or the site suffix in the warehouse name) in the Component Stock Check location lines - currently 'P7 / RAW MATERIAL GODOWN-P7'.",
+    "Optional: show a persistent load-error state on /storeapproval when the requests fetch fails instead of an empty table.",
+    "Consider moving/limiting the SAP valuation background refresh - its repeated 30s connect timeouts correlate with multi-second/ingress-timeout API latency for unrelated endpoints."
+  ],
+  "critical_code_review_comments": [
+    "store_approval_service.create_request() retry loop is correct but relies on the _id unique index only; fine. No collision risk observed (200 generated ids, 0 duplicates).",
+    "ProductionConfirmationPage.js is ~1300 lines - over the 700-line guideline; the Confirm dialog, Create-Order tab and lots table should be split into separate components.",
+    "A React console warning 'Received NaN for the children attribute' appeared once on the Create Production Order tab when an Active Order was restored from localStorage - likely a formatQty/Number() on a missing field in the restored job seed; not blocking, worth a defensive Number() guard."
+  ],
+  "updated_files": ["/app/backend/tests/test_short_request_id.py", "/app/backend/tests/_seed_short_id_request.py"],
+  "success_rate": {"backend": "100% (8/8)", "frontend": "100% of tested flows"},
+  "seed_data_creation": "Created + deleted one short-ID store request (SR-QBSYD9, requester TEST_QA_UI) and 2 transient pytest requests; synthetic vms_session/auth_user for /production-confirmation created via _setup_pc_session.py and deleted afterwards. The 4 pre-existing real store_requests (legacy uuid4 ids) were left untouched. No SAP writes performed (Confirm dialogs were always cancelled).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Use `python /app/backend/tests/_seed_short_id_request.py` to create a fresh SR-XXXXXX request for UI checks and `... cleanup` to remove it (no SAP writes). Auth: `python /app/backend/tests/_setup_pc_session.py` -> set cookie vms_session. NOTE: writing files into /app/backend/ triggers a uvicorn hot reload that makes the public API time out for ~30-60s - wait after creating test files before hitting the API, otherwise you get false failures (this caused a false 'search returns 0 rows' result initially).",
+  "rca_of_the_issue": "No product defects found for this session's changes. The one transient failure (empty /storeapproval queue) root-caused to a backend hot reload triggered by creating a test file plus SAP background-job-induced event-loop starvation, not to the search/ID code."
+}

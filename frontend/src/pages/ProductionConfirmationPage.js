@@ -241,14 +241,28 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
               <div className="bg-[#F9FAFB] px-3 py-1.5 text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">
                 Component Stock Check {row.site_id ? `(Site ${row.site_id})` : ""}
               </div>
-              <div className="max-h-32 overflow-y-auto divide-y divide-[#EAECF0]">
+              <div className="max-h-48 overflow-y-auto divide-y divide-[#EAECF0]">
                 {availability.components.map((c) => (
-                  <div key={c.product_id} className="flex items-center justify-between px-3 py-1 text-xs" data-testid={`component-row-${c.product_id}`}>
-                    <span className="text-[#344054] truncate mr-2">{c.product_id}{c.description ? ` - ${c.description}` : ""}</span>
-                    <span className={`shrink-0 tabular-nums ${c.sufficient ? "text-[#027A48]" : c.available_qty === null ? "text-[#98A2B3]" : "text-[#B42318] font-bold"}`}>
-                      {c.available_qty === null ? "no stock data" : `${formatQty(c.available_qty)} / ${formatQty(c.required_qty)} ${c.unit_of_measure || ""}`}
-                      {c.sufficient ? " ✓" : c.available_qty !== null ? " ✗" : ""}
-                    </span>
+                  <div key={c.product_id} className="px-3 py-1.5 text-xs" data-testid={`component-row-${c.product_id}`}>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[#344054] truncate mr-2">{c.product_id}{c.description ? ` - ${c.description}` : ""}</span>
+                      <span className={`shrink-0 tabular-nums ${c.sufficient ? "text-[#027A48]" : c.available_qty === null ? "text-[#98A2B3]" : "text-[#B42318] font-bold"}`}>
+                        {c.available_qty === null ? "no stock data" : `${formatQty(c.available_qty)} / ${formatQty(c.required_qty)} ${c.unit_of_measure || ""}`}
+                        {c.sufficient ? " ✓" : c.available_qty !== null ? " ✗" : ""}
+                      </span>
+                    </div>
+                    {/* Per-warehouse/stock-status breakdown at this site - user's
+                        explicit ask (Aug 2026): show SITE + Warehouse (e.g. RM/
+                        SFG/FG) + Stock Status, not just a single aggregate qty. */}
+                    {c.locations && c.locations.length > 0 && (
+                      <div className="mt-0.5 pl-2 text-[11px] text-[#667085] space-y-0.5" data-testid={`component-locations-${c.product_id}`}>
+                        {c.locations.map((loc, li) => (
+                          <div key={li}>
+                            {row.site_id}{loc.warehouse ? ` / ${loc.warehouse}` : ""}{loc.stock_status ? ` (${loc.stock_status})` : ""}: {formatQty(loc.qty)} {c.unit_of_measure || ""}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))}
                 {availability.components.length === 0 && <div className="px-3 py-1.5 text-xs text-[#98A2B3]">No active components in cached BOM.</div>}

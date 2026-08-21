@@ -21,10 +21,30 @@ CreateBundle, no Cancel/Delete operation. A cancelled request simply never
 triggers the Release action, so the Proposal sits un-converted in SAP -
 the exact same harmless/documented outcome as any other Proposal a
 planner chooses not to act on."""
-import uuid
 from datetime import datetime, timezone
 
 COLLECTION = "store_requests"
+COUNTER_COLLECTION = "store_request_counters"
+
+# Human-shareable, traceable-by-site request/issue ID (Aug 2026, per user
+# request - a full uuid4() was unusable to read aloud/type over chat with
+# the store team). Format "{site_id}-000123" - an atomic per-site counter
+# (Mongo $inc, upsert) guarantees uniqueness without any collision-retry
+# loop, and the site prefix alone tells the store team which site's queue
+# a shared ID belongs to at a glance.
+_SEQUENCE_WIDTH = 6
+
+
+def _next_sequence(db, site_id: str) -> int:
+    doc = db[COUNTER_COLLECTION].find_one_and_update(
+        {"_id": site_id}, {"$inc": {"seq": 1}}, upsert=True, return_document=True,
+    )
+    return doc["seq"]
+
+
+def _generate_id_for_site(db, site_id: str) -> str:
+    seq = _next_sequence(db, site_id)
+    return f"{site_id}-{seq:0{_SEQUENCE_WIDTH}d}"
 
 
 def ensure_indexes(db) -> None:
@@ -35,7 +55,7 @@ def ensure_indexes(db) -> None:
 def create_request(db, job_id: str, payload_dict: dict, proposal_id: str, short_components: list, actor: str) -> dict:
     now = datetime.now(timezone.utc)
     doc = {
-        "_id": str(uuid.uuid4()),
+        "_id": _generate_id_for_site(db, payload_dict["site_id"]),
         "job_id": job_id,
         "production_proposal_id": proposal_id,
         "material_id": payload_dict["material_id"],
