@@ -77,6 +77,8 @@ export default function StoreApprovalPage() {
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(null);
   const [issuedQty, setIssuedQty] = useState({});
+  const [sourceWarehouse, setSourceWarehouse] = useState({});
+  const [targetBin, setTargetBin] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [resultMessage, setResultMessage] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -152,8 +154,16 @@ export default function StoreApprovalPage() {
     setSelected(r);
     setResultMessage(null);
     const defaults = {};
-    r.components.forEach((c) => { defaults[c.product_id] = c.issued_qty != null ? String(c.issued_qty) : String(c.required_qty); });
+    const warehouseDefaults = {};
+    r.components.forEach((c) => {
+      defaults[c.product_id] = c.issued_qty != null ? String(c.issued_qty) : String(c.required_qty);
+      // Auto-pick the only warehouse when there's just one - otherwise the
+      // store person must choose (Aug 2026, Goods Movement integration).
+      if ((c.locations || []).length === 1) warehouseDefaults[c.product_id] = 0;
+    });
     setIssuedQty(defaults);
+    setSourceWarehouse(warehouseDefaults);
+    setTargetBin("");
   };
 
   const backToQueue = () => {
@@ -304,7 +314,16 @@ export default function StoreApprovalPage() {
       toast.error("Enter your name first");
       return;
     }
-    const issued = selected.components.map((c) => ({ product_id: c.product_id, issued_qty: Number(issuedQty[c.product_id]) || 0 }));
+    const issued = selected.components.map((c) => {
+      const locIdx = sourceWarehouse[c.product_id];
+      const loc = locIdx != null ? (c.locations || [])[locIdx] : null;
+      return {
+        product_id: c.product_id,
+        issued_qty: Number(issuedQty[c.product_id]) || 0,
+        warehouse: loc ? loc.warehouse : null,
+        owner_party_id: loc ? loc.owner : null,
+      };
+    });
     if (issued.some((i) => Number.isNaN(i.issued_qty) || i.issued_qty < 0)) {
       toast.error("Issued quantities must be valid, non-negative numbers");
       return;
@@ -313,6 +332,7 @@ export default function StoreApprovalPage() {
     try {
       const { data } = await axios.post(`${API}/store-requests/${selected._id}/issue`, {
         issued, decision: hasShortfall ? decision : null, actor: storeName.trim(),
+        target_logistics_area_id: targetBin.trim() || null,
       });
       if (data.status === "resolved") {
         setResultMessage("Stock issue recorded - the automated Production Order pipeline is resuming now.");
@@ -376,12 +396,12 @@ export default function StoreApprovalPage() {
             </div>
           )}
 
-          <div className="border border-[#D0D5DD] rounded-sm overflow-hidden">
+          <div className="border border-[#D0D5DD] rounded-sm overflow-x-auto">
             <table className="w-full text-[12px] border-collapse" data-testid="store-detail-components-table">
               <thead>
                 <tr>
-                  {["Component", "Required by Production", "In Stock at This Site (By Warehouse)", "Issued Qty"].map((h) => (
-                    <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">{h}</th>
+                  {["Component", "Required by Production", "In Stock at This Site (By Warehouse)", "Issue From", "Issued Qty", "SAP Stock Movement"].map((h) => (
+                    <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -392,6 +412,29 @@ export default function StoreApprovalPage() {
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums align-top">{formatQty(c.required_qty)} {c.unit_of_measure || ""}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums align-top" data-testid={`store-locations-${i}`}>
                       <LocationBreakdown locations={c.locations} unit={c.unit_of_measure} />
+                    </td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 align-top">
+                      {isPending ? (
+                        (c.locations || []).length > 0 ? (
+                          <Select
+                            value={sourceWarehouse[c.product_id] != null ? String(sourceWarehouse[c.product_id]) : ""}
+                            onValueChange={(v) => setSourceWarehouse((prev) => ({ ...prev, [c.product_id]: Number(v) }))}
+                          >
+                            <SelectTrigger className="h-7 w-40 bg-white" data-testid={`store-source-warehouse-trigger-${i}`}><SelectValue placeholder="Pick warehouse" /></SelectTrigger>
+                            <SelectContent>
+                              {c.locations.map((loc, li) => (
+                                <SelectItem key={li} value={String(li)} data-testid={`store-source-warehouse-option-${i}-${li}`}>
+                                  {loc.warehouse || "Unknown"}{loc.stock_status ? ` (${loc.stock_status})` : ""}{loc.owner ? ` \u00b7 ${loc.owner}` : ""}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <span className="text-[#98A2B3] text-[11px]">no location data</span>
+                        )
+                      ) : (
+                        <span>{c.issued_from_warehouse ? `${c.issued_from_warehouse}${c.issued_from_owner ? ` \u00b7 ${c.issued_from_owner}` : ""}` : "\u2014"}</span>
+                      )}
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 align-top">
                       {isPending ? (
@@ -406,6 +449,15 @@ export default function StoreApprovalPage() {
                         <span className="tabular-nums">{formatQty(c.issued_qty)} {c.unit_of_measure || ""}</span>
                       )}
                     </td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 align-top text-[11px]" data-testid={`store-goods-movement-${i}`}>
+                      {!c.goods_movement?.attempted ? (
+                        <span className="text-[#98A2B3]">not moved</span>
+                      ) : c.goods_movement.ok ? (
+                        <span className="text-[#175CD3] font-bold">{c.goods_movement.dry_run ? "Dry Run OK" : "Moved"} ({c.goods_movement.external_id})</span>
+                      ) : (
+                        <span className="text-[#B42318]">Failed - {c.goods_movement.error || (c.goods_movement.faults || []).map((f) => f.note).join("; ") || "unknown error"}</span>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -414,6 +466,17 @@ export default function StoreApprovalPage() {
 
           {isPending && !resultMessage && (
             <div className="space-y-2">
+              <div>
+                <Label className="text-xs font-bold text-[#344054]">Target Bin in SAP (where this stock physically goes - e.g. site's WIP bin)</Label>
+                <Input
+                  value={targetBin}
+                  onChange={(e) => setTargetBin(e.target.value)}
+                  placeholder="e.g. P2-WIP"
+                  className="h-8 w-96 bg-white"
+                  data-testid="store-target-bin-input"
+                />
+                <p className="text-[11px] text-[#667085] mt-0.5">Leaving this or a component's "Issue From" warehouse blank just skips the SAP stock movement for that component - the approval itself still goes through.</p>
+              </div>
               {hasShortfall ? (
                 <>
                   <p className="text-[11px] text-[#B54708]">One or more components are still short of the required quantity. Choose how to proceed:</p>

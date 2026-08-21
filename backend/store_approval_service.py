@@ -21,10 +21,35 @@ CreateBundle, no Cancel/Delete operation. A cancelled request simply never
 triggers the Release action, so the Proposal sits un-converted in SAP -
 the exact same harmless/documented outcome as any other Proposal a
 planner chooses not to act on."""
+import os
+
 from datetime import datetime, timezone
 
 COLLECTION = "store_requests"
 COUNTER_COLLECTION = "store_request_counters"
+
+# Flip RADISH_GOODS_MOVEMENT_DRY_RUN=false in .env only after a batch of
+# real dry runs has been reviewed and confirmed correct (user's explicit
+# Aug 2026 choice). Env-driven (not a code constant) so this can be
+# flipped without a redeploy, per testing_agent iteration_98's review.
+GOODS_MOVEMENT_DRY_RUN = os.environ.get("RADISH_GOODS_MOVEMENT_DRY_RUN", "true").lower() != "false"
+
+
+def _trigger_goods_movement(radish_client, owner_party_id, product_id, source_warehouse, target_warehouse, quantity, uom, site_id) -> dict:
+    try:
+        result = radish_client.goods_movement(
+            owner_party_id=owner_party_id, product_id=product_id,
+            source_logistics_area_id=source_warehouse, target_logistics_area_id=target_warehouse,
+            quantity=quantity, quantity_uom=uom, site_id=site_id, dry_run=GOODS_MOVEMENT_DRY_RUN,
+        )
+        return {**result, "attempted": True}
+    except Exception as e:
+        # Broad catch is deliberate (iteration_98 review) - a
+        # requests.Timeout/ConnectionError against this external,
+        # SAP-backed API is just as likely as a RadishQMSError, and the
+        # docstring above promises the approval itself is NEVER blocked
+        # by a failed/unreachable movement call.
+        return {"attempted": True, "ok": False, "error": str(e)}
 
 # Human-shareable, traceable-by-site request/issue ID (Aug 2026, per user
 # request - a full uuid4() was unusable to read aloud/type over chat with
@@ -110,30 +135,61 @@ def get_request_by_job(db, job_id: str):
     return db[COLLECTION].find_one({"job_id": job_id}, sort=[("created_at", -1)])
 
 
-def submit_issue(db, request_id: str, issued: list, decision: str, store_actor: str):
+def submit_issue(db, request_id: str, issued: list, decision: str, store_actor: str, radish_client=None, target_logistics_area_id: str = None):
     """Store records actual issued quantity per component. If everything
     was issued in full, resolves immediately. If short, the store must pick
     `decision`: "proceed" (continue the order pipeline anyway) or
-    "send_to_planner" (defer to the requester to decide)."""
+    "send_to_planner" (defer to the requester to decide).
+
+    Each `issued` entry may also carry `warehouse` (the source Logistics
+    Area the store person picked, from that component's `locations`) and
+    `owner_party_id` (that location's SAP owner, e.g. "RI"/"RT" - auto-
+    derived on the frontend from the picked location, not guessed). When
+    both are present, both `radish_client` and `target_logistics_area_id`
+    are given, and issued_qty > 0, this also fires a real Goods Movement
+    call (Aug 2026, Radish QMS integration) so the physical stock move is
+    recorded in SAP alongside this approval. Hardcoded to `dry_run=True`
+    for now (GOODS_MOVEMENT_DRY_RUN below) - user's explicit choice until
+    a few real dry runs are reviewed - so nothing physically moves in SAP
+    yet, only the SOAP envelope preview is captured for review. A failed/
+    skipped movement call NEVER blocks the approval itself - it's recorded
+    on the component for visibility, not a hard gate."""
     doc = db[COLLECTION].find_one({"_id": request_id})
     if not doc:
         return None
     if doc["status"] != "pending":
         raise ValueError(f"This request is no longer pending (current status: {doc['status']})")
 
-    issued_map = {i["product_id"]: i["issued_qty"] for i in issued}
+    issued_map = {i["product_id"]: i for i in issued}
     components = []
     shortfall_exists = False
     for c in doc["components"]:
-        issued_qty = issued_map.get(c["product_id"])
+        i = issued_map.get(c["product_id"], {})
+        issued_qty = i.get("issued_qty")
         issued_qty = 0 if issued_qty is None else float(issued_qty)
         shortfall = max(0.0, round(c["required_qty"] - issued_qty, 4))
         if shortfall > 0:
             shortfall_exists = True
-        components.append({**c, "issued_qty": issued_qty, "shortfall": shortfall})
+        movement = None
+        if issued_qty > 0 and radish_client is not None and target_logistics_area_id and i.get("warehouse") and i.get("owner_party_id"):
+            movement = _trigger_goods_movement(
+                radish_client, i["owner_party_id"], c["product_id"], i["warehouse"], target_logistics_area_id,
+                issued_qty, c.get("unit_of_measure") or "EA", doc["site_id"],
+            )
+        components.append({
+            **c, "issued_qty": issued_qty, "shortfall": shortfall, "goods_movement": movement,
+            # Persisted regardless of whether the movement actually fired
+            # (testing_agent iteration_98) - the resolved view/journal
+            # needs to show "issued from X" without parsing SOAP XML.
+            "issued_from_warehouse": i.get("warehouse"),
+            "issued_from_owner": i.get("owner_party_id"),
+        })
 
     now = datetime.now(timezone.utc)
-    update = {"components": components, "store_actor": store_actor, "store_decision": decision, "updated_at": now}
+    update = {
+        "components": components, "store_actor": store_actor, "store_decision": decision, "updated_at": now,
+        "target_logistics_area_id": target_logistics_area_id,
+    }
     if not shortfall_exists:
         update.update({"status": "resolved", "resolution": "full_issue", "resolved_at": now})
     elif decision == "proceed":

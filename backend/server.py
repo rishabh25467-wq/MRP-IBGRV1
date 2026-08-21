@@ -25,6 +25,7 @@ from sap_production_lot_client import SAPProductionLotClient, SAPProductionLotEr
 from sap_wip_clearing_client import SAPWipClearingClient, SAPWipClearingError
 from sap_production_proposal_client import SAPProductionProposalClient, SAPProductionProposalError
 from sap_production_model_client import SAPProductionModelClient, SAPProductionModelError, SAPProductionModelBomClient
+from radish_qms_client import RadishQMSClient, RadishQMSError
 from sap_production_order_release_client import SAPProductionOrderReleaseClient, SAPProductionOrderReleaseError
 from sap_material_physical_client import (
     SAPMaterialPhysicalClient, SAPMaterialPhysicalError, PHYSICAL_FIELD_TO_SAP_PROPERTY,
@@ -174,6 +175,12 @@ sap_production_model_bom_client = SAPProductionModelBomClient(
     base_url=os.environ['SAP_ODATA_PRODUCTION_MODEL_BOM_BASE_URL'],
     username=os.environ['SAP_ODATA_USERNAME'],
     password=os.environ['SAP_ODATA_PASSWORD'],
+)
+
+radish_qms_client = RadishQMSClient(
+    base_url=os.environ['RADISH_QMS_BASE_URL'],
+    email=os.environ['RADISH_QMS_EMAIL'],
+    password=os.environ['RADISH_QMS_PASSWORD'],
 )
 
 sap_material_physical_client = SAPMaterialPhysicalClient(
@@ -2484,9 +2491,17 @@ async def _resume_order_creation_job(job_id: str):
 
 
 class StoreIssueRequest(BaseModel):
-    issued: List[dict]  # [{"product_id": str, "issued_qty": float}, ...]
+    # [{"product_id": str, "issued_qty": float, "warehouse": str|None (chosen
+    # source Logistics Area from that component's `locations`),
+    # "owner_party_id": str|None (that location's `owner` field)}, ...]
+    issued: List[dict]
     decision: Optional[str] = None  # required only when a shortfall remains: "proceed" | "send_to_planner"
     actor: str
+    # Where the issued stock physically goes in SAP (e.g. the site's WIP/
+    # production consumption bin) - required for the Goods Movement call to
+    # fire; free-text for now (Aug 2026 - no fixed per-site bin list exists
+    # yet, per user's choice to type it manually until one is defined).
+    target_logistics_area_id: Optional[str] = None
 
 
 class PlannerStoreDecisionRequest(BaseModel):
@@ -2526,6 +2541,7 @@ async def issue_store_request(request_id: str, payload: StoreIssueRequest):
     try:
         updated = await asyncio.to_thread(
             store_approval_service.submit_issue, db, request_id, payload.issued, payload.decision, payload.actor.strip(),
+            radish_qms_client, payload.target_logistics_area_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

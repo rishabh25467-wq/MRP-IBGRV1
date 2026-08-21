@@ -207,7 +207,14 @@ def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, con
                 # "same warehouse" lines with different quantities - they
                 # are actually 2 different stock statuses in that warehouse.
                 "locations": [
-                    {"warehouse": loc.get("logistics_area"), "stock_status": loc.get("stock_status"), "qty": loc["qty"]}
+                    {
+                        "warehouse": loc.get("logistics_area"), "stock_status": loc.get("stock_status"), "qty": loc["qty"],
+                        # SAP Owner Party for this exact stock (e.g. "RI"/"RT") - carried
+                        # through so the Store Approval issue flow can auto-fill the
+                        # Goods Movement API's owner_party_id from whichever location
+                        # the store person actually picks, instead of guessing (Aug 2026).
+                        "owner": loc.get("company_code"),
+                    }
                     for loc in (site_locations or [])
                 ],
                 # Needing 0 of a component (e.g. Open Quantity is already 0 -
@@ -267,6 +274,7 @@ def check_component_availability(
                 stock_by_product.setdefault(row["product_id"], []).append({
                     "site": row.get("site"), "logistics_area": row.get("logistics_area"),
                     "stock_status": row.get("stock_status"), "qty": row["qty"],
+                    "company_code": row.get("company_code"),
                 })
         except Exception:
             stock_by_product = None  # fall through to cache below
