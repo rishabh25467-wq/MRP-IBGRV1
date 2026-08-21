@@ -726,6 +726,7 @@ const CreateOrderTab = ({ actorName }) => {
         availability_datetime: requestedEndDate ? new Date(requestedEndDate).toISOString() : null,
         actor: actorName.trim(),
         logistic_relationship_uuid: selectedSosOption ? selectedSosOption.logistic_relationship_uuid : null,
+        production_model_uuid: selectedSosOption ? selectedSosOption.production_model_uuid : null,
       });
       const jobId = data.job_id;
       setActiveJobs((prev) => [{

@@ -24,7 +24,7 @@ from sap_material_create_client import SAPMaterialCreateClient, SAPMaterialCreat
 from sap_production_lot_client import SAPProductionLotClient, SAPProductionLotError, SAPProductionLotAuthError
 from sap_wip_clearing_client import SAPWipClearingClient, SAPWipClearingError
 from sap_production_proposal_client import SAPProductionProposalClient, SAPProductionProposalError
-from sap_production_model_client import SAPProductionModelClient, SAPProductionModelError
+from sap_production_model_client import SAPProductionModelClient, SAPProductionModelError, SAPProductionModelBomClient
 from sap_production_order_release_client import SAPProductionOrderReleaseClient, SAPProductionOrderReleaseError
 from sap_material_physical_client import (
     SAPMaterialPhysicalClient, SAPMaterialPhysicalError, PHYSICAL_FIELD_TO_SAP_PROPERTY,
@@ -166,6 +166,12 @@ sap_production_proposal_release_client = SAPProductionOrderReleaseClient(
 
 sap_production_model_client = SAPProductionModelClient(
     base_url=os.environ['SAP_ODATA_PRODUCTION_MODEL_BASE_URL'],
+    username=os.environ['SAP_ODATA_USERNAME'],
+    password=os.environ['SAP_ODATA_PASSWORD'],
+)
+
+sap_production_model_bom_client = SAPProductionModelBomClient(
+    base_url=os.environ['SAP_ODATA_PRODUCTION_MODEL_BOM_BASE_URL'],
     username=os.environ['SAP_ODATA_USERNAME'],
     password=os.environ['SAP_ODATA_PASSWORD'],
 )
@@ -2092,6 +2098,7 @@ class CreateProductionProposalRequest(BaseModel):
     availability_datetime: Optional[str] = None
     actor: str
     logistic_relationship_uuid: Optional[str] = None
+    production_model_uuid: Optional[str] = None
 
 
 @api_router.get("/production-confirmation/source-of-supply-options/{material_id}")
@@ -2256,8 +2263,33 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
         # platform's ~60s ingress timeout the way a blocking pre-flight in
         # the POST endpoint itself would have been.
         job_store.update_job(db, job_id, {"status": "checking_stock"})
+        override_bom_id = None
+        if payload.production_model_uuid:
+            # User explicitly picked a Production Model via the Source of
+            # Supply picker - look up its REAL, currently-linked BOM (see
+            # SAPProductionModelBomClient) so this pre-flight check doesn't
+            # rely on bom_cache_service's "highest revision" default guess,
+            # which is exactly what caused the false-shortage bug this
+            # fixes (e.g. MAZ42117272-TA). Never blocks the job on its own
+            # - a lookup failure just leaves override_bom_id None and
+            # check_component_availability falls back to its normal
+            # cached-default behavior.
+            try:
+                override_bom_id = await asyncio.to_thread(
+                    sap_production_model_bom_client.get_bill_of_material_id_for_model, payload.production_model_uuid,
+                )
+            except Exception as e:
+                # Broad catch is deliberate here (not just SAPProductionModelError)
+                # - this OData call can also raise a raw requests transport
+                # error (ConnectTimeout/ReadTimeout, common on this tenant)
+                # which must degrade to the old cached-default behavior, not
+                # fail the whole order job (testing_agent iteration_96 caught
+                # this as a HIGH regression - a network timeout on this
+                # lookup used to propagate to the job's outer except Exception).
+                logger.warning(f"create-and-release job {job_id}: real-BOM-for-model lookup failed, using cached default instead: {e}")
         availability = await asyncio.to_thread(
-            production_confirmation_service.check_component_availability, db, payload.material_id, payload.quantity, payload.site_id, sap_inventory_client,
+            production_confirmation_service.check_component_availability, db, payload.material_id, payload.quantity, payload.site_id,
+            sap_inventory_client, override_bom_id, sap_soap_client,
         )
         short = [c for c in availability["components"] if not c["sufficient"]] if availability["checked"] else []
 

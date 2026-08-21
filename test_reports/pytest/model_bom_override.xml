@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="4" failures="1" skipped="0" tests="14" time="167.251" timestamp="2026-08-21T12:54:26.225294+00:00" hostname="agent-env-025980c2-0ecc-461b-b2ad-6d583c87f706"><testcase classname="tests.test_model_bom_override.TestSourceOfSupplyOptions" name="test_multiple_options_with_model_uuid" time="60.926"><error message="failed on setup with &quot;AssertionError: &lt;!DOCTYPE html&gt;&#10;  &lt;!--[if lt IE 7]&gt; &lt;html class=&quot;no-js ie6 oldie&quot; lang=&quot;en-US&quot;&gt; &lt;![endif]--&gt;&#10;  &lt;!--[if IE 7]&gt;    &lt;html class=&quot;no-js ie7 oldie&quot; lang=&quot;en-US&quot;&gt; &lt;![endif]--&gt;&#10;  &lt;!--[if IE 8]&gt;    &lt;html class=&quot;no-js ie8 oldie&quot; lang=&quot;en-US&quot;&gt; &lt;![endif]--&gt;&#10;  &lt;!--[if gt IE 8]&gt;&lt;!--&gt; &lt;html class=&quot;no-js&quot; lang=&quot;en-US&quot;&gt; &lt;!--&lt;![endif]--&gt;&#10;  &lt;head&gt;&#10;  &#10;  &lt;title&gt;preview.emergentagent.com | 502: Bad gateway&lt;/title&gt;&#10;  &lt;meta charset=&quot;UT&#10;assert 502 == 200&#10; +  where 502 = &lt;Response [502]&gt;.status_code&quot;">E   AssertionError: &lt;!DOCTYPE html&gt;
+      &lt;!--[if lt IE 7]&gt; &lt;html class="no-js ie6 oldie" lang="en-US"&gt; &lt;![endif]--&gt;
+      &lt;!--[if IE 7]&gt;    &lt;html class="no-js ie7 oldie" lang="en-US"&gt; &lt;![endif]--&gt;
+      &lt;!--[if IE 8]&gt;    &lt;html class="no-js ie8 oldie" lang="en-US"&gt; &lt;![endif]--&gt;
+      &lt;!--[if gt IE 8]&gt;&lt;!--&gt; &lt;html class="no-js" lang="en-US"&gt; &lt;!--&lt;![endif]--&gt;
+      &lt;head&gt;
+      
+      &lt;title&gt;preview.emergentagent.com | 502: Bad gateway&lt;/title&gt;
+      &lt;meta charset="UT
+    assert 502 == 200
+     +  where 502 = &lt;Response [502]&gt;.status_code</error></testcase><testcase classname="tests.test_model_bom_override.TestRealBomForModel" name="test_correct_model_resolves_to_real_bom" time="0.000"><error message="failed on setup with &quot;AssertionError: &lt;!DOCTYPE html&gt;&#10;  &lt;!--[if lt IE 7]&gt; &lt;html class=&quot;no-js ie6 oldie&quot; lang=&quot;en-US&quot;&gt; &lt;![endif]--&gt;&#10;  &lt;!--[if IE 7]&gt;    &lt;html class=&quot;no-js ie7 oldie&quot; lang=&quot;en-US&quot;&gt; &lt;![endif]--&gt;&#10;  &lt;!--[if IE 8]&gt;    &lt;html class=&quot;no-js ie8 oldie&quot; lang=&quot;en-US&quot;&gt; &lt;![endif]--&gt;&#10;  &lt;!--[if gt IE 8]&gt;&lt;!--&gt; &lt;html class=&quot;no-js&quot; lang=&quot;en-US&quot;&gt; &lt;!--&lt;![endif]--&gt;&#10;  &lt;head&gt;&#10;  &#10;  &lt;title&gt;preview.emergentagent.com | 502: Bad gateway&lt;/title&gt;&#10;  &lt;meta charset=&quot;UT&#10;assert 502 == 200&#10; +  where 502 = &lt;Response [502]&gt;.status_code&quot;">E   AssertionError: &lt;!DOCTYPE html&gt;
+      &lt;!--[if lt IE 7]&gt; &lt;html class="no-js ie6 oldie" lang="en-US"&gt; &lt;![endif]--&gt;
+      &lt;!--[if IE 7]&gt;    &lt;html class="no-js ie7 oldie" lang="en-US"&gt; &lt;![endif]--&gt;
+      &lt;!--[if IE 8]&gt;    &lt;html class="no-js ie8 oldie" lang="en-US"&gt; &lt;![endif]--&gt;
+      &lt;!--[if gt IE 8]&gt;&lt;!--&gt; &lt;html class="no-js" lang="en-US"&gt; &lt;!--&lt;![endif]--&gt;
+      &lt;head&gt;
+      
+      &lt;title&gt;preview.emergentagent.com | 502: Bad gateway&lt;/title&gt;
+      &lt;meta charset="UT
+    assert 502 == 200
+     +  where 502 = &lt;Response [502]&gt;.status_code</error></testcase><testcase classname="tests.test_model_bom_override.TestRealBomForModel" name="test_each_model_resolves_and_maps_distinctly" time="0.000"><error message="failed on setup with &quot;AssertionError: &lt;!DOCTYPE html&gt;&#10;  &lt;!--[if lt IE 7]&gt; &lt;html class=&quot;no-js ie6 oldie&quot; lang=&quot;en-US&quot;&gt; &lt;![endif]--&gt;&#10;  &lt;!--[if IE 7]&gt;    &lt;html class=&quot;no-js ie7 oldie&quot; lang=&quot;en-US&quot;&gt; &lt;![endif]--&gt;&#10;  &lt;!--[if IE 8]&gt;    &lt;html class=&quot;no-js ie8 oldie&quot; lang=&quot;en-US&quot;&gt; &lt;![endif]--&gt;&#10;  &lt;!--[if gt IE 8]&gt;&lt;!--&gt; &lt;html class=&quot;no-js&quot; lang=&quot;en-US&quot;&gt; &lt;!--&lt;![endif]--&gt;&#10;  &lt;head&gt;&#10;  &#10;  &lt;title&gt;preview.emergentagent.com | 502: Bad gateway&lt;/title&gt;&#10;  &lt;meta charset=&quot;UT&#10;assert 502 == 200&#10; +  where 502 = &lt;Response [502]&gt;.status_code&quot;">E   AssertionError: &lt;!DOCTYPE html&gt;
+      &lt;!--[if lt IE 7]&gt; &lt;html class="no-js ie6 oldie" lang="en-US"&gt; &lt;![endif]--&gt;
+      &lt;!--[if IE 7]&gt;    &lt;html class="no-js ie7 oldie" lang="en-US"&gt; &lt;![endif]--&gt;
+      &lt;!--[if IE 8]&gt;    &lt;html class="no-js ie8 oldie" lang="en-US"&gt; &lt;![endif]--&gt;
+      &lt;!--[if gt IE 8]&gt;&lt;!--&gt; &lt;html class="no-js" lang="en-US"&gt; &lt;!--&lt;![endif]--&gt;
+      &lt;head&gt;
+      
+      &lt;title&gt;preview.emergentagent.com | 502: Bad gateway&lt;/title&gt;
+      &lt;meta charset="UT
+    assert 502 == 200
+     +  where 502 = &lt;Response [502]&gt;.status_code</error></testcase><testcase classname="tests.test_model_bom_override.TestRealBomForModel" name="test_unknown_model_uuid_returns_none" time="0.800" /><testcase classname="tests.test_model_bom_override.TestAvailabilityOverride" name="test_cached_default_uses_highest_revision" time="0.080" /><testcase classname="tests.test_model_bom_override.TestAvailabilityOverride" name="test_override_uses_chosen_models_real_bom" time="1.033" /><testcase classname="tests.test_model_bom_override.TestAvailabilityOverride" name="test_override_falls_back_when_no_soap_client" time="0.011" /><testcase classname="tests.test_model_bom_override.TestAvailabilityOverride" name="test_override_failure_falls_back_to_cached" time="0.011" /><testcase classname="tests.test_model_bom_override.TestExistingLotAvailabilityUnchanged" name="test_component_availability_endpoint" time="60.180"><failure message="AssertionError: &lt;!DOCTYPE html&gt;&#10;  &lt;!--[if lt IE 7]&gt; &lt;html class=&quot;no-js ie6 oldie&quot; lang=&quot;en-US&quot;&gt; &lt;![endif]--&gt;&#10;  &lt;!--[if IE 7]&gt;    &lt;html class=&quot;no-js ie7 oldie&quot; lang=&quot;en-US&quot;&gt; &lt;![endif]--&gt;&#10;  &lt;!--[if IE 8]&gt;    &lt;html class=&quot;no-js ie8 oldie&quot; lang=&quot;en-US&quot;&gt; &lt;![endif]--&gt;&#10;  &lt;!--[if gt IE 8]&gt;&lt;!--&gt; &lt;html class=&quot;no-js&quot; lang=&quot;en-US&quot;&gt; &lt;!--&lt;![endif]--&gt;&#10;  &lt;head&gt;&#10;  &#10;  &lt;title&gt;preview.emergentagent.com | 502: Bad gateway&lt;/title&gt;&#10;  &lt;meta charset=&quot;UT&#10;assert 502 == 200&#10; +  where 502 = &lt;Response [502]&gt;.status_code">E   AssertionError: &lt;!DOCTYPE html&gt;
+      &lt;!--[if lt IE 7]&gt; &lt;html class="no-js ie6 oldie" lang="en-US"&gt; &lt;![endif]--&gt;
+      &lt;!--[if IE 7]&gt;    &lt;html class="no-js ie7 oldie" lang="en-US"&gt; &lt;![endif]--&gt;
+      &lt;!--[if IE 8]&gt;    &lt;html class="no-js ie8 oldie" lang="en-US"&gt; &lt;![endif]--&gt;
+      &lt;!--[if gt IE 8]&gt;&lt;!--&gt; &lt;html class="no-js" lang="en-US"&gt; &lt;!--&lt;![endif]--&gt;
+      &lt;head&gt;
+      
+      &lt;title&gt;preview.emergentagent.com | 502: Bad gateway&lt;/title&gt;
+      &lt;meta charset="UT
+    assert 502 == 200
+     +  where 502 = &lt;Response [502]&gt;.status_code</failure></testcase><testcase classname="tests.test_model_bom_override.TestExistingLotAvailabilityUnchanged" name="test_component_availability_missing_param" time="43.822" /><testcase classname="tests.test_model_bom_override.TestCreateAndReleaseContract" name="test_accepts_payload_without_production_model_uuid" time="0.085" /><testcase classname="tests.test_model_bom_override.TestCreateAndReleaseContract" name="test_accepts_payload_with_production_model_uuid" time="0.000"><error message="failed on setup with &quot;AssertionError: &lt;!DOCTYPE html&gt;&#10;  &lt;!--[if lt IE 7]&gt; &lt;html class=&quot;no-js ie6 oldie&quot; lang=&quot;en-US&quot;&gt; &lt;![endif]--&gt;&#10;  &lt;!--[if IE 7]&gt;    &lt;html class=&quot;no-js ie7 oldie&quot; lang=&quot;en-US&quot;&gt; &lt;![endif]--&gt;&#10;  &lt;!--[if IE 8]&gt;    &lt;html class=&quot;no-js ie8 oldie&quot; lang=&quot;en-US&quot;&gt; &lt;![endif]--&gt;&#10;  &lt;!--[if gt IE 8]&gt;&lt;!--&gt; &lt;html class=&quot;no-js&quot; lang=&quot;en-US&quot;&gt; &lt;!--&lt;![endif]--&gt;&#10;  &lt;head&gt;&#10;  &#10;  &lt;title&gt;preview.emergentagent.com | 502: Bad gateway&lt;/title&gt;&#10;  &lt;meta charset=&quot;UT&#10;assert 502 == 200&#10; +  where 502 = &lt;Response [502]&gt;.status_code&quot;">E   AssertionError: &lt;!DOCTYPE html&gt;
+      &lt;!--[if lt IE 7]&gt; &lt;html class="no-js ie6 oldie" lang="en-US"&gt; &lt;![endif]--&gt;
+      &lt;!--[if IE 7]&gt;    &lt;html class="no-js ie7 oldie" lang="en-US"&gt; &lt;![endif]--&gt;
+      &lt;!--[if IE 8]&gt;    &lt;html class="no-js ie8 oldie" lang="en-US"&gt; &lt;![endif]--&gt;
+      &lt;!--[if gt IE 8]&gt;&lt;!--&gt; &lt;html class="no-js" lang="en-US"&gt; &lt;!--&lt;![endif]--&gt;
+      &lt;head&gt;
+      
+      &lt;title&gt;preview.emergentagent.com | 502: Bad gateway&lt;/title&gt;
+      &lt;meta charset="UT
+    assert 502 == 200
+     +  where 502 = &lt;Response [502]&gt;.status_code</error></testcase><testcase classname="tests.test_model_bom_override.TestCreateAndReleaseContract" name="test_rejects_bad_availability_datetime" time="0.111" /><testcase classname="tests.test_model_bom_override.TestCreateAndReleaseContract" name="test_rejects_missing_required_fields" time="0.093" /></testsuite></testsuites>

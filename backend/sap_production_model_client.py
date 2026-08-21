@@ -150,3 +150,70 @@ class SAPProductionModelClient:
         return sorted(options, key=lambda c: (c["site_id"], c["production_model_id"]))
 
 
+class SAPProductionModelBomClient:
+    """Separate custom OData service ("productionmodelbomemergent", built by
+    the same key-user OData Modeler as productionmodelemergent) that exposes
+    the REAL BillOfMaterialID SAP actually locks to a given Production Model
+    - distinct from bom_cache_service's own "highest revision wins" guess,
+    which has no way to know which of several genuine alternate BOM
+    revisions a specific Production Model was actually built against (Aug
+    2026 bug: MAZ42117272-TA's cache defaulted to the 1.9mm revision while
+    the material's real, released Production Model is locked to the 2.0mm
+    one).
+
+    `ReleasedExecutionProductionModelCollection` (root) -> expand
+    `ReleasedExecutionProductionModelProductionSegment` (has the real
+    `BillOfMaterialID`) turns out to be an APPEND-ONLY execution-history
+    log, not a single current-state record - live-confirmed against
+    MAZ42117272-TA's real Production Model: 19 rows for the exact same
+    ProductionModelUUID, each with its own `VersionID` (1..19) and mostly
+    (but not always - 2 of 19 are stale outliers) agreeing on the same
+    BillOfMaterialID. The highest VersionID is the current/authoritative
+    link (confirmed live: v19 -> `MAZ42117272-TA_1`, matching the real
+    2.0mm revision) - so `get_bill_of_material_id_for_model` always takes
+    the max-VersionID row's BillOfMaterialID, not just any/the first one.
+
+    Deliberately scoped to ONLY the "new order, model already explicitly
+    chosen via the Source of Supply picker" case (per user's Aug 2026
+    decision) - NOT wired into BOM Explorer/Purchasing Plan/MRP's generic
+    "highest revision" default guess, and NOT into existing-lot Production
+    Confirmation's component check (no model selection happens there) -
+    both of those intentionally keep their current behavior unchanged."""
+
+    def __init__(self, base_url: str, username: str, password: str):
+        self.base_url = base_url.rstrip("/")
+        self.auth = HTTPBasicAuth(username, password)
+
+    def get_bill_of_material_id_for_model(self, production_model_uuid: str) -> str | None:
+        resp = requests.get(
+            f"{self.base_url}/ReleasedExecutionProductionModelCollection",
+            auth=self.auth,
+            headers={"Accept": "application/json"},
+            params={
+                "$filter": f"ProductionModelUUID eq guid'{production_model_uuid}'",
+                "$expand": "ReleasedExecutionProductionModelProductionSegment",
+                "$format": "json",
+            },
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            raise SAPProductionModelError(f"SAP returned HTTP {resp.status_code}: {resp.text[:300]}")
+        data = resp.json()
+        if "error" in data:
+            raise SAPProductionModelError(data["error"].get("message", {}).get("value", "Unknown OData error"))
+
+        best_version, best_bom_id = -1, None
+        for rem in _as_list(data.get("d", {}).get("results")):
+            for seg in _as_list(rem.get("ReleasedExecutionProductionModelProductionSegment")):
+                bom_id = seg.get("BillOfMaterialID")
+                if not bom_id:
+                    continue
+                try:
+                    version = int(seg.get("VersionID") or -1)
+                except (TypeError, ValueError):
+                    version = -1
+                if version > best_version:
+                    best_version, best_bom_id = version, bom_id
+        return best_bom_id
+
+

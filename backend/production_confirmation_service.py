@@ -9,7 +9,10 @@
   po_selection_service.py's audit trail, no login system exists so
   "who" is a free-text actor name from the browser.
 """
+import logging
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 REASON_COLLECTION = "deviation_reason_master"
 HISTORY_COLLECTION = "production_confirmation_history"
@@ -215,7 +218,10 @@ def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, con
     return {"checked": True, "reason": None, "components": components}
 
 
-def check_component_availability(db, main_output_product: str, confirmed_quantity: float, site_id: str, sap_inventory_client=None) -> dict:
+def check_component_availability(
+    db, main_output_product: str, confirmed_quantity: float, site_id: str,
+    sap_inventory_client=None, override_bom_id: str = None, sap_soap_client=None,
+) -> dict:
     """Compares BOM component requirements (from the app's own bom_node_cache,
     scaled to the quantity about to be confirmed) against on-hand stock at
     the lot's site - lets a user see BEFORE confirming/releasing whether
@@ -230,8 +236,28 @@ def check_component_availability(db, main_output_product: str, confirmed_quantit
     snapshot (refreshed on a fixed schedule - see INVENTORY_CACHE_REFRESH_
     INTERVAL_SECONDS in server.py) - this is what the open-lots list's
     Stock badges use, deliberately kept cache-only/instant since it's a
-    glance-view checked on every page load, not a gate before a write."""
+    glance-view checked on every page load, not a gate before a write.
+
+    `override_bom_id` (Aug 2026, new-order flow only - see
+    sap_production_model_client.SAPProductionModelBomClient): when the
+    caller already knows exactly which Production Model was picked for
+    THIS order via the Source of Supply picker, this is that model's real
+    BillOfMaterialID - fetched fresh from SAP (bypassing the cached
+    "highest revision" default guess, which is what caused the original
+    false-shortage bug) and used for this one check only. Never persisted
+    back into bom_node_cache - a one-off, per-order correction, not a
+    global cache change. Silently falls back to the cached default doc if
+    the live fetch fails or `sap_soap_client` isn't provided, so this is
+    purely additive/never blocks the pre-flight check on its own."""
     bom_doc = db["bom_node_cache"].find_one({"_id": main_output_product})
+    if override_bom_id and sap_soap_client is not None and override_bom_id != (bom_doc or {}).get("bom_id"):
+        try:
+            raw = sap_soap_client._fetch_bom_by_id(override_bom_id)
+        except Exception as e:
+            logger.warning(f"Component availability: live fetch of override BOM '{override_bom_id}' failed, falling back to cached default: {e}")
+            raw = None
+        if raw and raw.get("groups"):
+            bom_doc = {"bom_id": raw["bom_id"], "groups": raw["groups"]}
     stock_by_product = None
     if sap_inventory_client is not None:
         try:
