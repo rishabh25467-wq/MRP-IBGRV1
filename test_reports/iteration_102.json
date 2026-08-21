@@ -1,0 +1,37 @@
+{
+  "summary": "Backend-only verification of the NEW direct SAP Goods Movement integration (sap_goods_movement_client.py) replacing the Radish QMS wrapper for the Store Approval 'issue stock' action. ALL SAP traffic was mocked (requests.post inside the client, and SAPGoodsMovementClient.goods_movement at service level) - NO real SAP writes were performed. New suite /app/backend/tests/test_direct_sap_goods_movement.py: 41 tests, 41 passed. Regression re-run of iteration_98/100/101 store-approval + goods-movement suites (excluding their live-SAP-write classes): 53/53 passed. Verified: HTTP Basic Auth with SAP_SOAP_USERNAME(_EMERGENTBOM)/SAP_SOAP_PASSWORD against SAP_SOAP_GOODS_MOVEMENT_ENDPOINT + correct SOAPAction; SourceLogisticsAreaID/TargetLogisticsAreaID sent as 'P2-RM'/'P2-SFG' (site prefix stripped, no 'P2/P2-' anywhere in the envelope); unitCode='KGM' for internal label 'MASS' while <QuantityTypeCode>MASS</QuantityTypeCode> is preserved, and _resolve_unit_code() never emits >3 chars; response handling (HTTP 200 ok, 401 -> 'authentication failed', 502 HTML gateway body -> HTTP 502 error, network exception -> 'unreachable', embedded <SeverityCode>3 -> ok:false, SeverityCode 1 -> ok:true, quantity<=0 rejected before any HTTP call); dry_run=True performs no HTTP call; no-RM-stock -> {attempted:false, reason:...} with zero SAP calls and issued_from_warehouse=None; retry logic = 3 attempts with two 5s sleeps on transient errors, exactly 1 attempt when the message contains 'authentication failed', and the approval ALWAYS resolves ('resolved'/'partial_pending_planner') with the failure recorded in components[].goods_movement.error; shortfall/full-vs-partial/issue_id logic unchanged; server.py contains no radish_qms_client/RadishQMSClient reference at all while oms_client (different system) is untouched.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/store-requests (and the whole API surface)", "issue": "Backend intermittently stalls for 30-60s (3 API tests initially timed out at 60s; direct localhost:8001 calls also hung 30s twice, then returned 200 in 1.9s). Coincides with background SAP refresh jobs logging repeated 30s ConnectTimeouts to my431827.businessbydesign.cloud.sap (sap_valuation_client standard-cost chunks) - looks like thread-pool/semaphore starvation by background jobs, not a new-code defect. Same tests pass consistently when the tenant is responsive."},
+      {"endpoint": "sap_goods_movement_client._build_envelope", "issue": "Values are f-string interpolated into XML with no escaping - an ID containing & or < would produce malformed SOAP (current data is alphanumeric, so latent only)."},
+      {"endpoint": "sap_goods_movement_client._build_envelope", "issue": "quantity is interpolated with default float repr: a quantity < 1e-4 renders as scientific notation ('1e-05') which SAP will reject. Format explicitly (e.g. f'{quantity:.6f}' or Decimal) if micro-quantities are possible."},
+      {"endpoint": "sap_goods_movement_client._resolve_unit_code", "issue": "Unknown labels are silently truncated to 3 chars (e.g. 'LITRE' -> 'LIT', not a valid UN/CEFACT code) so SAP would reject with a confusing message. Suggest logging a warning on the non-mapped path and extending _UNIT_CODE_MAP for other dimension labels present in this app's data."},
+      {"endpoint": "store_approval_service.is_dry_run", "issue": "Still keyed on env var RADISH_GOODS_MOVEMENT_DRY_RUN after Radish was removed from this path - misleading name; consider SAP_GOODS_MOVEMENT_DRY_RUN with fallback to the old key."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_direct_sap_goods_movement.py",
+    "/app/test_reports/pytest/iteration_102_direct_sap.xml",
+    "/app/test_reports/pytest/iteration_102_api.xml",
+    "/app/test_reports/pytest/iteration_102_regression.xml"
+  ],
+  "action_items": [
+    "Optional: investigate background-job (sap_valuation_client / BOM cache refresh) starvation causing 30-60s API stalls - pre-existing, unrelated to this session's change.",
+    "Optional hardening in sap_goods_movement_client.py: XML-escape interpolated values, format quantity to avoid scientific notation, warn on unmapped unit labels.",
+    "Optional: rename RADISH_GOODS_MOVEMENT_DRY_RUN to a SAP-prefixed var now that Radish is out of this path."
+  ],
+  "critical_code_review_comments": [
+    "Direct SAP client and its integration into submit_issue/_trigger_goods_movement are correct and well isolated; no functional defects found. All findings are hardening/naming nits.",
+    "radish_qms_client.py and RADISH_QMS_* env vars are confirmed unused by application code (only referenced by two older test files and a docstring) - harmless as stated."
+  ],
+  "updated_files": ["/app/backend/tests/test_direct_sap_goods_movement.py"],
+  "success_rate": {"backend": "100% (94/94 executed tests)", "frontend": "not tested (backend-only round, per request)"},
+  "seed_data_creation": "store_requests docs with requester=TEST_QA_DIRECT_SAP (site P2), all deleted in module teardown. Two requests were issued through the public API but with SFG-only stock, so NO SAP call was made. No auth docs needed (these endpoints are public by design).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "No end-user auth needed for /api/store-requests* (public by design). SAP creds read from backend/.env (SAP_SOAP_USERNAME=_EMERGENTBOM).",
+  "context_for_next_testing_agent": "RADISH_GOODS_MOVEMENT_DRY_RUN=\"false\" in backend/.env, so ANY live POST /api/store-requests/{id}/issue on a component that has stock in {site}/{site}-RM will perform a REAL SAP write. Only seed components whose locations are in SFG (or have no locations) for API-level tests, and mock at the Python level otherwise. Also do NOT run tests/test_gm_warehouse_id_fix.py::TestSmoke / TestDryRunFlagPlumbing / TestLiveMovementWithFlagForced (real-write risk). New suite tests/test_direct_sap_goods_movement.py is safe to re-run in full. Note the backend can stall 30-60s when SAP background refresh jobs are timing out - retry API tests before declaring failure.",
+  "rca_of_the_issue": "Initial 3 API-test failures were ReadTimeouts, not code defects: the preview backend was mid-reload (watchfiles picked up the new test file under /app/backend/tests) while background SAP standard-cost/BOM refresh jobs were blocking on 30s SAP connect timeouts. Re-running the same class serially passed 3/3 in 6s."
+}

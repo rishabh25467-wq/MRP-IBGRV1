@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="3" skipped="0" tests="41" time="181.787" timestamp="2026-08-21T20:17:17.823158+00:00" hostname="agent-env-025980c2-0ecc-461b-b2ad-6d583c87f706"><testcase classname="tests.test_direct_sap_goods_movement.TestResponseHandling" name="test_ok_response" time="0.004" /><testcase classname="tests.test_direct_sap_goods_movement.TestUnitCodeMapping" name="test_resolve_unit_code[MASS-KGM]" time="0.003" /><testcase classname="tests.test_direct_sap_goods_movement.TestResponseHandling" name="test_401_raises_authentication_failed" time="0.001" /><testcase classname="tests.test_direct_sap_goods_movement.TestResponseHandling" name="test_502_html_gateway_body_raises" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestUnitCodeMapping" name="test_resolve_unit_code[EA-EA]" time="0.001" /><testcase classname="tests.test_direct_sap_goods_movement.TestResponseHandling" name="test_network_exception_wrapped" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestUnitCodeMapping" name="test_resolve_unit_code[KGM-KGM]" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestUnitCodeMapping" name="test_resolve_unit_code[H87-H87]" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestUnitCodeMapping" name="test_never_longer_than_three_chars" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestUnitCodeMapping" name="test_envelope_mass_maps_to_kgm_but_type_code_kept" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestResponseHandling" name="test_embedded_severity_error_returns_not_ok" time="0.001" /><testcase classname="tests.test_direct_sap_goods_movement.TestUnitCodeMapping" name="test_envelope_ea_passthrough" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestResponseHandling" name="test_severity_1_info_is_ok" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestResponseHandling" name="test_non_positive_quantity_rejected[0]" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestUnitCodeMapping" name="test_site_product_owner_in_envelope" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestResponseHandling" name="test_non_positive_quantity_rejected[-1]" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestLogisticsAreaNormalization" name="test_prefix_stripped[P2/P2-RM-P2-RM]" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestLogisticsAreaNormalization" name="test_prefix_stripped[P2/P2-SFG-P2-SFG]" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestRetryLogic" name="test_transient_error_retried_three_times_with_5s_delay" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestLogisticsAreaNormalization" name="test_prefix_stripped[P8/P8-RM-P8-RM]" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestRetryLogic" name="test_succeeds_on_second_attempt" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestLogisticsAreaNormalization" name="test_prefix_stripped[P2-RM-P2-RM]" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestRetryLogic" name="test_authentication_failure_is_not_retried" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestLogisticsAreaNormalization" name="test_prefix_stripped[A/B/C-RM-C-RM]" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestRetryLogic" name="test_dry_run_flag_forwarded_from_env" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestLogisticsAreaNormalization" name="test_envelope_carries_stripped_ids" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestServerWiring" name="test_radish_qms_not_imported_or_instantiated" time="0.001" /><testcase classname="tests.test_direct_sap_goods_movement.TestClientWiring" name="test_env_var_present" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestClientWiring" name="test_basic_auth_and_endpoint_used" time="0.001" /><testcase classname="tests.test_direct_sap_goods_movement.TestServerWiring" name="test_sap_goods_movement_client_instantiated_from_env" time="0.001" /><testcase classname="tests.test_direct_sap_goods_movement.TestClientWiring" name="test_same_creds_as_other_sap_soap_calls" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestServerWiring" name="test_oms_client_untouched" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestApprovalNeverBlocked" name="test_full_issue_resolves_even_when_all_three_attempts_fail" time="0.004" /><testcase classname="tests.test_direct_sap_goods_movement.TestServerWiring" name="test_store_approval_service_uses_sap_client_param" time="0.000" /><testcase classname="tests.test_direct_sap_goods_movement.TestPublicApi" name="test_issue_and_double_issue_guard" time="60.355"><failure message="AssertionError: &lt;!DOCTYPE html&gt;&#10;  &lt;!--[if lt IE 7]&gt; &lt;html class=&quot;no-js ie6 oldie&quot; lang=&quot;en-US&quot;&gt; &lt;![endif]--&gt;&#10;  &lt;!--[if IE 7]&gt;    &lt;html class=&quot;no-js ie7 oldie&quot; lang=&quot;en-US&quot;&gt; &lt;![endif]--&gt;&#10;  &lt;!--[if IE 8]&gt;    &lt;html class=&quot;no-js ie8 oldie&quot; lang=&quot;en-US&quot;&gt; &lt;![endif]--&gt;&#10;  &lt;!--[if gt IE 8]&gt;&lt;!--&gt; &lt;html class=&quot;no-js&quot; lang=&quot;en-US&quot;&gt; &lt;!--&lt;![endif]--&gt;&#10;  &lt;head&gt;&#10;  &#10;  &lt;title&gt;preview.emergentagent.com | 502: Bad gateway&lt;/title&gt;&#10;  &lt;meta charset=&quot;UT&#10;assert 502 == 200&#10; +  where 502 = &lt;Response [502]&gt;.status_code">tests/test_direct_sap_goods_movement.py:407: in test_issue_and_double_issue_guard
+    assert first.status_code == 200, first.text[:400]
+E   AssertionError: &lt;!DOCTYPE html&gt;
+E     &lt;!--[if lt IE 7]&gt; &lt;html class="no-js ie6 oldie" lang="en-US"&gt; &lt;![endif]--&gt;
+E     &lt;!--[if IE 7]&gt;    &lt;html class="no-js ie7 oldie" lang="en-US"&gt; &lt;![endif]--&gt;
+E     &lt;!--[if IE 8]&gt;    &lt;html class="no-js ie8 oldie" lang="en-US"&gt; &lt;![endif]--&gt;
+E     &lt;!--[if gt IE 8]&gt;&lt;!--&gt; &lt;html class="no-js" lang="en-US"&gt; &lt;!--&lt;![endif]--&gt;
+E     &lt;head&gt;
+E     
+E     &lt;title&gt;preview.emergentagent.com | 502: Bad gateway&lt;/title&gt;
+E     &lt;meta charset="UT
+E   assert 502 == 200
+E    +  where 502 = &lt;Response [502]&gt;.status_code</failure></testcase><testcase classname="tests.test_direct_sap_goods_movement.TestApprovalNeverBlocked" name="test_partial_send_to_planner_resolves_with_failure_recorded" time="0.002" /><testcase classname="tests.test_direct_sap_goods_movement.TestApprovalNeverBlocked" name="test_success_path_records_external_id" time="0.002" /><testcase classname="tests.test_direct_sap_goods_movement.TestDryRun" name="test_dry_run_skips_http" time="0.001" /><testcase classname="tests.test_direct_sap_goods_movement.TestNoRmStock" name="test_no_rm_stock_never_calls_sap" time="0.003" /><testcase classname="tests.test_direct_sap_goods_movement.TestPublicApi" name="test_missing_actor_rejected" time="60.147"><failure message="requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='sap-data-sync.preview.emergentagent.com', port=443): Read timed out. (read timeout=60)">/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:534: in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/urllib3/connection.py:571: in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/http/client.py:1443: in getresponse
+    response.begin()
+/usr/local/lib/python3.11/http/client.py:337: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/http/client.py:298: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/socket.py:718: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/ssl.py:1314: in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/ssl.py:1166: in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:696: in send
+    resp = conn.urlopen(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:842: in urlopen
+    retries = retries.increment(
+/root/.venv/lib/python3.11/site-packages/urllib3/util/retry.py:498: in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/urllib3/util/util.py:39: in reraise
+    raise value
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:788: in urlopen
+    response = self._make_request(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:536: in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:367: in _raise_timeout
+    raise ReadTimeoutError(
+E   urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='sap-data-sync.preview.emergentagent.com', port=443): Read timed out. (read timeout=60)
+
+During handling of the above exception, another exception occurred:
+tests/test_direct_sap_goods_movement.py:419: in test_missing_actor_rejected
+    resp = requests.post(f"{API}/store-requests/{rid}/issue", json={
+/root/.venv/lib/python3.11/site-packages/requests/api.py:134: in post
+    return request("post", url, data=data, json=json, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/api.py:71: in request
+    return session.request(method=method, url=url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:651: in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:784: in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:742: in send
+    raise ReadTimeout(e, request=request)
+E   requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='sap-data-sync.preview.emergentagent.com', port=443): Read timed out. (read timeout=60)</failure></testcase><testcase classname="tests.test_direct_sap_goods_movement.TestPublicApi" name="test_unknown_request_404" time="60.164"><failure message="requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='sap-data-sync.preview.emergentagent.com', port=443): Read timed out. (read timeout=60)">/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:534: in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/urllib3/connection.py:571: in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/http/client.py:1443: in getresponse
+    response.begin()
+/usr/local/lib/python3.11/http/client.py:337: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/http/client.py:298: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/socket.py:718: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/ssl.py:1314: in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/ssl.py:1166: in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:696: in send
+    resp = conn.urlopen(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:842: in urlopen
+    retries = retries.increment(
+/root/.venv/lib/python3.11/site-packages/urllib3/util/retry.py:498: in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/urllib3/util/util.py:39: in reraise
+    raise value
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:788: in urlopen
+    response = self._make_request(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:536: in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:367: in _raise_timeout
+    raise ReadTimeoutError(
+E   urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='sap-data-sync.preview.emergentagent.com', port=443): Read timed out. (read timeout=60)
+
+During handling of the above exception, another exception occurred:
+tests/test_direct_sap_goods_movement.py:426: in test_unknown_request_404
+    resp = requests.post(f"{API}/store-requests/TEST_DS_NOPE/issue", json={
+/root/.venv/lib/python3.11/site-packages/requests/api.py:134: in post
+    return request("post", url, data=data, json=json, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/api.py:71: in request
+    return session.request(method=method, url=url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:651: in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:784: in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:742: in send
+    raise ReadTimeout(e, request=request)
+E   requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='sap-data-sync.preview.emergentagent.com', port=443): Read timed out. (read timeout=60)</failure></testcase></testsuite></testsuites>

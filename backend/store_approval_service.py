@@ -33,15 +33,19 @@ logger = logging.getLogger(__name__)
 COLLECTION = "store_requests"
 COUNTER_COLLECTION = "store_request_counters"
 
-# Flip RADISH_GOODS_MOVEMENT_DRY_RUN=false in .env only after a batch of
+# Flip SAP_GOODS_MOVEMENT_DRY_RUN=false in .env only after a batch of
 # real dry runs has been reviewed and confirmed correct (user's explicit
-# Aug 2026 choice). Read LAZILY (a function, not a module-level constant) -
-# testing_agent iteration_100 caught that server.py imports this module
-# BEFORE calling load_dotenv(), so a module-level `os.environ.get(...)` at
-# import time always saw the flag missing and silently stayed dry-run even
-# after the .env value was flipped to "false" and the backend restarted.
+# Aug 2026 choice). Renamed from RADISH_GOODS_MOVEMENT_DRY_RUN once this
+# path moved off Radish onto a direct SAP client - old key kept as a
+# fallback so an already-deployed .env doesn't silently revert to dry-run.
+# Read LAZILY (a function, not a module-level constant) - testing_agent
+# iteration_100 caught that server.py imports this module BEFORE calling
+# load_dotenv(), so a module-level `os.environ.get(...)` at import time
+# always saw the flag missing and silently stayed dry-run even after the
+# .env value was flipped to "false" and the backend restarted.
 def is_dry_run() -> bool:
-    return os.environ.get("RADISH_GOODS_MOVEMENT_DRY_RUN", "true").lower() != "false"
+    value = os.environ.get("SAP_GOODS_MOVEMENT_DRY_RUN", os.environ.get("RADISH_GOODS_MOVEMENT_DRY_RUN", "true"))
+    return value.lower() != "false"
 
 
 def _has_sap_log_error(result: dict) -> str | None:
@@ -62,24 +66,29 @@ def _has_sap_log_error(result: dict) -> str | None:
     return None
 
 
-# Aug 2026: live (non-dry-run) movements were observed failing with
-# "Radish QMS/SAP unavailable" (RadishQMSError 502/503) while dry_run=true
-# calls against the exact same product/site succeeded instantly every
-# time - isolates the failure to the real downstream SAP write being slow/
-# timing out on this occasionally-flaky tenant (same known behavior
-# documented for every other SAP-writing flow in this app, e.g.
-# _create_proposal_for_payload's 3-attempt retry), not a Radish or code
-# bug. Retrying the exact same request a couple of times with a short
-# backoff before giving up matches that established pattern.
+# Aug 2026, direct-to-SAP migration: this was pointed at Radish QMS's REST
+# wrapper originally - traced 3 consecutive live-call failures ("Radish
+# QMS/SAP unavailable") to Radish's OWN Emergent-hosted app gateway timing
+# out on its outbound call to SAP (the raw body was literally Emergent's
+# "502: Bad gateway" HTML page, not a real SAP/Radish error) - confirmed
+# dry_run=true never hits this since it skips the outbound SAP call
+# entirely. Fixed by calling SAP directly (sap_goods_movement_client.py),
+# removing that extra hop/gateway altogether. Retry-with-backoff kept for
+# genuine SAP-side transient network errors (this tenant has documented
+# intermittent connect timeouts under load elsewhere in this app) -
+# SAPGoodsMovementError has no HTTP-status attribute like the old
+# RadishQMSError did, so retry on any exception except an auth failure
+# (401 - "authentication failed" in the message), which will never
+# self-resolve on retry.
 _GOODS_MOVEMENT_MAX_ATTEMPTS = 3
 _GOODS_MOVEMENT_RETRY_DELAY_SECONDS = 5
 
 
-def _trigger_goods_movement(radish_client, owner_party_id, product_id, source_warehouse, target_warehouse, quantity, uom, site_id) -> dict:
+def _trigger_goods_movement(sap_client, owner_party_id, product_id, source_warehouse, target_warehouse, quantity, uom, site_id) -> dict:
     last_error = None
     for attempt in range(_GOODS_MOVEMENT_MAX_ATTEMPTS):
         try:
-            result = radish_client.goods_movement(
+            result = sap_client.goods_movement(
                 owner_party_id=owner_party_id, product_id=product_id,
                 source_logistics_area_id=source_warehouse, target_logistics_area_id=target_warehouse,
                 quantity=quantity, quantity_uom=uom, site_id=site_id, dry_run=is_dry_run(),
@@ -91,25 +100,20 @@ def _trigger_goods_movement(radish_client, owner_party_id, product_id, source_wa
         except Exception as e:
             # Broad catch is deliberate (iteration_98 review) - a
             # requests.Timeout/ConnectionError against this external,
-            # SAP-backed API is just as likely as a RadishQMSError, and the
-            # docstring above promises the approval itself is NEVER blocked
-            # by a failed/unreachable movement call. Only status 502/503
-            # (transient "SAP unavailable" per RadishQMSClient) is worth
-            # retrying - anything else (auth failure, real SAP rejection)
-            # would just fail identically again.
+            # SAP-backed API is just as likely as a SAPGoodsMovementError,
+            # and the docstring above promises the approval itself is
+            # NEVER blocked by a failed/unreachable movement call.
             last_error = e
-            status = getattr(e, "status", None)
-            body = getattr(e, "body", None)
+            is_auth_failure = "authentication failed" in str(e).lower()
             logger.error(
                 f"Goods movement attempt {attempt + 1}/{_GOODS_MOVEMENT_MAX_ATTEMPTS} for {product_id} "
-                f"(site {site_id}, {source_warehouse}->{target_warehouse}) failed: status={status} error={e} "
-                f"body={body!r}"
+                f"(site {site_id}, {source_warehouse}->{target_warehouse}) failed: {e}"
             )
-            if status not in (502, 503) or attempt == _GOODS_MOVEMENT_MAX_ATTEMPTS - 1:
+            if is_auth_failure or attempt == _GOODS_MOVEMENT_MAX_ATTEMPTS - 1:
                 break
             logger.warning(
                 f"Goods movement attempt {attempt + 1}/{_GOODS_MOVEMENT_MAX_ATTEMPTS} for {product_id} "
-                f"hit a transient SAP error, retrying: {e}"
+                f"hit a transient error, retrying: {e}"
             )
             time.sleep(_GOODS_MOVEMENT_RETRY_DELAY_SECONDS)
     return {"attempted": True, "ok": False, "error": str(last_error)}
@@ -218,7 +222,7 @@ def _sfg_warehouse(site_id: str) -> str:
     return f"{site_id}/{site_id}-SFG"
 
 
-def submit_issue(db, request_id: str, issued: list, decision: str, store_actor: str, radish_client=None):
+def submit_issue(db, request_id: str, issued: list, decision: str, store_actor: str, sap_client=None):
     """Store records actual issued quantity per component. If everything
     was issued in full, resolves immediately. If short, the store must pick
     `decision`: "proceed" (continue the order pipeline anyway) or
@@ -267,10 +271,10 @@ def submit_issue(db, request_id: str, issued: list, decision: str, store_actor: 
             shortfall_exists = True
         rm_location = next((loc for loc in (c.get("locations") or []) if loc.get("warehouse_id") == source_warehouse), None)
         movement = None
-        if issued_qty > 0 and radish_client is not None:
+        if issued_qty > 0 and sap_client is not None:
             if rm_location and rm_location.get("owner"):
                 movement = _trigger_goods_movement(
-                    radish_client, rm_location["owner"], c["product_id"], source_warehouse, target_warehouse,
+                    sap_client, rm_location["owner"], c["product_id"], source_warehouse, target_warehouse,
                     issued_qty, c.get("unit_of_measure") or "EA", site_id,
                 )
             else:

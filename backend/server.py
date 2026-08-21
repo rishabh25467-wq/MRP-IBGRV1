@@ -25,7 +25,7 @@ from sap_production_lot_client import SAPProductionLotClient, SAPProductionLotEr
 from sap_wip_clearing_client import SAPWipClearingClient, SAPWipClearingError
 from sap_production_proposal_client import SAPProductionProposalClient, SAPProductionProposalError
 from sap_production_model_client import SAPProductionModelClient, SAPProductionModelError, SAPProductionModelBomClient
-from radish_qms_client import RadishQMSClient, RadishQMSError
+from sap_goods_movement_client import SAPGoodsMovementClient, SAPGoodsMovementError
 from sap_production_order_release_client import SAPProductionOrderReleaseClient, SAPProductionOrderReleaseError
 from sap_material_physical_client import (
     SAPMaterialPhysicalClient, SAPMaterialPhysicalError, PHYSICAL_FIELD_TO_SAP_PROPERTY,
@@ -177,10 +177,10 @@ sap_production_model_bom_client = SAPProductionModelBomClient(
     password=os.environ['SAP_ODATA_PASSWORD'],
 )
 
-radish_qms_client = RadishQMSClient(
-    base_url=os.environ['RADISH_QMS_BASE_URL'],
-    email=os.environ['RADISH_QMS_EMAIL'],
-    password=os.environ['RADISH_QMS_PASSWORD'],
+sap_goods_movement_client = SAPGoodsMovementClient(
+    endpoint=os.environ['SAP_SOAP_GOODS_MOVEMENT_ENDPOINT'],
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
 )
 
 sap_material_physical_client = SAPMaterialPhysicalClient(
@@ -2533,7 +2533,7 @@ async def issue_store_request(request_id: str, payload: StoreIssueRequest):
     try:
         updated = await asyncio.to_thread(
             store_approval_service.submit_issue, db, request_id, payload.issued, payload.decision, payload.actor.strip(),
-            radish_qms_client,
+            sap_goods_movement_client,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
