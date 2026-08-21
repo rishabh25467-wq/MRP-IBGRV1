@@ -118,6 +118,7 @@ export default function StoreApprovalPage() {
   const [selected, setSelected] = useState(null);
   const [issuedQty, setIssuedQty] = useState({});
   const [submitting, setSubmitting] = useState(false);
+  const [submitElapsed, setSubmitElapsed] = useState(0);
   const [resultMessage, setResultMessage] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [userSearch, setUserSearch] = useState("");
@@ -129,6 +130,26 @@ export default function StoreApprovalPage() {
   const [dateTo, setDateTo] = useState("");
 
   useEffect(() => localStorage.setItem(STORE_NAME_KEY, storeName), [storeName]);
+
+  // Ticks while a Goods Movement POST is in flight (backend now retries up
+  // to 3x with a 5s backoff on transient SAP errors, so this single
+  // request can occasionally take 30-70s - user's explicit ask was to show
+  // a progress bar + message so it never looks frozen the way "Failed -
+  // Radish QMS/SAP unavailable" used to).
+  useEffect(() => {
+    if (!submitting) {
+      setSubmitElapsed(0);
+      return;
+    }
+    const interval = setInterval(() => setSubmitElapsed((s) => s + 1), 1000);
+    return () => clearInterval(interval);
+  }, [submitting]);
+
+  const submitProgressMessage = submitElapsed < 5
+    ? "Recording issued quantities and posting the SAP Goods Movement..."
+    : submitElapsed < 20
+    ? "Still working - SAP is taking a little longer than usual to confirm the movement..."
+    : "Almost there - retrying once more with SAP before giving up...";
 
   const loadRequests = useCallback(async () => {
     setLoading(true);
@@ -658,7 +679,18 @@ export default function StoreApprovalPage() {
               <div className="bg-[#F0FDF9] border border-[#A6F4C5] rounded-sm px-3 py-2 text-xs text-[#027A48]" data-testid="store-issue-movement-notice">
                 Issuing stock records a SAP Goods Movement <strong>{selected.site_id}/{selected.site_id}-RM &rarr; {selected.site_id}/{selected.site_id}-SFG</strong> (fixed by site - not user-chosen). This is LIVE - stock physically moves in SAP the moment you confirm.
               </div>
-              {hasShortfall ? (
+              {submitting ? (
+                <div className="bg-white border border-[#D0D5DD] rounded-sm px-3 py-3 space-y-2" data-testid="store-issue-progress">
+                  <div className="h-1.5 w-full bg-[#EAECF0] rounded-full overflow-hidden">
+                    <div className="h-full w-1/3 bg-[#0E7C86] rounded-full animate-[store-issue-progress_1.1s_ease-in-out_infinite]" />
+                  </div>
+                  <p className="text-xs text-[#344054] flex items-center gap-1.5" data-testid="store-issue-progress-message">
+                    <ArrowClockwise size={12} className="animate-spin text-[#0E7C86]" />
+                    {submitProgressMessage}
+                    <span className="text-[#98A2B3] tabular-nums ml-1" data-testid="store-issue-progress-elapsed">{submitElapsed}s</span>
+                  </p>
+                </div>
+              ) : hasShortfall ? (
                 <>
                   <p className="text-[11px] text-[#B54708]">One or more components are still short of the required quantity. Choose how to proceed:</p>
                   <div className="flex flex-wrap gap-2">

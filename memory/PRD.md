@@ -1,3 +1,11 @@
+## Session update (2026-08-21, part 6) - UI polish: Short-badge popover, unit display, dry-run banner, store-issue progress bar
+
+- **Tooltip → Popover on Production Confirmation "Short" badge**: hover-triggered Tooltip made both the OK and Short badges flash a dark/black background on hover - root cause was shadcn `Badge`'s default variant baking in `hover:bg-primary/80`, never overridden since this page's badges only pass custom bg colors (no `hover:` override). Added `variant="outline"` to every Badge on this page (removes that default hover class + shadow) and swapped the Short badge's hover-Tooltip for a click-triggered Popover (custom white/bordered styling, not the default dark tooltip). Also fixed the popover's "need X" text to include the unit (was only shown on "have X").
+- **"MASS" unit label fixed for display**: SAP's own BOM data returns "MASS" as a dimension/QuantityTypeCode label (not a real unit - confirmed by this session's own SAP schema investigation), which read like a typo to planners. Added a display-only `formatUnit()` helper on Production Confirmation ("MASS" -> "KG"); backend/internal values (unit_code sent to APIs, etc.) untouched.
+- **Store Approval progress bar**: clicking "Confirm Stock Fully Issued"/"Proceed with Partial Stock" now shows an animated progress bar + elapsed-seconds message (escalating wording past 5s/20s) instead of just a disabled button - the backend's 3x retry-with-backoff on the Goods Movement call means this single request can occasionally take 30-70s.
+- Fixed a stale StoreApprovalPage.js banner still saying "Currently DRY RUN only" (superseded by part 5's dry-run-flip weeks ago) - now says "This is LIVE".
+- Self-tested via screenshots (hover vs click on Short badge, unit labels, progress bar with real 0.001 MASS test writes - GACID 265954 confirmed).
+
 ## Session update (2026-08-21, part 5) - Radish QMS fully replaced with direct SAP for Goods Movement
 
 **MAJOR architecture change, user's explicit choice ("direct is needed", "proceed with direct")**: replaced the Radish QMS REST wrapper with a direct SAP SOAP integration for the Store Approval "issue stock" Goods Movement action ONLY (everywhere else - sales forecast via `oms_client.py` - still uses Radish normally, untouched).

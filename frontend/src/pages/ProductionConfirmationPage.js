@@ -17,7 +17,7 @@ import {
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Toaster, toast } from "@/components/ui/sonner";
@@ -52,6 +52,14 @@ const StatCard = ({ icon: Icon, label, value, testId }) => (
 );
 
 const formatQty = (v) => (v == null ? "—" : v.toLocaleString("en-IN", { maximumFractionDigits: 2 }));
+
+// SAP's own BOM data returns "MASS" as the raw unit label (it's actually
+// a dimension/QuantityTypeCode, not a real unit - the Goods Movement bug
+// fix this session confirmed the real SAP unit code is "KGM"/kilogram).
+// Showing the raw "MASS" text to planners reads as a typo/bug - display
+// the real, human-friendly unit instead. Internal values/keys (unit_code
+// sent back to the API, etc.) are untouched - this is a display-only map.
+const formatUnit = (u) => (u === "MASS" ? "KG" : u || "");
 
 const STATUS_TONE = {
   Released: "bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]",
@@ -190,7 +198,7 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
         toast.success(`Confirmation posted to SAP for Lot ${row.production_lot_id}`);
         if (data.byproduct_confirmation) {
           if (data.byproduct_confirmation.success) {
-            toast.success(`By-product ${byproductMatch?.product_id || "quantity"} (${byproductQty ?? 0} ${byproductMatch?.unit_code || ""}) posted to SAP`);
+            toast.success(`By-product ${byproductMatch?.product_id || "quantity"} (${byproductQty ?? 0} ${formatUnit(byproductMatch?.unit_code)}) posted to SAP`);
           } else {
             toast.error(`By-product quantity failed to post: ${data.byproduct_confirmation.logs?.map((l) => l.note).join("; ") || "see history for details"}`);
           }
@@ -224,15 +232,15 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
         </DialogHeader>
         <div className="space-y-3 py-1">
           <div className="text-xs text-[#667085] bg-[#F9FAFB] border border-[#EAECF0] rounded-sm px-3 py-2">
-            Planned: <strong className="text-[#1D2939]">{formatQty(row.planned_quantity)}</strong> {row.unit_code} ·
-            {" "}Open: <strong className="text-[#1D2939]">{formatQty(row.open_quantity)}</strong> {row.unit_code}
+            Planned: <strong className="text-[#1D2939]">{formatQty(row.planned_quantity)}</strong> {formatUnit(row.unit_code)} ·
+            {" "}Open: <strong className="text-[#1D2939]">{formatQty(row.open_quantity)}</strong> {formatUnit(row.unit_code)}
           </div>
           <div>
             <Label className="text-xs font-bold text-[#344054]">Confirmed Output Quantity</Label>
             <Input type="number" value={confirmedQty} onChange={(e) => updateConfirmedQty(e.target.value)} data-testid="confirm-qty-input" />
             {qtyExceedsOpen && (
               <p className="text-xs text-[#B54708] mt-1" data-testid="confirm-qty-exceeds-open-warning">
-                Note: {confirmedQty} exceeds the Open Quantity ({row.open_quantity} {row.unit_code}) - double-check before posting if this isn't intentional over-production.
+                Note: {confirmedQty} exceeds the Open Quantity ({row.open_quantity} {formatUnit(row.unit_code)}) - double-check before posting if this isn't intentional over-production.
               </p>
             )}
           </div>
@@ -249,7 +257,7 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
                     <div className="flex items-center justify-between">
                       <span className="text-[#344054] truncate mr-2">{c.product_id}{c.description ? ` - ${c.description}` : ""}</span>
                       <span className={`shrink-0 tabular-nums ${c.sufficient ? "text-[#027A48]" : c.available_qty === null ? "text-[#98A2B3]" : "text-[#B42318] font-bold"}`}>
-                        {c.available_qty === null ? "no stock data" : `${formatQty(c.available_qty)} / ${formatQty(c.required_qty)} ${c.unit_of_measure || ""}`}
+                        {c.available_qty === null ? "no stock data" : `${formatQty(c.available_qty)} / ${formatQty(c.required_qty)} ${formatUnit(c.unit_of_measure)}`}
                         {c.sufficient ? " ✓" : c.available_qty !== null ? " ✗" : ""}
                       </span>
                     </div>
@@ -260,7 +268,7 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
                       <div className="mt-0.5 pl-2 text-[11px] text-[#667085] space-y-0.5" data-testid={`component-locations-${c.product_id}`}>
                         {c.locations.map((loc, li) => (
                           <div key={li}>
-                            {row.site_id}{loc.warehouse ? ` / ${loc.warehouse}` : ""}{loc.stock_status ? ` (${loc.stock_status})` : ""}: {formatQty(loc.qty)} {c.unit_of_measure || ""}
+                            {row.site_id}{loc.warehouse ? ` / ${loc.warehouse}` : ""}{loc.stock_status ? ` (${loc.stock_status})` : ""}: {formatQty(loc.qty)} {formatUnit(c.unit_of_measure)}
                           </div>
                         ))}
                       </div>
@@ -288,7 +296,7 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
                 <div className="mt-1 text-[#667085]" data-testid="scrap-calc-family">
                   Expected by-product: {scrapCalc.scrap_family.family} ({scrapCalc.scrap_family.expected_byproduct_code})
                   {byproductMatch
-                    ? <span className="text-[#027A48]" data-testid="byproduct-match-found"> · will post {byproductQty ?? 0} {byproductMatch.unit_code} of {byproductMatch.product_id} to SAP</span>
+                    ? <span className="text-[#027A48]" data-testid="byproduct-match-found"> · will post {byproductQty ?? 0} {formatUnit(byproductMatch.unit_code)} of {byproductMatch.product_id} to SAP</span>
                     : canAutoCreateByproduct
                       ? <span className="text-[#0E7C86]" data-testid="byproduct-auto-create"> · no output line exists yet - will auto-create it and post {byproductQty ?? 0} KGM to SAP</span>
                       : <span className="text-[#B54708]" data-testid="byproduct-match-missing"> · no by-product output line found on this lot - only Confirmed Quantity will be posted</span>}
@@ -428,10 +436,10 @@ const HistoryDialog = ({ open, onClose }) => {
                     <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums">{formatQty(e.confirmed_scrap)}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1">{e.confirmation_finished ? "Yes" : "No"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1">
-                      {e.success ? <Badge className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Success</Badge> : <Badge className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>}
+                      {e.success ? <Badge variant="outline" className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Success</Badge> : <Badge variant="outline" className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>}
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1">
-                      {!e.wip_clearing ? "—" : e.wip_clearing.success ? <Badge className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Cleared</Badge> : <Badge className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>}
+                      {!e.wip_clearing ? "—" : e.wip_clearing.success ? <Badge variant="outline" className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Cleared</Badge> : <Badge variant="outline" className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>}
                     </td>
                   </tr>
                 ))}
@@ -1006,11 +1014,11 @@ const CreateOrderTab = ({ actorName }) => {
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{new Date(j.startedAt).toLocaleTimeString("en-IN")}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium">{j.material_id}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{j.site_id}</td>
-                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(j.quantity)} {j.unit_code}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(j.quantity)} {formatUnit(j.unit_code)}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5" data-testid={`active-order-status-${i}`}>
                       {isPaused ? (
                         <>
-                          <Badge className={`border ${
+                          <Badge variant="outline" className={`border ${
                             j.status === "partial_pending_planner" ? "bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]"
                             : "bg-[#FFFAEB] text-[#B54708] border-[#FEDF89]"
                           }`}>
@@ -1055,16 +1063,16 @@ const CreateOrderTab = ({ actorName }) => {
                             {j.storeRequest.components.map((c) => (
                               <tr key={c.product_id}>
                                 <td className="border border-[#FEDF89] px-2 py-1 align-top">{c.product_id}{c.description ? ` - ${c.description}` : ""}</td>
-                                <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums align-top">{formatQty(c.required_qty)} {c.unit_of_measure || ""}</td>
+                                <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums align-top">{formatQty(c.required_qty)} {formatUnit(c.unit_of_measure)}</td>
                                 <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums align-top">
                                   {(c.locations && c.locations.length > 0) ? c.locations.map((loc, li) => (
-                                    <div key={li}>{loc.warehouse || (loc.site ? loc.site.split("-").pop() : "Unknown Warehouse")}{loc.stock_status ? ` (${loc.stock_status})` : ""}: {formatQty(loc.qty)} {c.unit_of_measure || ""}</div>
+                                    <div key={li}>{loc.warehouse || (loc.site ? loc.site.split("-").pop() : "Unknown Warehouse")}{loc.stock_status ? ` (${loc.stock_status})` : ""}: {formatQty(loc.qty)} {formatUnit(c.unit_of_measure)}</div>
                                   )) : "no stock at this site"}
                                 </td>
                                 {j.status === "partial_pending_planner" && (
                                   <>
-                                    <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums align-top">{formatQty(c.issued_qty)} {c.unit_of_measure || ""}</td>
-                                    <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums font-bold text-[#B42318] align-top">{formatQty(c.shortfall)} {c.unit_of_measure || ""}</td>
+                                    <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums align-top">{formatQty(c.issued_qty)} {formatUnit(c.unit_of_measure)}</td>
+                                    <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums font-bold text-[#B42318] align-top">{formatQty(c.shortfall)} {formatUnit(c.unit_of_measure)}</td>
                                   </>
                                 )}
                               </tr>
@@ -1117,10 +1125,10 @@ const CreateOrderTab = ({ actorName }) => {
                 <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums">{h.quantity ?? "—"}</td>
                 <td className="border border-[#D0D5DD] px-2 py-1">
                   {h.type !== "proposal_created"
-                    ? h.success ? <Badge className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Released</Badge> : <Badge className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>
+                    ? h.success ? <Badge variant="outline" className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Released</Badge> : <Badge variant="outline" className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>
                     : h.production_order_id
-                      ? h.released ? <Badge className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Released</Badge> : <Badge className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Release Failed</Badge>
-                      : <Badge className="bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]">Created</Badge>}
+                      ? h.released ? <Badge variant="outline" className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Released</Badge> : <Badge variant="outline" className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Release Failed</Badge>
+                      : <Badge variant="outline" className="bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]">Created</Badge>}
                 </td>
               </tr>
             ))}
@@ -1324,13 +1332,13 @@ export default function ProductionConfirmationPage() {
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{r.main_output_product || "—"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">{r.site_id || "—"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
-                      <Badge className={`${STATUS_TONE[r.life_cycle_status_label] || "bg-slate-100 text-slate-600 border-slate-200"} border`}>{r.life_cycle_status_label}</Badge>
+                      <Badge variant="outline" className={`${STATUS_TONE[r.life_cycle_status_label] || "bg-slate-100 text-slate-600 border-slate-200"} border`}>{r.life_cycle_status_label}</Badge>
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">{r.reporting_point_id || "—"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(r.planned_quantity)}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(r.total_confirmed_quantity)}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums font-bold text-[#B54708]">{formatQty(r.open_quantity)}</td>
-                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">{r.unit_code || "—"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">{formatUnit(r.unit_code) || "—"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{r.confirmation_finished ? "Yes" : "No"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
                       {!stock ? (
@@ -1338,24 +1346,23 @@ export default function ProductionConfirmationPage() {
                       ) : !stock.checked ? (
                         <span className="text-[11px] text-[#98A2B3]" data-testid={`stock-badge-unknown-${i}`}>No BOM cached</span>
                       ) : stock.sufficient_all ? (
-                        <Badge className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6] border" data-testid={`stock-badge-ok-${i}`}>OK</Badge>
+                        <Badge variant="outline" className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6] border" data-testid={`stock-badge-ok-${i}`}>OK</Badge>
                       ) : (
-                        <TooltipProvider>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Badge className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA] border cursor-help" data-testid={`stock-badge-short-${i}`}>
-                                Short ({stock.short_components.length})
-                              </Badge>
-                            </TooltipTrigger>
-                            <TooltipContent data-testid={`stock-tooltip-${i}`}>
-                              {stock.short_components.map((c) => (
-                                <div key={c.product_id}>
-                                  {c.product_id}: need {formatQty(c.required_qty)}, have {c.available_qty === null ? "no data" : formatQty(c.available_qty)} {c.unit_of_measure || ""}
-                                </div>
-                              ))}
-                            </TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Badge variant="outline" className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA] border cursor-pointer" data-testid={`stock-badge-short-${i}`}>
+                              Short ({stock.short_components.length})
+                            </Badge>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-auto max-w-sm bg-white border border-[#D0D5DD] text-[#1D2939] shadow-lg p-3 text-xs space-y-1" data-testid={`stock-tooltip-${i}`}>
+                            <div className="font-bold font-heading uppercase tracking-wide text-[10px] text-[#667085] mb-1">Short Components</div>
+                            {stock.short_components.map((c) => (
+                              <div key={c.product_id}>
+                                {c.product_id}: need {formatQty(c.required_qty)} {formatUnit(c.unit_of_measure)}, have {c.available_qty === null ? "no data" : `${formatQty(c.available_qty)} ${formatUnit(c.unit_of_measure)}`}
+                              </div>
+                            ))}
+                          </PopoverContent>
+                        </Popover>
                       )}
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
