@@ -656,7 +656,7 @@ export default function StoreApprovalPage() {
           {isPending && !resultMessage && (
             <div className="space-y-2">
               <div className="bg-[#F0FDF9] border border-[#A6F4C5] rounded-sm px-3 py-2 text-xs text-[#027A48]" data-testid="store-issue-movement-notice">
-                Issuing stock records a SAP Goods Movement <strong>{selected.site_id}/{selected.site_id}-RM &rarr; {selected.site_id}/{selected.site_id}-SFG</strong> (fixed by site - not user-chosen). Currently DRY RUN only, nothing physically moves in SAP yet.
+                Issuing stock records a SAP Goods Movement <strong>{selected.site_id}/{selected.site_id}-RM &rarr; {selected.site_id}/{selected.site_id}-SFG</strong> (fixed by site - not user-chosen). This is LIVE - stock physically moves in SAP the moment you confirm.
               </div>
               {hasShortfall ? (
                 <>
