@@ -2469,6 +2469,16 @@ async def list_store_requests():
     return {"requests": await asyncio.to_thread(store_approval_service.list_requests, db)}
 
 
+@api_router.get("/store-requests/journal")
+async def get_store_requests_journal():
+    """Every store_requests doc regardless of status (pending, awaiting
+    requester, resolved, cancelled) - the store team's full history/
+    audit log, filtered/sorted/searched client-side since the volume is
+    low. Declared BEFORE /store-requests/{request_id} so FastAPI matches
+    this static path first instead of treating "journal" as a request_id."""
+    return {"requests": await asyncio.to_thread(store_approval_service.list_all_requests, db)}
+
+
 @api_router.get("/store-requests/{request_id}")
 async def get_store_request_public(request_id: str):
     doc = await asyncio.to_thread(store_approval_service.get_request, db, request_id)

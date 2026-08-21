@@ -989,7 +989,7 @@ const CreateOrderTab = ({ actorName }) => {
                                 <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums align-top">{formatQty(c.required_qty)} {c.unit_of_measure || ""}</td>
                                 <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums align-top">
                                   {(c.locations && c.locations.length > 0) ? c.locations.map((loc, li) => (
-                                    <div key={li}>{loc.warehouse || "Unknown Warehouse"}{loc.stock_status ? ` (${loc.stock_status})` : ""}: {formatQty(loc.qty)} {c.unit_of_measure || ""}</div>
+                                    <div key={li}>{loc.warehouse || (loc.site ? loc.site.split("-").pop() : "Unknown Warehouse")}{loc.stock_status ? ` (${loc.stock_status})` : ""}: {formatQty(loc.qty)} {c.unit_of_measure || ""}</div>
                                   )) : "no stock at this site"}
                                 </td>
                                 {j.status === "partial_pending_planner" && (

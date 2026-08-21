@@ -1,0 +1,25 @@
+{
+  "summary": "Tested ONLY the new Store Approval journal/filter/sort/search feature + legacy location fallback (per request). Backend: 9/9 pytest cases pass on GET /api/store-requests/journal vs GET /api/store-requests (queue) - journal returns all 4 statuses, queue correctly limited to pending/partial_pending_planner, route not swallowed by /store-requests/{request_id}, legacy {site,qty} and new {warehouse,stock_status,qty} location shapes preserved verbatim, resolved-request re-issue correctly rejected with 400, no ObjectId leakage. Frontend /storeapproval: queue/journal tab toggle, all 4 search kinds (material_id, site, requester, component product_id AND description - case-insensitive), Status filter, Site filter, filter+filter and filter+search combinations, sort toggling on created_at/material_id/quantity (order verified, caret icon flips), read-only detail for resolved/cancelled (no issued-qty inputs, no submit buttons), 'Back to queue' preserves the active tab in BOTH directions. Legacy fallback verified: seeded legacy doc renders 'P2: 2 KG' (not 'Unknown Warehouse'); new-shape doc renders 'QA Main Warehouse (Unrestricted): 2 KG'; the REAL pending BK-0021 doc now renders P1/P2/P7 instead of Unknown Warehouse. No console errors. All 4 seeded test docs deleted; the 3 real Ankit docs untouched (verified post-cleanup).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/storeapproval detail - legacy docs", "issues": ["Legacy fallback can render duplicate labels for a component (real BK-0021 shows 'P2: 836.36 MASS' and 'P2: 4,000 MASS', 'P7:' twice) because pre-migration rows were per-stock-status but only carry the site code. Cosmetic/low - consider appending an index or the row's stock_status when present, or grouping-summing duplicates."]},
+      {"screen": "/storeapproval list toolbar", "issues": ["Search input has no 'Search' Label while Status/Site/Your Name do, so the toolbar's label row is visually inconsistent (minor)."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_store_journal.py", "/app/test_reports/pytest/journal_results.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Journal endpoint has no pagination/limit - fine at current volume (3 docs) as documented, but list_all_requests(db) will return the entire collection unbounded; add a limit/skip before the journal grows to thousands.",
+    "Note for future runs: creating/editing files under /app/backend (including tests/) triggers the uvicorn WatchFiles reload, and startup blocks on SAP background refreshes with 30s connect timeouts - the first pytest run failed 4/9 purely from that reload (all passed on re-run). Prefer writing seed scripts outside /app/backend."
+  ],
+  "updated_files": ["/app/backend/tests/test_store_journal.py"],
+  "success_rate": {"backend": "100% (9/9)", "frontend": "100% (all journal/search/filter/sort/legacy-fallback checks passed)"},
+  "seed_data_creation": "4 synthetic store_requests (TEST_JOURNAL_* for pytest, TESTJ_1..4 for UI) covering pending/partial_pending_planner/resolved/cancelled and legacy+new location shapes. ALL deleted after testing - store_requests now holds exactly the 3 real Ankit docs. No background_jobs created.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Journal feature is clean. Reusable pytest suite at /app/backend/tests/test_store_journal.py (self-seeding + self-cleaning, TEST_JOURNAL_ prefix); run with -n 0. UI seed helper pattern: insert store_requests docs with _id prefix TESTJ_ and delete by regex afterwards. Do not delete the 3 real 'Ankit' pending docs.",
+  "rca_of_the_issue": "Initial 4 pytest failures were environment-induced, not product defects: writing the test file into /app/backend triggered a backend hot reload whose startup blocks on unreachable SAP OData endpoints (30s connect timeouts), causing 60s read timeouts on the API. Re-run after the reload settled: 9/9 pass."
+}

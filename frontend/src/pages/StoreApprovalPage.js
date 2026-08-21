@@ -1,11 +1,12 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import axios from "axios";
 import "@/App.css";
-import { Package, ArrowLeft, ArrowClockwise, WarningCircle } from "@phosphor-icons/react";
+import { Package, ArrowLeft, ArrowClockwise, WarningCircle, CaretUp, CaretDown, MagnifyingGlass } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Toaster, toast } from "@/components/ui/sonner";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -20,11 +21,18 @@ const LocationBreakdown = ({ locations, unit }) => {
   }
   return (
     <div className="space-y-0.5">
-      {locations.map((loc, i) => (
-        <div key={i}>
-          <span className="text-[#667085]">{loc.warehouse || "Unknown Warehouse"}{loc.stock_status ? ` (${loc.stock_status})` : ""}:</span> {formatQty(loc.qty)} {unit || ""}
-        </div>
-      ))}
+      {locations.map((loc, i) => {
+        // Requests created before the warehouse/stock_status fields were
+        // added froze the OLD {site, qty} shape into their doc forever -
+        // fall back to the (unscoped) site code instead of a confusing
+        // "Unknown Warehouse" for those legacy, already-open requests.
+        const label = loc.warehouse || (loc.site ? loc.site.split("-").pop() : "Unknown Warehouse");
+        return (
+          <div key={i}>
+            <span className="text-[#667085]">{label}{loc.stock_status ? ` (${loc.stock_status})` : ""}:</span> {formatQty(loc.qty)} {unit || ""}
+          </div>
+        );
+      })}
     </div>
   );
 };
@@ -32,16 +40,50 @@ const LocationBreakdown = ({ locations, unit }) => {
 const STATUS_BADGE = {
   pending: { label: "Awaiting Store", tone: "bg-[#FFFAEB] text-[#B54708] border-[#FEDF89]" },
   partial_pending_planner: { label: "Awaiting Requester", tone: "bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]" },
+  resolved: { label: "Resolved", tone: "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]" },
+  cancelled: { label: "Cancelled", tone: "bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]" },
 };
+
+// Free-text search across every field that matters, not just Material -
+// user's explicit ask ("search by any field").
+const matchesSearch = (r, term) => {
+  if (!term) return true;
+  const haystack = [
+    r.material_id, r.site_id, r.requester, r.production_proposal_id, r.status,
+    r.store_actor, r.planner_actor,
+    ...(r.components || []).flatMap((c) => [c.product_id, c.description]),
+  ].filter(Boolean).join(" ").toLowerCase();
+  return haystack.includes(term.toLowerCase());
+};
+
+const SortableHeader = ({ label, field, sortField, sortDir, onSort }) => (
+  <th
+    className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide cursor-pointer select-none"
+    onClick={() => onSort(field)}
+    data-testid={`store-journal-sort-${field}`}
+  >
+    <span className="inline-flex items-center gap-1">
+      {label}
+      {sortField === field && (sortDir === "asc" ? <CaretUp size={11} weight="bold" /> : <CaretDown size={11} weight="bold" />)}
+    </span>
+  </th>
+);
 
 export default function StoreApprovalPage() {
   const [storeName, setStoreName] = useState(() => localStorage.getItem(STORE_NAME_KEY) || "");
+  const [viewMode, setViewMode] = useState("queue"); // "queue" | "journal"
   const [requests, setRequests] = useState([]);
+  const [journalRequests, setJournalRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(null);
   const [issuedQty, setIssuedQty] = useState({});
   const [submitting, setSubmitting] = useState(false);
   const [resultMessage, setResultMessage] = useState(null);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [siteFilter, setSiteFilter] = useState("all");
+  const [sortField, setSortField] = useState("created_at");
+  const [sortDir, setSortDir] = useState("desc");
 
   useEffect(() => localStorage.setItem(STORE_NAME_KEY, storeName), [storeName]);
 
@@ -57,11 +99,54 @@ export default function StoreApprovalPage() {
     }
   }, []);
 
+  const loadJournal = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data } = await axios.get(`${API}/store-requests/journal`);
+      setJournalRequests(data.requests);
+    } catch {
+      toast.error("Failed to load the requests journal");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
-    loadRequests();
-    const interval = setInterval(loadRequests, 8000);
+    const refresh = () => (viewMode === "journal" ? loadJournal() : loadRequests());
+    refresh();
+    const interval = setInterval(refresh, 8000);
     return () => clearInterval(interval);
-  }, [loadRequests]);
+  }, [viewMode, loadRequests, loadJournal]);
+
+  const handleSort = (field) => {
+    if (sortField === field) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortField(field);
+      setSortDir(field === "created_at" ? "desc" : "asc");
+    }
+  };
+
+  const rawList = viewMode === "journal" ? journalRequests : requests;
+  const siteOptions = useMemo(() => Array.from(new Set(rawList.map((r) => r.site_id).filter(Boolean))).sort(), [rawList]);
+
+  const displayedRequests = useMemo(() => {
+    let list = rawList.filter((r) => matchesSearch(r, searchTerm));
+    if (statusFilter !== "all") list = list.filter((r) => r.status === statusFilter);
+    if (siteFilter !== "all") list = list.filter((r) => r.site_id === siteFilter);
+    const dir = sortDir === "asc" ? 1 : -1;
+    list = [...list].sort((a, b) => {
+      let va = a[sortField];
+      let vb = b[sortField];
+      if (sortField === "created_at") { va = new Date(va).getTime(); vb = new Date(vb).getTime(); }
+      if (typeof va === "string") va = va.toLowerCase();
+      if (typeof vb === "string") vb = vb.toLowerCase();
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      return va < vb ? -dir : va > vb ? dir : 0;
+    });
+    return list;
+  }, [rawList, searchTerm, statusFilter, siteFilter, sortField, sortDir]);
 
   const openRequest = (r) => {
     setSelected(r);
@@ -74,7 +159,7 @@ export default function StoreApprovalPage() {
   const backToQueue = () => {
     setSelected(null);
     setResultMessage(null);
-    loadRequests();
+    viewMode === "journal" ? loadJournal() : loadRequests();
   };
 
   if (!selected) {
@@ -90,7 +175,7 @@ export default function StoreApprovalPage() {
             <span className="font-sans text-[12px] text-white/70">Process stock requests from Production Planning</span>
           </div>
         </header>
-        <main className="max-w-4xl mx-auto p-4 sm:p-6 space-y-4">
+        <main className="max-w-6xl mx-auto p-4 sm:p-6 space-y-4">
           <div className="flex flex-wrap items-end gap-3">
             <div>
               <Label className="text-xs font-bold text-[#344054]">Your Name</Label>
@@ -102,22 +187,80 @@ export default function StoreApprovalPage() {
                 data-testid="store-actor-name-input"
               />
             </div>
-            <Button variant="outline" onClick={loadRequests} data-testid="store-refresh-button">
+            <div className="flex gap-1 bg-white border border-[#D0D5DD] rounded-sm p-1">
+              <button
+                type="button"
+                onClick={() => setViewMode("queue")}
+                className={`px-3 py-1.5 text-xs font-bold rounded-sm ${viewMode === "queue" ? "bg-[#0E7C86] text-white" : "text-[#344054]"}`}
+                data-testid="store-view-mode-queue"
+              >
+                Pending Queue
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("journal")}
+                className={`px-3 py-1.5 text-xs font-bold rounded-sm ${viewMode === "journal" ? "bg-[#0E7C86] text-white" : "text-[#344054]"}`}
+                data-testid="store-view-mode-journal"
+              >
+                Journal (All Requests)
+              </button>
+            </div>
+            <div className="relative">
+              <MagnifyingGlass size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
+              <Input
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Search material, site, requester, component..."
+                className="w-64 bg-white pl-7"
+                data-testid="store-search-input"
+              />
+            </div>
+            <div>
+              <Label className="text-xs font-bold text-[#344054]">Status</Label>
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="w-44 bg-white" data-testid="store-status-filter-trigger"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all" data-testid="store-status-filter-all">All Statuses</SelectItem>
+                  {Object.entries(STATUS_BADGE).map(([key, v]) => (
+                    <SelectItem key={key} value={key} data-testid={`store-status-filter-${key}`}>{v.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs font-bold text-[#344054]">Site</Label>
+              <Select value={siteFilter} onValueChange={setSiteFilter}>
+                <SelectTrigger className="w-32 bg-white" data-testid="store-site-filter-trigger"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all" data-testid="store-site-filter-all">All Sites</SelectItem>
+                  {siteOptions.map((s) => (
+                    <SelectItem key={s} value={s} data-testid={`store-site-filter-${s}`}>{s}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button variant="outline" onClick={() => (viewMode === "journal" ? loadJournal() : loadRequests())} data-testid="store-refresh-button">
               <ArrowClockwise size={14} className="mr-1.5" /> Refresh
             </Button>
+            <span className="text-xs text-[#667085] ml-auto" data-testid="store-result-count">{displayedRequests.length} request(s)</span>
           </div>
 
-          <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-hidden">
+          <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-auto">
             <table className="w-full text-[13px] border-collapse" data-testid="store-requests-table">
               <thead>
                 <tr>
-                  {["Requested", "Material", "Site", "Qty", "Requester", "Short Components", "Status", ""].map((h) => (
-                    <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">{h}</th>
-                  ))}
+                  <SortableHeader label="Requested" field="created_at" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                  <SortableHeader label="Material" field="material_id" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                  <SortableHeader label="Site" field="site_id" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                  <SortableHeader label="Qty" field="quantity" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                  <SortableHeader label="Requester" field="requester" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                  <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">Short Components</th>
+                  <SortableHeader label="Status" field="status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                  <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide"></th>
                 </tr>
               </thead>
               <tbody>
-                {requests.map((r, i) => (
+                {displayedRequests.map((r, i) => (
                   <tr key={r._id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`store-request-row-${i}`}>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{new Date(r.created_at).toLocaleString("en-IN")}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium">{r.material_id}</td>
@@ -135,8 +278,10 @@ export default function StoreApprovalPage() {
                     </td>
                   </tr>
                 ))}
-                {!loading && requests.length === 0 && (
-                  <tr><td colSpan={8} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="store-requests-empty-state">No pending stock requests right now.</td></tr>
+                {!loading && displayedRequests.length === 0 && (
+                  <tr><td colSpan={8} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="store-requests-empty-state">
+                    {rawList.length === 0 ? (viewMode === "journal" ? "No requests recorded yet." : "No pending stock requests right now.") : "No requests match your filters."}
+                  </td></tr>
                 )}
               </tbody>
             </table>

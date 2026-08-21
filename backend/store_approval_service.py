@@ -76,6 +76,12 @@ def list_requests(db) -> list:
     return list(db[COLLECTION].find({"status": {"$in": ["pending", "partial_pending_planner"]}}).sort("created_at", -1))
 
 
+def list_all_requests(db) -> list:
+    """Full journal/history for /storeapproval - every request regardless
+    of status, most recent first."""
+    return list(db[COLLECTION].find({}).sort("created_at", -1))
+
+
 def get_request(db, request_id: str):
     return db[COLLECTION].find_one({"_id": request_id})
 
