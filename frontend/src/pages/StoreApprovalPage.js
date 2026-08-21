@@ -49,7 +49,7 @@ const STATUS_BADGE = {
 const matchesSearch = (r, term) => {
   if (!term) return true;
   const haystack = [
-    r._id, r.material_id, r.site_id, r.requester, r.production_proposal_id, r.status,
+    r._id, r.issue_id, r.material_id, r.site_id, r.requester, r.production_proposal_id, r.status,
     r.store_actor, r.planner_actor,
     ...(r.components || []).flatMap((c) => [c.product_id, c.description]),
   ].filter(Boolean).join(" ").toLowerCase();
@@ -82,10 +82,13 @@ export default function StoreApprovalPage() {
   const [submitting, setSubmitting] = useState(false);
   const [resultMessage, setResultMessage] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [userSearch, setUserSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [siteFilter, setSiteFilter] = useState("all");
   const [sortField, setSortField] = useState("created_at");
   const [sortDir, setSortDir] = useState("desc");
+  const [availableBins, setAvailableBins] = useState([]);
+  const [addingCustomBin, setAddingCustomBin] = useState(false);
 
   useEffect(() => localStorage.setItem(STORE_NAME_KEY, storeName), [storeName]);
 
@@ -114,7 +117,7 @@ export default function StoreApprovalPage() {
   }, []);
 
   useEffect(() => {
-    const refresh = () => (viewMode === "journal" ? loadJournal() : loadRequests());
+    const refresh = () => (viewMode === "queue" ? loadRequests() : loadJournal());
     refresh();
     const interval = setInterval(refresh, 8000);
     return () => clearInterval(interval);
@@ -129,7 +132,7 @@ export default function StoreApprovalPage() {
     }
   };
 
-  const rawList = viewMode === "journal" ? journalRequests : requests;
+  const rawList = viewMode === "queue" ? requests : journalRequests;
   const siteOptions = useMemo(() => Array.from(new Set(rawList.map((r) => r.site_id).filter(Boolean))).sort(), [rawList]);
 
   const displayedRequests = useMemo(() => {
@@ -150,6 +153,38 @@ export default function StoreApprovalPage() {
     return list;
   }, [rawList, searchTerm, statusFilter, siteFilter, sortField, sortDir]);
 
+  const movementRows = useMemo(() => {
+    // Register of every physically-issued component across all requests -
+    // one row per component-issue (Aug 2026, "Movement History" tab).
+    const rows = [];
+    journalRequests.forEach((r) => {
+      (r.components || []).forEach((c) => {
+        if (c.issued_qty == null) return; // this request was never issued (still pending)
+        rows.push({
+          key: `${r._id}:${c.product_id}`,
+          request_id: r._id, issue_id: r.issue_id, site_id: r.site_id,
+          material_id: r.material_id, product_id: c.product_id, description: c.description,
+          issued_qty: c.issued_qty, unit_of_measure: c.unit_of_measure,
+          warehouse: c.issued_from_warehouse, owner: c.issued_from_owner,
+          target_bin: r.target_logistics_area_id,
+          requester: r.requester, store_actor: r.store_actor,
+          movement: c.goods_movement, when: r.resolved_at || r.updated_at,
+        });
+      });
+    });
+    let list = rows;
+    if (siteFilter !== "all") list = list.filter((row) => row.site_id === siteFilter);
+    if (searchTerm) {
+      const t = searchTerm.toLowerCase();
+      list = list.filter((row) => [row.product_id, row.description, row.material_id, row.request_id, row.issue_id].filter(Boolean).join(" ").toLowerCase().includes(t));
+    }
+    if (userSearch) {
+      const t = userSearch.toLowerCase();
+      list = list.filter((row) => [row.requester, row.store_actor].filter(Boolean).join(" ").toLowerCase().includes(t));
+    }
+    return list.sort((a, b) => new Date(b.when || 0) - new Date(a.when || 0));
+  }, [journalRequests, siteFilter, searchTerm, userSearch]);
+
   const openRequest = (r) => {
     setSelected(r);
     setResultMessage(null);
@@ -164,12 +199,21 @@ export default function StoreApprovalPage() {
     setIssuedQty(defaults);
     setSourceWarehouse(warehouseDefaults);
     setTargetBin("");
+    setAddingCustomBin(false);
+    setAvailableBins([]);
+    axios.get(`${API}/store-requests/target-bins`, { params: { site_id: r.site_id } })
+      .then(({ data }) => {
+        const bins = data.bins || [];
+        setAvailableBins(bins);
+        if (bins.length === 0) setAddingCustomBin(true); // nothing to pick from yet at this site
+      })
+      .catch(() => setAddingCustomBin(true));
   };
 
   const backToQueue = () => {
     setSelected(null);
     setResultMessage(null);
-    viewMode === "journal" ? loadJournal() : loadRequests();
+    viewMode === "queue" ? loadRequests() : loadJournal();
   };
 
   if (!selected) {
@@ -187,16 +231,18 @@ export default function StoreApprovalPage() {
         </header>
         <main className="max-w-6xl mx-auto p-4 sm:p-6 space-y-4">
           <div className="flex flex-wrap items-end gap-3">
-            <div>
-              <Label className="text-xs font-bold text-[#344054]">Your Name</Label>
-              <Input
-                value={storeName}
-                onChange={(e) => setStoreName(e.target.value)}
-                placeholder="Store user name..."
-                className="w-56 bg-white"
-                data-testid="store-actor-name-input"
-              />
-            </div>
+            {viewMode !== "movements" && (
+              <div>
+                <Label className="text-xs font-bold text-[#344054]">Your Name</Label>
+                <Input
+                  value={storeName}
+                  onChange={(e) => setStoreName(e.target.value)}
+                  placeholder="Store user name..."
+                  className="w-56 bg-white"
+                  data-testid="store-actor-name-input"
+                />
+              </div>
+            )}
             <div className="flex gap-1 bg-white border border-[#D0D5DD] rounded-sm p-1">
               <button
                 type="button"
@@ -214,31 +260,59 @@ export default function StoreApprovalPage() {
               >
                 Journal (All Requests)
               </button>
-            </div>
-            <div className="relative">
-              <MagnifyingGlass size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
-              <Input
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Search material, site, requester, component..."
-                className="w-64 bg-white pl-7"
-                data-testid="store-search-input"
-              />
+              <button
+                type="button"
+                onClick={() => setViewMode("movements")}
+                className={`px-3 py-1.5 text-xs font-bold rounded-sm ${viewMode === "movements" ? "bg-[#0E7C86] text-white" : "text-[#344054]"}`}
+                data-testid="store-view-mode-movements"
+              >
+                Movement History
+              </button>
             </div>
             <div>
-              <Label className="text-xs font-bold text-[#344054]">Status</Label>
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="w-44 bg-white" data-testid="store-status-filter-trigger"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all" data-testid="store-status-filter-all">All Statuses</SelectItem>
-                  {Object.entries(STATUS_BADGE).map(([key, v]) => (
-                    <SelectItem key={key} value={key} data-testid={`store-status-filter-${key}`}>{v.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label className="text-xs font-bold text-[#344054]">Search</Label>
+              <div className="relative">
+                <MagnifyingGlass size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
+                <Input
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder={viewMode === "movements" ? "Search item / material / request ID..." : "Search material, site, requester, component..."}
+                  className="w-64 bg-white pl-7"
+                  data-testid="store-search-input"
+                />
+              </div>
             </div>
+            {viewMode === "movements" && (
+              <div>
+                <Label className="text-xs font-bold text-[#344054]">Requester / Issued By</Label>
+                <div className="relative">
+                  <MagnifyingGlass size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
+                  <Input
+                    value={userSearch}
+                    onChange={(e) => setUserSearch(e.target.value)}
+                    placeholder="Search a name..."
+                    className="w-56 bg-white pl-7"
+                    data-testid="store-movements-user-search-input"
+                  />
+                </div>
+              </div>
+            )}
+            {viewMode !== "movements" && (
+              <div>
+                <Label className="text-xs font-bold text-[#344054]">Status</Label>
+                <Select value={statusFilter} onValueChange={setStatusFilter}>
+                  <SelectTrigger className="w-44 bg-white" data-testid="store-status-filter-trigger"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all" data-testid="store-status-filter-all">All Statuses</SelectItem>
+                    {Object.entries(STATUS_BADGE).map(([key, v]) => (
+                      <SelectItem key={key} value={key} data-testid={`store-status-filter-${key}`}>{v.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div>
-              <Label className="text-xs font-bold text-[#344054]">Site</Label>
+              <Label className="text-xs font-bold text-[#344054]">Plant / Site</Label>
               <Select value={siteFilter} onValueChange={setSiteFilter}>
                 <SelectTrigger className="w-32 bg-white" data-testid="store-site-filter-trigger"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -249,17 +323,61 @@ export default function StoreApprovalPage() {
                 </SelectContent>
               </Select>
             </div>
-            <Button variant="outline" onClick={() => (viewMode === "journal" ? loadJournal() : loadRequests())} data-testid="store-refresh-button">
+            <Button variant="outline" onClick={() => (viewMode === "queue" ? loadRequests() : loadJournal())} data-testid="store-refresh-button">
               <ArrowClockwise size={14} className="mr-1.5" /> Refresh
             </Button>
-            <span className="text-xs text-[#667085] ml-auto" data-testid="store-result-count">{displayedRequests.length} request(s)</span>
+            <span className="text-xs text-[#667085] ml-auto" data-testid="store-result-count">
+              {viewMode === "movements" ? `${movementRows.length} movement(s)` : `${displayedRequests.length} request(s)`}
+            </span>
           </div>
 
+          {viewMode === "movements" ? (
+            <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-auto">
+              <table className="w-full text-[12px] border-collapse" data-testid="store-movements-table">
+                <thead>
+                  <tr>
+                    {["Request ID", "Issue ID", "Site", "Item", "Qty Issued", "From Warehouse", "To Bin", "Requested By", "Issued By", "SAP Movement", "When"].map((h) => (
+                      <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {movementRows.map((row, i) => (
+                    <tr key={row.key} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`store-movement-row-${i}`}>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono font-bold text-[#175CD3]">{row.request_id}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono text-[#0E7C86]">{row.issue_id || "\u2014"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.site_id}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.product_id}{row.description ? ` - ${row.description}` : ""}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(row.issued_qty)} {row.unit_of_measure || ""}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.warehouse ? `${row.warehouse}${row.owner ? ` \u00b7 ${row.owner}` : ""}` : "\u2014"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.target_bin || "\u2014"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.requester || "\u2014"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.store_actor || "\u2014"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5 text-[11px]">
+                        {!row.movement?.attempted ? (
+                          <span className="text-[#98A2B3]">not moved</span>
+                        ) : row.movement.ok ? (
+                          <span className="text-[#175CD3] font-bold">{row.movement.dry_run ? "Dry Run OK" : "Moved"} ({row.movement.external_id})</span>
+                        ) : (
+                          <span className="text-[#B42318]">Failed</span>
+                        )}
+                      </td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5 whitespace-nowrap">{row.when ? new Date(row.when).toLocaleString("en-IN") : "\u2014"}</td>
+                    </tr>
+                  ))}
+                  {movementRows.length === 0 && (
+                    <tr><td colSpan={11} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="store-movements-empty-state">No stock movements recorded yet.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          ) : (
           <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-auto">
             <table className="w-full text-[13px] border-collapse" data-testid="store-requests-table">
               <thead>
                 <tr>
                   <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">Request ID</th>
+                  <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">Issue ID</th>
                   <SortableHeader label="Requested" field="created_at" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                   <SortableHeader label="Material" field="material_id" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                   <SortableHeader label="Site" field="site_id" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
@@ -273,7 +391,8 @@ export default function StoreApprovalPage() {
               <tbody>
                 {displayedRequests.map((r, i) => (
                   <tr key={r._id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`store-request-row-${i}`}>
-                    <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono font-bold text-[#175CD3]" data-testid={`store-request-id-${i}`}>{r._id}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono font-bold text-[#175CD3] max-w-[110px] truncate" data-testid={`store-request-id-${i}`} title={r._id}>{r._id}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono text-[#0E7C86]" data-testid={`store-issue-id-${i}`}>{r.issue_id || "\u2014"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{new Date(r.created_at).toLocaleString("en-IN")}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium">{r.material_id}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{r.site_id}</td>
@@ -291,13 +410,14 @@ export default function StoreApprovalPage() {
                   </tr>
                 ))}
                 {!loading && displayedRequests.length === 0 && (
-                  <tr><td colSpan={9} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="store-requests-empty-state">
+                  <tr><td colSpan={10} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="store-requests-empty-state">
                     {rawList.length === 0 ? (viewMode === "journal" ? "No requests recorded yet." : "No pending stock requests right now.") : "No requests match your filters."}
                   </td></tr>
                 )}
               </tbody>
             </table>
           </div>
+          )}
         </main>
       </div>
     );
@@ -358,7 +478,7 @@ export default function StoreApprovalPage() {
         </div>
         <span className="font-heading text-[16px] font-bold text-white tracking-tight">Store Approval</span>
       </header>
-      <main className="max-w-3xl mx-auto p-4 sm:p-6 space-y-4">
+      <main className="max-w-6xl mx-auto p-4 sm:p-6 space-y-4">
         <button onClick={backToQueue} className="flex items-center gap-1.5 text-sm text-[#344054] hover:text-[#0E7C86]" data-testid="store-back-to-queue-button">
           <ArrowLeft size={14} weight="bold" /> Back to queue
         </button>
@@ -369,6 +489,9 @@ export default function StoreApprovalPage() {
               <h3 className="font-heading text-sm font-bold text-[#1D2939] uppercase tracking-wide">{selected.material_id} &middot; {formatQty(selected.quantity)} {selected.unit_code}</h3>
               <p className="text-xs text-[#667085]">
                 Request ID <span className="font-mono font-bold text-[#175CD3]" data-testid="store-request-detail-id">{selected._id}</span>
+                {selected.issue_id && (
+                  <> &middot; Issue ID <span className="font-mono font-bold text-[#0E7C86]" data-testid="store-issue-detail-id">{selected.issue_id}</span></>
+                )}
                 {" "}&middot; Site {selected.site_id} &middot; Requested by {selected.requester} &middot; Proposal {selected.production_proposal_id}
               </p>
             </div>
@@ -468,14 +591,40 @@ export default function StoreApprovalPage() {
             <div className="space-y-2">
               <div>
                 <Label className="text-xs font-bold text-[#344054]">Target Bin in SAP (where this stock physically goes - e.g. site's WIP bin)</Label>
-                <Input
-                  value={targetBin}
-                  onChange={(e) => setTargetBin(e.target.value)}
-                  placeholder="e.g. P2-WIP"
-                  className="h-8 w-96 bg-white"
-                  data-testid="store-target-bin-input"
-                />
-                <p className="text-[11px] text-[#667085] mt-0.5">Leaving this or a component's "Issue From" warehouse blank just skips the SAP stock movement for that component - the approval itself still goes through.</p>
+                {addingCustomBin ? (
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={targetBin}
+                      onChange={(e) => setTargetBin(e.target.value)}
+                      placeholder="e.g. P2-WIP"
+                      className="h-8 w-72 bg-white"
+                      data-testid="store-target-bin-input"
+                      autoFocus
+                    />
+                    {availableBins.length > 0 && (
+                      <button type="button" className="text-[11px] text-[#0E7C86] underline" onClick={() => setAddingCustomBin(false)} data-testid="store-target-bin-back-to-list">
+                        pick from list instead
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <Select
+                    value={targetBin}
+                    onValueChange={(v) => (v === "__custom__" ? setAddingCustomBin(true) : setTargetBin(v))}
+                  >
+                    <SelectTrigger className="h-8 w-72 bg-white" data-testid="store-target-bin-trigger"><SelectValue placeholder="Pick a bin used before at this site" /></SelectTrigger>
+                    <SelectContent>
+                      {availableBins.map((b) => (
+                        <SelectItem key={b} value={b} data-testid={`store-target-bin-option-${b}`}>{b}</SelectItem>
+                      ))}
+                      <SelectItem value="__custom__" data-testid="store-target-bin-option-custom">+ Type a new bin ID...</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+                <p className="text-[11px] text-[#667085] mt-0.5">
+                  {availableBins.length === 0 && !addingCustomBin ? "No bin has been used at this site yet - " : ""}
+                  Leaving this or a component's "Issue From" warehouse blank just skips the SAP stock movement for that component - the approval itself still goes through. This list may eventually be locked to the request's own source warehouse - still being decided.
+                </p>
               </div>
               {hasShortfall ? (
                 <>

@@ -2526,6 +2526,14 @@ async def get_store_requests_journal():
     return {"requests": await asyncio.to_thread(store_approval_service.list_all_requests, db)}
 
 
+@api_router.get("/store-requests/target-bins")
+async def get_store_request_target_bins(site_id: str = Query(...)):
+    """Bin dropdown for a given site (Aug 2026) - see
+    store_approval_service.list_known_target_bins. Also declared before
+    /store-requests/{request_id}, same reason as /journal above."""
+    return {"bins": await asyncio.to_thread(store_approval_service.list_known_target_bins, db, site_id)}
+
+
 @api_router.get("/store-requests/{request_id}")
 async def get_store_request_public(request_id: str):
     doc = await asyncio.to_thread(store_approval_service.get_request, db, request_id)

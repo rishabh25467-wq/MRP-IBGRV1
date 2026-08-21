@@ -1,0 +1,43 @@
+{
+  "summary": "Tested the 3 new Store Approval asks (Issue ID generation, per-site Target Bin dropdown, Movement History tab) end to end. Backend: new pytest suite test_issue_id_and_target_bins.py - 14/14 passed (issue_id shape/persistence, independent ':issue' counter, uniqueness, re-issue rejection, journal payload, target-bins distinct/sorted/site-scoped/empty/422, organic growth after a new bin is typed, plus a light regression smoke of queue/journal/issue-actor validation). Frontend: full Playwright run on /storeapproval - Movement History tab (row-per-issued-component, pending rows correctly excluded, Plant/Site filter, item search, requester/issuer search, Requested By / Issued By names), Target Bin dropdown with '+ Type a new bin ID...' -> text input -> 'pick from list instead' round trip, zero-bin site auto-showing the text input, and a real end-to-end issue that produced Request ID TESTUI_PEND_A + a distinct Issue ID QAUI1-I000001 shown in both the detail header and the Journal Issue ID column, with the Radish QMS dry-run movement succeeding (MOV-D025AC). All seeded test data and counters cleaned up; the real P2 pending request was left untouched.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/store-requests/*", "issue": "Flaky-once observation: first full suite run hit two 60s ReadTimeouts (target-bins and /issue). Root cause was uvicorn --reload restarting the backend because the new test file was written under /app/backend/tests (watched dir), not an app defect - immediate re-run was 3s/14 passed. No product change needed."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "StoreApprovalPage Target Bin Select", "issue": "React console warning: 'Select is changing from uncontrolled to controlled' - caused by value={targetBin || undefined} (line ~604). Cosmetic only, dropdown works; use value={targetBin} with a placeholder instead.", "selector": "[data-testid=store-target-bin-trigger]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/storeapproval Movement History toolbar", "issues": ["Toolbar wraps raggedly at 1920px: the labelled 'Your Name' / 'Plant / Site' controls sit on different baselines from the two unlabelled search inputs, so the requester/issuer search box lands on row 2 under 'Your Name' - looks accidental. Consider labels for both search boxes or a fixed grid.", "'Your Name' input is shown on the Movement History tab where it is meaningless (it is only needed when issuing).", "Legacy uuid Request IDs (pre short-ID data, e.g. bdc0e560-71be-...) wrap over 3 lines and blow up the row height in the Request ID column - consider truncating with a title tooltip."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_issue_id_and_target_bins.py",
+    "/app/backend/tests/_seed_ui_issueid.py",
+    "/app/test_reports/pytest/issue_id_bins.xml"
+  ],
+  "action_items": [
+    "Optional/low: fix the controlled/uncontrolled Select warning on the Target Bin dropdown (value={targetBin || undefined}).",
+    "Optional/low: hide the 'Your Name' input and tidy toolbar alignment on the Movement History tab; truncate long legacy uuid Request IDs."
+  ],
+  "critical_code_review_comments": [
+    "submit_issue() stamps issue_id inside the same $set as the status change and is guarded by the status != 'pending' check, so exactly one issue_id per request - verified by test (2nd issue returns 400 and issue_id is unchanged).",
+    "list_known_target_bins() uses a Mongo distinct with a falsy filter, so nulls/empty strings never reach the dropdown - verified.",
+    "target-bins/journal routes are declared before /store-requests/{request_id}; a regression test now covers 'target-bins' not being swallowed as a request_id.",
+    "StoreApprovalPage.js is 645 lines and growing (3 view modes now); consider splitting the Movement History table and the detail panel into separate components before the next feature."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_issue_id_and_target_bins.py",
+    "/app/backend/tests/_seed_ui_issueid.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Synthetic store_requests tagged TEST_ISSUEID_* (pytest, auto-teardown) and TESTUI_* with sites QAUI1/QAUI2 (UI run) - ALL deleted afterwards, along with the QAUI1/QAUI2 and TESTISSUEID1 counter docs. Verified 0 leftover TEST* docs; only P2/P7 counters and the 5 real store_requests remain.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "New suite /app/backend/tests/test_issue_id_and_target_bins.py covers issue_id + target-bins; it seeds shortfall requests and always uses decision='send_to_planner' so the SAP Proposal->Order resume pipeline is never kicked off. /app/backend/tests/_seed_ui_issueid.py seed|clean gives UI fixtures (QAUI1 has bins, QAUI2 has none) for re-testing the bin dropdown. Note writing files under /app/backend/tests triggers a uvicorn reload - wait ~5s before hitting the API or you'll see spurious timeouts. Real P2 pending request (MAZ42117272-TA, requester Ankit) still un-issued and untouched.",
+  "rca_of_the_issue": "No product defects found this round. The only failures seen were self-inflicted uvicorn --reload restarts from writing the test file into the watched backend dir."
+}

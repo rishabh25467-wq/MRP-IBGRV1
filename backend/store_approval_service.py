@@ -60,9 +60,9 @@ def _trigger_goods_movement(radish_client, owner_party_id, product_id, source_wa
 _SEQUENCE_WIDTH = 6
 
 
-def _next_sequence(db, site_id: str) -> int:
+def _next_sequence(db, counter_key: str) -> int:
     doc = db[COUNTER_COLLECTION].find_one_and_update(
-        {"_id": site_id}, {"$inc": {"seq": 1}}, upsert=True, return_document=True,
+        {"_id": counter_key}, {"$inc": {"seq": 1}}, upsert=True, return_document=True,
     )
     return doc["seq"]
 
@@ -70,6 +70,18 @@ def _next_sequence(db, site_id: str) -> int:
 def _generate_id_for_site(db, site_id: str) -> str:
     seq = _next_sequence(db, site_id)
     return f"{site_id}-{seq:0{_SEQUENCE_WIDTH}d}"
+
+
+def _generate_issue_id_for_site(db, site_id: str) -> str:
+    """Separate from the Request ID (own counter, own key "{site_id}:issue"
+    so its sequence never collides with/skips numbers in the request
+    sequence) - one created every time stock is actually issued (i.e. once
+    per submit_issue() call - a request can only be issued once, see the
+    "no longer pending" guard below), format "{site_id}-I000123" (user's
+    Aug 2026 choice - same shape as the Request ID, "I" marks it as the
+    issue-side reference so the two are never confused when read aloud)."""
+    seq = _next_sequence(db, f"{site_id}:issue")
+    return f"{site_id}-I{seq:0{_SEQUENCE_WIDTH}d}"
 
 
 def ensure_indexes(db) -> None:
@@ -135,6 +147,18 @@ def get_request_by_job(db, job_id: str):
     return db[COLLECTION].find_one({"job_id": job_id}, sort=[("created_at", -1)])
 
 
+def list_known_target_bins(db, site_id: str) -> list:
+    """Every distinct Target Bin a store person has actually typed in for
+    this site so far (Aug 2026) - powers the "Bin list per site" dropdown
+    on /storeapproval. No fixed master list exists yet (user's explicit
+    choice: "give a dropdown for now, fix later per site/user" - it may
+    eventually need to be the SAME warehouse the request came from, still
+    undecided), so this just grows organically: the first time a new bin
+    is typed for a site it's a one-off free-text entry, and every request
+    after that sees it as a dropdown option too."""
+    return sorted(b for b in db[COLLECTION].distinct("target_logistics_area_id", {"site_id": site_id}) if b)
+
+
 def submit_issue(db, request_id: str, issued: list, decision: str, store_actor: str, radish_client=None, target_logistics_area_id: str = None):
     """Store records actual issued quantity per component. If everything
     was issued in full, resolves immediately. If short, the store must pick
@@ -153,7 +177,10 @@ def submit_issue(db, request_id: str, issued: list, decision: str, store_actor: 
     a few real dry runs are reviewed - so nothing physically moves in SAP
     yet, only the SOAP envelope preview is captured for review. A failed/
     skipped movement call NEVER blocks the approval itself - it's recorded
-    on the component for visibility, not a hard gate."""
+    on the component for visibility, not a hard gate. Also generates a
+    separate `issue_id` (Aug 2026, user's explicit choice) - one per
+    submit_issue() call, distinct from the Request ID so the two can't be
+    confused when read aloud to the requester/planner."""
     doc = db[COLLECTION].find_one({"_id": request_id})
     if not doc:
         return None
@@ -189,6 +216,7 @@ def submit_issue(db, request_id: str, issued: list, decision: str, store_actor: 
     update = {
         "components": components, "store_actor": store_actor, "store_decision": decision, "updated_at": now,
         "target_logistics_area_id": target_logistics_area_id,
+        "issue_id": _generate_issue_id_for_site(db, doc["site_id"]),
     }
     if not shortfall_exists:
         update.update({"status": "resolved", "resolution": "full_issue", "resolved_at": now})
