@@ -14,20 +14,15 @@ const STORE_NAME_KEY = "storeApprovalActorName";
 
 const formatQty = (v) => (v == null ? "\u2014" : Number(v).toLocaleString("en-IN", { maximumFractionDigits: 2 }));
 
-// inventory_cache stores full site names like "RADISH TECHNOLOGY-P2" -
-// show just the short site code (after the last "-") to keep the
-// per-location breakdown compact.
-const shortSite = (site) => (site || "").split("-").pop() || site || "?";
-
 const LocationBreakdown = ({ locations, unit }) => {
   if (!locations || locations.length === 0) {
-    return <span className="text-[#98A2B3]">no stock data anywhere</span>;
+    return <span className="text-[#98A2B3]">no stock at this site</span>;
   }
   return (
     <div className="space-y-0.5">
       {locations.map((loc, i) => (
         <div key={i}>
-          <span className="text-[#667085]">{shortSite(loc.site)}:</span> {formatQty(loc.qty)} {unit || ""}
+          <span className="text-[#667085]">{loc.warehouse || "Unknown Warehouse"}{loc.stock_status ? ` (${loc.stock_status})` : ""}:</span> {formatQty(loc.qty)} {unit || ""}
         </div>
       ))}
     </div>
@@ -235,7 +230,7 @@ export default function StoreApprovalPage() {
             <table className="w-full text-[12px] border-collapse" data-testid="store-detail-components-table">
               <thead>
                 <tr>
-                  {["Component", "Required by Production", "In Stock (By Location)", "Issued Qty"].map((h) => (
+                  {["Component", "Required by Production", "In Stock at This Site (By Warehouse)", "Issued Qty"].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">{h}</th>
                   ))}
                 </tr>

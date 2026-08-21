@@ -185,25 +185,28 @@ def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, con
                 continue
             required_qty = round(item["quantity"] * confirmed_quantity, 4)
             locations = stock_by_product.get(item["product_id"])
-            if locations is None:
-                available_qty = None
-            else:
-                # inventory_cache stores full site names like "RADISH TECHNOLOGY-P2"
-                # (company name + site code), never the bare site code - match on
-                # the "-{site_id}" suffix, not exact equality (was always 0 before).
-                available_qty = sum(loc["qty"] for loc in locations if loc.get("site", "").endswith(f"-{site_id}"))
+            # inventory_cache stores full site names like "RADISH TECHNOLOGY-P2"
+            # (company name + site code), never the bare site code - match on
+            # the "-{site_id}" suffix, not exact equality (was always 0 before).
+            site_locations = [loc for loc in locations if (loc.get("site") or "").endswith(f"-{site_id}")] if locations is not None else None
+            available_qty = None if site_locations is None else sum(loc["qty"] for loc in site_locations)
             components.append({
                 "product_id": item["product_id"],
                 "description": item.get("description"),
                 "unit_of_measure": item.get("unit_of_measure"),
                 "required_qty": required_qty,
                 "available_qty": available_qty,
-                # Full raw per-location stock breakdown (not just the
-                # site-scoped sum above) - lets a store user see exactly
-                # WHERE stock sits tenant-wide, not just a single number
-                # for the requested site (user's explicit ask, Store
-                # Approval workflow).
-                "locations": locations or [],
+                # Per-WAREHOUSE (and stock status, e.g. Unrestricted vs
+                # Quality Inspection) breakdown at THIS site only - not
+                # other sites, a store user at P2 can't issue from P7's
+                # stock anyway. stock_status is included because raw SAP
+                # rows can otherwise show what LOOKS like 2 identical
+                # "same warehouse" lines with different quantities - they
+                # are actually 2 different stock statuses in that warehouse.
+                "locations": [
+                    {"warehouse": loc.get("logistics_area"), "stock_status": loc.get("stock_status"), "qty": loc["qty"]}
+                    for loc in (site_locations or [])
+                ],
                 # Needing 0 of a component (e.g. Open Quantity is already 0 -
                 # a fully-confirmed row) is never "short", regardless of
                 # whether we happen to have on-hand data for it.
@@ -235,7 +238,10 @@ def check_component_availability(db, main_output_product: str, confirmed_quantit
             live_rows = sap_inventory_client.get_inventory_detail()
             stock_by_product = {}
             for row in live_rows:
-                stock_by_product.setdefault(row["product_id"], []).append({"site": row.get("site"), "qty": row["qty"]})
+                stock_by_product.setdefault(row["product_id"], []).append({
+                    "site": row.get("site"), "logistics_area": row.get("logistics_area"),
+                    "stock_status": row.get("stock_status"), "qty": row["qty"],
+                })
         except Exception:
             stock_by_product = None  # fall through to cache below
     if stock_by_product is None:

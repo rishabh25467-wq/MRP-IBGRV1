@@ -509,7 +509,12 @@ const CreateOrderTab = ({ actorName }) => {
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, []);
 
-  const selectedSosOption = sosOptions[Number(selectedSosKey)];
+  // selectedSosKey === "" means "nothing picked yet" - Number("") is 0,
+  // which would silently resolve to sosOptions[0] and defeat the entire
+  // point of forcing an explicit choice when there are 2+ options (a real
+  // bug found by testing: a manually-typed Site was enough to submit an
+  // order bound to option[0]'s Production Model with nothing ever picked).
+  const selectedSosOption = selectedSosKey === "" ? null : sosOptions[Number(selectedSosKey)];
 
   const chooseSosOption = (key) => {
     setSelectedSosKey(key);
@@ -653,9 +658,22 @@ const CreateOrderTab = ({ actorName }) => {
     })();
   }, [loadHistory]);
 
+  const skipFirstPersistRef = useRef(true);
+
   // Persist the (small) seed info for every active job so a page refresh
-  // doesn't lose track of orders still running in the background.
+  // doesn't lose track of orders still running in the background. Skips
+  // its very first mount invocation - on mount BOTH this effect and the
+  // restore effect below fire within the same commit using the render's
+  // still-stale `activeJobs` ([]), so writing on that first pass would
+  // always clobber the not-yet-read localStorage seed with "[]" before
+  // hydration could use it. The restore effect's setActiveJobs() triggers
+  // a second render, which re-runs this effect (now un-skipped) with the
+  // real hydrated value.
   useEffect(() => {
+    if (skipFirstPersistRef.current) {
+      skipFirstPersistRef.current = false;
+      return;
+    }
     const seed = activeJobs.map(({ job_id, material_id, site_id, quantity, unit_code, startedAt }) => ({ job_id, material_id, site_id, quantity, unit_code, startedAt }));
     localStorage.setItem(ACTIVE_JOBS_STORAGE_KEY, JSON.stringify(seed));
   }, [activeJobs]);
@@ -678,6 +696,10 @@ const CreateOrderTab = ({ actorName }) => {
       toast.error("Enter your name first (top-right of the page)");
       return;
     }
+    if (sosOptions.length > 1 && !selectedSosOption) {
+      toast.error("This material has multiple valid Production Models - pick one from the Source of Supply list before creating the order");
+      return;
+    }
     if (!materialId.trim() || !siteId.trim() || !quantity) {
       toast.error("Product, Site and Quantity are required");
       return;
@@ -688,10 +710,6 @@ const CreateOrderTab = ({ actorName }) => {
     }
     if (sosChecked && !materialUuid && !sosCheckFailed) {
       toast.error("Product ID not recognized in SAP - pick one from the suggestions or check the spelling");
-      return;
-    }
-    if (sosOptions.length > 1 && !selectedSosOption) {
-      toast.error("This material has multiple valid Production Models - pick one from the Source of Supply list before creating the order");
       return;
     }
     setSubmitting(true);
@@ -718,7 +736,7 @@ const CreateOrderTab = ({ actorName }) => {
       toast.success("Order request submitted - track its progress in the Active Orders table below.");
       // Free up the form immediately so another order can be submitted
       // right away - it no longer waits for this one to finish/pause.
-      setMaterialId(""); setQuantity("1"); setRequestedEndDate("");
+      setMaterialId(""); setQuantity("1"); setRequestedEndDate(""); setSiteId("");
       setSosOptions([]); setSosChecked(false); setSelectedSosKey(""); setSiteAutoFilled(false);
       setUnitCode("EA"); setUnitCodeAutoFilled(false); setMaterialUuid(null); setLastCheckedId(null);
     } catch (e) {
@@ -959,7 +977,7 @@ const CreateOrderTab = ({ actorName }) => {
                         <table className="w-full text-[11px] border-collapse bg-white">
                           <thead>
                             <tr>
-                              {["Component", "Required by Production", "In Stock (By Location)", ...(j.status === "partial_pending_planner" ? ["Issued", "Shortfall"] : [])].map((h) => (
+                              {["Component", "Required by Production", `In Stock at Site ${j.storeRequest.site_id} (By Warehouse)`, ...(j.status === "partial_pending_planner" ? ["Issued", "Shortfall"] : [])].map((h) => (
                                 <th key={h} className="border border-[#FEDF89] px-2 py-1 text-left font-bold text-[#93370D]">{h}</th>
                               ))}
                             </tr>
@@ -971,8 +989,8 @@ const CreateOrderTab = ({ actorName }) => {
                                 <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums align-top">{formatQty(c.required_qty)} {c.unit_of_measure || ""}</td>
                                 <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums align-top">
                                   {(c.locations && c.locations.length > 0) ? c.locations.map((loc, li) => (
-                                    <div key={li}>{(loc.site || "").split("-").pop()}: {formatQty(loc.qty)} {c.unit_of_measure || ""}</div>
-                                  )) : "no stock data anywhere"}
+                                    <div key={li}>{loc.warehouse || "Unknown Warehouse"}{loc.stock_status ? ` (${loc.stock_status})` : ""}: {formatQty(loc.qty)} {c.unit_of_measure || ""}</div>
+                                  )) : "no stock at this site"}
                                 </td>
                                 {j.status === "partial_pending_planner" && (
                                   <>

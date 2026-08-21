@@ -1,0 +1,42 @@
+{
+  "summary": "Iteration_93 fix-verification pass. Backend: added tests/test_locations_site_scope.py (9 unit tests on production_confirmation_service._check_availability_against_stock) and updated tests/test_store_locations.py to the new locations shape - 16/16 pass. The site-scoped, per-warehouse locations restructuring is correct end-to-end (only target-site rows, {warehouse, stock_status, qty}, no 'site' key, available_qty summed for target site only). Frontend: iteration_92's HIGH activeJobs-localStorage bug and LOW site-not-cleared bug are FIXED and verified; the MEDIUM multi-SoS guard bug is NOT fixed and is in fact worse than reported - the guard never fires because Number(\"\") === 0, so the app still silently auto-picks the FIRST Production Model and fires a real SAP create-and-release POST (verified via an intercepted request payload carrying logistic_relationship_uuid of option[0]). /storeapproval and the planner Active Orders expandable row both render 'Warehouse (Stock Status): qty' correctly; store lifecycle (pending -> partial -> send_to_planner -> planner reject) regression passes.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "SAP OData (background valuation refresh)", "issue": "Environment-level: repeated ConnectTimeout to my431827.businessbydesign.cloud.sap during the run (Standard Costs chunks skipped). Also a file write into /app/backend/tests triggers a uvicorn reload that 502s /api for ~45-60s. Not a code defect, but slows testing."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Create Production Order with a multi-option Source of Supply (HTBS-SPAIN, 2 valid Production Model/Site combos)", "issue": "NOT FIXED (iteration_92 MEDIUM, now HIGH). Root cause: `const selectedSosOption = sosOptions[Number(selectedSosKey)];` (ProductionConfirmationPage.js ~line 514). With nothing picked selectedSosKey is \"\" and Number(\"\") === 0, so selectedSosOption resolves to sosOptions[0] (truthy). Effects: (1) the new guard `if (sosOptions.length > 1 && !selectedSosOption)` never fires - clicking Create with nothing picked still shows the generic 'Product, Site and Quantity are required' toast (only because Site happens to be blank); (2) far worse - if the user types a Site manually, the submit goes through and POSTs logistic_relationship_uuid of option[0] (verified: intercepted body {\"material_id\":\"HTBS-SPAIN\",\"site_id\":\"P2\",...,\"logistic_relationship_uuid\":\"FA163E18-1C7B-1FE0-A99D-1FFB40FD7F05\"}), i.e. the silent auto-pick the user explicitly asked to remove is still live and can write a wrong Production Model to SAP. Fix: `const selectedSosOption = selectedSosKey === \"\" ? null : sosOptions[Number(selectedSosKey)];` (or store the index as null and check `selectedSosKey === \"\"`).", "affected_selectors": ["create-proposal-submit-button", "source-of-supply-select-trigger", "create-proposal-site-input"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_locations_site_scope.py",
+    "/app/backend/tests/test_store_locations.py",
+    "/app/test_reports/pytest/pytest_iter93.xml"
+  ],
+  "action_items": [
+    "FIX (HIGH): ProductionConfirmationPage.js selectedSosOption must be null when selectedSosKey is \"\" (Number(\"\")===0 defeats the multi-SoS guard AND silently auto-picks option[0]'s logistic_relationship_uuid on submit when the user types a Site manually).",
+    "No other action needed: activeJobs localStorage resume, site-input clearing, site+warehouse-scoped locations (backend + both UIs) all verified working."
+  ],
+  "critical_code_review_comments": [
+    "Guard `!selectedSosOption` is unsafe with a string-index state; prefer an explicit `selectedSosKey === \"\"` sentinel check, and additionally block the POST when sosOptions.length > 1 && !logistic_relationship_uuid (defence in depth before a real SAP write).",
+    "createProposal() sends logistic_relationship_uuid derived from a possibly-unselected index - consider deriving the payload from an explicitly-chosen option object held in state rather than an index lookup.",
+    "StoreApprovalPage queue shows an empty <tbody> (no rows, no empty-state) during the initial load; a 'Loading...' row would avoid the momentary blank table.",
+    "ProductionConfirmationPage.js is ~1300 lines - consider splitting the Create-Order card, Active Orders table and Confirmation tab into separate components."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_locations_site_scope.py (new)",
+    "/app/backend/tests/test_store_locations.py (locations fixtures updated to {warehouse, stock_status, qty}; auth fixture uid made xdist-unique)",
+    "/app/backend/tests/_seed_locations_job.py (seed locations updated to the new shape)"
+  ],
+  "success_rate": {"backend": "100% (16/16)", "frontend": "80% (4/5 verified flows; multi-SoS guard fails)"},
+  "seed_data_creation": "Synthetic super_admin auth_user/auth_session (deleted), 2 background_jobs + 2 store_requests tagged TEST_UI_LOCATIONS (deleted via _seed_locations_job.py --clean). Verified 0 leftover TEST docs.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Reuse /app/backend/tests/_setup_pc_session.py (prints a vms_session token) and _seed_locations_job.py (now seeds the new warehouse/stock_status locations shape; --clean removes). localStorage resume test: page.context.add_init_script setting key 'productionConfirmationActiveJobs' BEFORE goto, plus the vms_session cookie on sap-data-sync.preview.emergentagent.com. checkSourceOfSupply only fires on BLUR of the product input (fill + keyboard.press('Tab')), and the SoS lookup can take 30-90s. To retest the multi-SoS guard without a real SAP write, page.route the POST /api/production-confirmation/create-and-release-order and fulfill it with {job_id: 'FAKE'} - that also exercises the form-reset/site-clearing path. Note /storeapproval queue renders rows only after the fetch resolves - wait for store-request-row-0, not just the table. Writing files into /app/backend triggers a uvicorn reload -> ~1 min of 502s.",
+  "rca_of_the_issue": "Multi-SoS guard: selectedSosOption = sosOptions[Number(selectedSosKey)]. The 'nothing selected' sentinel is the empty string, and Number(\"\") is 0, so the lookup silently returns the first option. Therefore both the new guard (runs first now, but its condition is false) and the intended 'no auto-pick' behaviour are bypassed; a manually-typed Site is enough to submit an order bound to option[0]'s Production Model. Reproduction: /production-confirmation -> enter name -> Product 'HTBS-SPAIN' -> Tab (2 options appear, none selected) -> type Site 'P2' -> Create Production Order -> POST fires with logistic_relationship_uuid FA163E18-1C7B-1FE0-A99D-1FFB40FD7F05."
+}
