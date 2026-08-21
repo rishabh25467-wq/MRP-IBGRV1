@@ -14,6 +14,26 @@ const STORE_NAME_KEY = "storeApprovalActorName";
 
 const formatQty = (v) => (v == null ? "\u2014" : Number(v).toLocaleString("en-IN", { maximumFractionDigits: 2 }));
 
+// inventory_cache stores full site names like "RADISH TECHNOLOGY-P2" -
+// show just the short site code (after the last "-") to keep the
+// per-location breakdown compact.
+const shortSite = (site) => (site || "").split("-").pop() || site || "?";
+
+const LocationBreakdown = ({ locations, unit }) => {
+  if (!locations || locations.length === 0) {
+    return <span className="text-[#98A2B3]">no stock data anywhere</span>;
+  }
+  return (
+    <div className="space-y-0.5">
+      {locations.map((loc, i) => (
+        <div key={i}>
+          <span className="text-[#667085]">{shortSite(loc.site)}:</span> {formatQty(loc.qty)} {unit || ""}
+        </div>
+      ))}
+    </div>
+  );
+};
+
 const STATUS_BADGE = {
   pending: { label: "Awaiting Store", tone: "bg-[#FFFAEB] text-[#B54708] border-[#FEDF89]" },
   partial_pending_planner: { label: "Awaiting Requester", tone: "bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]" },
@@ -215,7 +235,7 @@ export default function StoreApprovalPage() {
             <table className="w-full text-[12px] border-collapse" data-testid="store-detail-components-table">
               <thead>
                 <tr>
-                  {["Component", "Required", "In Stock (Cached)", "Issued Qty"].map((h) => (
+                  {["Component", "Required by Production", "In Stock (By Location)", "Issued Qty"].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">{h}</th>
                   ))}
                 </tr>
@@ -223,10 +243,12 @@ export default function StoreApprovalPage() {
               <tbody>
                 {selected.components.map((c, i) => (
                   <tr key={c.product_id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"}>
-                    <td className="border border-[#D0D5DD] px-2 py-1.5">{c.product_id}{c.description ? ` - ${c.description}` : ""}</td>
-                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(c.required_qty)} {c.unit_of_measure || ""}</td>
-                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{c.available_qty == null ? "no data" : `${formatQty(c.available_qty)} ${c.unit_of_measure || ""}`}</td>
-                    <td className="border border-[#D0D5DD] px-2 py-1.5">
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 align-top">{c.product_id}{c.description ? ` - ${c.description}` : ""}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums align-top">{formatQty(c.required_qty)} {c.unit_of_measure || ""}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums align-top" data-testid={`store-locations-${i}`}>
+                      <LocationBreakdown locations={c.locations} unit={c.unit_of_measure} />
+                    </td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 align-top">
                       {isPending ? (
                         <Input
                           type="number"

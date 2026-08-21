@@ -50,6 +50,7 @@ def create_request(db, job_id: str, payload_dict: dict, proposal_id: str, short_
                 "unit_of_measure": c.get("unit_of_measure"),
                 "required_qty": c["required_qty"],
                 "available_qty": c.get("available_qty"),
+                "locations": c.get("locations") or [],
                 "issued_qty": None,
                 "shortfall": None,
             }

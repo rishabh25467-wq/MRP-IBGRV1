@@ -198,6 +198,12 @@ def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, con
                 "unit_of_measure": item.get("unit_of_measure"),
                 "required_qty": required_qty,
                 "available_qty": available_qty,
+                # Full raw per-location stock breakdown (not just the
+                # site-scoped sum above) - lets a store user see exactly
+                # WHERE stock sits tenant-wide, not just a single number
+                # for the requested site (user's explicit ask, Store
+                # Approval workflow).
+                "locations": locations or [],
                 # Needing 0 of a component (e.g. Open Quantity is already 0 -
                 # a fully-confirmed row) is never "short", regardless of
                 # whether we happen to have on-hand data for it.

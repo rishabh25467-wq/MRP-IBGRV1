@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, Fragment } from "react";
 import "@/App.css";
 import axios from "axios";
 import {
@@ -430,15 +430,30 @@ const HistoryDialog = ({ open, onClose }) => {
 };
 
 // -------------------- Create Production Order tab --------------------
+const ACTIVE_JOBS_STORAGE_KEY = "productionConfirmationActiveJobs";
+const POLL_INTERVAL_MS = 4000;
+
+// These 2 statuses PAUSE the automated pipeline for a human action (store
+// issuing stock, or the requester deciding on a partial issue).
+const PAUSED_STATUSES = ["waiting_store_approval", "partial_pending_planner"];
+
+const PHASE_LABELS = {
+  running: "Submitting...",
+  checking_stock: "Checking Stock",
+  creating_proposal: "Creating Proposal",
+  waiting_for_order: "Waiting for Order",
+  releasing_order: "Releasing Order",
+  waiting_store_approval: "Waiting for Store",
+  partial_pending_planner: "Awaiting Your Decision",
+};
+
 const CreateOrderTab = ({ actorName }) => {
   const [materialId, setMaterialId] = useState("");
   const [siteId, setSiteId] = useState("");
   const [quantity, setQuantity] = useState("1");
   const [unitCode, setUnitCode] = useState("EA");
   const [requestedEndDate, setRequestedEndDate] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [createPhase, setCreatePhase] = useState("");
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [submitting, setSubmitting] = useState(false);
   const [releaseOrderId, setReleaseOrderId] = useState("");
   const [releasing, setReleasing] = useState(false);
   const [history, setHistory] = useState([]);
@@ -452,13 +467,15 @@ const CreateOrderTab = ({ actorName }) => {
   const [materialUuid, setMaterialUuid] = useState(null);
   const [productSuggestions, setProductSuggestions] = useState([]);
   const [showProductSuggestions, setShowProductSuggestions] = useState(false);
-  const [storeRequest, setStoreRequest] = useState(null);
-  const [showStoreApprovalPanel, setShowStoreApprovalPanel] = useState(false);
-  const [decidingStoreRequest, setDecidingStoreRequest] = useState(false);
+  // Every in-flight create-and-release job this browser session knows
+  // about, tracked in the "Active Orders" table below - NOT tied to the
+  // form, so submitting one order never blocks starting another while the
+  // first is still running/paused in the background.
+  const [activeJobs, setActiveJobs] = useState([]);
   const productInputWrapperRef = useRef(null);
   const suggestionDebounceRef = useRef(null);
   const suggestionRequestRef = useRef(null);
-  const storeRequestRef = useRef(null);
+  const pollingJobIdsRef = useRef(new Set());
 
   const COMMON_UOM_CODES = ["EA", "KGM", "MTR", "LTR", "PC", "SET", "BOX", "TO"];
 
@@ -492,31 +509,6 @@ const CreateOrderTab = ({ actorName }) => {
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, []);
 
-  const PHASE_LABELS = {
-    running: "Starting...",
-    checking_stock: "Checking live SAP stock for all components...",
-    creating_proposal: "Creating Proposal in SAP...",
-    waiting_for_order: "Waiting for SAP to convert Proposal to Order...",
-    releasing_order: "Releasing Order in SAP...",
-    waiting_store_approval: "Waiting for store to issue stock...",
-    partial_pending_planner: "Awaiting your decision on partial stock issue...",
-  };
-
-  const STEP_ORDER = ["running", "checking_stock", "creating_proposal", "waiting_for_order", "releasing_order"];
-  const STEP_TITLES = {
-    running: "Submitting request to SAP",
-    checking_stock: "Checking live component stock in SAP (~45s)",
-    creating_proposal: "Creating Production Proposal in SAP",
-    waiting_for_order: "Waiting for SAP to convert Proposal → Order",
-    releasing_order: "Releasing the Order in SAP",
-  };
-
-  // These 2 statuses PAUSE the automated pipeline for a human action (store
-  // issuing stock, or the requester deciding on a partial issue) - the
-  // normal step-by-step progress panel is swapped for the Store Approval
-  // panel below while in either of these states.
-  const PAUSED_STATUSES = ["waiting_store_approval", "partial_pending_planner"];
-
   const selectedSosOption = sosOptions[Number(selectedSosKey)];
 
   const chooseSosOption = (key) => {
@@ -544,11 +536,16 @@ const CreateOrderTab = ({ actorName }) => {
       setMaterialUuid(data.material_uuid || null);
       const options = data.options || [];
       setSosOptions(options);
-      const preferred = options.findIndex((o) => o.is_active);
-      const idx = preferred >= 0 ? preferred : (options.length > 0 ? 0 : -1);
-      if (idx >= 0) {
-        setSelectedSosKey(String(idx));
-        setSiteId(options[idx].site_id); // model determines site - always overwritten here, never an independent pre-filter
+      // Only auto-pick when there's exactly ONE valid Model/Site combo -
+      // no real ambiguity there. With 2+ valid options, force the user to
+      // explicitly choose (previously defaulted to the first "Active" one
+      // alphabetically, which could silently pick a model whose BOM has a
+      // stock shortage while a perfectly fine alternative sat unused in
+      // the dropdown - user's explicit call, no more auto-pick when there's
+      // a real choice to make).
+      if (options.length === 1) {
+        setSelectedSosKey("0");
+        setSiteId(options[0].site_id); // model determines site - always overwritten here, never an independent pre-filter
         setSiteAutoFilled(true);
       } else if (siteAutoFilled) {
         setSiteId(""); // clear a stale auto-filled site from a previous material - but never clobber a site the user typed themselves
@@ -576,8 +573,6 @@ const CreateOrderTab = ({ actorName }) => {
       setSosChecked(true);
     }
   };
-  const POLL_INTERVAL_MS = 4000;
-  const MAX_POLL_MS = 22 * 60 * 1000; // job itself gives up after 20 min, add a small buffer
 
   const loadHistory = useCallback(() => {
     setLoadingHistory(true);
@@ -585,6 +580,98 @@ const CreateOrderTab = ({ actorName }) => {
   }, []);
 
   useEffect(() => { loadHistory(); }, [loadHistory]);
+
+  const removeActiveJob = (jobId) => setActiveJobs((prev) => prev.filter((j) => j.job_id !== jobId));
+  const toggleJobExpand = (jobId) => setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, expanded: !j.expanded } : j)));
+
+  // Runs entirely independently per job - multiple can be in flight at
+  // once, each polling its own status on its own timer, none of them
+  // blocking the form above from starting yet another order.
+  const pollJob = useCallback((jobId) => {
+    if (pollingJobIdsRef.current.has(jobId)) return;
+    pollingJobIdsRef.current.add(jobId);
+    const tickTimer = setInterval(() => {
+      setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, elapsedSeconds: Math.round((Date.now() - j.startedAt) / 1000) } : j)));
+    }, 1000);
+    let lastStoreReqKey = null;
+    (async () => {
+      try {
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+          let job;
+          try {
+            ({ data: job } = await axios.get(`${API}/production-confirmation/create-and-release-order/status/${jobId}`));
+          } catch {
+            continue; // transient network hiccup - keep tracking this job, try again next round
+          }
+          if (PAUSED_STATUSES.includes(job.status)) {
+            const key = `${job.store_request_id}:${job.status}`;
+            if (job.store_request_id && lastStoreReqKey !== key) {
+              try {
+                const { data: reqDoc } = await axios.get(`${API}/production-confirmation/store-requests/by-job/${jobId}`);
+                lastStoreReqKey = key;
+                setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, status: job.status, storeRequest: reqDoc } : j)));
+              } catch {
+                setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, status: job.status } : j)));
+              }
+            } else {
+              setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, status: job.status } : j)));
+            }
+            continue;
+          }
+          setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, status: job.status } : j)));
+          if (job.status === "done") {
+            const result = job.result;
+            if (result.production_order_id && result.released) {
+              toast.success(`Production Order ${result.production_order_id} created and released in SAP - ready for confirmation`);
+            } else if (result.production_order_id) {
+              toast.error(`Order ${result.production_order_id} was created but Release failed - use the fallback form to retry`);
+            } else {
+              toast.error(result.note || "Proposal created but the Order hasn't appeared yet - it keeps retrying automatically, check history shortly");
+            }
+            removeActiveJob(jobId);
+            loadHistory();
+            break;
+          }
+          if (job.status === "cancelled") {
+            toast.error(job.result?.note || "Order creation was cancelled after the store approval decision");
+            removeActiveJob(jobId);
+            loadHistory();
+            break;
+          }
+          if (job.status === "failed") {
+            toast.error(job.error || "Failed to create Production Order in SAP");
+            removeActiveJob(jobId);
+            break;
+          }
+        }
+      } finally {
+        clearInterval(tickTimer);
+        pollingJobIdsRef.current.delete(jobId);
+      }
+    })();
+  }, [loadHistory]);
+
+  // Persist the (small) seed info for every active job so a page refresh
+  // doesn't lose track of orders still running in the background.
+  useEffect(() => {
+    const seed = activeJobs.map(({ job_id, material_id, site_id, quantity, unit_code, startedAt }) => ({ job_id, material_id, site_id, quantity, unit_code, startedAt }));
+    localStorage.setItem(ACTIVE_JOBS_STORAGE_KEY, JSON.stringify(seed));
+  }, [activeJobs]);
+
+  useEffect(() => {
+    let stored = [];
+    try { stored = JSON.parse(localStorage.getItem(ACTIVE_JOBS_STORAGE_KEY) || "[]"); } catch { stored = []; }
+    if (stored.length > 0) {
+      setActiveJobs(stored.map((s) => ({
+        ...s, status: "running", elapsedSeconds: Math.round((Date.now() - s.startedAt) / 1000),
+        storeRequest: null, deciding: false, expanded: false,
+      })));
+      stored.forEach((s) => pollJob(s.job_id));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const createProposal = async () => {
     if (!actorName.trim()) {
@@ -603,111 +690,60 @@ const CreateOrderTab = ({ actorName }) => {
       toast.error("Product ID not recognized in SAP - pick one from the suggestions or check the spelling");
       return;
     }
-    setCreating(true);
-    setElapsedSeconds(0);
-    setCreatePhase("running");
-    const startedAt = Date.now();
-    // Live per-second ticker, independent of the 4s poll interval below -
-    // purely cosmetic, never drives any actual logic.
-    const tickTimer = setInterval(() => {
-      setElapsedSeconds(Math.round((Date.now() - startedAt) / 1000));
-    }, 1000);
+    if (sosOptions.length > 1 && !selectedSosOption) {
+      toast.error("This material has multiple valid Production Models - pick one from the Source of Supply list before creating the order");
+      return;
+    }
+    setSubmitting(true);
     try {
+      const payloadMaterialId = materialId.trim();
+      const payloadSiteId = siteId.trim().toUpperCase();
+      const payloadQuantity = Number(quantity);
+      const payloadUnitCode = unitCode.trim().toUpperCase() || "EA";
       const { data } = await axios.post(`${API}/production-confirmation/create-and-release-order`, {
-        material_id: materialId.trim(),
-        site_id: siteId.trim().toUpperCase(),
-        quantity: Number(quantity),
-        unit_code: unitCode.trim().toUpperCase() || "EA",
+        material_id: payloadMaterialId,
+        site_id: payloadSiteId,
+        quantity: payloadQuantity,
+        unit_code: payloadUnitCode,
         availability_datetime: requestedEndDate ? new Date(requestedEndDate).toISOString() : null,
         actor: actorName.trim(),
         logistic_relationship_uuid: selectedSosOption ? selectedSosOption.logistic_relationship_uuid : null,
       });
       const jobId = data.job_id;
-      // The backend's very first real phase is always "checking_stock" -
-      // set it optimistically instead of waiting up to 4s for the first
-      // poll to confirm, so the user doesn't see a stale "Starting..."
-      // step 1 for that entire window.
-      setCreatePhase("checking_stock");
-
-      // Runs fully in the background on the server (no HTTP request held
-      // open) since SAP's own conversion + indexing can take minutes -
-      // poll a status endpoint instead, same pattern as Purchasing Plan.
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-        const { data: job } = await axios.get(`${API}/production-confirmation/create-and-release-order/status/${jobId}`);
-        setCreatePhase(job.status);
-        if (PAUSED_STATUSES.includes(job.status)) {
-          const last = storeRequestRef.current;
-          if (job.store_request_id && (!last || last.id !== job.store_request_id || last.status !== job.status)) {
-            try {
-              const { data: reqDoc } = await axios.get(`${API}/production-confirmation/store-requests/by-job/${jobId}`);
-              storeRequestRef.current = { id: reqDoc._id, status: reqDoc.status };
-              setStoreRequest(reqDoc);
-              setShowStoreApprovalPanel(true);
-            } catch {
-              // transient - keep polling, try the fetch again next round
-            }
-          }
-          continue;
-        }
-        if (job.status === "done") {
-          const result = job.result;
-          if (result.production_order_id && result.released) {
-            toast.success(`Production Order ${result.production_order_id} created and released in SAP - ready for confirmation`);
-          } else if (result.production_order_id) {
-            toast.error(`Order ${result.production_order_id} was created but Release failed - use the fallback form below to retry`);
-          } else {
-            toast.error(result.note || "Proposal created but the Order hasn't appeared yet - it keeps retrying automatically, check history shortly");
-          }
-          setMaterialId(""); setQuantity("1"); setRequestedEndDate("");
-          setSosOptions([]); setSosChecked(false); setSelectedSosKey(""); setSiteAutoFilled(false);
-          setUnitCode("EA"); setUnitCodeAutoFilled(false);
-          setStoreRequest(null); setShowStoreApprovalPanel(false); storeRequestRef.current = null;
-          loadHistory();
-          break;
-        }
-        if (job.status === "cancelled") {
-          toast.error(job.result?.note || "Order creation was cancelled after the store approval decision");
-          setMaterialId(""); setQuantity("1"); setRequestedEndDate("");
-          setSosOptions([]); setSosChecked(false); setSelectedSosKey(""); setSiteAutoFilled(false);
-          setUnitCode("EA"); setUnitCodeAutoFilled(false);
-          setStoreRequest(null); setShowStoreApprovalPanel(false); storeRequestRef.current = null;
-          loadHistory();
-          break;
-        }
-        if (job.status === "failed") {
-          throw new Error(job.error || "Failed to create Production Order in SAP");
-        }
-        if (Date.now() - startedAt > MAX_POLL_MS) {
-          throw new Error("This is taking unusually long - it's still running in the background, check the history below shortly");
-        }
-      }
+      setActiveJobs((prev) => [{
+        job_id: jobId, material_id: payloadMaterialId, site_id: payloadSiteId, quantity: payloadQuantity, unit_code: payloadUnitCode,
+        status: "checking_stock", startedAt: Date.now(), elapsedSeconds: 0, storeRequest: null, deciding: false, expanded: false,
+      }, ...prev]);
+      pollJob(jobId);
+      toast.success("Order request submitted - track its progress in the Active Orders table below.");
+      // Free up the form immediately so another order can be submitted
+      // right away - it no longer waits for this one to finish/pause.
+      setMaterialId(""); setQuantity("1"); setRequestedEndDate("");
+      setSosOptions([]); setSosChecked(false); setSelectedSosKey(""); setSiteAutoFilled(false);
+      setUnitCode("EA"); setUnitCodeAutoFilled(false); setMaterialUuid(null); setLastCheckedId(null);
     } catch (e) {
       toast.error(e.response?.data?.detail || e.message || "Failed to create Production Order in SAP");
     } finally {
-      clearInterval(tickTimer);
-      setCreating(false);
-      setCreatePhase("");
+      setSubmitting(false);
     }
   };
 
-  const decideStoreRequest = async (decision) => {
+  const decideStoreRequest = async (jobId, requestId, decision) => {
     if (!actorName.trim()) {
       toast.error("Enter your name first (top-right of the page)");
       return;
     }
-    if (!storeRequest) return;
-    setDecidingStoreRequest(true);
+    if (!requestId) return;
+    setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, deciding: true } : j)));
     try {
-      await axios.post(`${API}/production-confirmation/store-requests/${storeRequest._id}/decision`, {
+      await axios.post(`${API}/production-confirmation/store-requests/${requestId}/decision`, {
         decision, actor: actorName.trim(),
       });
       toast.success(decision === "approve" ? "Approved - resuming automated order creation" : "Rejected - order creation cancelled");
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed to record your decision");
     } finally {
-      setDecidingStoreRequest(false);
+      setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, deciding: false } : j)));
     }
   };
 
@@ -741,7 +777,7 @@ const CreateOrderTab = ({ actorName }) => {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-white border border-[#D0D5DD] rounded-sm p-4 space-y-3" data-testid="create-proposal-card">
           <h3 className="font-heading text-sm font-bold text-[#1D2939] uppercase tracking-wide">Create Production Order</h3>
-          <p className="text-xs text-[#667085]">Creates and releases a Production Order in SAP - fully automated, retries in the background until SAP converts it. Checks component stock first and blocks with a clear reason if a raw material is out of stock (no orphaned Proposals).</p>
+          <p className="text-xs text-[#667085]">Creates and releases a Production Order in SAP - fully automated, retries in the background until SAP converts it. Checks component stock first; submitting an order tracks it in the Active Orders table below so this form stays free to submit another right away.</p>
           <div ref={productInputWrapperRef} className="relative">
             <Label className="text-xs font-bold text-[#344054]">Product ID</Label>
             <Input
@@ -797,9 +833,9 @@ const CreateOrderTab = ({ actorName }) => {
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-[#B54708] mt-1">
+                <p className="text-xs font-bold text-[#B54708] mt-1" data-testid={sosOptions.length > 1 ? "sos-choice-required-warning" : undefined}>
                   {sosOptions.length > 1
-                    ? `This material has ${sosOptions.length} valid Production Model/Site combinations - pick one, it sets the Site for you.`
+                    ? `This material has ${sosOptions.length} valid Production Model/Site combinations - you must pick one before creating the order (it sets the Site for you; not auto-picked since one option may be short on stock while another isn't).`
                     : "Picking this confirms the Production Model - and its Site - SAP will use."}
                 </p>
               </div>
@@ -848,107 +884,9 @@ const CreateOrderTab = ({ actorName }) => {
               <Input type="date" value={requestedEndDate} onChange={(e) => setRequestedEndDate(e.target.value)} data-testid="create-proposal-date-input" />
             </div>
           </div>
-          <Button onClick={createProposal} disabled={creating} className="w-full" data-testid="create-proposal-submit-button">
-            {creating ? `${PHASE_LABELS[createPhase] || "Working..."} (${elapsedSeconds}s)` : "Create Production Order"}
+          <Button onClick={createProposal} disabled={submitting} className="w-full" data-testid="create-proposal-submit-button">
+            {submitting ? "Submitting..." : "Create Production Order"}
           </Button>
-          {creating && !PAUSED_STATUSES.includes(createPhase) && (
-            <div className="bg-[#F9FAFB] border border-[#EAECF0] rounded-sm p-3 space-y-2" data-testid="create-proposal-progress-steps">
-              {STEP_ORDER.map((step, idx) => {
-                const currentIdx = STEP_ORDER.indexOf(createPhase);
-                const isDone = currentIdx > idx;
-                const isCurrent = currentIdx === idx;
-                return (
-                  <div key={step} className="flex items-center gap-2 text-xs" data-testid={`create-proposal-step-${step}`}>
-                    <span className={`flex-none w-4 h-4 rounded-full flex items-center justify-center text-[10px] ${
-                      isDone ? "bg-[#027A48] text-white" : isCurrent ? "bg-[#B54708] text-white animate-pulse" : "bg-[#E4E7EC] text-[#98A2B3]"
-                    }`}>
-                      {isDone ? "✓" : idx + 1}
-                    </span>
-                    <span className={isCurrent ? "text-[#B54708] font-medium" : isDone ? "text-[#027A48]" : "text-[#98A2B3]"}>
-                      {STEP_TITLES[step]}
-                    </span>
-                  </div>
-                );
-              })}
-              <p className="text-[11px] text-[#98A2B3] pt-1">Elapsed: {elapsedSeconds}s - this runs in the background, feel free to keep working elsewhere on this page.</p>
-            </div>
-          )}
-          {creating && PAUSED_STATUSES.includes(createPhase) && storeRequest && !showStoreApprovalPanel && (
-            <button
-              type="button"
-              onClick={() => setShowStoreApprovalPanel(true)}
-              className="w-full text-left bg-[#FFFAEB] border border-[#FEDF89] rounded-sm p-2.5 text-xs text-[#B54708] font-medium"
-              data-testid="store-approval-panel-reopen"
-            >
-              Store approval pending - click to view details
-            </button>
-          )}
-          {creating && PAUSED_STATUSES.includes(createPhase) && storeRequest && showStoreApprovalPanel && (
-            <div className="bg-[#FFFAEB] border border-[#FEDF89] rounded-sm p-3 space-y-2.5" data-testid="store-approval-panel">
-              <div className="flex items-start justify-between gap-2">
-                <h4 className="font-heading text-xs font-bold text-[#B54708] uppercase tracking-wide">
-                  {createPhase === "partial_pending_planner" ? "Awaiting Your Decision" : "Store Approval Required"}
-                </h4>
-                <button
-                  type="button"
-                  onClick={() => setShowStoreApprovalPanel(false)}
-                  className="text-[#B54708]/70 hover:text-[#B54708] text-xs font-bold leading-none px-1"
-                  data-testid="store-approval-panel-close"
-                  title="Hide (keeps running in the background)"
-                >
-                  ✕
-                </button>
-              </div>
-              <p className="text-[11px] text-[#93370D]">
-                Proposal <strong>{storeRequest.production_proposal_id}</strong> was created in SAP, but {storeRequest.components.length} component(s)
-                {" "}are short at {storeRequest.site_id}. The Order pipeline is paused until stock is resolved.
-              </p>
-              <div className="border border-[#FEDF89] rounded-sm overflow-hidden bg-white">
-                <table className="w-full text-[11px] border-collapse" data-testid="store-approval-components-table">
-                  <thead>
-                    <tr className="bg-[#FFFAEB]">
-                      {["Component", "Required", "In Stock", ...(createPhase === "partial_pending_planner" ? ["Issued", "Shortfall"] : [])].map((h) => (
-                        <th key={h} className="border border-[#FEDF89] px-2 py-1 text-left font-bold text-[#93370D]">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {storeRequest.components.map((c) => (
-                      <tr key={c.product_id}>
-                        <td className="border border-[#FEDF89] px-2 py-1">{c.product_id}{c.description ? ` - ${c.description}` : ""}</td>
-                        <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums">{formatQty(c.required_qty)} {c.unit_of_measure || ""}</td>
-                        <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums">{c.available_qty == null ? "no data" : `${formatQty(c.available_qty)} ${c.unit_of_measure || ""}`}</td>
-                        {createPhase === "partial_pending_planner" && (
-                          <>
-                            <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums">{formatQty(c.issued_qty)} {c.unit_of_measure || ""}</td>
-                            <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums font-bold text-[#B42318]">{formatQty(c.shortfall)} {c.unit_of_measure || ""}</td>
-                          </>
-                        )}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {createPhase === "waiting_store_approval" ? (
-                <p className="text-[11px] text-[#93370D]">
-                  Share this Request ID with the store team so they can process it on the Store Approval screen (<code>/storeapproval</code>):
-                  {" "}<strong data-testid="store-approval-request-id">{storeRequest._id}</strong>
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  <p className="text-[11px] text-[#93370D]">The store could not fully issue the required stock and asked you to decide.</p>
-                  <div className="flex gap-2">
-                    <Button size="sm" disabled={decidingStoreRequest} onClick={() => decideStoreRequest("approve")} data-testid="store-approval-approve-button">
-                      Approve &amp; Continue with Partial Stock
-                    </Button>
-                    <Button size="sm" variant="outline" disabled={decidingStoreRequest} onClick={() => decideStoreRequest("reject")} data-testid="store-approval-reject-button">
-                      Reject &amp; Cancel Order
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
         </div>
 
         <div className="bg-white border border-[#D0D5DD] rounded-sm p-4 space-y-3" data-testid="release-order-card">
@@ -962,6 +900,106 @@ const CreateOrderTab = ({ actorName }) => {
             {releasing ? "Releasing in SAP..." : "Release Production Order"}
           </Button>
         </div>
+      </div>
+
+      <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-auto" data-testid="active-orders-card">
+        <div className="px-3 py-2 border-b border-[#D0D5DD] bg-[#F9FAFB]">
+          <h3 className="font-heading text-xs font-bold text-[#1D2939] uppercase tracking-wide">Active Orders ({activeJobs.length})</h3>
+        </div>
+        <table className="w-full text-[12px] border-collapse" data-testid="active-orders-table">
+          <thead>
+            <tr>
+              {["Started", "Material", "Site", "Qty", "Status", "Actions"].map((h) => (
+                <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {activeJobs.map((j, i) => {
+              const isPaused = PAUSED_STATUSES.includes(j.status);
+              return (
+                <Fragment key={j.job_id}>
+                  <tr className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`active-order-row-${i}`}>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5">{new Date(j.startedAt).toLocaleTimeString("en-IN")}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium">{j.material_id}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5">{j.site_id}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(j.quantity)} {j.unit_code}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5" data-testid={`active-order-status-${i}`}>
+                      <Badge className={`border ${
+                        j.status === "partial_pending_planner" ? "bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]"
+                        : j.status === "waiting_store_approval" ? "bg-[#FFFAEB] text-[#B54708] border-[#FEDF89]"
+                        : "bg-[#F2F4F7] text-[#344054] border-[#D0D5DD]"
+                      }`}>
+                        {PHASE_LABELS[j.status] || j.status}
+                      </Badge>
+                      {!isPaused && <span className="ml-1.5 text-[11px] text-[#98A2B3] tabular-nums">{j.elapsedSeconds}s</span>}
+                    </td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5">
+                      {j.status === "partial_pending_planner" ? (
+                        <div className="flex flex-wrap gap-1.5">
+                          <Button size="sm" variant="outline" onClick={() => toggleJobExpand(j.job_id)} data-testid={`active-order-view-button-${i}`}>{j.expanded ? "Hide" : "View"}</Button>
+                          <Button size="sm" disabled={j.deciding} onClick={() => decideStoreRequest(j.job_id, j.storeRequest?._id, "approve")} data-testid={`store-approval-approve-button-${i}`}>Confirm</Button>
+                          <Button size="sm" variant="outline" disabled={j.deciding} onClick={() => decideStoreRequest(j.job_id, j.storeRequest?._id, "reject")} data-testid={`store-approval-reject-button-${i}`}>Delete</Button>
+                        </div>
+                      ) : j.status === "waiting_store_approval" ? (
+                        j.storeRequest ? (
+                          <Button size="sm" variant="outline" onClick={() => toggleJobExpand(j.job_id)} data-testid={`active-order-view-button-${i}`}>{j.expanded ? "Hide" : "View"}</Button>
+                        ) : <span className="text-[11px] text-[#98A2B3]">Loading...</span>
+                      ) : (
+                        <span className="text-[11px] text-[#98A2B3]">—</span>
+                      )}
+                    </td>
+                  </tr>
+                  {j.expanded && j.storeRequest && (
+                    <tr data-testid={`active-order-details-${i}`}>
+                      <td colSpan={6} className="border border-[#D0D5DD] px-2 py-2 bg-[#FFFAEB]">
+                        <p className="text-[11px] text-[#93370D] mb-1.5">
+                          Proposal <strong>{j.storeRequest.production_proposal_id}</strong> was created in SAP - {j.storeRequest.components.length} component(s) short at {j.storeRequest.site_id}.
+                        </p>
+                        <table className="w-full text-[11px] border-collapse bg-white">
+                          <thead>
+                            <tr>
+                              {["Component", "Required by Production", "In Stock (By Location)", ...(j.status === "partial_pending_planner" ? ["Issued", "Shortfall"] : [])].map((h) => (
+                                <th key={h} className="border border-[#FEDF89] px-2 py-1 text-left font-bold text-[#93370D]">{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {j.storeRequest.components.map((c) => (
+                              <tr key={c.product_id}>
+                                <td className="border border-[#FEDF89] px-2 py-1 align-top">{c.product_id}{c.description ? ` - ${c.description}` : ""}</td>
+                                <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums align-top">{formatQty(c.required_qty)} {c.unit_of_measure || ""}</td>
+                                <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums align-top">
+                                  {(c.locations && c.locations.length > 0) ? c.locations.map((loc, li) => (
+                                    <div key={li}>{(loc.site || "").split("-").pop()}: {formatQty(loc.qty)} {c.unit_of_measure || ""}</div>
+                                  )) : "no stock data anywhere"}
+                                </td>
+                                {j.status === "partial_pending_planner" && (
+                                  <>
+                                    <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums align-top">{formatQty(c.issued_qty)} {c.unit_of_measure || ""}</td>
+                                    <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums font-bold text-[#B42318] align-top">{formatQty(c.shortfall)} {c.unit_of_measure || ""}</td>
+                                  </>
+                                )}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {j.status === "waiting_store_approval" && (
+                          <p className="text-[11px] text-[#93370D] mt-1.5">
+                            Share this Request ID with the store team on the Store Approval screen (<code>/storeapproval</code>): <strong data-testid={`store-approval-request-id-${i}`}>{j.storeRequest._id}</strong>
+                          </p>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+            {activeJobs.length === 0 && (
+              <tr><td colSpan={6} className="text-center py-6 text-[#98A2B3] border border-[#D0D5DD]" data-testid="active-orders-empty-state">No orders in progress - anything you create above will show up here.</td></tr>
+            )}
+          </tbody>
+        </table>
       </div>
 
       <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-auto">
