@@ -214,6 +214,14 @@ def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, con
                         # Goods Movement API's owner_party_id from whichever location
                         # the store person actually picks, instead of guessing (Aug 2026).
                         "owner": loc.get("company_code"),
+                        # Raw SAP Logistics Area ID (e.g. "P2/P2-RM") - "warehouse"
+                        # above is the human-readable description ("RAW MATERIAL
+                        # GODOWN-P2"), NOT what the Goods Movement API/rule needs
+                        # to match against. Real bug traced to this (Aug 2026):
+                        # store approved an issue, RM stock existed, but the fixed
+                        # RM->SFG rule compared its ID-format guess against this
+                        # description field and never matched, so no movement fired.
+                        "warehouse_id": loc.get("logistics_area_id"),
                     }
                     for loc in (site_locations or [])
                 ],
@@ -273,6 +281,7 @@ def check_component_availability(
             for row in live_rows:
                 stock_by_product.setdefault(row["product_id"], []).append({
                     "site": row.get("site"), "logistics_area": row.get("logistics_area"),
+                    "logistics_area_id": row.get("logistics_area_id"),
                     "stock_status": row.get("stock_status"), "qty": row["qty"],
                     "company_code": row.get("company_code"),
                 })

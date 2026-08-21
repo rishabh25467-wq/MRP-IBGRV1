@@ -94,6 +94,7 @@ def build_inventory(db, sap_inventory_client, sap_valuation_client) -> list:
         entry["locations"].append({
             "site": row.get("site"),
             "logistics_area": row.get("logistics_area"),
+            "logistics_area_id": row.get("logistics_area_id"),
             "stock_status": row.get("stock_status"),
             "qty": row["qty"],
             "company_code": row.get("company_code"),

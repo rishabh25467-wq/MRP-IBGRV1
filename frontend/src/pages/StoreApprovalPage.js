@@ -438,11 +438,11 @@ export default function StoreApprovalPage() {
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{row.store_actor || "\u2014"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5 text-[11px]">
                         {!row.movement?.attempted ? (
-                          <span className="text-[#98A2B3]">not moved</span>
+                          <span className="text-[#98A2B3]" title={row.movement?.reason || ""}>not moved</span>
                         ) : row.movement.ok ? (
                           <span className="text-[#175CD3] font-bold">{row.movement.dry_run ? "Dry Run OK" : "Moved"} ({row.movement.external_id})</span>
                         ) : (
-                          <span className="text-[#B42318]">Failed</span>
+                          <span className="text-[#B42318]" title={row.movement.error || (row.movement.faults || []).map((f) => f.note).join("; ") || ""}>Failed</span>
                         )}
                       </td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5 whitespace-nowrap">
@@ -640,7 +640,7 @@ export default function StoreApprovalPage() {
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 align-top text-[11px]" data-testid={`store-goods-movement-${i}`}>
                       {!c.goods_movement?.attempted ? (
-                        <span className="text-[#98A2B3]">not moved</span>
+                        <span className="text-[#98A2B3]" title={c.goods_movement?.reason || ""}>not moved{c.goods_movement?.reason ? ` - ${c.goods_movement.reason}` : ""}</span>
                       ) : c.goods_movement.ok ? (
                         <span className="text-[#175CD3] font-bold">{c.goods_movement.dry_run ? "Dry Run OK" : "Moved"} ({c.goods_movement.external_id})</span>
                       ) : (

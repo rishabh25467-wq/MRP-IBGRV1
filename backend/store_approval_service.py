@@ -22,6 +22,7 @@ triggers the Release action, so the Proposal sits un-converted in SAP -
 the exact same harmless/documented outcome as any other Proposal a
 planner chooses not to act on."""
 import os
+import re
 
 from datetime import datetime, timezone
 
@@ -30,9 +31,31 @@ COUNTER_COLLECTION = "store_request_counters"
 
 # Flip RADISH_GOODS_MOVEMENT_DRY_RUN=false in .env only after a batch of
 # real dry runs has been reviewed and confirmed correct (user's explicit
-# Aug 2026 choice). Env-driven (not a code constant) so this can be
-# flipped without a redeploy, per testing_agent iteration_98's review.
-GOODS_MOVEMENT_DRY_RUN = os.environ.get("RADISH_GOODS_MOVEMENT_DRY_RUN", "true").lower() != "false"
+# Aug 2026 choice). Read LAZILY (a function, not a module-level constant) -
+# testing_agent iteration_100 caught that server.py imports this module
+# BEFORE calling load_dotenv(), so a module-level `os.environ.get(...)` at
+# import time always saw the flag missing and silently stayed dry-run even
+# after the .env value was flipped to "false" and the backend restarted.
+def is_dry_run() -> bool:
+    return os.environ.get("RADISH_GOODS_MOVEMENT_DRY_RUN", "true").lower() != "false"
+
+
+def _has_sap_log_error(result: dict) -> str | None:
+    """Real Aug 2026 bug: SAP can embed an actual error inside a normal-
+    looking `GoodsAndActivityConfirmationGoodsMovementResponse` <Log> block
+    (SeverityCode 3 = error) rather than raising a SOAP fault - Radish's
+    own `ok`/`faults` parsing didn't catch this shape and reported
+    `ok: true` for a movement SAP actually rejected ("Source logistics
+    area is invalid..."). Belt-and-suspenders check on our side: scan any
+    raw XML the response carries for a Log Item with SeverityCode 3+ and
+    treat that as a failure regardless of what `ok` says."""
+    xml = (result or {}).get("raw_xml") or (result or {}).get("envelope") or (result or {}).get("raw") or ""
+    if not xml:
+        return None
+    if re.search(r"<SeverityCode>\s*[3-9]\s*</SeverityCode>", xml):
+        note = re.search(r"<Note>(.*?)</Note>", xml)
+        return note.group(1) if note else "SAP logged an error-severity item for this movement"
+    return None
 
 
 def _trigger_goods_movement(radish_client, owner_party_id, product_id, source_warehouse, target_warehouse, quantity, uom, site_id) -> dict:
@@ -40,8 +63,11 @@ def _trigger_goods_movement(radish_client, owner_party_id, product_id, source_wa
         result = radish_client.goods_movement(
             owner_party_id=owner_party_id, product_id=product_id,
             source_logistics_area_id=source_warehouse, target_logistics_area_id=target_warehouse,
-            quantity=quantity, quantity_uom=uom, site_id=site_id, dry_run=GOODS_MOVEMENT_DRY_RUN,
+            quantity=quantity, quantity_uom=uom, site_id=site_id, dry_run=is_dry_run(),
         )
+        sap_error = _has_sap_log_error(result)
+        if sap_error and result.get("ok"):
+            result = {**result, "ok": False, "error": f"SAP rejected the movement: {sap_error}"}
         return {**result, "attempted": True}
     except Exception as e:
         # Broad catch is deliberate (iteration_98 review) - a
@@ -174,9 +200,10 @@ def submit_issue(db, request_id: str, issued: list, decision: str, store_actor: 
     The Owner Party ID can't be picked either now - it's read off whichever
     of the component's own `locations` sits in the RM warehouse (SAP's real
     stock owner for that exact bin, "RI"/"RT"). If the component has no
-    stock on file in the RM warehouse at all, the movement is skipped
-    (visible on the component as `goods_movement: None`) - never a hard
-    block on the approval itself.
+    stock on file in the RM warehouse at all, the movement is skipped with
+    a `{"attempted": False, "reason": ...}` marker (distinguishes "nothing
+    to move from" from a genuinely-attempted-and-failed SAP call) - never
+    a hard block on the approval itself.
 
     Also generates a separate `issue_id` (one per submit_issue() call,
     distinct from the Request ID so the two can't be confused when read
@@ -201,19 +228,26 @@ def submit_issue(db, request_id: str, issued: list, decision: str, store_actor: 
         shortfall = max(0.0, round(c["required_qty"] - issued_qty, 4))
         if shortfall > 0:
             shortfall_exists = True
-        rm_location = next((loc for loc in (c.get("locations") or []) if loc.get("warehouse") == source_warehouse), None)
+        rm_location = next((loc for loc in (c.get("locations") or []) if loc.get("warehouse_id") == source_warehouse), None)
         movement = None
-        if issued_qty > 0 and radish_client is not None and rm_location and rm_location.get("owner"):
-            movement = _trigger_goods_movement(
-                radish_client, rm_location["owner"], c["product_id"], source_warehouse, target_warehouse,
-                issued_qty, c.get("unit_of_measure") or "EA", site_id,
-            )
+        if issued_qty > 0 and radish_client is not None:
+            if rm_location and rm_location.get("owner"):
+                movement = _trigger_goods_movement(
+                    radish_client, rm_location["owner"], c["product_id"], source_warehouse, target_warehouse,
+                    issued_qty, c.get("unit_of_measure") or "EA", site_id,
+                )
+            else:
+                # Distinguishes "no RM stock on file for this component"
+                # (real-world case, e.g. this material's on-hand stock is
+                # actually in SFG/QC, not RM) from a genuinely-attempted-
+                # and-failed call (testing_agent iteration_100 review).
+                movement = {"attempted": False, "ok": False, "reason": "No stock on file in this site's RM warehouse for this component"}
         components.append({
             **c, "issued_qty": issued_qty, "shortfall": shortfall, "goods_movement": movement,
             # Persisted regardless of whether the movement actually fired
             # (testing_agent iteration_98) - the resolved view/journal
             # needs to show "issued from X" without parsing SOAP XML.
-            "issued_from_warehouse": source_warehouse if movement else None,
+            "issued_from_warehouse": source_warehouse if (movement and movement.get("attempted")) else None,
             "issued_from_owner": rm_location.get("owner") if rm_location else None,
         })
 

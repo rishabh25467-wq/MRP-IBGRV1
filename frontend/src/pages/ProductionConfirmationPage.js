@@ -12,6 +12,8 @@ import {
   Gear,
   Trash,
   Plus,
+  CircleNotch,
+  Circle,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -455,10 +457,58 @@ const PHASE_LABELS = {
   running: "Submitting...",
   checking_stock: "Checking Stock",
   creating_proposal: "Creating Proposal",
-  waiting_for_order: "Waiting for Order",
+  waiting_for_order: "Posting to SAP",
   releasing_order: "Releasing Order",
   waiting_store_approval: "Waiting for Store",
   partial_pending_planner: "Awaiting Your Decision",
+};
+
+// Linear happy-path order of the automated pipeline (excludes the 2
+// PAUSED_STATUSES above, which branch off to their own Badge+actions UI,
+// and excludes "done"/"failed"/"cancelled" which remove the row entirely
+// via a toast the instant they're seen - see pollJob). Some of these
+// steps (creating_proposal in particular, often also releasing_order when
+// SAP self-releases) can complete in well under one poll interval, so a
+// user watching only the CURRENT status would rarely if ever see them -
+// this tracker instead marks every step up to the current one as done
+// (checkmarked) so a fast step still visibly registers as completed
+// rather than seeming to have never happened.
+const ORDER_STEP_KEYS = ["checking_stock", "creating_proposal", "waiting_for_order", "releasing_order"];
+
+const OrderStepTracker = ({ status, elapsedSeconds }) => {
+  // Any status not yet in ORDER_STEP_KEYS (e.g. "running", seeded right
+  // after submit or restored from localStorage before the first poll
+  // resolves) is treated as step 0 "current" rather than indexOf's -1
+  // (which would render every step gray/pending with no spinner at all -
+  // testing_agent iteration_101 caught this as a ~4s cosmetic gap).
+  const rawIndex = ORDER_STEP_KEYS.indexOf(status);
+  const currentIndex = rawIndex === -1 ? 0 : rawIndex;
+  return (
+    <div className="flex items-center gap-1 flex-wrap" data-testid="order-step-tracker">
+      {ORDER_STEP_KEYS.map((key, idx) => {
+        const isDone = currentIndex > idx;
+        const isCurrent = currentIndex === idx;
+        return (
+          <span key={key} className="flex items-center gap-1">
+            <span
+              className={`flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-sm border whitespace-nowrap ${
+                isDone ? "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]"
+                : isCurrent ? "bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]"
+                : "bg-[#F9FAFB] text-[#98A2B3] border-[#EAECF0]"
+              }`}
+              data-testid={`order-step-${key}`}
+              data-step-state={isDone ? "done" : isCurrent ? "current" : "pending"}
+            >
+              {isDone ? <CheckCircle size={11} weight="fill" /> : isCurrent ? <CircleNotch size={11} className="animate-spin" /> : <Circle size={11} />}
+              {PHASE_LABELS[key]}
+            </span>
+            {idx < ORDER_STEP_KEYS.length - 1 && <span className="text-[#D0D5DD]">{"\u2192"}</span>}
+          </span>
+        );
+      })}
+      <span className="text-[11px] text-[#98A2B3] tabular-nums ml-1" data-testid="order-step-elapsed">{elapsedSeconds}s</span>
+    </div>
+  );
 };
 
 const CreateOrderTab = ({ actorName }) => {
@@ -958,14 +1008,18 @@ const CreateOrderTab = ({ actorName }) => {
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{j.site_id}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(j.quantity)} {j.unit_code}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5" data-testid={`active-order-status-${i}`}>
-                      <Badge className={`border ${
-                        j.status === "partial_pending_planner" ? "bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]"
-                        : j.status === "waiting_store_approval" ? "bg-[#FFFAEB] text-[#B54708] border-[#FEDF89]"
-                        : "bg-[#F2F4F7] text-[#344054] border-[#D0D5DD]"
-                      }`}>
-                        {PHASE_LABELS[j.status] || j.status}
-                      </Badge>
-                      {!isPaused && <span className="ml-1.5 text-[11px] text-[#98A2B3] tabular-nums">{j.elapsedSeconds}s</span>}
+                      {isPaused ? (
+                        <>
+                          <Badge className={`border ${
+                            j.status === "partial_pending_planner" ? "bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]"
+                            : "bg-[#FFFAEB] text-[#B54708] border-[#FEDF89]"
+                          }`}>
+                            {PHASE_LABELS[j.status] || j.status}
+                          </Badge>
+                        </>
+                      ) : (
+                        <OrderStepTracker status={j.status} elapsedSeconds={j.elapsedSeconds} />
+                      )}
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
                       {j.status === "partial_pending_planner" ? (

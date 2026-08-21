@@ -1,0 +1,47 @@
+{
+  "summary": "Independent re-verification of (1) the Radish QMS Goods Movement fixes and (2) the new Order Creation step tracker. Backend: added /app/backend/tests/test_gm_edge_cases.py (20 new error-path/edge-case tests) - all pass; plus 9 mock-only cases from the existing test_gm_warehouse_id_fix.py after updating 3 stale assertions that still referenced the removed GOODS_MOVEMENT_DRY_RUN constant and the old `goods_movement is None` skip marker (test-code only). Also ran ONE live probe through the running server (synthetic non-existent product, so SAP could not move any real stock) which proves the LIVE (non-dry-run) path is genuinely reaching SAP: response carried raw_xml (not the dry-run-only `envelope`), SAP embedded a SeverityCode-3 Log item, and _has_sap_log_error correctly downgraded Radish's ok:true to ok:false. Frontend: drove the step tracker through the full job lifecycle via Playwright route interception (no real SAP writes) - every data-testid/data-step-state transition matched the design exactly, including the core carry-over fix (all steps at/before the current backend status render 'done'), the spinner on the current step, the ticking elapsed counter, PAUSED_STATUSES falling back to the legacy Badge+View UI, and row removal + success toast on 'done'. 29/29 backend tests and 12/12 frontend checks passed. Two non-blocking issues found (see below).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/store-requests/{id}/issue", "issue": "Synchronous live Radish/SAP goods-movement call takes ~30s in-process (measured 29.8s on localhost) and one run through the public ingress returned HTTP 502 (Cloudflare/ingress gateway timeout) to the caller while the backend completed the request seconds later. A store user issuing stock can therefore see a 502/'failed' in the browser even though the movement fired. Consider firing the movement in a background task and returning the approval immediately (or polling), or at least surfacing a 'still processing' state instead of a hard error."},
+      {"endpoint": "Radish goods_movement (live)", "issue": "No live evidence yet of a successful (ok:true) real movement. The only live response captured this round was SAP rejecting with 'Source logistics area is invalid for external id MOV-0F1371' - that probe deliberately used a non-existent product/owner so the rejection is inconclusive, but it means the end-to-end 'stock actually moved in SAP' claim is still unproven by automated tests. Recommend the main agent/user run one real small-qty movement on a product with genuine P2/P2-RM stock and confirm ok:true."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "OrderStepTracker (ProductionConfirmationPage.js)", "issue": "After a page refresh, localStorage-restored active jobs are re-seeded with status 'running', which is not in ORDER_STEP_KEYS -> currentIndex = -1, so all 4 steps render gray/'pending' with NO current step and no spinner for up to one poll interval (~4s). Verified: states were all 'pending', spinners=0 immediately after reload, then corrected to done/done/current/pending after the first poll. Suggest mapping 'running' (and any unknown status) to step 0 as 'current'.", "selector": "[data-testid=\"order-step-tracker\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_gm_edge_cases.py",
+    "/app/backend/tests/test_gm_warehouse_id_fix.py",
+    "/app/backend/tests/_probe_live_gm_timing.py",
+    "/app/backend/tests/_setup_session_101.py",
+    "/app/test_reports/pytest/iteration_101_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL (LOW): map restored/unknown job status 'running' to the first step as 'current' in OrderStepTracker so a refreshed page doesn't show an all-gray tracker for ~4s.",
+    "CONSIDER: make the goods-movement call in POST /api/store-requests/{id}/issue asynchronous/background - it currently takes ~30s and can hit the ingress gateway timeout (observed one 502) while succeeding server-side.",
+    "SIGN-OFF GAP: run one real small-qty goods movement against a product with genuine P2/P2-RM stock to capture an ok:true response - all automated evidence so far is mocked or on a synthetic product."
+  ],
+  "critical_code_review_comments": [
+    "store_approval_service.is_dry_run() lazy read is correct and now unit-covered (env true/false/FALSE/absent + dry_run kwarg forwarded).",
+    "submit_issue() RM matching on locations[].warehouse_id, the {attempted:false, reason:...} skip marker, issued_from_warehouse/issued_from_owner plumbing, and the never-block-the-approval error path (RadishQMSError 502/503, ConnectTimeout) are all verified correct.",
+    "ProductionConfirmationPage.js is 1389 lines - well over the 700-line guideline; CreateOrderTab / confirmation dialogs / OrderStepTracker should be split into separate modules."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_gm_edge_cases.py (new)",
+    "/app/backend/tests/test_gm_warehouse_id_fix.py (3 stale assertions updated to this session's intentional API changes - test code only)",
+    "/app/backend/tests/_probe_live_gm_timing.py (new one-off probe)",
+    "/app/backend/tests/_setup_session_101.py (new synthetic-session helper)"
+  ],
+  "success_rate": {"backend": "100% (29/29)", "frontend": "100% (12/12 assertions; 1 low-severity cosmetic gap noted)"},
+  "seed_data_creation": "Synthetic store_requests docs (requester TEST_QA_GM_EDGE / TEST_QA_PROBE) and one synthetic auth_users + auth_sessions pair (TEST-TID-101:TEST-OID-101) - ALL deleted at the end of the run (verified 0 remaining).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "No end-user login; used the documented synthetic vms_session cookie technique from /app/memory/test_credentials.md (created and cleaned up).",
+  "context_for_next_testing_agent": "Run backend GM tests with `pytest tests/test_gm_edge_cases.py -n0` - the module-scoped cleanup fixture deletes by `requester`, so xdist parallelism makes one worker delete another worker's seed (false 404s). test_gm_warehouse_id_fix.py::TestLiveMovementWithFlagForced and ::TestSmoke::test_live_issue_via_api_attempts_movement perform REAL Radish/SAP movement calls (the forced one uses a real stocked product) - do not run them unless a live write is explicitly authorised. For step-tracker UI work, intercept **/api/production-confirmation/create-and-release-order (POST), .../status/** (GET) and .../store-requests/by-job/** plus source-of-supply-options/** to drive the whole lifecycle deterministically without SAP; note the SoS lookup only fires when you click the autocomplete suggestion (data-testid=product-suggestion-{id}), not on plain typing.",
+  "rca_of_the_issue": "Step-tracker carry-over works because OrderStepTracker derives state from ORDER_STEP_KEYS.indexOf(status) (isDone = currentIndex > idx), so fast steps the 4s poll never observes as 'current' still render green - confirmed at every status. The only gap is status values outside ORDER_STEP_KEYS ('running' from the localStorage restore path) yielding indexOf = -1 and an all-pending tracker. On the backend side, the 502 seen through the public URL is an ingress/gateway timeout caused by the ~30s synchronous live Radish->SAP goods-movement call inside the /issue request, not a backend exception (backend logs show the request completing normally afterwards)."
+}

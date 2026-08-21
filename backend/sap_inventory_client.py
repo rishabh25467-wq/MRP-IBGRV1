@@ -111,6 +111,14 @@ class SAPInventoryClient:
                 "description": row.get("TMATERIAL_UUID"),
                 "site": row.get("TSITE_UUID"),
                 "logistics_area": row.get("TLOG_AREA_UUID"),
+                # Raw SAP Logistics Area ID (CLOG_AREA_UUID, e.g. "P2/P2-RM") -
+                # distinct from "logistics_area" above which is the human-
+                # readable TEXT ("RAW MATERIAL GODOWN-P2"). Aug 2026 bug fix:
+                # the Goods Movement rule matches/calls SAP using THIS raw ID,
+                # never the description - a real "approved but stock not
+                # moved" case was traced to comparing the description string
+                # against the fixed "{site}/{site}-RM" ID and never matching.
+                "logistics_area_id": row.get("CLOG_AREA_UUID"),
                 "stock_status": row.get("TINV_STOCK_STATUS_CODE"),
                 "qty": qty,
                 "uom": row.get("CON_HAND_STOCK_UOM"),
