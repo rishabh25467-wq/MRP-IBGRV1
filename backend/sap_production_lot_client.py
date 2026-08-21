@@ -160,6 +160,11 @@ class SAPProductionLotClient:
                 "unit_code": _first_tag_attr(mo_block, "PlannedQuantity", "unitCode") or _first_tag_attr(mo_block, "OpenQuantity", "unitCode"),
                 "planned_quantity": _to_float(_first_tag(mo_block, "PlannedQuantity")),
                 "open_quantity": _to_float(_first_tag(mo_block, "OpenQuantity")),
+                # Needed to CREATE a brand-new by-product line (ActionCode
+                # 01) when one wasn't planned at all - reuse the main
+                # output's own target area as a sensible default, since a
+                # by-product almost always shares the main output's site.
+                "target_logistics_area_id": _first_tag(mo_block, "TargetLogisticsAreaID"),
             } for mo_block in _all_blocks(group_block, "MaterialOutput")]
 
             for rp_block in _all_blocks(group_block, "ReportingPoint"):
@@ -362,6 +367,43 @@ class SAPProductionLotClient:
      <ConfirmationGroupUUID>{confirmation_group_uuid}</ConfirmationGroupUUID>
      <MaterialOutput ActionCode="02">
       <MaterialOutputUUID>{material_output_uuid}</MaterialOutputUUID>
+      <ConfirmedQuantity unitCode="{unit_code or ''}">{confirmed_quantity}</ConfirmedQuantity>
+     </MaterialOutput>
+    </ConfirmationGroup>
+   </ProductionLot>
+  </n0:ProductionLotsBundleMaintainRequest_sync_V1>
+ </soapenv:Body>
+</soapenv:Envelope>"""
+        xml = self._post(self.manage_endpoint, body, MANAGE_SOAP_ACTION)
+        logs = self._parse_confirm_logs(xml)
+        success = not any(l["severity"] == "E" for l in logs)
+        return {"success": success, "logs": logs}
+
+    def create_material_output(
+        self, production_lot_id: str, production_lot_uuid: str, confirmation_group_uuid: str,
+        product_id: str, target_logistics_area_id: str, confirmed_quantity: float, unit_code: str,
+    ) -> dict:
+        """Adds a brand-new by-product output line that was NEVER planned
+        on this lot at all (its Production Model has no such output row) -
+        ActionCode="01" (Create), per SAP's own documented example ("Add
+        new by-product under MaterialOutput"): just ProductID +
+        TargetLogisticsAreaID + ConfirmedQuantity, no MaterialOutputUUID
+        needed since SAP generates one. Same isolation constraint as
+        confirm_material_output - must run BEFORE finish_task, and cannot
+        be combined with a ReportingPoint node in the same request."""
+        body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+ <soapenv:Body>
+  <n0:ProductionLotsBundleMaintainRequest_sync_V1 xmlns:n0="http://sap.com/xi/SAPGlobal20/Global">
+   <BasicMessageHeader/>
+   <ProductionLot>
+    <ProductionLotID>{production_lot_id}</ProductionLotID>
+    <ProductionLotUUID>{production_lot_uuid}</ProductionLotUUID>
+    <ConfirmationGroup>
+     <ConfirmationGroupUUID>{confirmation_group_uuid}</ConfirmationGroupUUID>
+     <MaterialOutput ActionCode="01">
+      <ProductID>{product_id}</ProductID>
+      <TargetLogisticsAreaID>{target_logistics_area_id}</TargetLogisticsAreaID>
       <ConfirmedQuantity unitCode="{unit_code or ''}">{confirmed_quantity}</ConfirmedQuantity>
      </MaterialOutput>
     </ConfirmationGroup>

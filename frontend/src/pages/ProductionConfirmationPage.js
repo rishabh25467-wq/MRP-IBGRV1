@@ -115,6 +115,14 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
   // isn't the main product IS the by-product to confirm.
   const byproductMatch = row.material_outputs?.find((mo) => mo.product_id !== row.main_output_product) || null;
 
+  // If no output line exists AT ALL for the expected by-product, we can
+  // still CREATE one from scratch (SAP supports ActionCode="01" on a
+  // brand-new MaterialOutput) - reuse the main output's own target
+  // logistics area as the destination, since a by-product almost always
+  // shares the main output's site/storage area.
+  const mainOutputRow = row.material_outputs?.find((mo) => mo.product_id === row.main_output_product) || null;
+  const canAutoCreateByproduct = !byproductMatch && !!mainOutputRow?.target_logistics_area_id;
+
   // Weight-based by-product quantity - fully independent of the manual
   // Confirmed Scrap (rejection) field above.
   const qtyNum = Number(confirmedQty);
@@ -170,6 +178,10 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
         byproduct_material_output_uuid: byproductMatch?.material_output_uuid || null,
         byproduct_confirmed_quantity: byproductMatch ? byproductQty : null,
         byproduct_unit_code: byproductMatch?.unit_code || null,
+        new_byproduct_product_id: canAutoCreateByproduct && byproductQty > 0 ? scrapCalc.scrap_family.expected_byproduct_code : null,
+        new_byproduct_target_logistics_area_id: canAutoCreateByproduct && byproductQty > 0 ? mainOutputRow.target_logistics_area_id : null,
+        new_byproduct_confirmed_quantity: canAutoCreateByproduct && byproductQty > 0 ? byproductQty : null,
+        new_byproduct_unit_code: canAutoCreateByproduct && byproductQty > 0 ? "KGM" : null,
         actor: actorName.trim(),
       });
       if (data.success) {
@@ -261,7 +273,9 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
                   Expected by-product: {scrapCalc.scrap_family.family} ({scrapCalc.scrap_family.expected_byproduct_code})
                   {byproductMatch
                     ? <span className="text-[#027A48]" data-testid="byproduct-match-found"> · will post {byproductQty ?? 0} {byproductMatch.unit_code} of {byproductMatch.product_id} to SAP</span>
-                    : <span className="text-[#B54708]" data-testid="byproduct-match-missing"> · no by-product output line found on this lot - only Confirmed Quantity will be posted</span>}
+                    : canAutoCreateByproduct
+                      ? <span className="text-[#0E7C86]" data-testid="byproduct-auto-create"> · no output line exists yet - will auto-create it and post {byproductQty ?? 0} KGM to SAP</span>
+                      : <span className="text-[#B54708]" data-testid="byproduct-match-missing"> · no by-product output line found on this lot - only Confirmed Quantity will be posted</span>}
                 </div>
               )}
             </div>

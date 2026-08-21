@@ -1954,6 +1954,10 @@ class ConfirmProductionRequest(BaseModel):
     byproduct_material_output_uuid: Optional[str] = None
     byproduct_confirmed_quantity: Optional[float] = None
     byproduct_unit_code: Optional[str] = None
+    new_byproduct_product_id: Optional[str] = None
+    new_byproduct_target_logistics_area_id: Optional[str] = None
+    new_byproduct_confirmed_quantity: Optional[float] = None
+    new_byproduct_unit_code: Optional[str] = None
     actor: str
 
 
@@ -1977,6 +1981,22 @@ async def confirm_production(payload: ConfirmProductionRequest):
                 confirmation_group_uuid=payload.confirmation_group_uuid,
                 material_output_uuid=payload.byproduct_material_output_uuid,
                 confirmed_quantity=payload.byproduct_confirmed_quantity, unit_code=payload.byproduct_unit_code,
+            )
+        except SAPProductionLotError as e:
+            byproduct_confirmation = {"success": False, "logs": [{"note": str(e)}]}
+    elif (payload.new_byproduct_product_id and payload.new_byproduct_target_logistics_area_id
+          and payload.new_byproduct_confirmed_quantity is not None):
+        # No output line was ever planned for this by-product on this lot
+        # (Production Model gap) - create the line from scratch instead of
+        # updating an existing one, per the same before-finish ordering.
+        try:
+            byproduct_confirmation = await asyncio.to_thread(
+                sap_production_lot_client.create_material_output,
+                production_lot_id=payload.production_lot_id, production_lot_uuid=payload.production_lot_uuid,
+                confirmation_group_uuid=payload.confirmation_group_uuid,
+                product_id=payload.new_byproduct_product_id,
+                target_logistics_area_id=payload.new_byproduct_target_logistics_area_id,
+                confirmed_quantity=payload.new_byproduct_confirmed_quantity, unit_code=payload.new_byproduct_unit_code,
             )
         except SAPProductionLotError as e:
             byproduct_confirmation = {"success": False, "logs": [{"note": str(e)}]}
