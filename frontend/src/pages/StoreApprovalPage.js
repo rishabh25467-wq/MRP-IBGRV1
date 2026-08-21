@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import axios from "axios";
 import "@/App.css";
-import { Package, ArrowLeft, ArrowClockwise, WarningCircle, CaretUp, CaretDown, MagnifyingGlass } from "@phosphor-icons/react";
+import { Package, ArrowLeft, ArrowClockwise, WarningCircle, CaretUp, CaretDown, MagnifyingGlass, DownloadSimple } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,6 +14,46 @@ const API = `${BACKEND_URL}/api`;
 const STORE_NAME_KEY = "storeApprovalActorName";
 
 const formatQty = (v) => (v == null ? "\u2014" : Number(v).toLocaleString("en-IN", { maximumFractionDigits: 2 }));
+
+// Aging (Aug 2026, user's explicit ask): "time since requested" text +
+// severity tier, reused for the Pending Queue's live badge and the
+// Movement History report's "Age at Issue" column/CSV export.
+const ageParts = (fromIso, toIso) => {
+  if (!fromIso) return null;
+  const ms = (toIso ? new Date(toIso) : new Date()) - new Date(fromIso);
+  if (Number.isNaN(ms) || ms < 0) return null;
+  const mins = Math.floor(ms / 60000);
+  const hours = Math.floor(mins / 60);
+  const days = Math.floor(hours / 24);
+  const label = days > 0 ? `${days}d ${hours % 24}h` : hours > 0 ? `${hours}h ${mins % 60}m` : `${mins}m`;
+  const tier = days > 0 ? "overdue" : hours >= 4 ? "warn" : "fresh";
+  return { label, tier, hours: ms / 3600000 };
+};
+
+const AGE_TIER_CLASS = { fresh: "text-[#027A48]", warn: "text-[#B54708] font-bold", overdue: "text-[#B42318] font-bold" };
+
+const AgeBadge = ({ fromIso, toIso, testId }) => {
+  const age = ageParts(fromIso, toIso);
+  if (!age) return <span className="text-[#98A2B3]">\u2014</span>;
+  return <span className={AGE_TIER_CLASS[age.tier]} data-testid={testId}>{age.label}{!toIso ? " ago" : ""}</span>;
+};
+
+const toCsv = (rows, columns) => {
+  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const header = columns.map((c) => esc(c.label)).join(",");
+  const body = rows.map((r) => columns.map((c) => esc(c.get(r))).join(",")).join("\n");
+  return `${header}\n${body}`;
+};
+
+const downloadCsv = (filename, csv) => {
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+};
 
 const LocationBreakdown = ({ locations, unit }) => {
   if (!locations || locations.length === 0) {
@@ -167,6 +207,7 @@ export default function StoreApprovalPage() {
           target_bin: r.target_logistics_area_id,
           requester: r.requester, store_actor: r.store_actor,
           movement: c.goods_movement, when: r.resolved_at || r.updated_at,
+          requested_at: r.created_at,
         });
       });
     });
@@ -339,6 +380,35 @@ export default function StoreApprovalPage() {
             <Button variant="outline" onClick={() => (viewMode === "queue" ? loadRequests() : loadJournal())} data-testid="store-refresh-button">
               <ArrowClockwise size={14} className="mr-1.5" /> Refresh
             </Button>
+            {viewMode === "movements" && (
+              <Button
+                variant="outline"
+                onClick={() => downloadCsv(
+                  `stock-movement-history-${new Date().toISOString().slice(0, 10)}.csv`,
+                  toCsv(movementRows, [
+                    { label: "Request ID", get: (r) => r.request_id },
+                    { label: "Issue ID", get: (r) => r.issue_id || "" },
+                    { label: "Site", get: (r) => r.site_id },
+                    { label: "Item", get: (r) => r.product_id },
+                    { label: "Description", get: (r) => r.description || "" },
+                    { label: "Qty Issued", get: (r) => r.issued_qty },
+                    { label: "Unit", get: (r) => r.unit_of_measure || "" },
+                    { label: "From Warehouse", get: (r) => r.warehouse || "" },
+                    { label: "Owner", get: (r) => r.owner || "" },
+                    { label: "To Bin", get: (r) => r.target_bin || "" },
+                    { label: "Requested By", get: (r) => r.requester || "" },
+                    { label: "Issued By", get: (r) => r.store_actor || "" },
+                    { label: "SAP Movement Status", get: (r) => (!r.movement?.attempted ? "not moved" : r.movement.ok ? (r.movement.dry_run ? "Dry Run OK" : "Moved") : "Failed") },
+                    { label: "Requested At", get: (r) => (r.requested_at ? new Date(r.requested_at).toLocaleString("en-IN") : "") },
+                    { label: "Issued At", get: (r) => (r.when ? new Date(r.when).toLocaleString("en-IN") : "") },
+                    { label: "Age at Issue", get: (r) => ageParts(r.requested_at, r.when)?.label || "" },
+                  ]),
+                )}
+                data-testid="store-movements-download-csv"
+              >
+                <DownloadSimple size={14} className="mr-1.5" /> Download CSV
+              </Button>
+            )}
             <span className="text-xs text-[#667085] ml-auto" data-testid="store-result-count">
               {viewMode === "movements" ? `${movementRows.length} movement(s)` : `${displayedRequests.length} request(s)`}
             </span>
@@ -349,7 +419,7 @@ export default function StoreApprovalPage() {
               <table className="w-full text-[12px] border-collapse" data-testid="store-movements-table">
                 <thead>
                   <tr>
-                    {["Request ID", "Issue ID", "Site", "Item", "Qty Issued", "From Warehouse", "To Bin", "Requested By", "Issued By", "SAP Movement", "When"].map((h) => (
+                    {["Request ID", "Issue ID", "Site", "Item", "Qty Issued", "From Warehouse", "To Bin", "Requested By", "Issued By", "SAP Movement", "Age at Issue", "When"].map((h) => (
                       <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
@@ -375,11 +445,14 @@ export default function StoreApprovalPage() {
                           <span className="text-[#B42318]">Failed</span>
                         )}
                       </td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5 whitespace-nowrap">
+                        {ageParts(row.requested_at, row.when)?.label || "\u2014"}
+                      </td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5 whitespace-nowrap">{row.when ? new Date(row.when).toLocaleString("en-IN") : "\u2014"}</td>
                     </tr>
                   ))}
                   {movementRows.length === 0 && (
-                    <tr><td colSpan={11} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="store-movements-empty-state">No stock movements recorded yet.</td></tr>
+                    <tr><td colSpan={12} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="store-movements-empty-state">No stock movements recorded yet.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -392,6 +465,7 @@ export default function StoreApprovalPage() {
                   <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">Request ID</th>
                   <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">Issue ID</th>
                   <SortableHeader label="Requested" field="created_at" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                  <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">Age</th>
                   <SortableHeader label="Material" field="material_id" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                   <SortableHeader label="Site" field="site_id" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                   <SortableHeader label="Qty" field="quantity" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
@@ -407,6 +481,13 @@ export default function StoreApprovalPage() {
                     <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono font-bold text-[#175CD3] max-w-[110px] truncate" data-testid={`store-request-id-${i}`} title={r._id}>{r._id}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono text-[#0E7C86]" data-testid={`store-issue-id-${i}`}>{r.issue_id || "\u2014"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{new Date(r.created_at).toLocaleString("en-IN")}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5">
+                      {r.status === "pending" || r.status === "partial_pending_planner" ? (
+                        <AgeBadge fromIso={r.created_at} testId={`store-age-${i}`} />
+                      ) : (
+                        <span className="text-[#667085]" data-testid={`store-age-${i}`} title="Time from request to resolution">{ageParts(r.created_at, r.resolved_at)?.label || "\u2014"}</span>
+                      )}
+                    </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium">{r.material_id}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{r.site_id}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(r.quantity)} {r.unit_code}</td>
@@ -423,7 +504,7 @@ export default function StoreApprovalPage() {
                   </tr>
                 ))}
                 {!loading && displayedRequests.length === 0 && (
-                  <tr><td colSpan={10} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="store-requests-empty-state">
+                  <tr><td colSpan={11} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="store-requests-empty-state">
                     {rawList.length === 0 ? (viewMode === "journal" ? "No requests recorded yet." : "No pending stock requests right now.") : "No requests match your filters."}
                   </td></tr>
                 )}
