@@ -33,6 +33,7 @@ const ADD_NEW_CATEGORY_VALUE = "__add_new_category__";
 const PHYSICAL_FIELDS = [
   { key: "net_weight_kg", label: "Net Weight", unit: "kg" },
   { key: "surface_area_sqin", label: "Surface Area", unit: "in²" },
+  { key: "gross_weight_kg", label: "Gross Weight", unit: "kg" },
 ];
 
 const formatDate = (iso) => (iso ? new Date(iso).toLocaleString() : "—");
@@ -63,6 +64,7 @@ export default function AdminPage() {
   const [backfilling, setBackfilling] = useState(false);
   const [importing, setImporting] = useState(false);
   const [pushAllOpen, setPushAllOpen] = useState(false);
+  const [pushAllMode, setPushAllMode] = useState("msl"); // "msl" | "physical"
   const [pushAllStatus, setPushAllStatus] = useState("idle"); // idle | running | done | failed
   const [pushAllProgress, setPushAllProgress] = useState({ processed: 0, total: 0 });
   const [pushAllResult, setPushAllResult] = useState(null);
@@ -456,7 +458,12 @@ export default function AdminPage() {
     try {
       const buffer = await file.arrayBuffer();
       const workbook = XLSX.read(buffer, { type: "array" });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      // "Gross & Net Wt." is the sheet name used by the L1-L2 Item Report
+      // export (Net Wt./Gross Wt./SA bulk import) - falls back to the
+      // first sheet for the older MSL/Lead Time template, which has no
+      // such sheet.
+      const sheetName = workbook.SheetNames.find((n) => n.toLowerCase().includes("gross") && n.toLowerCase().includes("net")) || workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
       const rows = XLSX.utils.sheet_to_json(sheet);
 
       let updated = 0;
@@ -473,6 +480,9 @@ export default function AdminPage() {
             if (row["Lead Time (Days)"] !== undefined && row["Lead Time (Days)"] !== "") {
               payload.lead_time_days = Number(row["Lead Time (Days)"]);
             }
+            if (row["Net Wt."] !== undefined && row["Net Wt."] !== "") payload.net_weight_kg = Number(row["Net Wt."]);
+            if (row["Gross Wt."] !== undefined && row["Gross Wt."] !== "") payload.gross_weight_kg = Number(row["Gross Wt."]);
+            if (row["SA"] !== undefined && row["SA"] !== "") payload.surface_area_sqin = Number(row["SA"]);
             if (Object.keys(payload).length === 0) return;
             try {
               await axios.patch(`${API}/admin/components/${encodeURIComponent(productId)}`, payload);
@@ -485,7 +495,7 @@ export default function AdminPage() {
       }
 
       toast.success(`Imported ${updated} row${updated === 1 ? "" : "s"}`, {
-        description: notFound.length ? `${notFound.length} product ID(s) not found: ${notFound.slice(0, 5).join(", ")}${notFound.length > 5 ? "..." : ""}` : "MSL / Lead Time updated. Refreshing list...",
+        description: notFound.length ? `${notFound.length} product ID(s) not found: ${notFound.slice(0, 5).join(", ")}${notFound.length > 5 ? "..." : ""}` : "Values updated locally. Use \"Push All to SAP\" below to write Net Weight/Surface Area to SAP in bulk. Refreshing list...",
       });
       loadComponents();
     } catch (err) {
@@ -495,17 +505,19 @@ export default function AdminPage() {
     }
   };
 
-  const startPushAllToSap = async () => {
+  const startPushAllToSap = async (mode = "msl") => {
+    setPushAllMode(mode);
     setPushAllOpen(true);
     setPushAllStatus("running");
     setPushAllProgress({ processed: 0, total: 0 });
     setPushAllResult(null);
     setPushAllError(null);
+    const endpoint = mode === "physical" ? "push-all-physical-to-sap" : "push-all-to-sap";
     try {
-      const { data } = await axios.post(`${API}/admin/components/push-all-to-sap`);
+      const { data } = await axios.post(`${API}/admin/components/${endpoint}`);
       const jobId = data.job_id;
       const poll = async () => {
-        const { data: job } = await axios.get(`${API}/admin/components/push-all-to-sap/${jobId}`);
+        const { data: job } = await axios.get(`${API}/admin/components/${endpoint}/${jobId}`);
         if (job.progress) setPushAllProgress(job.progress);
         if (job.status === "running") {
           setTimeout(poll, 1500);
@@ -679,7 +691,7 @@ export default function AdminPage() {
           disabled={importing}
           className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054]"
           data-testid="admin-import-excel-button"
-          title="Upload an edited MSL / Lead Time Excel file to update components in bulk"
+          title="Upload an edited MSL / Lead Time Excel file, or an L1-L2 Item Report's 'Gross & Net Wt.' sheet (Product ID, Net Wt., Gross Wt., SA columns), to update components in bulk"
         >
           <UploadSimple size={13} className={`mr-1.5 ${importing ? "animate-pulse" : ""}`} />
           {importing ? "Importing..." : "Import from Excel"}
@@ -694,13 +706,23 @@ export default function AdminPage() {
         />
         <Button
           type="button"
-          onClick={startPushAllToSap}
+          onClick={() => startPushAllToSap("msl")}
           className="h-8 bg-[#B54708] hover:bg-[#93370D] text-white text-xs rounded-sm"
           data-testid="admin-push-all-to-sap-button"
           title="Push MSL / Lead Time to SAP for every linked component that has a value set"
         >
           <CloudArrowUp size={13} className="mr-1.5" />
           Push All to SAP
+        </Button>
+        <Button
+          type="button"
+          onClick={() => startPushAllToSap("physical")}
+          className="h-8 bg-[#175CD3] hover:bg-[#004EEB] text-white text-xs rounded-sm"
+          data-testid="admin-push-all-physical-to-sap-button"
+          title="Push Net Weight / Surface Area to SAP for every component that has a value set"
+        >
+          <CloudArrowUp size={13} className="mr-1.5" />
+          Push All Weight/Area to SAP
         </Button>
         <span className="text-xs text-[#475467] ml-auto font-sans" data-testid="admin-item-count">
           {filteredSorted.length} of {items.length} components
@@ -1142,7 +1164,10 @@ export default function AdminPage() {
             <div className="font-heading text-xs font-bold text-[#004B87] uppercase col-span-2">Local Value (this app)</div>
             {PHYSICAL_FIELDS.map(({ key, label, unit }) => (
               <Fragment key={key}>
-                <div className="text-[#344054] self-center">{label}</div>
+                <div className="text-[#344054] self-center">
+                  {label}
+                  {key === "gross_weight_kg" && <span className="text-[10px] text-[#98A2B3] block">(local only, not pushed to SAP)</span>}
+                </div>
                 <div className="tabular-nums text-[#667085] self-center" data-testid={`weight-dims-sap-${key}`}>
                   {physicalSapData?.attributes?.[key] != null ? `${physicalSapData.attributes[key].toFixed(3)} ${unit}` : "—"}
                 </div>
@@ -1199,7 +1224,7 @@ export default function AdminPage() {
       <Dialog open={pushAllOpen} onOpenChange={(open) => !open && pushAllStatus !== "running" && setPushAllOpen(false)}>
         <DialogContent className="max-w-md" data-testid="push-all-to-sap-dialog">
           <DialogHeader>
-            <DialogTitle className="font-heading text-base">Push All to SAP</DialogTitle>
+            <DialogTitle className="font-heading text-base">{pushAllMode === "physical" ? "Push All Weight/Area to SAP" : "Push All to SAP"}</DialogTitle>
           </DialogHeader>
           {pushAllStatus === "running" && (
             <div className="py-4 space-y-3" data-testid="push-all-running">

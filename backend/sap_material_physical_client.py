@@ -135,3 +135,51 @@ class SAPMaterialPhysicalClient:
             raise SAPMaterialPhysicalError(f"SAP write failed: {_extract_sap_error_message(resp)}")
         return len(values)
 
+
+def bulk_push_physical_to_sap(db, physical_client, progress_callback=None) -> dict:
+    """Bulk counterpart to the per-row 'Push to SAP' in the Weight &
+    Surface Area dialog - user's explicit ask (Aug 2026): after importing
+    Net Wt./Surface Area for ~600 components from an Excel report, pushing
+    them to SAP one row at a time was impractical. Mirrors
+    sap_planning_client.bulk_push_to_sap's exact structure (bounded
+    ThreadPoolExecutor concurrency - safe here too, each push is one
+    material's own PATCH, no cross-material contention). Only pushes
+    net_weight_kg/surface_area_sqin - gross_weight_kg has no SAP field
+    (Aug 2026 decision: local-only for now). Returns
+    {total, pushed, failed: [{product_id, error}]}."""
+    from datetime import datetime, timezone
+    from concurrent.futures import ThreadPoolExecutor
+
+    docs = list(db["component_master"].find({
+        "$or": [{"net_weight_kg": {"$ne": None}}, {"surface_area_sqin": {"$ne": None}}],
+    }))
+    total = len(docs)
+    pushed = 0
+    failed = []
+    processed = 0
+
+    def push_one(doc):
+        values = {field: doc.get(field) for field in PHYSICAL_FIELD_TO_SAP_PROPERTY}
+        if not any(v is not None for v in values.values()):
+            return doc["_id"], False, "No Net Weight/Surface Area value set"
+        try:
+            physical_client.push_physical_attributes(doc["_id"], values)
+            db["component_master"].update_one({"_id": doc["_id"]}, {"$set": {"sap_physical_pushed_at": datetime.now(timezone.utc)}})
+            return doc["_id"], True, None
+        except SAPMaterialPhysicalError as e:
+            return doc["_id"], False, str(e)
+        except Exception as e:
+            return doc["_id"], False, f"Unexpected error: {e}"
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        for product_id, success, error in executor.map(push_one, docs):
+            processed += 1
+            if success:
+                pushed += 1
+            else:
+                failed.append({"product_id": product_id, "error": error})
+            if progress_callback:
+                progress_callback(processed, total)
+
+    return {"total": total, "pushed": pushed, "failed": failed}
+

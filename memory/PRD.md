@@ -1,3 +1,12 @@
+## Session update (2026-08-21, part 8) - Bulk import Net/Gross Weight + Surface Area from Excel, bulk push to SAP
+
+User's ask: set Gross Wt./Net Wt./Surface Area on ~260 components from an uploaded "L1-L2 Item Report" Excel (sheet "Gross & Net Wt.": Product ID, Net Wt., Gross Wt., SA columns) instead of one at a time.
+
+- Checked SAP's `materialgeneralinfo` OData `$metadata` directly - confirmed no Gross Weight field exists (only `ItemNetWeight1`/`SurfaceAreaSqInch` were ever custom-exposed, Aug 18 work). Per user's choice: Gross Weight is stored **locally only** (new `gross_weight_kg` field on `component_master`, added to `UpdateComponentMasterRequest`/`ComponentMasterItem`) - never pushed to SAP, clearly labeled "(local only, not pushed to SAP)" in the Weight & Surface Area dialog.
+- Extended AdminPage.js's existing "Import from Excel" (previously MSL/Lead Time only) to also read "Net Wt."/"Gross Wt."/"SA" columns, auto-detecting the "Gross & Net Wt." sheet by name. Existing MSL/Lead Time template still works unchanged (falls back to first sheet).
+- **NEW bulk push**: there was previously only a bulk push for MSL/Lead Time (`push-all-to-sap`) - Weight/Surface Area only had a one-by-one per-component push. Added `sap_material_physical_client.bulk_push_physical_to_sap()` (5-worker ThreadPoolExecutor, mirrors `sap_planning_client.bulk_push_to_sap`'s exact shape) + `POST/GET /admin/components/push-all-physical-to-sap` (same background-job/progress-poll pattern) + a second "Push All Weight/Area to SAP" button reusing the same progress dialog (`pushAllMode` state).
+- User's real file imported and verified: 231 of 262 unique Product IDs matched and updated in `component_master` (some rows are per-BOM-usage duplicates of the same Product ID with different weights depending on parent context - last-value-wins is acceptable per user's "overwrite all matches" choice). Verified bulk-push-to-SAP end to end on real data (5/6 test run pushed successfully; the 1 failure was a synthetic non-existent test product, correctly rejected).
+
 ## Session update (2026-08-21, part 7) - MASS->KG on Store screen, Last Confirmation outcome badges
 
 - **Store Approval "MASS" -> "KG" display fix**: same `formatUnit()` treatment as part 6, applied to the 5 remaining raw unit displays on StoreApprovalPage.js (queue table, detail header, required/issued qty columns, `LocationBreakdown`). CSV export still uses raw `unit_of_measure`/`unit_code` (data export, not a screen).

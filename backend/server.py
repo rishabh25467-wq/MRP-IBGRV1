@@ -28,7 +28,7 @@ from sap_production_model_client import SAPProductionModelClient, SAPProductionM
 from sap_goods_movement_client import SAPGoodsMovementClient, SAPGoodsMovementError
 from sap_production_order_release_client import SAPProductionOrderReleaseClient, SAPProductionOrderReleaseError
 from sap_material_physical_client import (
-    SAPMaterialPhysicalClient, SAPMaterialPhysicalError, PHYSICAL_FIELD_TO_SAP_PROPERTY,
+    SAPMaterialPhysicalClient, SAPMaterialPhysicalError, PHYSICAL_FIELD_TO_SAP_PROPERTY, bulk_push_physical_to_sap,
 )
 from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplierAuthError, SAPSupplierNotConfiguredError
 from sap_price_spec_client import SAPPriceSpecClient, SAPPriceSpecError, bulk_push_erp_prices_to_sap
@@ -2653,6 +2653,7 @@ class ComponentMasterItem(BaseModel):
     net_weight_kg: Optional[float] = None
     surface_area_sqin: Optional[float] = None
     sap_physical_pushed_at: Optional[str] = None
+    gross_weight_kg: Optional[float] = None
 
 
 def _to_component_master_item(doc: dict) -> ComponentMasterItem:
@@ -2672,6 +2673,7 @@ def _to_component_master_item(doc: dict) -> ComponentMasterItem:
         net_weight_kg=doc.get("net_weight_kg"),
         surface_area_sqin=doc.get("surface_area_sqin"),
         sap_physical_pushed_at=sap_physical_pushed_at.isoformat() if sap_physical_pushed_at else None,
+        gross_weight_kg=doc.get("gross_weight_kg"),
     )
 
 
@@ -2700,6 +2702,7 @@ class UpdateComponentMasterRequest(BaseModel):
     lead_time_days: Optional[float] = None
     net_weight_kg: Optional[float] = None
     surface_area_sqin: Optional[float] = None
+    gross_weight_kg: Optional[float] = None
 
 
 @api_router.patch("/admin/components/{product_id}", response_model=ComponentMasterItem)
@@ -2710,7 +2713,9 @@ async def update_admin_component(product_id: str, payload: UpdateComponentMaster
     directly (see purchasing_plan.get_component_msl), and/or its Procurement
     Lead Time (used only by the SAP Push-to-SAP write-back), and/or its
     Net Weight/Surface Area (local values used by the separate "Push
-    Weight & Surface Area to SAP" write-back)."""
+    Weight & Surface Area to SAP" write-back), and/or its Gross Weight
+    (Aug 2026: local-only for now, no SAP field exists for it yet - kept
+    for future scrap-calc reference, never sent to SAP)."""
     update = {}
     if payload.category is not None:
         update["category"] = payload.category
@@ -2724,6 +2729,8 @@ async def update_admin_component(product_id: str, payload: UpdateComponentMaster
         value = getattr(payload, field)
         if value is not None:
             update[field] = value
+    if payload.gross_weight_kg is not None:
+        update["gross_weight_kg"] = payload.gross_weight_kg
     if not update:
         raise HTTPException(status_code=400, detail="Provide at least one field to update")
 
@@ -2961,6 +2968,47 @@ async def start_push_all_to_sap():
 
 @api_router.get("/admin/components/push-all-to-sap/{job_id}", response_model=PushAllToSapJobStatus)
 async def get_push_all_to_sap_status(job_id: str):
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return PushAllToSapJobStatus(job_id=job_id, **job)
+
+
+@api_router.post("/admin/components/push-all-physical-to-sap")
+async def start_push_all_physical_to_sap():
+    """Bulk counterpart to the per-row 'Push to SAP' in the Weight &
+    Surface Area dialog - for after a bulk Excel import of Net Wt./
+    Surface Area across many components (see bulk_push_physical_to_sap's
+    docstring). Same background-job/progress-polling shape as the MSL/
+    Lead Time bulk push above."""
+    job_id = str(uuid.uuid4())
+    job_store.create_job(db, job_id, {"status": "running", "progress": {"processed": 0, "total": 0}, "result": None, "error": None})
+
+    last_progress = {"processed": 0, "total": 0}
+
+    def progress_callback(processed, total):
+        nonlocal last_progress
+        last_progress = {"processed": processed, "total": total}
+        job_store.update_job(db, job_id, {"progress": last_progress})
+
+    async def run():
+        try:
+            result = await asyncio.to_thread(bulk_push_physical_to_sap, db, sap_material_physical_client, progress_callback)
+            job_store.update_job(db, job_id, {
+                "status": "done", "progress": last_progress, "result": result, "error": None,
+            })
+        except Exception as e:
+            logger.error(f"Bulk push-physical-to-SAP failed: {e}")
+            job_store.update_job(db, job_id, {
+                "status": "failed", "progress": last_progress, "result": None, "error": str(e),
+            })
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+@api_router.get("/admin/components/push-all-physical-to-sap/{job_id}", response_model=PushAllToSapJobStatus)
+async def get_push_all_physical_to_sap_status(job_id: str):
     job = job_store.get_job(db, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id")
