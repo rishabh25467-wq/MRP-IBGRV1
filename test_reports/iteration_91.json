@@ -1,0 +1,37 @@
+{
+  "summary": "Independently re-verified the new Requester->Store Approval workflow (backend + frontend) and the Production Confirmation row-level Confirm-button disable fix. Backend: created /app/backend/tests/test_store_approval.py (22 pytest cases, all passing) covering the public GET/POST /api/store-requests* endpoints (unauthenticated), full/partial/send-to-planner issue paths incl. job resume to 'waiting_for_order', 400/404 edge cases, auth enforcement (401 no cookie, 403 without production_confirmation page) and the authenticated planner by-job + approve/reject decision endpoints (reject sets job status='cancelled' with the SAP no-delete-proposal note). Frontend: /storeapproval loads with ZERO auth (no redirect), queue table + detail view + per-component Issued Qty inputs default to required qty, single 'Confirm Stock Fully Issued' when no shortfall vs 'Proceed with Partial Stock' / 'Send to Requester for Approval' when short, name-required guard, read-only awaiting-requester state, and both submit paths worked end-to-end against the real API. Production Confirmation page: 25 real SAP open-lot rows checked - every Finished=Yes row's Confirm button is disabled with the correct tooltip, every Finished=No row is enabled and opens the confirm dialog (0 mismatches). The inline Store Approval panel was E2E tested with Playwright route-mocked job/status/by-job/decision endpoints (no live SAP): panel appears at waiting_store_approval with the Request ID, survives outside-click + Escape (not a modal), collapses only via the explicit x, reopen chip appears, polling keeps running underneath (status flip to partial_pending_planner re-rendered the panel with Approve/Reject + Issued/Shortfall columns), and Approve POSTed {\"decision\":\"approve\",\"actor\":\"QA Planner\"}. All seeded test docs (store_requests, background_jobs, auth_users, auth_sessions) were deleted afterwards - store_requests is back to 0 docs.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/products/search", "issue": "PAGE_ROUTE_RULES maps /api/products/search to {quota_allocation} only, so a user granted ONLY 'production_confirmation' gets 403 on the Create Production Order tab's Product ID autocomplete (verified: HTTP 403 + browser console error). The tab still works if you type an exact ID, but suggestions silently never appear. Add 'production_confirmation' to that rule."},
+      {"endpoint": "N/A (whole API, transient)", "issue": "Right after a backend reload/restart while the SAP inventory+Standard-Costs refresh job is running against a timing-out SAP host, ALL API requests (even the pure-Mongo /api/store-requests) queued for ~69s and the public ingress returned 502/timeout for a few minutes. Recovered on its own. Pre-existing background-job/thread-pool starvation, not caused by this feature, but it also stalls the new public store endpoints."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/storeapproval detail view", "issues": ["The 'Your Name' input only exists on the queue view, but the 'Enter your name first' validation toast fires in the detail view - the user has to guess to go 'Back to queue' to type it. Consider showing the name input (or a prompt) inside the detail view too."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_store_approval.py", "/app/test_reports/pytest/store_approval.xml"],
+  "action_items": [
+    "Add 'production_confirmation' to the /api/products/search entry in auth_service.PAGE_ROUTE_RULES so planners with only that page can use the Product ID autocomplete.",
+    "Optional UX: surface the store user's name input on the /storeapproval detail view (validation currently fires where the field isn't visible).",
+    "Optional: run the periodic SAP inventory/Standard-Costs refresh on a dedicated bounded executor so a timing-out SAP host cannot make unrelated API calls (incl. the public store-approval endpoints) wait ~70s."
+  ],
+  "critical_code_review_comments": [
+    "_continue_order_creation's self-release branch releases ANY new 'In Preparation' production order it discovers (sap_production_order_release_client.list_ids_by_status('1') diff is NOT filtered by site or by the proposal being tracked). With the new pause/resume path a job can now sit idle for hours before resuming, widening the window in which an unrelated order created by someone else gets auto-released by this job. Consider filtering the candidate by site/proposal before releasing.",
+    "server.py is 3841 lines - the new store-approval endpoints/resume helpers are a good candidate to move into a router module (routers/store_approval.py) per the <700-line guideline.",
+    "store_approval_service.submit_issue / planner_decision do a read-then-update (not an atomic find_one_and_update with a status filter), so two concurrent submits on the same pending request can both pass the status check. Low real-world risk on this queue, but a filtered atomic update would remove the race.",
+    "Writing any file under /app/backend (including test files) triggers uvicorn's watchfiles reload, which took >1 min to come back and 502'd the API mid-test-run - worth noting for future agents; reload-dir excludes for tests/ would help."
+  ],
+  "updated_files": ["/app/backend/tests/test_store_approval.py"],
+  "success_rate": {"backend": "100% (22/22 pytest cases)", "frontend": "100% of tested flows (public /storeapproval E2E, row-level Confirm disable on 25 live rows, inline panel via mocked job)"},
+  "seed_data_creation": "Temporary synthetic docs only: store_requests + background_jobs (proposal ids TEST_PROPOSAL_0001/TEST_PROPOSAL_UI) and 3 synthetic auth_users/auth_sessions with production_confirmation access. All deleted - store_requests count is 0 and no TEST_* auth docs remain.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "No end-user login; used the documented synthetic Mongo session technique (auth_users + auth_sessions + vms_session cookie). All such docs removed after testing.",
+  "context_for_next_testing_agent": "Reusable suite: /app/backend/tests/test_store_approval.py - it seeds its own paused background_jobs + store_requests and cleans up in a session fixture. Run it SERIALLY (-n 0) or expect flakiness: writing/adding files under /app/backend triggers a uvicorn reload and every in-flight request fails with 502 (this is what made my first xdist run show 100% failures; serial rerun passed 22/22). Two of its tests genuinely resume a job, which starts a real 20-minute SAP polling loop against a bogus proposal id - restart the backend after the run to kill those tasks. The inline Store Approval panel on the Create Production Order tab cannot be reached without a live SAP order, so it was validated with Playwright page.route mocks of create-and-release-order, its /status/{job_id}, store-requests/by-job and /decision.",
+  "rca_of_the_issue": "No defects found in the new feature or the bug fix. The only real bug found is unrelated-but-adjacent: /api/products/search is gated on the quota_allocation page only, so production_confirmation-only users get 403 on the product autocomplete of the very tab this feature lives on."
+}

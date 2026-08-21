@@ -55,6 +55,7 @@ import mrp_service
 import mps_service
 import po_selection_service
 import production_confirmation_service
+import store_approval_service
 import mrp_plan_store
 import autosave_store
 import job_store
@@ -106,6 +107,7 @@ mongo_client = MongoClient(os.environ['MONGO_URL'], tz_aware=True)
 db = mongo_client[os.environ['DB_NAME']]
 job_store.ensure_indexes(db)
 auth_service.ensure_indexes(db)
+store_approval_service.ensure_indexes(db)
 
 sap_soap_client = SAPSoapBOMClient(
     endpoint=os.environ['SAP_SOAP_ENDPOINT'],
@@ -2182,6 +2184,48 @@ def _is_permanent_sap_error(raw_error: str) -> bool:
     return any(marker in lower for marker in _SAP_PERMANENT_ERROR_MARKERS)
 
 
+async def _create_proposal_for_payload(payload: "CreateProductionProposalRequest", avail_dt, job_id: str) -> str:
+    """Creates the SAP Production Proposal for this payload - shared by both
+    the normal auto-release path and the insufficient-stock path (which,
+    per the Store Approval workflow, still creates the Proposal right away
+    and only defers the Release/Order steps until the store resolves the
+    stock shortfall)."""
+    if payload.logistic_relationship_uuid:
+        # User explicitly picked a non-default Production Model - this can
+        # ONLY be set at creation time (SAP rejects it on PATCH of an
+        # existing Proposal), so this bypasses the normal SOAP path
+        # entirely and goes through the custom OData Create action.
+        doc = db["component_master"].find_one({"_id": payload.material_id}) or db["bom_node_cache"].find_one({"_id": payload.material_id})
+        material_uuid = (doc or {}).get("product_uuid")
+        if not material_uuid:
+            raise SAPProductionOrderReleaseError(f"Could not resolve product_uuid for material '{payload.material_id}'")
+        spa_uuid = await asyncio.to_thread(sap_production_model_client.get_supply_planning_area_uuid, payload.site_id)
+        for attempt in range(3):
+            try:
+                return await asyncio.to_thread(
+                    sap_production_proposal_release_client.create_with_source_of_supply,
+                    material_uuid, spa_uuid, payload.quantity, payload.unit_code, avail_dt, payload.logistic_relationship_uuid,
+                )
+            except SAPProductionOrderReleaseError as e:
+                if attempt == 2 or _is_permanent_sap_error(str(e)):
+                    raise SAPProductionOrderReleaseError(_clarify_sap_error(str(e), payload.unit_code, payload.material_id))
+                logger.warning(f"create-and-release job {job_id}: create-with-source-of-supply attempt {attempt + 1}/3 hit a transient SAP error, retrying: {e}")
+                await asyncio.sleep(10)
+    else:
+        for attempt in range(3):
+            try:
+                proposal_result = await asyncio.to_thread(
+                    sap_production_proposal_client.create_proposal,
+                    payload.material_id, payload.site_id, payload.quantity, payload.unit_code, avail_dt,
+                )
+                return proposal_result["production_proposal_id"]
+            except SAPProductionProposalError as e:
+                if attempt == 2 or _is_permanent_sap_error(str(e)):
+                    raise SAPProductionProposalError(_clarify_sap_error(str(e), payload.unit_code, payload.material_id))
+                logger.warning(f"create-and-release job {job_id}: proposal creation attempt {attempt + 1}/3 hit a transient SAP error, retrying: {e}")
+                await asyncio.sleep(10)
+
+
 async def _run_create_and_release_job(job_id: str, payload: "CreateProductionProposalRequest", avail_dt):
     """One-click orchestration, run fully in the background so it is never
     bound by the platform's ~60s ingress timeout: Create Proposal -> (settle
@@ -2194,7 +2238,13 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
     look up or type an Order ID. The settle delays exist because SAP's own
     indexing needs a beat after each write before the very next call reads
     reliably - calling Release immediately after Create (0s apart) risked
-    the action silently missing the just-created Proposal."""
+    the action silently missing the just-created Proposal.
+
+    If a component is short at pre-flight, this no longer just fails the
+    job - it still creates the Proposal, then opens a Store Approval
+    request and PAUSES (job status "waiting_store_approval") until a
+    warehouse user (or the requester, for a partial issue) resolves it -
+    see store_approval_service.py + _continue_order_creation below."""
     try:
         # Pre-flight stock check - LIVE from SAP (not the cache) since this
         # gates a real SAP write; ~47s for SAP's inventory report (a heavy
@@ -2209,55 +2259,39 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
         availability = await asyncio.to_thread(
             production_confirmation_service.check_component_availability, db, payload.material_id, payload.quantity, payload.site_id, sap_inventory_client,
         )
-        if availability["checked"]:
-            short = [c for c in availability["components"] if not c["sufficient"]]
-            if short:
-                names = ", ".join(f"{c['product_id']} (need {c['required_qty']}, have {c['available_qty'] if c['available_qty'] is not None else 'unknown'})" for c in short)
-                raise SAPProductionOrderReleaseError(f"Can't auto-release - insufficient component stock at {payload.site_id}: {names}")
+        short = [c for c in availability["components"] if not c["sufficient"]] if availability["checked"] else []
 
         job_store.update_job(db, job_id, {"status": "creating_proposal"})
-        proposal_id = None
-        if payload.logistic_relationship_uuid:
-            # User explicitly picked a non-default Production Model - this
-            # can ONLY be set at creation time (SAP rejects it on PATCH of
-            # an existing Proposal), so this bypasses the normal SOAP path
-            # entirely and goes through the custom OData Create action.
-            doc = db["component_master"].find_one({"_id": payload.material_id}) or db["bom_node_cache"].find_one({"_id": payload.material_id})
-            material_uuid = (doc or {}).get("product_uuid")
-            if not material_uuid:
-                raise SAPProductionOrderReleaseError(f"Could not resolve product_uuid for material '{payload.material_id}'")
-            spa_uuid = await asyncio.to_thread(sap_production_model_client.get_supply_planning_area_uuid, payload.site_id)
-            for attempt in range(3):
-                try:
-                    proposal_id = await asyncio.to_thread(
-                        sap_production_proposal_release_client.create_with_source_of_supply,
-                        material_uuid, spa_uuid, payload.quantity, payload.unit_code, avail_dt, payload.logistic_relationship_uuid,
-                    )
-                    break
-                except SAPProductionOrderReleaseError as e:
-                    if attempt == 2 or _is_permanent_sap_error(str(e)):
-                        raise SAPProductionOrderReleaseError(_clarify_sap_error(str(e), payload.unit_code, payload.material_id))
-                    logger.warning(f"create-and-release job {job_id}: create-with-source-of-supply attempt {attempt + 1}/3 hit a transient SAP error, retrying: {e}")
-                    await asyncio.sleep(10)
-        else:
-            proposal_result = None
-            for attempt in range(3):
-                try:
-                    proposal_result = await asyncio.to_thread(
-                        sap_production_proposal_client.create_proposal,
-                        payload.material_id, payload.site_id, payload.quantity, payload.unit_code, avail_dt,
-                    )
-                    break
-                except SAPProductionProposalError as e:
-                    if attempt == 2 or _is_permanent_sap_error(str(e)):
-                        raise SAPProductionProposalError(_clarify_sap_error(str(e), payload.unit_code, payload.material_id))
-                    logger.warning(f"create-and-release job {job_id}: proposal creation attempt {attempt + 1}/3 hit a transient SAP error, retrying: {e}")
-                    await asyncio.sleep(10)
-            proposal_id = proposal_result["production_proposal_id"]
+        proposal_id = await _create_proposal_for_payload(payload, avail_dt, job_id)
         await asyncio.to_thread(
             production_confirmation_service.log_proposal_creation, db, payload.actor, payload.dict(),
             {"production_proposal_id": proposal_id}, job_id,
         )
+
+        if short:
+            store_request = await asyncio.to_thread(
+                store_approval_service.create_request, db, job_id, payload.dict(), proposal_id, short, payload.actor,
+            )
+            job_store.update_job(db, job_id, {
+                "status": "waiting_store_approval",
+                "production_proposal_id": proposal_id,
+                "store_request_id": store_request["_id"],
+            })
+            return
+
+        await _continue_order_creation(job_id, payload, proposal_id)
+    except Exception as e:
+        logger.error(f"create-and-release job {job_id} failed: {e}")
+        job_store.update_job(db, job_id, {"status": "failed", "error": str(e)})
+
+
+async def _continue_order_creation(job_id: str, payload: "CreateProductionProposalRequest", proposal_id: str):
+    """Resumes/runs the Proposal -> Order polling + Release pipeline. Called
+    either right after Proposal creation (no stock shortfall), or later by
+    _resume_order_creation_job() once a paused Store Approval request is
+    resolved (store issued enough stock, store chose to proceed with a
+    partial issue, or the planner approved a partial issue)."""
+    try:
         job_store.update_job(db, job_id, {"status": "waiting_for_order", "production_proposal_id": proposal_id})
         await asyncio.sleep(SAP_SETTLE_DELAY_SECONDS)  # let SAP fully commit the new Proposal before anything reads/acts on it
 
@@ -2386,7 +2420,11 @@ async def create_and_release_production_order(payload: CreateProductionProposalR
             raise HTTPException(status_code=400, detail="availability_datetime must be an ISO date/time")
 
     job_id = str(uuid.uuid4())
-    job_store.create_job(db, job_id, {"status": "running", "result": None, "error": None})
+    # payload_snapshot is kept on the job doc (not just held in the running
+    # asyncio task) so a paused "waiting_store_approval" job can be resumed
+    # later from a completely fresh request (store/planner action) without
+    # needing the original in-memory task to still exist.
+    job_store.create_job(db, job_id, {"status": "running", "result": None, "error": None, "payload_snapshot": payload.dict()})
     asyncio.create_task(_run_create_and_release_job(job_id, payload, avail_dt))
     return {"job_id": job_id}
 
@@ -2397,6 +2435,97 @@ async def get_create_and_release_job_status(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id")
     return job
+
+
+async def _resume_order_creation_job(job_id: str):
+    """Kicks off _continue_order_creation() again for a job that was
+    paused at "waiting_store_approval"/"partial_pending_planner" - used
+    once the linked store_requests doc reaches status "resolved"."""
+    job = job_store.get_job(db, job_id)
+    snapshot = (job or {}).get("payload_snapshot")
+    proposal_id = (job or {}).get("production_proposal_id")
+    if not snapshot or not proposal_id:
+        logger.error(f"_resume_order_creation_job: job {job_id} missing payload_snapshot/production_proposal_id, cannot resume")
+        return
+    payload = CreateProductionProposalRequest(**snapshot)
+    asyncio.create_task(_continue_order_creation(job_id, payload, proposal_id))
+
+
+class StoreIssueRequest(BaseModel):
+    issued: List[dict]  # [{"product_id": str, "issued_qty": float}, ...]
+    decision: Optional[str] = None  # required only when a shortfall remains: "proceed" | "send_to_planner"
+    actor: str
+
+
+class PlannerStoreDecisionRequest(BaseModel):
+    decision: str  # "approve" | "reject"
+    actor: str
+
+
+@api_router.get("/store-requests")
+async def list_store_requests():
+    """Unauthenticated by design (user's explicit choice) - the store team
+    needs to see the open queue of stock requests without a login."""
+    return {"requests": await asyncio.to_thread(store_approval_service.list_requests, db)}
+
+
+@api_router.get("/store-requests/{request_id}")
+async def get_store_request_public(request_id: str):
+    doc = await asyncio.to_thread(store_approval_service.get_request, db, request_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Store request not found")
+    return doc
+
+
+@api_router.post("/store-requests/{request_id}/issue")
+async def issue_store_request(request_id: str, payload: StoreIssueRequest):
+    if not payload.actor.strip():
+        raise HTTPException(status_code=400, detail="actor (store user's name) is required")
+    try:
+        updated = await asyncio.to_thread(
+            store_approval_service.submit_issue, db, request_id, payload.issued, payload.decision, payload.actor.strip(),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Store request not found")
+    if updated["status"] == "resolved":
+        await _resume_order_creation_job(updated["job_id"])
+    elif updated["status"] == "partial_pending_planner":
+        job_store.update_job(db, updated["job_id"], {"status": "partial_pending_planner", "store_request_id": updated["_id"]})
+    return updated
+
+
+@api_router.get("/production-confirmation/store-requests/by-job/{job_id}")
+async def get_store_request_by_job(job_id: str):
+    doc = await asyncio.to_thread(store_approval_service.get_request_by_job, db, job_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="No store request linked to this job")
+    return doc
+
+
+@api_router.post("/production-confirmation/store-requests/{request_id}/decision")
+async def decide_store_request(request_id: str, payload: PlannerStoreDecisionRequest):
+    if not payload.actor.strip():
+        raise HTTPException(status_code=400, detail="actor (your name) is required")
+    if payload.decision not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="decision must be 'approve' or 'reject'")
+    try:
+        updated = await asyncio.to_thread(
+            store_approval_service.planner_decision, db, request_id, payload.decision, payload.actor.strip(),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Store request not found")
+    if updated["status"] == "resolved":
+        await _resume_order_creation_job(updated["job_id"])
+    elif updated["status"] == "cancelled":
+        job_store.update_job(db, updated["job_id"], {"status": "cancelled", "result": {
+            "production_proposal_id": updated["production_proposal_id"], "production_order_id": None, "released": False,
+            "note": "Order creation cancelled - the partial stock issue was rejected. The SAP Proposal was left un-converted (SAP has no API to delete a Production Proposal) - ask your SAP admin to clean it up in Fiori if it needs removing.",
+        }})
+    return updated
 
 
 class ReleaseProductionOrderRequest(BaseModel):

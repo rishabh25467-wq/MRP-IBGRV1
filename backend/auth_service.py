@@ -99,7 +99,7 @@ PAGE_ROUTE_RULES = [
     ("/api/suppliers/sap-receipt-dates/", {"quota_allocation"}),
     ("/api/suppliers/sync-from-sap", {"supplier_master"}),
     ("/api/suppliers", {"supplier_master", "quota_allocation"}),
-    ("/api/products/search", {"quota_allocation"}),
+    ("/api/products/search", {"quota_allocation", "production_confirmation"}),
     ("/api/quota-arrangements/", {"quota_allocation"}),
     ("/api/admin/components", {"admin"}),
     ("/api/admin/categories", {"admin"}),
@@ -111,6 +111,12 @@ PAGE_ROUTE_RULES = [
 # logged out, and /auth/me must never itself 401 (the frontend uses it to
 # find out WHETHER it's logged in).
 PUBLIC_PATHS = {"/api/", "/api/auth/login", "/api/auth/callback", "/api/auth/me"}
+
+# Prefix version of the above - used for the Store Approval workflow's
+# `/storeapproval` screen, which the user explicitly asked to keep
+# unauthenticated for now ("not hidden behind a login right now") so a
+# warehouse/store user can act on a stock request without an account.
+PUBLIC_PATH_PREFIXES = ("/api/store-requests",)
 
 
 def ensure_indexes(db) -> None:
@@ -242,7 +248,12 @@ def create_auth_middleware(db):
 
     async def auth_middleware(request: Request, call_next):
         path = request.url.path
-        if request.method == "OPTIONS" or not path.startswith("/api/") or path in PUBLIC_PATHS:
+        if (
+            request.method == "OPTIONS"
+            or not path.startswith("/api/")
+            or path in PUBLIC_PATHS
+            or path.startswith(PUBLIC_PATH_PREFIXES)
+        ):
             return await call_next(request)
 
         user = await asyncio.to_thread(get_current_user, request, db)

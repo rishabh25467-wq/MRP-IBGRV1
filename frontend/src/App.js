@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, useLocation } from "react-router-dom";
 import BomExplorerPage from "@/pages/BomExplorerPage";
 import PurchasingPlanPage from "@/pages/PurchasingPlanPage";
 import ProductionPlanPage from "@/pages/ProductionPlanPage";
@@ -10,15 +10,21 @@ import QuotaAllocationPage from "@/pages/QuotaAllocationPage";
 import SapWritePage from "@/pages/SapWritePage";
 import CreateMaterialPage from "@/pages/CreateMaterialPage";
 import L1L2ReportPage from "@/pages/L1L2ReportPage";
+import StoreApprovalPage from "@/pages/StoreApprovalPage";
 import LoginPage from "@/pages/LoginPage";
 import PendingAccessPage from "@/pages/PendingAccessPage";
 import AccessManagementPage from "@/pages/AccessManagementPage";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 
+// /storeapproval is intentionally left OUTSIDE the login gate - the
+// warehouse/store team processing stock requests should not need an
+// Entra ID account (explicit user choice, Store Approval workflow).
 function AuthGate({ children }) {
   const { user, loading, isPendingAccess } = useAuth();
+  const location = useLocation();
 
+  if (location.pathname === "/storeapproval") return children;
   if (loading) return null;
   if (!user) return <LoginPage />;
   if (isPendingAccess) return <PendingAccessPage />;
@@ -43,6 +49,7 @@ function App() {
             <Route path="/admin/create-material" element={<ProtectedRoute page="admin_create_material"><CreateMaterialPage /></ProtectedRoute>} />
             <Route path="/admin/l1-l2-report" element={<ProtectedRoute page="admin"><L1L2ReportPage /></ProtectedRoute>} />
             <Route path="/admin/access-management" element={<ProtectedRoute superAdminOnly><AccessManagementPage /></ProtectedRoute>} />
+            <Route path="/storeapproval" element={<StoreApprovalPage />} />
           </Routes>
         </AuthGate>
       </BrowserRouter>

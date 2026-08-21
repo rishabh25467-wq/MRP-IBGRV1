@@ -452,9 +452,13 @@ const CreateOrderTab = ({ actorName }) => {
   const [materialUuid, setMaterialUuid] = useState(null);
   const [productSuggestions, setProductSuggestions] = useState([]);
   const [showProductSuggestions, setShowProductSuggestions] = useState(false);
+  const [storeRequest, setStoreRequest] = useState(null);
+  const [showStoreApprovalPanel, setShowStoreApprovalPanel] = useState(false);
+  const [decidingStoreRequest, setDecidingStoreRequest] = useState(false);
   const productInputWrapperRef = useRef(null);
   const suggestionDebounceRef = useRef(null);
   const suggestionRequestRef = useRef(null);
+  const storeRequestRef = useRef(null);
 
   const COMMON_UOM_CODES = ["EA", "KGM", "MTR", "LTR", "PC", "SET", "BOX", "TO"];
 
@@ -494,6 +498,8 @@ const CreateOrderTab = ({ actorName }) => {
     creating_proposal: "Creating Proposal in SAP...",
     waiting_for_order: "Waiting for SAP to convert Proposal to Order...",
     releasing_order: "Releasing Order in SAP...",
+    waiting_store_approval: "Waiting for store to issue stock...",
+    partial_pending_planner: "Awaiting your decision on partial stock issue...",
   };
 
   const STEP_ORDER = ["running", "checking_stock", "creating_proposal", "waiting_for_order", "releasing_order"];
@@ -504,6 +510,12 @@ const CreateOrderTab = ({ actorName }) => {
     waiting_for_order: "Waiting for SAP to convert Proposal → Order",
     releasing_order: "Releasing the Order in SAP",
   };
+
+  // These 2 statuses PAUSE the automated pipeline for a human action (store
+  // issuing stock, or the requester deciding on a partial issue) - the
+  // normal step-by-step progress panel is swapped for the Store Approval
+  // panel below while in either of these states.
+  const PAUSED_STATUSES = ["waiting_store_approval", "partial_pending_planner"];
 
   const selectedSosOption = sosOptions[Number(selectedSosKey)];
 
@@ -611,6 +623,11 @@ const CreateOrderTab = ({ actorName }) => {
         logistic_relationship_uuid: selectedSosOption ? selectedSosOption.logistic_relationship_uuid : null,
       });
       const jobId = data.job_id;
+      // The backend's very first real phase is always "checking_stock" -
+      // set it optimistically instead of waiting up to 4s for the first
+      // poll to confirm, so the user doesn't see a stale "Starting..."
+      // step 1 for that entire window.
+      setCreatePhase("checking_stock");
 
       // Runs fully in the background on the server (no HTTP request held
       // open) since SAP's own conversion + indexing can take minutes -
@@ -620,6 +637,20 @@ const CreateOrderTab = ({ actorName }) => {
         await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
         const { data: job } = await axios.get(`${API}/production-confirmation/create-and-release-order/status/${jobId}`);
         setCreatePhase(job.status);
+        if (PAUSED_STATUSES.includes(job.status)) {
+          const last = storeRequestRef.current;
+          if (job.store_request_id && (!last || last.id !== job.store_request_id || last.status !== job.status)) {
+            try {
+              const { data: reqDoc } = await axios.get(`${API}/production-confirmation/store-requests/by-job/${jobId}`);
+              storeRequestRef.current = { id: reqDoc._id, status: reqDoc.status };
+              setStoreRequest(reqDoc);
+              setShowStoreApprovalPanel(true);
+            } catch {
+              // transient - keep polling, try the fetch again next round
+            }
+          }
+          continue;
+        }
         if (job.status === "done") {
           const result = job.result;
           if (result.production_order_id && result.released) {
@@ -632,6 +663,16 @@ const CreateOrderTab = ({ actorName }) => {
           setMaterialId(""); setQuantity("1"); setRequestedEndDate("");
           setSosOptions([]); setSosChecked(false); setSelectedSosKey(""); setSiteAutoFilled(false);
           setUnitCode("EA"); setUnitCodeAutoFilled(false);
+          setStoreRequest(null); setShowStoreApprovalPanel(false); storeRequestRef.current = null;
+          loadHistory();
+          break;
+        }
+        if (job.status === "cancelled") {
+          toast.error(job.result?.note || "Order creation was cancelled after the store approval decision");
+          setMaterialId(""); setQuantity("1"); setRequestedEndDate("");
+          setSosOptions([]); setSosChecked(false); setSelectedSosKey(""); setSiteAutoFilled(false);
+          setUnitCode("EA"); setUnitCodeAutoFilled(false);
+          setStoreRequest(null); setShowStoreApprovalPanel(false); storeRequestRef.current = null;
           loadHistory();
           break;
         }
@@ -648,6 +689,25 @@ const CreateOrderTab = ({ actorName }) => {
       clearInterval(tickTimer);
       setCreating(false);
       setCreatePhase("");
+    }
+  };
+
+  const decideStoreRequest = async (decision) => {
+    if (!actorName.trim()) {
+      toast.error("Enter your name first (top-right of the page)");
+      return;
+    }
+    if (!storeRequest) return;
+    setDecidingStoreRequest(true);
+    try {
+      await axios.post(`${API}/production-confirmation/store-requests/${storeRequest._id}/decision`, {
+        decision, actor: actorName.trim(),
+      });
+      toast.success(decision === "approve" ? "Approved - resuming automated order creation" : "Rejected - order creation cancelled");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to record your decision");
+    } finally {
+      setDecidingStoreRequest(false);
     }
   };
 
@@ -791,7 +851,7 @@ const CreateOrderTab = ({ actorName }) => {
           <Button onClick={createProposal} disabled={creating} className="w-full" data-testid="create-proposal-submit-button">
             {creating ? `${PHASE_LABELS[createPhase] || "Working..."} (${elapsedSeconds}s)` : "Create Production Order"}
           </Button>
-          {creating && (
+          {creating && !PAUSED_STATUSES.includes(createPhase) && (
             <div className="bg-[#F9FAFB] border border-[#EAECF0] rounded-sm p-3 space-y-2" data-testid="create-proposal-progress-steps">
               {STEP_ORDER.map((step, idx) => {
                 const currentIdx = STEP_ORDER.indexOf(createPhase);
@@ -811,6 +871,82 @@ const CreateOrderTab = ({ actorName }) => {
                 );
               })}
               <p className="text-[11px] text-[#98A2B3] pt-1">Elapsed: {elapsedSeconds}s - this runs in the background, feel free to keep working elsewhere on this page.</p>
+            </div>
+          )}
+          {creating && PAUSED_STATUSES.includes(createPhase) && storeRequest && !showStoreApprovalPanel && (
+            <button
+              type="button"
+              onClick={() => setShowStoreApprovalPanel(true)}
+              className="w-full text-left bg-[#FFFAEB] border border-[#FEDF89] rounded-sm p-2.5 text-xs text-[#B54708] font-medium"
+              data-testid="store-approval-panel-reopen"
+            >
+              Store approval pending - click to view details
+            </button>
+          )}
+          {creating && PAUSED_STATUSES.includes(createPhase) && storeRequest && showStoreApprovalPanel && (
+            <div className="bg-[#FFFAEB] border border-[#FEDF89] rounded-sm p-3 space-y-2.5" data-testid="store-approval-panel">
+              <div className="flex items-start justify-between gap-2">
+                <h4 className="font-heading text-xs font-bold text-[#B54708] uppercase tracking-wide">
+                  {createPhase === "partial_pending_planner" ? "Awaiting Your Decision" : "Store Approval Required"}
+                </h4>
+                <button
+                  type="button"
+                  onClick={() => setShowStoreApprovalPanel(false)}
+                  className="text-[#B54708]/70 hover:text-[#B54708] text-xs font-bold leading-none px-1"
+                  data-testid="store-approval-panel-close"
+                  title="Hide (keeps running in the background)"
+                >
+                  ✕
+                </button>
+              </div>
+              <p className="text-[11px] text-[#93370D]">
+                Proposal <strong>{storeRequest.production_proposal_id}</strong> was created in SAP, but {storeRequest.components.length} component(s)
+                {" "}are short at {storeRequest.site_id}. The Order pipeline is paused until stock is resolved.
+              </p>
+              <div className="border border-[#FEDF89] rounded-sm overflow-hidden bg-white">
+                <table className="w-full text-[11px] border-collapse" data-testid="store-approval-components-table">
+                  <thead>
+                    <tr className="bg-[#FFFAEB]">
+                      {["Component", "Required", "In Stock", ...(createPhase === "partial_pending_planner" ? ["Issued", "Shortfall"] : [])].map((h) => (
+                        <th key={h} className="border border-[#FEDF89] px-2 py-1 text-left font-bold text-[#93370D]">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {storeRequest.components.map((c) => (
+                      <tr key={c.product_id}>
+                        <td className="border border-[#FEDF89] px-2 py-1">{c.product_id}{c.description ? ` - ${c.description}` : ""}</td>
+                        <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums">{formatQty(c.required_qty)} {c.unit_of_measure || ""}</td>
+                        <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums">{c.available_qty == null ? "no data" : `${formatQty(c.available_qty)} ${c.unit_of_measure || ""}`}</td>
+                        {createPhase === "partial_pending_planner" && (
+                          <>
+                            <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums">{formatQty(c.issued_qty)} {c.unit_of_measure || ""}</td>
+                            <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums font-bold text-[#B42318]">{formatQty(c.shortfall)} {c.unit_of_measure || ""}</td>
+                          </>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {createPhase === "waiting_store_approval" ? (
+                <p className="text-[11px] text-[#93370D]">
+                  Share this Request ID with the store team so they can process it on the Store Approval screen (<code>/storeapproval</code>):
+                  {" "}<strong data-testid="store-approval-request-id">{storeRequest._id}</strong>
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-[11px] text-[#93370D]">The store could not fully issue the required stock and asked you to decide.</p>
+                  <div className="flex gap-2">
+                    <Button size="sm" disabled={decidingStoreRequest} onClick={() => decideStoreRequest("approve")} data-testid="store-approval-approve-button">
+                      Approve &amp; Continue with Partial Stock
+                    </Button>
+                    <Button size="sm" variant="outline" disabled={decidingStoreRequest} onClick={() => decideStoreRequest("reject")} data-testid="store-approval-reject-button">
+                      Reject &amp; Cancel Order
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1098,7 +1234,15 @@ export default function ProductionConfirmationPage() {
                       )}
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
-                      <Button size="sm" disabled={loading} onClick={() => setConfirmRow(r)} data-testid={`confirm-button-${i}`}>Confirm</Button>
+                      <Button
+                        size="sm"
+                        disabled={loading || r.confirmation_finished}
+                        onClick={() => setConfirmRow(r)}
+                        title={r.confirmation_finished ? "Already marked as finished - re-confirmation disabled to avoid a duplicate SAP posting" : undefined}
+                        data-testid={`confirm-button-${i}`}
+                      >
+                        Confirm
+                      </Button>
                     </td>
                   </tr>
                   );

@@ -1,0 +1,24 @@
+{
+  "summary": "Frontend-only verification of the new 'checking_stock' pre-flight step in the Create Production Order progress panel (ProductionConfirmationPage.js). Used a synthetic vms_session cookie (tests/_setup_pc_session.py) and page.route mocks for POST /api/production-confirmation/create-and-release-order (job_id=mock-job-1) and its status endpoint - no real SAP call/order was created. All requested checks PASSED: 5-step order running -> checking_stock -> creating_proposal -> waiting_for_order -> releasing_order with checking_stock as step 2 titled 'Checking live component stock in SAP (~45s)'; step 1 shows green checkmark, step 2 active (animate-pulse, orange) with badge '2', steps 3-5 greyed/pending; submit button label becomes 'Checking live SAP stock for all components... (6s)' with an incrementing counter. Elapsed counter ticked exactly 1s per second across 8 samples [6,7,8,9,10,11,12,13] (no 4s jumps). Failure path: mocked status 'failed' with the insufficient-stock error rendered the exact message in a toast and fully reset the form (button back to 'Create Production Order', enabled, progress panel unmounted - not stuck spinning). Light regressions clean: Product ID typeahead + SoS picker resolved 2 Production Models for BK-0021, Site auto-locked to P2, UoM locked from SAP base unit, Production Confirmation open-lots list loaded 113 reporting points / 100 lots instantly with Stock badges (OK / 'No BOM cached'). Zero console errors in both runs.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Create Production Order - progress panel", "issues": ["Cosmetic only, no action strictly needed: for the first ~4s (until the first 4s poll returns) the button reads 'Starting... (Ns)' and step 1 is active, so the user briefly does not see the new stock-check step. Could optimistically set phase to 'checking_stock' immediately or do a first poll after ~1s."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "STEP_ORDER/STEP_TITLES/PHASE_LABELS are consistent with the backend job statuses ('checking_stock' set before check_component_availability) - verified by reading backend/server.py job flow references; no mismatch found.",
+    "ProductionConfirmationPage.js is ~1120 lines - consider splitting CreateOrderTab / ConfirmDialog into separate modules (>700 line guideline)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (per request)", "frontend": "100%"},
+  "seed_data_creation": "Temporary super_admin auth_users/auth_sessions doc (oid TEST-QA-OID) created via /app/backend/tests/_setup_pc_session.py and DELETED after testing (1 user + 4 sessions removed). No SAP Proposal/Order was created (all create/status calls mocked in-browser).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "To test the Create Production Order flow: run `cd /app/backend && python tests/_setup_pc_session.py`, add the printed token as cookie vms_session for the REACT_APP_BACKEND_URL host, then ALWAYS fill data-testid=actor-name-input (silent validation guard) before clicking create-proposal-submit-button, and ALWAYS mock POST/GET create-and-release-order via page.route (a real call takes ~45s+ and creates a real SAP order). Delete the auth_users/auth_sessions docs for user_id '2a94b71e-...:TEST-QA-OID' when done. Progress-step state can be asserted via inner_html of [data-testid=create-proposal-step-<phase>] ('bg-[#027A48]' = done, 'animate-pulse' = active).",
+  "rca_of_the_issue": "N/A - no defects found in this round."
+}
