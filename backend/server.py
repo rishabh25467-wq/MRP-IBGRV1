@@ -2064,6 +2064,16 @@ async def get_production_confirmation_history(production_lot_id: Optional[str] =
     return {"entries": entries}
 
 
+class LatestConfirmationBatchRequest(BaseModel):
+    production_lot_ids: List[str]
+
+
+@api_router.post("/production-confirmation/history/latest-batch")
+async def get_latest_confirmation_batch(payload: LatestConfirmationBatchRequest):
+    result = await asyncio.to_thread(production_confirmation_service.get_latest_confirmation_by_lot, db, payload.production_lot_ids)
+    return result
+
+
 @api_router.get("/production-confirmation/deviation-reasons")
 async def list_deviation_reasons():
     return {"reasons": await asyncio.to_thread(production_confirmation_service.get_deviation_reasons, db)}

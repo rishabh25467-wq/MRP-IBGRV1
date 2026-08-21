@@ -15,6 +15,12 @@ const STORE_NAME_KEY = "storeApprovalActorName";
 
 const formatQty = (v) => (v == null ? "\u2014" : Number(v).toLocaleString("en-IN", { maximumFractionDigits: 2 }));
 
+// SAP's own BOM data returns "MASS" as a dimension/QuantityTypeCode label,
+// not a real unit - matches the same display-only fix on Production
+// Confirmation/Create Order screens. Internal values (unit_code sent back
+// to the API, CSV export raw data) are untouched.
+const formatUnit = (u) => (u === "MASS" ? "KG" : u || "");
+
 // Aging (Aug 2026, user's explicit ask): "time since requested" text +
 // severity tier, reused for the Pending Queue's live badge and the
 // Movement History report's "Age at Issue" column/CSV export.
@@ -69,7 +75,7 @@ const LocationBreakdown = ({ locations, unit }) => {
         const label = loc.warehouse || (loc.site ? loc.site.split("-").pop() : "Unknown Warehouse");
         return (
           <div key={i}>
-            <span className="text-[#667085]">{label}{loc.stock_status ? ` (${loc.stock_status})` : ""}:</span> {formatQty(loc.qty)} {unit || ""}
+            <span className="text-[#667085]">{label}{loc.stock_status ? ` (${loc.stock_status})` : ""}:</span> {formatQty(loc.qty)} {formatUnit(unit)}
           </div>
         );
       })}
@@ -452,7 +458,7 @@ export default function StoreApprovalPage() {
                       <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono text-[#0E7C86]">{row.issue_id || "\u2014"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{row.site_id}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{row.product_id}{row.description ? ` - ${row.description}` : ""}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(row.issued_qty)} {row.unit_of_measure || ""}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(row.issued_qty)} {formatUnit(row.unit_of_measure)}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{row.warehouse ? `${row.warehouse}${row.owner ? ` \u00b7 ${row.owner}` : ""}` : "\u2014"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{row.target_bin || "\u2014"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{row.requester || "\u2014"}</td>
@@ -511,7 +517,7 @@ export default function StoreApprovalPage() {
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium">{r.material_id}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{r.site_id}</td>
-                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(r.quantity)} {r.unit_code}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(r.quantity)} {formatUnit(r.unit_code)}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{r.requester}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{r.components.length}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
@@ -591,7 +597,7 @@ export default function StoreApprovalPage() {
         <div className="bg-white border border-[#D0D5DD] rounded-sm p-4 space-y-3" data-testid="store-request-detail">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h3 className="font-heading text-sm font-bold text-[#1D2939] uppercase tracking-wide">{selected.material_id} &middot; {formatQty(selected.quantity)} {selected.unit_code}</h3>
+              <h3 className="font-heading text-sm font-bold text-[#1D2939] uppercase tracking-wide">{selected.material_id} &middot; {formatQty(selected.quantity)} {formatUnit(selected.unit_code)}</h3>
               <p className="text-xs text-[#667085]">
                 Request ID <span className="font-mono font-bold text-[#175CD3]" data-testid="store-request-detail-id">{selected._id}</span>
                 {selected.issue_id && (
@@ -637,7 +643,7 @@ export default function StoreApprovalPage() {
                 {selected.components.map((c, i) => (
                   <tr key={c.product_id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"}>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 align-top">{c.product_id}{c.description ? ` - ${c.description}` : ""}</td>
-                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums align-top">{formatQty(c.required_qty)} {c.unit_of_measure || ""}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums align-top">{formatQty(c.required_qty)} {formatUnit(c.unit_of_measure)}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums align-top" data-testid={`store-locations-${i}`}>
                       <LocationBreakdown locations={c.locations} unit={c.unit_of_measure} />
                     </td>
@@ -656,7 +662,7 @@ export default function StoreApprovalPage() {
                           data-testid={`store-issued-qty-input-${i}`}
                         />
                       ) : (
-                        <span className="tabular-nums">{formatQty(c.issued_qty)} {c.unit_of_measure || ""}</span>
+                        <span className="tabular-nums">{formatQty(c.issued_qty)} {formatUnit(c.unit_of_measure)}</span>
                       )}
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 align-top text-[11px]" data-testid={`store-goods-movement-${i}`}>

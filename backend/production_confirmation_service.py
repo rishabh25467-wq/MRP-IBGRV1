@@ -108,6 +108,31 @@ def get_confirmation_history(db, production_lot_id: str = None, limit: int = 200
     ]
 
 
+def get_latest_confirmation_by_lot(db, production_lot_ids: list) -> dict:
+    """One aggregation, not N queries - same batch pattern used by
+    check_component_availability_batch for the STOCK column. User's
+    explicit ask: a persistent per-lot indicator for posting/WIP-clearing/
+    by-product outcome, since today those only ever show as a toast that
+    disappears."""
+    if not production_lot_ids:
+        return {}
+    pipeline = [
+        {"$match": {"production_lot_id": {"$in": production_lot_ids}}},
+        {"$sort": {"at": -1}},
+        {"$group": {"_id": "$production_lot_id", "doc": {"$first": "$$ROOT"}}},
+    ]
+    result = {}
+    for row in db[HISTORY_COLLECTION].aggregate(pipeline):
+        d = row["doc"]
+        result[row["_id"]] = {
+            "success": d.get("success"),
+            "wip_clearing": d.get("wip_clearing"),
+            "byproduct_confirmation": d.get("byproduct_confirmation"),
+            "at": d["at"].isoformat(),
+        }
+    return result
+
+
 PROPOSAL_HISTORY_COLLECTION = "production_order_creation_history"
 
 

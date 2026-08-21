@@ -61,6 +61,28 @@ const formatQty = (v) => (v == null ? "—" : v.toLocaleString("en-IN", { maximu
 // sent back to the API, etc.) are untouched - this is a display-only map.
 const formatUnit = (u) => (u === "MASS" ? "KG" : u || "");
 
+// User's explicit ask: today posting/WIP-clearing/by-product outcomes
+// only ever show as a toast at confirm-time, then vanish - this renders
+// the LAST confirmation's outcome persistently on the row itself.
+const LastConfirmationBadges = ({ data }) => {
+  if (!data) return <span className="text-[#98A2B3] text-xs">—</span>;
+  const chip = (ok, label) => (
+    <span className={`flex items-center gap-1 text-[10px] px-1 py-0.5 rounded-sm border w-fit ${
+      ok ? "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]" : "bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]"
+    }`}>
+      {ok ? <CheckCircle size={10} weight="fill" /> : <WarningCircle size={10} weight="fill" />}
+      {label}
+    </span>
+  );
+  return (
+    <div className="space-y-0.5" data-testid="last-confirmation-badges">
+      {chip(!!data.success, "Posted")}
+      {data.wip_clearing != null && chip(!!data.wip_clearing.success, "WIP Cleared")}
+      {data.byproduct_confirmation != null && chip(!!data.byproduct_confirmation.success, "By-product")}
+    </div>
+  );
+};
+
 const STATUS_TONE = {
   Released: "bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]",
   Started: "bg-[#FFFAEB] text-[#B54708] border-[#FEDF89]",
@@ -1154,6 +1176,7 @@ export default function ProductionConfirmationPage() {
   const [showReasons, setShowReasons] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [stockByRow, setStockByRow] = useState({});
+  const [lastConfirmationByLot, setLastConfirmationByLot] = useState({});
 
   const loadReasons = useCallback(() => {
     axios.get(`${API}/production-confirmation/deviation-reasons`).then(({ data }) => setReasons(data.reasons)).catch(() => {});
@@ -1171,6 +1194,17 @@ export default function ProductionConfirmationPage() {
       rows.forEach((r, i) => { map[rowKey(r)] = data.results[i]; });
       setStockByRow(map);
     }).catch(() => {});
+  }, [rows]);
+
+  useEffect(() => {
+    const lotIds = [...new Set(rows.map((r) => r.production_lot_id))];
+    if (lotIds.length === 0) {
+      setLastConfirmationByLot({});
+      return;
+    }
+    axios.post(`${API}/production-confirmation/history/latest-batch`, { production_lot_ids: lotIds })
+      .then(({ data }) => setLastConfirmationByLot(data))
+      .catch(() => {});
   }, [rows]);
 
   const loadOpenLots = useCallback(async () => {
@@ -1318,7 +1352,7 @@ export default function ProductionConfirmationPage() {
             <table className="w-full text-[13px] border-collapse" data-testid="production-lots-table">
               <thead>
                 <tr>
-                  {["Lot ID", "Output Product", "Site", "Status", "Reporting Point", "Planned", "Confirmed So Far", "Open", "UOM", "Finished", "Stock", ""].map((h) => (
+                  {["Lot ID", "Output Product", "Site", "Status", "Reporting Point", "Planned", "Confirmed So Far", "Open", "UOM", "Finished", "Stock", "Last Confirmation", ""].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">{h}</th>
                   ))}
                 </tr>
@@ -1326,6 +1360,7 @@ export default function ProductionConfirmationPage() {
               <tbody>
                 {rows.map((r, i) => {
                   const stock = stockByRow[rowKey(r)];
+                  const lastConf = lastConfirmationByLot[r.production_lot_id];
                   return (
                   <tr key={rowKey(r)} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`lot-row-${i}`}>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium text-[#101828]">{r.production_lot_id}</td>
@@ -1364,6 +1399,9 @@ export default function ProductionConfirmationPage() {
                           </PopoverContent>
                         </Popover>
                       )}
+                    </td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5" data-testid={`last-confirmation-cell-${i}`}>
+                      <LastConfirmationBadges data={lastConf} />
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
                       <Button
