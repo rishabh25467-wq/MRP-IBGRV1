@@ -2491,17 +2491,9 @@ async def _resume_order_creation_job(job_id: str):
 
 
 class StoreIssueRequest(BaseModel):
-    # [{"product_id": str, "issued_qty": float, "warehouse": str|None (chosen
-    # source Logistics Area from that component's `locations`),
-    # "owner_party_id": str|None (that location's `owner` field)}, ...]
-    issued: List[dict]
+    issued: List[dict]  # [{"product_id": str, "issued_qty": float}, ...]
     decision: Optional[str] = None  # required only when a shortfall remains: "proceed" | "send_to_planner"
     actor: str
-    # Where the issued stock physically goes in SAP (e.g. the site's WIP/
-    # production consumption bin) - required for the Goods Movement call to
-    # fire; free-text for now (Aug 2026 - no fixed per-site bin list exists
-    # yet, per user's choice to type it manually until one is defined).
-    target_logistics_area_id: Optional[str] = None
 
 
 class PlannerStoreDecisionRequest(BaseModel):
@@ -2526,14 +2518,6 @@ async def get_store_requests_journal():
     return {"requests": await asyncio.to_thread(store_approval_service.list_all_requests, db)}
 
 
-@api_router.get("/store-requests/target-bins")
-async def get_store_request_target_bins(site_id: str = Query(...)):
-    """Bin dropdown for a given site (Aug 2026) - see
-    store_approval_service.list_known_target_bins. Also declared before
-    /store-requests/{request_id}, same reason as /journal above."""
-    return {"bins": await asyncio.to_thread(store_approval_service.list_known_target_bins, db, site_id)}
-
-
 @api_router.get("/store-requests/{request_id}")
 async def get_store_request_public(request_id: str):
     doc = await asyncio.to_thread(store_approval_service.get_request, db, request_id)
@@ -2549,7 +2533,7 @@ async def issue_store_request(request_id: str, payload: StoreIssueRequest):
     try:
         updated = await asyncio.to_thread(
             store_approval_service.submit_issue, db, request_id, payload.issued, payload.decision, payload.actor.strip(),
-            radish_qms_client, payload.target_logistics_area_id,
+            radish_qms_client,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

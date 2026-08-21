@@ -77,8 +77,6 @@ export default function StoreApprovalPage() {
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(null);
   const [issuedQty, setIssuedQty] = useState({});
-  const [sourceWarehouse, setSourceWarehouse] = useState({});
-  const [targetBin, setTargetBin] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [resultMessage, setResultMessage] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -87,8 +85,6 @@ export default function StoreApprovalPage() {
   const [siteFilter, setSiteFilter] = useState("all");
   const [sortField, setSortField] = useState("created_at");
   const [sortDir, setSortDir] = useState("desc");
-  const [availableBins, setAvailableBins] = useState([]);
-  const [addingCustomBin, setAddingCustomBin] = useState(false);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
@@ -199,25 +195,10 @@ export default function StoreApprovalPage() {
     setSelected(r);
     setResultMessage(null);
     const defaults = {};
-    const warehouseDefaults = {};
     r.components.forEach((c) => {
       defaults[c.product_id] = c.issued_qty != null ? String(c.issued_qty) : String(c.required_qty);
-      // Auto-pick the only warehouse when there's just one - otherwise the
-      // store person must choose (Aug 2026, Goods Movement integration).
-      if ((c.locations || []).length === 1) warehouseDefaults[c.product_id] = 0;
     });
     setIssuedQty(defaults);
-    setSourceWarehouse(warehouseDefaults);
-    setTargetBin("");
-    setAddingCustomBin(false);
-    setAvailableBins([]);
-    axios.get(`${API}/store-requests/target-bins`, { params: { site_id: r.site_id } })
-      .then(({ data }) => {
-        const bins = data.bins || [];
-        setAvailableBins(bins);
-        if (bins.length === 0) setAddingCustomBin(true); // nothing to pick from yet at this site
-      })
-      .catch(() => setAddingCustomBin(true));
   };
 
   const backToQueue = () => {
@@ -466,16 +447,7 @@ export default function StoreApprovalPage() {
       toast.error("Enter your name first");
       return;
     }
-    const issued = selected.components.map((c) => {
-      const locIdx = sourceWarehouse[c.product_id];
-      const loc = locIdx != null ? (c.locations || [])[locIdx] : null;
-      return {
-        product_id: c.product_id,
-        issued_qty: Number(issuedQty[c.product_id]) || 0,
-        warehouse: loc ? loc.warehouse : null,
-        owner_party_id: loc ? loc.owner : null,
-      };
-    });
+    const issued = selected.components.map((c) => ({ product_id: c.product_id, issued_qty: Number(issuedQty[c.product_id]) || 0 }));
     if (issued.some((i) => Number.isNaN(i.issued_qty) || i.issued_qty < 0)) {
       toast.error("Issued quantities must be valid, non-negative numbers");
       return;
@@ -484,7 +456,6 @@ export default function StoreApprovalPage() {
     try {
       const { data } = await axios.post(`${API}/store-requests/${selected._id}/issue`, {
         issued, decision: hasShortfall ? decision : null, actor: storeName.trim(),
-        target_logistics_area_id: targetBin.trim() || null,
       });
       if (data.status === "resolved") {
         setResultMessage("Stock issue recorded - the automated Production Order pipeline is resuming now.");
@@ -555,7 +526,7 @@ export default function StoreApprovalPage() {
             <table className="w-full text-[12px] border-collapse" data-testid="store-detail-components-table">
               <thead>
                 <tr>
-                  {["Component", "Required by Production", "In Stock at This Site (By Warehouse)", "Issue From", "Issued Qty", "SAP Stock Movement"].map((h) => (
+                  {["Component", "Required by Production", "In Stock at This Site (By Warehouse)", "Issued From (Site RM)", "Issued Qty", "SAP Stock Movement (RM \u2192 SFG)"].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -568,28 +539,10 @@ export default function StoreApprovalPage() {
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums align-top" data-testid={`store-locations-${i}`}>
                       <LocationBreakdown locations={c.locations} unit={c.unit_of_measure} />
                     </td>
-                    <td className="border border-[#D0D5DD] px-2 py-1.5 align-top">
-                      {isPending ? (
-                        (c.locations || []).length > 0 ? (
-                          <Select
-                            value={sourceWarehouse[c.product_id] != null ? String(sourceWarehouse[c.product_id]) : ""}
-                            onValueChange={(v) => setSourceWarehouse((prev) => ({ ...prev, [c.product_id]: Number(v) }))}
-                          >
-                            <SelectTrigger className="h-7 w-40 bg-white" data-testid={`store-source-warehouse-trigger-${i}`}><SelectValue placeholder="Pick warehouse" /></SelectTrigger>
-                            <SelectContent>
-                              {c.locations.map((loc, li) => (
-                                <SelectItem key={li} value={String(li)} data-testid={`store-source-warehouse-option-${i}-${li}`}>
-                                  {loc.warehouse || "Unknown"}{loc.stock_status ? ` (${loc.stock_status})` : ""}{loc.owner ? ` \u00b7 ${loc.owner}` : ""}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        ) : (
-                          <span className="text-[#98A2B3] text-[11px]">no location data</span>
-                        )
-                      ) : (
-                        <span>{c.issued_from_warehouse ? `${c.issued_from_warehouse}${c.issued_from_owner ? ` \u00b7 ${c.issued_from_owner}` : ""}` : "\u2014"}</span>
-                      )}
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 align-top text-[11px]" data-testid={`store-issue-source-${i}`}>
+                      {/* Aug 2026, user's fixed business rule - always Site RM -> Site SFG, no picker anymore */}
+                      {c.issued_from_warehouse || `${selected.site_id}/${selected.site_id}-RM`}
+                      {c.issued_from_owner ? ` \u00b7 ${c.issued_from_owner}` : ""}
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 align-top">
                       {isPending ? (
@@ -621,42 +574,8 @@ export default function StoreApprovalPage() {
 
           {isPending && !resultMessage && (
             <div className="space-y-2">
-              <div>
-                <Label className="text-xs font-bold text-[#344054]">Target Bin in SAP (where this stock physically goes - e.g. site's WIP bin)</Label>
-                {addingCustomBin ? (
-                  <div className="flex items-center gap-2">
-                    <Input
-                      value={targetBin}
-                      onChange={(e) => setTargetBin(e.target.value)}
-                      placeholder="e.g. P2-WIP"
-                      className="h-8 w-72 bg-white"
-                      data-testid="store-target-bin-input"
-                      autoFocus
-                    />
-                    {availableBins.length > 0 && (
-                      <button type="button" className="text-[11px] text-[#0E7C86] underline" onClick={() => setAddingCustomBin(false)} data-testid="store-target-bin-back-to-list">
-                        pick from list instead
-                      </button>
-                    )}
-                  </div>
-                ) : (
-                  <Select
-                    value={targetBin}
-                    onValueChange={(v) => (v === "__custom__" ? setAddingCustomBin(true) : setTargetBin(v))}
-                  >
-                    <SelectTrigger className="h-8 w-72 bg-white" data-testid="store-target-bin-trigger"><SelectValue placeholder="Pick a bin used before at this site" /></SelectTrigger>
-                    <SelectContent>
-                      {availableBins.map((b) => (
-                        <SelectItem key={b} value={b} data-testid={`store-target-bin-option-${b}`}>{b}</SelectItem>
-                      ))}
-                      <SelectItem value="__custom__" data-testid="store-target-bin-option-custom">+ Type a new bin ID...</SelectItem>
-                    </SelectContent>
-                  </Select>
-                )}
-                <p className="text-[11px] text-[#667085] mt-0.5">
-                  {availableBins.length === 0 && !addingCustomBin ? "No bin has been used at this site yet - " : ""}
-                  Leaving this or a component's "Issue From" warehouse blank just skips the SAP stock movement for that component - the approval itself still goes through. This list may eventually be locked to the request's own source warehouse - still being decided.
-                </p>
+              <div className="bg-[#F0FDF9] border border-[#A6F4C5] rounded-sm px-3 py-2 text-xs text-[#027A48]" data-testid="store-issue-movement-notice">
+                Issuing stock records a SAP Goods Movement <strong>{selected.site_id}/{selected.site_id}-RM &rarr; {selected.site_id}/{selected.site_id}-SFG</strong> (fixed by site - not user-chosen). Currently DRY RUN only, nothing physically moves in SAP yet.
               </div>
               {hasShortfall ? (
                 <>

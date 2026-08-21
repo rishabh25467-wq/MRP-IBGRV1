@@ -147,45 +147,49 @@ def get_request_by_job(db, job_id: str):
     return db[COLLECTION].find_one({"job_id": job_id}, sort=[("created_at", -1)])
 
 
-def list_known_target_bins(db, site_id: str) -> list:
-    """Every distinct Target Bin a store person has actually typed in for
-    this site so far (Aug 2026) - powers the "Bin list per site" dropdown
-    on /storeapproval. No fixed master list exists yet (user's explicit
-    choice: "give a dropdown for now, fix later per site/user" - it may
-    eventually need to be the SAME warehouse the request came from, still
-    undecided), so this just grows organically: the first time a new bin
-    is typed for a site it's a one-off free-text entry, and every request
-    after that sees it as a dropdown option too."""
-    return sorted(b for b in db[COLLECTION].distinct("target_logistics_area_id", {"site_id": site_id}) if b)
+def _rm_warehouse(site_id: str) -> str:
+    return f"{site_id}/{site_id}-RM"
 
 
-def submit_issue(db, request_id: str, issued: list, decision: str, store_actor: str, radish_client=None, target_logistics_area_id: str = None):
+def _sfg_warehouse(site_id: str) -> str:
+    return f"{site_id}/{site_id}-SFG"
+
+
+def submit_issue(db, request_id: str, issued: list, decision: str, store_actor: str, radish_client=None):
     """Store records actual issued quantity per component. If everything
     was issued in full, resolves immediately. If short, the store must pick
     `decision`: "proceed" (continue the order pipeline anyway) or
     "send_to_planner" (defer to the requester to decide).
 
-    Each `issued` entry may also carry `warehouse` (the source Logistics
-    Area the store person picked, from that component's `locations`) and
-    `owner_party_id` (that location's SAP owner, e.g. "RI"/"RT" - auto-
-    derived on the frontend from the picked location, not guessed). When
-    both are present, both `radish_client` and `target_logistics_area_id`
-    are given, and issued_qty > 0, this also fires a real Goods Movement
-    call (Aug 2026, Radish QMS integration) so the physical stock move is
-    recorded in SAP alongside this approval. Hardcoded to `dry_run=True`
-    for now (GOODS_MOVEMENT_DRY_RUN below) - user's explicit choice until
-    a few real dry runs are reviewed - so nothing physically moves in SAP
-    yet, only the SOAP envelope preview is captured for review. A failed/
-    skipped movement call NEVER blocks the approval itself - it's recorded
-    on the component for visibility, not a hard gate. Also generates a
-    separate `issue_id` (Aug 2026, user's explicit choice) - one per
-    submit_issue() call, distinct from the Request ID so the two can't be
-    confused when read aloud to the requester/planner."""
+    Aug 2026, user's explicit business rule: the Goods Movement is ALWAYS
+    Raw Material -> Semi-Finished Goods at the request's own site - no
+    picking a source warehouse or typing a target bin anymore (that manual
+    picker from the previous iteration is gone). `_rm_warehouse`/
+    `_sfg_warehouse` build the fixed SAP Logistics Area IDs (confirmed live
+    against real inventory data, e.g. "P2/P2-RM" -> "P2/P2-SFG"). Site
+    itself is not yet locked to the logged-in user (planned, not built -
+    user's words: "will be fixed later") - for now it's whatever site the
+    original shortage request was raised for.
+
+    The Owner Party ID can't be picked either now - it's read off whichever
+    of the component's own `locations` sits in the RM warehouse (SAP's real
+    stock owner for that exact bin, "RI"/"RT"). If the component has no
+    stock on file in the RM warehouse at all, the movement is skipped
+    (visible on the component as `goods_movement: None`) - never a hard
+    block on the approval itself.
+
+    Also generates a separate `issue_id` (one per submit_issue() call,
+    distinct from the Request ID so the two can't be confused when read
+    aloud to the requester/planner)."""
     doc = db[COLLECTION].find_one({"_id": request_id})
     if not doc:
         return None
     if doc["status"] != "pending":
         raise ValueError(f"This request is no longer pending (current status: {doc['status']})")
+
+    site_id = doc["site_id"]
+    source_warehouse = _rm_warehouse(site_id)
+    target_warehouse = _sfg_warehouse(site_id)
 
     issued_map = {i["product_id"]: i for i in issued}
     components = []
@@ -197,26 +201,27 @@ def submit_issue(db, request_id: str, issued: list, decision: str, store_actor: 
         shortfall = max(0.0, round(c["required_qty"] - issued_qty, 4))
         if shortfall > 0:
             shortfall_exists = True
+        rm_location = next((loc for loc in (c.get("locations") or []) if loc.get("warehouse") == source_warehouse), None)
         movement = None
-        if issued_qty > 0 and radish_client is not None and target_logistics_area_id and i.get("warehouse") and i.get("owner_party_id"):
+        if issued_qty > 0 and radish_client is not None and rm_location and rm_location.get("owner"):
             movement = _trigger_goods_movement(
-                radish_client, i["owner_party_id"], c["product_id"], i["warehouse"], target_logistics_area_id,
-                issued_qty, c.get("unit_of_measure") or "EA", doc["site_id"],
+                radish_client, rm_location["owner"], c["product_id"], source_warehouse, target_warehouse,
+                issued_qty, c.get("unit_of_measure") or "EA", site_id,
             )
         components.append({
             **c, "issued_qty": issued_qty, "shortfall": shortfall, "goods_movement": movement,
             # Persisted regardless of whether the movement actually fired
             # (testing_agent iteration_98) - the resolved view/journal
             # needs to show "issued from X" without parsing SOAP XML.
-            "issued_from_warehouse": i.get("warehouse"),
-            "issued_from_owner": i.get("owner_party_id"),
+            "issued_from_warehouse": source_warehouse if movement else None,
+            "issued_from_owner": rm_location.get("owner") if rm_location else None,
         })
 
     now = datetime.now(timezone.utc)
     update = {
         "components": components, "store_actor": store_actor, "store_decision": decision, "updated_at": now,
-        "target_logistics_area_id": target_logistics_area_id,
-        "issue_id": _generate_issue_id_for_site(db, doc["site_id"]),
+        "target_logistics_area_id": target_warehouse,
+        "issue_id": _generate_issue_id_for_site(db, site_id),
     }
     if not shortfall_exists:
         update.update({"status": "resolved", "resolution": "full_issue", "resolved_at": now})
