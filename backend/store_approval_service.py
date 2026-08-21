@@ -21,10 +21,14 @@ CreateBundle, no Cancel/Delete operation. A cancelled request simply never
 triggers the Release action, so the Proposal sits un-converted in SAP -
 the exact same harmless/documented outcome as any other Proposal a
 planner chooses not to act on."""
+import logging
 import os
 import re
+import time
 
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 COLLECTION = "store_requests"
 COUNTER_COLLECTION = "store_request_counters"
@@ -58,24 +62,57 @@ def _has_sap_log_error(result: dict) -> str | None:
     return None
 
 
+# Aug 2026: live (non-dry-run) movements were observed failing with
+# "Radish QMS/SAP unavailable" (RadishQMSError 502/503) while dry_run=true
+# calls against the exact same product/site succeeded instantly every
+# time - isolates the failure to the real downstream SAP write being slow/
+# timing out on this occasionally-flaky tenant (same known behavior
+# documented for every other SAP-writing flow in this app, e.g.
+# _create_proposal_for_payload's 3-attempt retry), not a Radish or code
+# bug. Retrying the exact same request a couple of times with a short
+# backoff before giving up matches that established pattern.
+_GOODS_MOVEMENT_MAX_ATTEMPTS = 3
+_GOODS_MOVEMENT_RETRY_DELAY_SECONDS = 5
+
+
 def _trigger_goods_movement(radish_client, owner_party_id, product_id, source_warehouse, target_warehouse, quantity, uom, site_id) -> dict:
-    try:
-        result = radish_client.goods_movement(
-            owner_party_id=owner_party_id, product_id=product_id,
-            source_logistics_area_id=source_warehouse, target_logistics_area_id=target_warehouse,
-            quantity=quantity, quantity_uom=uom, site_id=site_id, dry_run=is_dry_run(),
-        )
-        sap_error = _has_sap_log_error(result)
-        if sap_error and result.get("ok"):
-            result = {**result, "ok": False, "error": f"SAP rejected the movement: {sap_error}"}
-        return {**result, "attempted": True}
-    except Exception as e:
-        # Broad catch is deliberate (iteration_98 review) - a
-        # requests.Timeout/ConnectionError against this external,
-        # SAP-backed API is just as likely as a RadishQMSError, and the
-        # docstring above promises the approval itself is NEVER blocked
-        # by a failed/unreachable movement call.
-        return {"attempted": True, "ok": False, "error": str(e)}
+    last_error = None
+    for attempt in range(_GOODS_MOVEMENT_MAX_ATTEMPTS):
+        try:
+            result = radish_client.goods_movement(
+                owner_party_id=owner_party_id, product_id=product_id,
+                source_logistics_area_id=source_warehouse, target_logistics_area_id=target_warehouse,
+                quantity=quantity, quantity_uom=uom, site_id=site_id, dry_run=is_dry_run(),
+            )
+            sap_error = _has_sap_log_error(result)
+            if sap_error and result.get("ok"):
+                result = {**result, "ok": False, "error": f"SAP rejected the movement: {sap_error}"}
+            return {**result, "attempted": True}
+        except Exception as e:
+            # Broad catch is deliberate (iteration_98 review) - a
+            # requests.Timeout/ConnectionError against this external,
+            # SAP-backed API is just as likely as a RadishQMSError, and the
+            # docstring above promises the approval itself is NEVER blocked
+            # by a failed/unreachable movement call. Only status 502/503
+            # (transient "SAP unavailable" per RadishQMSClient) is worth
+            # retrying - anything else (auth failure, real SAP rejection)
+            # would just fail identically again.
+            last_error = e
+            status = getattr(e, "status", None)
+            body = getattr(e, "body", None)
+            logger.error(
+                f"Goods movement attempt {attempt + 1}/{_GOODS_MOVEMENT_MAX_ATTEMPTS} for {product_id} "
+                f"(site {site_id}, {source_warehouse}->{target_warehouse}) failed: status={status} error={e} "
+                f"body={body!r}"
+            )
+            if status not in (502, 503) or attempt == _GOODS_MOVEMENT_MAX_ATTEMPTS - 1:
+                break
+            logger.warning(
+                f"Goods movement attempt {attempt + 1}/{_GOODS_MOVEMENT_MAX_ATTEMPTS} for {product_id} "
+                f"hit a transient SAP error, retrying: {e}"
+            )
+            time.sleep(_GOODS_MOVEMENT_RETRY_DELAY_SECONDS)
+    return {"attempted": True, "ok": False, "error": str(last_error)}
 
 # Human-shareable, traceable-by-site request/issue ID (Aug 2026, per user
 # request - a full uuid4() was unusable to read aloud/type over chat with
