@@ -206,19 +206,37 @@ def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, con
     return {"checked": True, "reason": None, "components": components}
 
 
-def check_component_availability(db, main_output_product: str, confirmed_quantity: float, site_id: str) -> dict:
+def check_component_availability(db, main_output_product: str, confirmed_quantity: float, site_id: str, sap_inventory_client=None) -> dict:
     """Compares BOM component requirements (from the app's own bom_node_cache,
-    scaled to the quantity about to be confirmed) against cached on-hand
-    stock at the lot's site (inventory_cache) - lets a user see BEFORE
-    confirming whether SAP's backflush is likely to reject the confirmation
-    for insufficient component stock (see production_confirmation_history
-    for a real example of that SAP rejection). Uses only already-cached
-    data (no live SAP calls) so it's instant."""
+    scaled to the quantity about to be confirmed) against on-hand stock at
+    the lot's site - lets a user see BEFORE confirming/releasing whether
+    SAP's backflush is likely to reject it for insufficient component
+    stock. If `sap_inventory_client` is given, fetches LIVE stock from SAP
+    (this is the one stock check in the app that does - it gates a real
+    SAP write, an out-of-date cache here directly caused a wrong "unknown"
+    result once, see PRD Aug 2026) - falls back to the cached snapshot if
+    the live call fails (SAP's inventory report has occasional transient
+    errors) so a live SAP hiccup never blocks a release outright. Without
+    a client, or on live failure, uses the cached `inventory_cache`
+    snapshot (refreshed on a fixed schedule - see INVENTORY_CACHE_REFRESH_
+    INTERVAL_SECONDS in server.py) - this is what the open-lots list's
+    Stock badges use, deliberately kept cache-only/instant since it's a
+    glance-view checked on every page load, not a gate before a write."""
     bom_doc = db["bom_node_cache"].find_one({"_id": main_output_product})
-    inventory_doc = db["inventory_cache"].find_one({"_id": "latest"})
-    stock_by_product = {}
-    for item in (inventory_doc or {}).get("items", []):
-        stock_by_product[item["product_id"]] = item.get("locations", [])
+    stock_by_product = None
+    if sap_inventory_client is not None:
+        try:
+            live_rows = sap_inventory_client.get_inventory_detail()
+            stock_by_product = {}
+            for row in live_rows:
+                stock_by_product.setdefault(row["product_id"], []).append({"site": row.get("site"), "qty": row["qty"]})
+        except Exception:
+            stock_by_product = None  # fall through to cache below
+    if stock_by_product is None:
+        inventory_doc = db["inventory_cache"].find_one({"_id": "latest"})
+        stock_by_product = {}
+        for item in (inventory_doc or {}).get("items", []):
+            stock_by_product[item["product_id"]] = item.get("locations", [])
     return _check_availability_against_stock(bom_doc, stock_by_product, confirmed_quantity, site_id)
 
 

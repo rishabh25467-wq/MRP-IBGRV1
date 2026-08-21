@@ -490,14 +490,16 @@ const CreateOrderTab = ({ actorName }) => {
 
   const PHASE_LABELS = {
     running: "Starting...",
+    checking_stock: "Checking live SAP stock for all components...",
     creating_proposal: "Creating Proposal in SAP...",
     waiting_for_order: "Waiting for SAP to convert Proposal to Order...",
     releasing_order: "Releasing Order in SAP...",
   };
 
-  const STEP_ORDER = ["running", "creating_proposal", "waiting_for_order", "releasing_order"];
+  const STEP_ORDER = ["running", "checking_stock", "creating_proposal", "waiting_for_order", "releasing_order"];
   const STEP_TITLES = {
     running: "Submitting request to SAP",
+    checking_stock: "Checking live component stock in SAP (~45s)",
     creating_proposal: "Creating Production Proposal in SAP",
     waiting_for_order: "Waiting for SAP to convert Proposal → Order",
     releasing_order: "Releasing the Order in SAP",

@@ -1,3 +1,14 @@
+## Session update (2026-08-21) - Live SAP stock check for the auto-release gate
+
+User asked why the auto-release stock check showed "have unknown" for `HRCOIL1.9X80.5` and pushed back on cache-only checks ("since every action is happening inside SAP... better to get live data"). Investigated and found the cache genuinely WAS stale: a live fetch (`sap_inventory_client.get_inventory_detail()`) revealed this component actually has 10.0 KGM at P2 that the 2h-old cache didn't know about yet.
+
+**Trade-off surfaced to user**: a live SAP inventory fetch takes **~46-47 seconds** (SAP's inventory analytics OData report is a heavy ~6000-row OLAP query, no viable per-product server-side filter without hitting the previously-documented 500-error issue). User's call: live check worth the wait for the auto-release gate (infrequent, high-stakes), but NOT for the open-lots list's Stock badges (frequent glance-view - would hammer SAP if made live on every page load). Also shortened the routine cache refresh from 2h → 30 min as a balance (4x more scheduled SAP report pulls/day, but bounded/predictable vs. usage-driven).
+
+**Implemented**: `check_component_availability()` in `production_confirmation_service.py` now takes an optional `sap_inventory_client` param - when given, fetches live SAP stock (falls back to cache silently if the live call errors, so a transient SAP hiccup never blocks a release). `check_component_availability_batch()` (list badges) is UNCHANGED - still cache-only by design. The live check was moved to run INSIDE the already-backgrounded `_run_create_and_release_job` (new `checking_stock` phase, first step) rather than blocking the initial POST endpoint - avoids any risk of the platform's ~60s ingress timeout on a 47s+ synchronous call. Frontend shows "Checking live SAP stock for all components... (~45s)" during this phase (`PHASE_LABELS`/`STEP_TITLES`/`STEP_ORDER` updated).
+
+**Verified live end-to-end**: ran the real pre-flight check against `MAZ42117272-RA` (qty 500) - 45.6s, correctly returned "have 10.0" for `HRCOIL1.9X80.5` instead of the old "unknown". Cache-only path (used by list badges) regression-checked, unaffected.
+
+
 ## Session update (2026-08-20, part 14) - Auto-add missing by-product output line (Task 1 finally completed)
 
 Researched (with user's hint "it can be added as a line in the task creation time") and found the correct SAP write path via `help.sap.com`'s own documented example for `ManageProductionLotsIn` ("Add new by-product under MaterialOutput"): a brand-new `MaterialOutput` line CAN be added directly to an open lot's Confirmation Group with `ActionCode="01"` (ProductID + TargetLogisticsAreaID + ConfirmedQuantity, no UUID needed) - same service this app already uses for everything else in Production Confirmation.

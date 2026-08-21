@@ -2196,6 +2196,25 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
     reliably - calling Release immediately after Create (0s apart) risked
     the action silently missing the just-created Proposal."""
     try:
+        # Pre-flight stock check - LIVE from SAP (not the cache) since this
+        # gates a real SAP write; ~47s for SAP's inventory report (a heavy
+        # OLAP-style query, hence why it's live ONLY here and not on the
+        # open-lots list's Stock badges, which stay cache-only/instant on
+        # purpose to avoid hammering SAP on every page view). Worth the
+        # wait since order creation is infrequent, and running inside this
+        # already-backgrounded job means it's never subject to the
+        # platform's ~60s ingress timeout the way a blocking pre-flight in
+        # the POST endpoint itself would have been.
+        job_store.update_job(db, job_id, {"status": "checking_stock"})
+        availability = await asyncio.to_thread(
+            production_confirmation_service.check_component_availability, db, payload.material_id, payload.quantity, payload.site_id, sap_inventory_client,
+        )
+        if availability["checked"]:
+            short = [c for c in availability["components"] if not c["sufficient"]]
+            if short:
+                names = ", ".join(f"{c['product_id']} (need {c['required_qty']}, have {c['available_qty'] if c['available_qty'] is not None else 'unknown'})" for c in short)
+                raise SAPProductionOrderReleaseError(f"Can't auto-release - insufficient component stock at {payload.site_id}: {names}")
+
         job_store.update_job(db, job_id, {"status": "creating_proposal"})
         proposal_id = None
         if payload.logistic_relationship_uuid:
@@ -2365,20 +2384,6 @@ async def create_and_release_production_order(payload: CreateProductionProposalR
             avail_dt = datetime.fromisoformat(payload.availability_datetime.replace("Z", "+00:00"))
         except ValueError:
             raise HTTPException(status_code=400, detail="availability_datetime must be an ISO date/time")
-
-    # Pre-flight stock check (cached inventory, instant) - SAP's own "Full
-    # Quantity" action on the Production Request Segment silently disables
-    # itself when a required component is out of stock, orphaning the
-    # Proposal with no clear reason. Catching that here, before creating
-    # anything in SAP, gives an immediate, specific error instead.
-    availability = await asyncio.to_thread(
-        production_confirmation_service.check_component_availability, db, payload.material_id, payload.quantity, payload.site_id,
-    )
-    if availability["checked"]:
-        short = [c for c in availability["components"] if not c["sufficient"]]
-        if short:
-            names = ", ".join(f"{c['product_id']} (need {c['required_qty']}, have {c['available_qty'] if c['available_qty'] is not None else 'unknown'})" for c in short)
-            raise HTTPException(status_code=400, detail=f"Can't auto-release - insufficient component stock at {payload.site_id}: {names}")
 
     job_id = str(uuid.uuid4())
     job_store.create_job(db, job_id, {"status": "running", "result": None, "error": None})
@@ -3515,10 +3520,14 @@ app.middleware("http")(auth_service.create_auth_middleware(db))
 BOM_CACHE_REFRESH_INTERVAL_SECONDS = 6 * 60 * 60
 
 # Same background-scheduler pattern for the Inventory page's cache (see
-# inventory_service.refresh_inventory_cache) - every 2h, well inside a
-# workday, so "Last Updated" on the Inventory page never gets too stale
-# even if nobody clicks "Refresh" manually.
-INVENTORY_CACHE_REFRESH_INTERVAL_SECONDS = 2 * 60 * 60
+# inventory_service.refresh_inventory_cache) - every 30 min (tightened
+# from 2h per user request, Aug 2026 - this SAP report is a genuinely
+# heavy OLAP query (~47s for ~6000 rows), so this is a deliberate balance:
+# tight enough that staleness rarely matters, not so tight it hammers SAP.
+# The one place staleness actually matters (auto-release's stock gate)
+# does its own live check instead of relying on this cache - see
+# check_component_availability's live-first behavior below.
+INVENTORY_CACHE_REFRESH_INTERVAL_SECONDS = 30 * 60
 
 
 @app.on_event("startup")
