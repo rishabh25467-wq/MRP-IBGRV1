@@ -89,6 +89,8 @@ export default function StoreApprovalPage() {
   const [sortDir, setSortDir] = useState("desc");
   const [availableBins, setAvailableBins] = useState([]);
   const [addingCustomBin, setAddingCustomBin] = useState(false);
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
 
   useEffect(() => localStorage.setItem(STORE_NAME_KEY, storeName), [storeName]);
 
@@ -182,8 +184,16 @@ export default function StoreApprovalPage() {
       const t = userSearch.toLowerCase();
       list = list.filter((row) => [row.requester, row.store_actor].filter(Boolean).join(" ").toLowerCase().includes(t));
     }
+    if (dateFrom) {
+      const from = new Date(dateFrom); from.setHours(0, 0, 0, 0);
+      list = list.filter((row) => row.when && new Date(row.when) >= from);
+    }
+    if (dateTo) {
+      const to = new Date(dateTo); to.setHours(23, 59, 59, 999);
+      list = list.filter((row) => row.when && new Date(row.when) <= to);
+    }
     return list.sort((a, b) => new Date(b.when || 0) - new Date(a.when || 0));
-  }, [journalRequests, siteFilter, searchTerm, userSearch]);
+  }, [journalRequests, siteFilter, searchTerm, userSearch, dateFrom, dateTo]);
 
   const openRequest = (r) => {
     setSelected(r);
@@ -296,6 +306,28 @@ export default function StoreApprovalPage() {
                   />
                 </div>
               </div>
+            )}
+            {viewMode === "movements" && (
+              <>
+                <div>
+                  <Label className="text-xs font-bold text-[#344054]">From</Label>
+                  <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-36 bg-white" data-testid="store-movements-date-from" />
+                </div>
+                <div>
+                  <Label className="text-xs font-bold text-[#344054]">To</Label>
+                  <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-36 bg-white" data-testid="store-movements-date-to" />
+                </div>
+                {(dateFrom || dateTo) && (
+                  <Button
+                    variant="outline"
+                    className="h-9"
+                    onClick={() => { setDateFrom(""); setDateTo(""); }}
+                    data-testid="store-movements-date-clear"
+                  >
+                    Clear Dates
+                  </Button>
+                )}
+              </>
             )}
             {viewMode !== "movements" && (
               <div>
