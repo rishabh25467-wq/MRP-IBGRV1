@@ -41,7 +41,7 @@ import quota_arrangement_service
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
-from inventory_service import get_cached_inventory, refresh_inventory_cache, deep_backfill_uuids
+from inventory_service import get_cached_inventory, refresh_inventory_cache, refresh_stock_quantities_only, deep_backfill_uuids
 import l1_l2_report_service
 from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids, categorize_full_inventory, backfill_drawing_urls, refresh_attachments_now, REFRESH_ATTACHMENTS_MAX_IDS
 from oms_client import OMSClient, OMSError
@@ -2679,6 +2679,42 @@ async def get_store_requests_balance_pending():
     arrives in the RM warehouse. Declared BEFORE /store-requests/{request_id}
     for the same routing reason as /journal above."""
     return {"requests": await asyncio.to_thread(store_approval_service.list_balance_pending, db)}
+
+
+@api_router.post("/store-requests/refresh-live-stock")
+async def refresh_live_stock_for_store():
+    """"Refresh Live Stock Now" v2 (Aug 2026) - store person's on-demand
+    button for the exact "I just posted a Goods Receipt, is it visible
+    yet" gap. Deliberately its OWN endpoint (not /api/inventory, which
+    sits behind the `inventory` page permission) under the /store-requests
+    prefix already exempted from auth for this public workflow. Uses
+    refresh_stock_quantities_only - the SAME live SAP quantity pull as the
+    scheduled 30-min loop, just run sooner and skipping the slow Standard
+    Costs valuation lookup entirely (irrelevant here, and previously the
+    actual cause of an earlier version of this button feeling "stuck" for
+    minutes). Declared BEFORE /store-requests/{request_id} so this literal
+    path isn't swallowed by that dynamic route."""
+    job_id = str(uuid.uuid4())
+    job_store.create_job(db, job_id, {"status": "running", "error": None})
+
+    async def run():
+        try:
+            await asyncio.to_thread(refresh_stock_quantities_only, db, sap_inventory_client)
+            job_store.update_job(db, job_id, {"status": "done", "error": None})
+        except Exception as e:
+            logger.error(f"Store screen live stock refresh job {job_id} failed: {e}")
+            job_store.update_job(db, job_id, {"status": "failed", "error": str(e)})
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+@api_router.get("/store-requests/refresh-live-stock/{job_id}")
+async def get_refresh_live_stock_status(job_id: str):
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return {"status": job["status"], "error": job.get("error")}
 
 
 @api_router.get("/store-requests/{request_id}")

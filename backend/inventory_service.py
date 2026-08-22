@@ -263,6 +263,68 @@ def refresh_inventory_cache(db, sap_inventory_client, sap_valuation_client) -> d
     return {"items": items, "categories": categories, "updated_at": updated_at}
 
 
+def refresh_stock_quantities_only(db, sap_inventory_client) -> dict:
+    """"Refresh Live Stock Now" v2 (Aug 2026) - Store Approval's on-demand
+    button. Does the SAME live SAP quantity pull the scheduled/manual full
+    refresh does, but deliberately skips the separate, slow, chunked
+    Standard Costs valuation lookup entirely - Store Approval only ever
+    needs quantities, never $-value, and that valuation lookup (flaky on
+    this tenant) is what made an earlier attempt at this button feel
+    "stuck" for minutes. Combined with the new retry logic in
+    sap_inventory_client, this should complete reliably in the time of
+    one (now-retried) paginated OData pull - no new type of SAP load, just
+    the existing quantity pull run sooner than its next scheduled turn.
+    Preserves whatever unit_cost/currency was already cached (same
+    "sticky" pattern build_inventory uses on a cost-lookup failure),
+    recomputed against the NEW qty so total_value stays consistent."""
+    detail_rows = sap_inventory_client.get_inventory_detail()
+
+    by_product = {}
+    for row in detail_rows:
+        product_id = row["product_id"]
+        entry = by_product.setdefault(product_id, {
+            "product_id": product_id, "description": row.get("description"),
+            "total_qty": 0.0, "uom": row.get("uom"), "locations": [],
+        })
+        entry["total_qty"] += row["qty"]
+        entry["locations"].append({
+            "site": row.get("site"), "logistics_area": row.get("logistics_area"),
+            "logistics_area_id": row.get("logistics_area_id"), "stock_status": row.get("stock_status"),
+            "qty": row["qty"], "company_code": row.get("company_code"), "company_name": row.get("company_name"),
+        })
+
+    component_docs = {
+        doc["_id"]: doc
+        for doc in db["component_master"].find({"_id": {"$in": list(by_product.keys())}}, {"description": 1})
+    }
+    previous_by_id = {it["product_id"]: it for it in get_cached_inventory(db)["items"]}
+
+    for product_id, entry in by_product.items():
+        comp = component_docs.get(product_id)
+        if comp and comp.get("description"):
+            entry["description"] = comp["description"]
+        previous = previous_by_id.get(product_id)
+        if previous and previous.get("unit_cost") is not None:
+            entry["unit_cost"] = previous["unit_cost"]
+            entry["currency"] = previous["currency"]
+            entry["total_value"] = round(previous["unit_cost"] * entry["total_qty"], 2)
+        else:
+            entry["unit_cost"] = None
+            entry["currency"] = None
+            entry["total_value"] = None
+        entry["locations"].sort(key=lambda loc: -loc["qty"])
+
+    items = sorted(by_product.values(), key=lambda e: e["product_id"])
+    categories = sorted({it["category"] for it in items if it.get("category")})
+    updated_at = datetime.now(timezone.utc)
+    db[INVENTORY_CACHE_COLLECTION].update_one(
+        {"_id": INVENTORY_CACHE_ID},
+        {"$set": {"items": items, "categories": categories, "updated_at": updated_at}},
+        upsert=True,
+    )
+    return {"items": items, "categories": categories, "updated_at": updated_at}
+
+
 def deep_backfill_uuids(db, sap_soap_client, sap_material_client=None, progress_callback=None) -> dict:
     """User-requested, one-time CONTROLLED live SAP lookup for every
     inventory item that still has no product_uuid after the free,

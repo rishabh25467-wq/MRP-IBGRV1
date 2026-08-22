@@ -155,6 +155,8 @@ export default function StoreApprovalPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitElapsed, setSubmitElapsed] = useState(0);
   const [issueProgress, setIssueProgress] = useState(null);
+  const [refreshingStock, setRefreshingStock] = useState(false);
+  const [refreshElapsed, setRefreshElapsed] = useState(0);
   const [resultMessage, setResultMessage] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [userSearch, setUserSearch] = useState("");
@@ -180,6 +182,20 @@ export default function StoreApprovalPage() {
     const interval = setInterval(() => setSubmitElapsed((s) => s + 1), 1000);
     return () => clearInterval(interval);
   }, [submitting]);
+
+  // Ticks while "Refresh Live Stock Now" (v2, Aug 2026) is in flight - a
+  // fast, retried, quantities-only SAP pull (see
+  // inventory_service.refresh_stock_quantities_only), deliberately NOT the
+  // slow full refresh (with Standard Costs valuation) an earlier version
+  // of this button used, which is what made it feel "stuck" for minutes.
+  useEffect(() => {
+    if (!refreshingStock) {
+      setRefreshElapsed(0);
+      return;
+    }
+    const interval = setInterval(() => setRefreshElapsed((s) => s + 1), 1000);
+    return () => clearInterval(interval);
+  }, [refreshingStock]);
 
   const submitProgressMessage = issueProgress && issueProgress.progress_total > 0
     ? `Moving stock for component ${issueProgress.progress_current} of ${issueProgress.progress_total}${issueProgress.current_component ? ` (${issueProgress.current_component})` : ""}...`
@@ -660,6 +676,43 @@ export default function StoreApprovalPage() {
     }
   };
 
+  // "Refresh Live Stock Now" v2 (Aug 2026) - a fast, retried, quantities-
+  // only SAP pull, then re-fetches THIS request so its component
+  // locations pick up whatever was just found. Never blocks/breaks the
+  // screen on failure - just toasts and leaves the existing data as-is.
+  const refreshLiveStock = async () => {
+    setRefreshingStock(true);
+    try {
+      const { data } = await axios.post(`${API}/store-requests/refresh-live-stock`);
+      await new Promise((resolve) => {
+        const interval = setInterval(async () => {
+          try {
+            const { data: job } = await axios.get(`${API}/store-requests/refresh-live-stock/${data.job_id}`);
+            if (job.status === "done" || job.status === "failed") {
+              clearInterval(interval);
+              if (job.status === "failed") {
+                toast.error(job.error || "Live stock refresh failed - still showing the last known data");
+              } else {
+                toast.success("Live SAP stock refreshed");
+              }
+              resolve();
+            }
+          } catch {
+            clearInterval(interval);
+            toast.error("Lost connection while refreshing live stock");
+            resolve();
+          }
+        }, 3000);
+      });
+      const { data: fresh } = await axios.get(`${API}/store-requests/${selected._id}`);
+      setSelected(fresh);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to start a live stock refresh");
+    } finally {
+      setRefreshingStock(false);
+    }
+  };
+
   const pollIssueJob = (jobId, requestId) => new Promise((resolve) => {
     const interval = setInterval(async () => {
       try {
@@ -732,6 +785,20 @@ export default function StoreApprovalPage() {
                   className="h-8 w-40 bg-white text-xs"
                   data-testid="store-actor-name-input-detail"
                 />
+              )}
+              {(isPending || isReopenable) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8"
+                  disabled={refreshingStock || submitting || isIssuing}
+                  onClick={refreshLiveStock}
+                  data-testid="store-refresh-live-stock-button"
+                  title="Just posted a Goods Receipt? Pull live SAP quantities now instead of waiting up to 30 min for the scheduled refresh"
+                >
+                  <ArrowClockwise size={13} className={`mr-1.5 ${refreshingStock ? "animate-spin" : ""}`} />
+                  {refreshingStock ? `Refreshing (${refreshElapsed}s)...` : "Refresh Live Stock Now"}
+                </Button>
               )}
               <Badge className={`${STATUS_BADGE[selected.status]?.tone || "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]"} border`}>{STATUS_BADGE[selected.status]?.label || selected.status}</Badge>
             </div>

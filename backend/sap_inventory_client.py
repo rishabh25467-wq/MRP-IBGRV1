@@ -23,6 +23,7 @@ Material/Product ID - the same value used elsewhere in this app as
 `product_id` (NOT a GUID/UUID, and NOT the same as `product_uuid`).
 """
 import logging
+import time
 
 import requests
 from requests.auth import HTTPBasicAuth
@@ -32,6 +33,15 @@ from sap_rate_limiter import sap_semaphore
 logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 5000
+# Aug 2026 - this tenant's connectivity is documented as flaky (frequent
+# ConnectTimeoutError seen elsewhere on this same tenant); _fetch_page used
+# to have ZERO retry, so a single transient blip on any one page killed
+# the WHOLE multi-page pull instantly, discarding every page already
+# fetched - the actual root cause behind "the manual Inventory refresh
+# fails more often than not" (real user feedback). Short, bounded backoff
+# so a genuinely-down SAP still fails fast rather than hammering it.
+_MAX_ATTEMPTS = 3
+_RETRY_BACKOFF_SECONDS = [3, 8]
 
 
 class SAPInventoryError(Exception):
@@ -44,20 +54,29 @@ class SAPInventoryClient:
         self.auth = HTTPBasicAuth(username, password)
 
     def _fetch_page(self, skip: int) -> list:
-        with sap_semaphore:
-            resp = requests.get(
-                self.report_url,
-                auth=self.auth,
-                timeout=60,
-                headers={"Accept": "application/json"},
-                params={"$format": "json", "$top": PAGE_SIZE, "$skip": skip},
-            )
-        if resp.status_code != 200:
-            raise SAPInventoryError(f"SAP inventory report returned HTTP {resp.status_code}: {resp.text[:300]}")
-        data = resp.json()
-        if "error" in data:
-            raise SAPInventoryError(data["error"].get("message", {}).get("value", "Unknown OData error"))
-        return data.get("d", {}).get("results", [])
+        last_exc = None
+        for attempt in range(_MAX_ATTEMPTS):
+            try:
+                with sap_semaphore:
+                    resp = requests.get(
+                        self.report_url,
+                        auth=self.auth,
+                        timeout=60,
+                        headers={"Accept": "application/json"},
+                        params={"$format": "json", "$top": PAGE_SIZE, "$skip": skip},
+                    )
+                if resp.status_code != 200:
+                    raise SAPInventoryError(f"SAP inventory report returned HTTP {resp.status_code}: {resp.text[:300]}")
+                data = resp.json()
+                if "error" in data:
+                    raise SAPInventoryError(data["error"].get("message", {}).get("value", "Unknown OData error"))
+                return data.get("d", {}).get("results", [])
+            except (requests.exceptions.RequestException, SAPInventoryError) as e:
+                last_exc = e
+                if attempt < _MAX_ATTEMPTS - 1:
+                    logger.warning(f"SAP inventory page fetch (skip={skip}) failed on attempt {attempt + 1}/{_MAX_ATTEMPTS}, retrying: {e}")
+                    time.sleep(_RETRY_BACKOFF_SECONDS[attempt])
+        raise SAPInventoryError(f"SAP inventory report failed after {_MAX_ATTEMPTS} attempts (skip={skip}): {last_exc}")
 
     def _fetch_all_rows(self) -> list:
         rows = []
