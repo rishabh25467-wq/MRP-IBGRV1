@@ -28,6 +28,8 @@ import time
 
 from datetime import datetime, timezone
 
+from production_confirmation_service import is_usable_stock_status
+
 logger = logging.getLogger(__name__)
 
 COLLECTION = "store_requests"
@@ -307,7 +309,11 @@ def submit_issue(db, request_id: str, issued: list, decision: str, store_actor: 
         shortfall = max(0.0, round(c["required_qty"] - issued_qty, 4))
         if shortfall > 0:
             shortfall_exists = True
-        rm_location = next((loc for loc in (c.get("locations") or []) if loc.get("warehouse_id") == source_warehouse), None)
+        rm_locations_all = [loc for loc in (c.get("locations") or []) if loc.get("warehouse_id") == source_warehouse]
+        # Never source a movement from Quality Inspection/Blocked stock -
+        # confirmed live this tenant's RM stock can carry an "Inspection"
+        # status (production_confirmation_service.is_usable_stock_status).
+        rm_location = next((loc for loc in rm_locations_all if is_usable_stock_status(loc.get("stock_status"))), None)
         movement = None
         if issued_qty > 0 and sap_client is not None:
             if rm_location and rm_location.get("owner"):
@@ -315,6 +321,11 @@ def submit_issue(db, request_id: str, issued: list, decision: str, store_actor: 
                     sap_client, rm_location["owner"], c["product_id"], source_warehouse, target_warehouse,
                     issued_qty, c.get("unit_of_measure") or "EA", site_id,
                 )
+            elif rm_locations_all:
+                # Real stock exists in this warehouse, but only in a
+                # Quality Inspection/Blocked status - not usable, and NOT
+                # the same case as "no stock on file at all" below.
+                movement = {"attempted": False, "ok": False, "reason": "Stock on file in this site's RM warehouse is held in Quality Inspection/Blocked status - not usable for production until released."}
             else:
                 # Distinguishes "no RM stock on file for this component"
                 # (real-world case, e.g. this material's on-hand stock is

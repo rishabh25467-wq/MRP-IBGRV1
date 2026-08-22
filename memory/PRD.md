@@ -6,6 +6,16 @@ Both P0 bugs reported by user were found ALREADY FIXED in code from the previous
 
 No code changes were needed this session - purely verification of already-completed work.
 
+## Session update (2026-08-22, part 3) - never source/count Quality Inspection or Blocked stock
+
+User asked directly: "making sure u would not move restricted stock?" - checked, and this WAS a real gap (not yet handled): confirmed live in this tenant's own `inventory_cache` that SAP's `stock_status` field carries a real "Inspection" value (Quality Inspection hold, e.g. product `100162723-14` has 2,000 units in Inspection at P2-RM) alongside the normal free/unrestricted "Not Assigned" status - the code had no filter on this at all.
+
+- New shared helper `production_confirmation_service.is_usable_stock_status()` (`_NON_USABLE_STOCK_STATUSES = {inspection, quality inspection, blocked, restricted-use, restricted, in transit}`).
+- `_check_availability_against_stock()`'s SFG `available_qty` sum now excludes non-usable-status stock (was previously any stock physically sitting in an `-SFG` logistics area, regardless of hold status) - fixes the Short Components badge/tooltip from ever showing Inspection/Blocked stock as "available".
+- `store_approval_service.submit_issue()` now picks `rm_location` (the real Goods Movement source + owner party) ONLY from usable-status RM rows - if the RM warehouse only has Inspection/Blocked stock on file (real stock exists but isn't usable), the movement is now explicitly skipped with a distinct reason ("... held in Quality Inspection/Blocked status - not usable for production until released") instead of either being silently picked as the source or lumped in with the generic "no stock on file" case.
+- The full location breakdown shown to the store user is unchanged (still lists Inspection rows for transparency) - only the availability math and the actual movement's source selection are affected.
+- Self-tested: confirmed via direct function calls that `is_usable_stock_status("Inspection")`/`"Blocked"` -> False, `"Not Assigned"` -> True; backend restarted clean, `/api/store-requests` returns 200.
+
 ## Session update (2026-08-22, part 2) - bilingual (EN/Hindi) human-readable Goods Movement errors
 
 User reported the Store Approval screen was showing raw SAP SOAP Fault XML (`<soap-env:Fault>...<faultText>Negative stock not permitted...`) directly to the store floor instead of a readable message, and asked for English + Hindi.

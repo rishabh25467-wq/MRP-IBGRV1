@@ -17,6 +17,19 @@ logger = logging.getLogger(__name__)
 REASON_COLLECTION = "deviation_reason_master"
 HISTORY_COLLECTION = "production_confirmation_history"
 
+# Aug 2026: SAP's own stock-status field can carry values like "Inspection"
+# (Quality Inspection hold) or "Blocked" - this stock physically sits in
+# the warehouse but is NOT free/usable stock. Confirmed live in this
+# tenant's real inventory_cache data ("Inspection" appears alongside the
+# normal "Not Assigned" = unrestricted status). Never count this stock as
+# "available" for a component availability check, and never let the Store
+# Approval flow pick it as the source for a real Goods Movement.
+_NON_USABLE_STOCK_STATUSES = {"inspection", "quality inspection", "blocked", "restricted-use", "restricted", "in transit"}
+
+
+def is_usable_stock_status(stock_status) -> bool:
+    return (stock_status or "").strip().lower() not in _NON_USABLE_STOCK_STATUSES
+
 DEFAULT_DEVIATION_REASONS = [
     {"code": "001", "label": "Resource Failure"},
     {"code": "002", "label": "Resource Unclean"},
@@ -226,7 +239,13 @@ def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, con
             # 841kg SFG) looked like it had 4,836kg "available" when only
             # 841kg was actually ready to consume - masking real shortages
             # that should have triggered a Store Approval request.
-            sfg_locations = [loc for loc in (site_locations or []) if (loc.get("logistics_area_id") or "").endswith("-SFG")]
+            # Also excludes Quality Inspection/Blocked stock (see
+            # is_usable_stock_status above) - that stock sits in the SFG
+            # warehouse but isn't actually free to consume yet.
+            sfg_locations = [
+                loc for loc in (site_locations or [])
+                if (loc.get("logistics_area_id") or "").endswith("-SFG") and is_usable_stock_status(loc.get("stock_status"))
+            ]
             available_qty = None if site_locations is None else sum(loc["qty"] for loc in sfg_locations)
             components.append({
                 "product_id": item["product_id"],
