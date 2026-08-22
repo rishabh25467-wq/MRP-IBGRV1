@@ -2392,6 +2392,19 @@ async def _continue_order_creation(job_id: str, payload: "CreateProductionPropos
         new_order_id = None
         order_self_released = False
         while time.monotonic() - elapsed_start <= CREATE_RELEASE_MAX_WAIT_SECONDS:
+            # User-requested stop (Aug 2026 - "allow to stop the rotating
+            # wheel"): checked once per poll tick, cheap Mongo read. This
+            # only stops OUR OWN polling/re-triggering - it can NEVER
+            # delete/cancel the SAP Proposal already created (no such SAP
+            # API exists, see part-2 session note), so that stays exactly
+            # as it is, un-converted, in SAP.
+            current_job = job_store.get_job(db, job_id)
+            if current_job and current_job.get("cancel_requested"):
+                job_store.update_job(db, job_id, {"status": "cancelled", "result": {
+                    "production_proposal_id": proposal_id, "production_order_id": None, "released": False,
+                    "note": f"Stopped - this app will no longer auto-check for the resulting Order. Proposal {proposal_id} was already created in SAP and is NOT deleted; if SAP still converts it into an Order later, it will need to be released manually.",
+                }})
+                return
             elapsed = time.monotonic() - elapsed_start
             if last_trigger is None or elapsed - last_trigger >= CREATE_RELEASE_RETRIGGER_EVERY_SECONDS:
                 trigger_count += 1
@@ -2539,6 +2552,23 @@ async def get_create_and_release_job_status(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id")
     return job
+
+
+@api_router.post("/production-confirmation/create-and-release-order/{job_id}/cancel")
+async def cancel_create_and_release_job(job_id: str):
+    """"Stop the rotating wheel" (Aug 2026) - the running background job
+    checks this flag once per poll tick (see _continue_order_creation) and
+    stops itself, but this can only ever stop OUR OWN tracking/polling.
+    It does NOT and CANNOT delete/cancel the SAP Proposal already created
+    (no such SAP API exists) - it will simply sit un-converted in SAP,
+    same as any other orphaned Proposal already documented in this app."""
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    if job.get("status") in ("done", "failed", "cancelled"):
+        raise HTTPException(status_code=400, detail="This order run has already finished - nothing to stop")
+    job_store.update_job(db, job_id, {"cancel_requested": True})
+    return {"ok": True}
 
 
 async def _resume_order_creation_job(job_id: str):

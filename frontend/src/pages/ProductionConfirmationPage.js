@@ -864,6 +864,21 @@ const CreateOrderTab = ({ actorName }) => {
     }
   };
 
+  // "Stop the rotating wheel" (Aug 2026): stops THIS app's own polling for
+  // the resulting Order - it can never delete/cancel the SAP Proposal
+  // already created (no such SAP API exists), so that stays exactly as
+  // it is, un-converted, in SAP. pollJob's existing "cancelled" handling
+  // toasts + removes the row once the backend confirms the stop.
+  const stopTrackingJob = async (jobId) => {
+    setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, stopping: true } : j)));
+    try {
+      await axios.post(`${API}/production-confirmation/create-and-release-order/${jobId}/cancel`);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to stop this order run");
+      setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, stopping: false } : j)));
+    }
+  };
+
   const releaseOrder = async () => {
     if (!actorName.trim()) {
       toast.error("Enter your name first (top-right of the page)");
@@ -1067,7 +1082,16 @@ const CreateOrderTab = ({ actorName }) => {
                           <Button size="sm" variant="outline" onClick={() => toggleJobExpand(j.job_id)} data-testid={`active-order-view-button-${i}`}>{j.expanded ? "Hide" : "View"}</Button>
                         ) : <span className="text-[11px] text-[#98A2B3]">Loading...</span>
                       ) : (
-                        <span className="text-[11px] text-[#98A2B3]">—</span>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={j.stopping}
+                          onClick={() => stopTrackingJob(j.job_id)}
+                          title="Stops this app's own tracking only - if a SAP Proposal was already created, it stays in SAP un-converted, it is not deleted"
+                          data-testid={`active-order-stop-button-${i}`}
+                        >
+                          {j.stopping ? "Stopping..." : "Stop"}
+                        </Button>
                       )}
                     </td>
                   </tr>
