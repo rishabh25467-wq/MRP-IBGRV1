@@ -216,6 +216,59 @@ def get_proposal_and_release_history(db, limit: int = 200) -> list:
     ]
 
 
+def load_stock_by_product(db) -> dict:
+    """Loads the current inventory_cache (refreshed every 30 min from live
+    SAP, see server.py's start_inventory_cache_refresh_loop) into a
+    {product_id: [raw locations]} shape - shared by the shortage check
+    below (via check_component_availability_batch) and store_approval_
+    service.refresh_component_locations (re-syncing an ALREADY-OPEN
+    request's stock display/movement-source against however fresh the
+    cache now is, instead of the frozen snapshot from whenever the
+    request was first created - real incident, Aug 2026: a Goods Receipt
+    posted an hour earlier had already reached inventory_cache, but an
+    already-open Store Approval request still showed the old, lower RM
+    quantity and would have skipped the movement entirely)."""
+    inventory_doc = db["inventory_cache"].find_one({"_id": "latest"})
+    stock_by_product = {}
+    for item in (inventory_doc or {}).get("items", []):
+        stock_by_product[item["product_id"]] = item.get("locations", [])
+    return stock_by_product
+
+
+def site_locations_for_product(stock_by_product: dict, product_id: str, site_id: str):
+    """Returns this product's locations at `site_id`, in the app's
+    standard per-component display/movement-source shape (warehouse,
+    stock_status, qty, owner, warehouse_id), or None if the product has
+    no cache entry at all (distinct from an empty list, which means
+    "cached, but zero stock at this site"). inventory_cache stores full
+    site names like "RADISH TECHNOLOGY-P2" (company name + site code),
+    never the bare site code - match on the "-{site_id}" suffix, not
+    exact equality (was always 0 before)."""
+    locations = stock_by_product.get(product_id)
+    if locations is None:
+        return None
+    site_locations = [loc for loc in locations if (loc.get("site") or "").endswith(f"-{site_id}")]
+    return [
+        {
+            "warehouse": loc.get("logistics_area"), "stock_status": loc.get("stock_status"), "qty": loc["qty"],
+            # SAP Owner Party for this exact stock (e.g. "RI"/"RT") - carried
+            # through so the Store Approval issue flow can auto-fill the
+            # Goods Movement API's owner_party_id from whichever location
+            # the store person actually picks, instead of guessing (Aug 2026).
+            "owner": loc.get("company_code"),
+            # Raw SAP Logistics Area ID (e.g. "P2/P2-RM") - "warehouse"
+            # above is the human-readable description ("RAW MATERIAL
+            # GODOWN-P2"), NOT what the Goods Movement API/rule needs
+            # to match against. Real bug traced to this (Aug 2026):
+            # store approved an issue, RM stock existed, but the fixed
+            # RM->SFG rule compared its ID-format guess against this
+            # description field and never matched, so no movement fired.
+            "warehouse_id": loc.get("logistics_area_id"),
+        }
+        for loc in site_locations
+    ]
+
+
 def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, confirmed_quantity: float, site_id: str) -> dict:
     if not bom_doc or not bom_doc.get("groups"):
         return {"checked": False, "reason": "No cached BOM found locally for this product - cannot check component availability.", "components": []}
@@ -225,11 +278,10 @@ def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, con
             if not item.get("active") or item.get("quantity") is None:
                 continue
             required_qty = round(item["quantity"] * confirmed_quantity, 4)
-            locations = stock_by_product.get(item["product_id"])
-            # inventory_cache stores full site names like "RADISH TECHNOLOGY-P2"
-            # (company name + site code), never the bare site code - match on
-            # the "-{site_id}" suffix, not exact equality (was always 0 before).
-            site_locations = [loc for loc in locations if (loc.get("site") or "").endswith(f"-{site_id}")] if locations is not None else None
+            # Per-WAREHOUSE (and stock status, e.g. Unrestricted vs Quality
+            # Inspection) breakdown at THIS site only - not other sites, a
+            # store user at P2 can't issue from P7's stock anyway.
+            site_locations = site_locations_for_product(stock_by_product, item["product_id"], site_id)
             # "Available for production" must be SFG (Semi-Finish Godown)
             # stock only - RM (raw material) hasn't been issued/moved into
             # production yet, so it isn't actually consumable, even though
@@ -244,7 +296,7 @@ def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, con
             # warehouse but isn't actually free to consume yet.
             sfg_locations = [
                 loc for loc in (site_locations or [])
-                if (loc.get("logistics_area_id") or "").endswith("-SFG") and is_usable_stock_status(loc.get("stock_status"))
+                if (loc.get("warehouse_id") or "").endswith("-SFG") and is_usable_stock_status(loc.get("stock_status"))
             ]
             available_qty = None if site_locations is None else sum(loc["qty"] for loc in sfg_locations)
             components.append({
@@ -254,31 +306,9 @@ def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, con
                 "required_qty": required_qty,
                 "available_qty": available_qty,
                 # Per-WAREHOUSE (and stock status, e.g. Unrestricted vs
-                # Quality Inspection) breakdown at THIS site only - not
-                # other sites, a store user at P2 can't issue from P7's
-                # stock anyway. stock_status is included because raw SAP
-                # rows can otherwise show what LOOKS like 2 identical
-                # "same warehouse" lines with different quantities - they
-                # are actually 2 different stock statuses in that warehouse.
-                "locations": [
-                    {
-                        "warehouse": loc.get("logistics_area"), "stock_status": loc.get("stock_status"), "qty": loc["qty"],
-                        # SAP Owner Party for this exact stock (e.g. "RI"/"RT") - carried
-                        # through so the Store Approval issue flow can auto-fill the
-                        # Goods Movement API's owner_party_id from whichever location
-                        # the store person actually picks, instead of guessing (Aug 2026).
-                        "owner": loc.get("company_code"),
-                        # Raw SAP Logistics Area ID (e.g. "P2/P2-RM") - "warehouse"
-                        # above is the human-readable description ("RAW MATERIAL
-                        # GODOWN-P2"), NOT what the Goods Movement API/rule needs
-                        # to match against. Real bug traced to this (Aug 2026):
-                        # store approved an issue, RM stock existed, but the fixed
-                        # RM->SFG rule compared its ID-format guess against this
-                        # description field and never matched, so no movement fired.
-                        "warehouse_id": loc.get("logistics_area_id"),
-                    }
-                    for loc in (site_locations or [])
-                ],
+                # Quality Inspection) breakdown at THIS site only - already
+                # in final shape via site_locations_for_product() above.
+                "locations": site_locations or [],
                 # Needing 0 of a component (e.g. Open Quantity is already 0 -
                 # a fully-confirmed row) is never "short", regardless of
                 # whether we happen to have on-hand data for it.
@@ -342,10 +372,7 @@ def check_component_availability(
         except Exception:
             stock_by_product = None  # fall through to cache below
     if stock_by_product is None:
-        inventory_doc = db["inventory_cache"].find_one({"_id": "latest"})
-        stock_by_product = {}
-        for item in (inventory_doc or {}).get("items", []):
-            stock_by_product[item["product_id"]] = item.get("locations", [])
+        stock_by_product = load_stock_by_product(db)
     return _check_availability_against_stock(bom_doc, stock_by_product, confirmed_quantity, site_id)
 
 
@@ -357,10 +384,7 @@ def check_component_availability_batch(db, rows: list) -> list:
     of {checked, reason, sufficient_all, short_components} - a compact
     summary (not the full component list) since the list view only needs a
     badge + the short ones for a tooltip, not every sufficient component."""
-    inventory_doc = db["inventory_cache"].find_one({"_id": "latest"})
-    stock_by_product = {}
-    for item in (inventory_doc or {}).get("items", []):
-        stock_by_product[item["product_id"]] = item.get("locations", [])
+    stock_by_product = load_stock_by_product(db)
 
     product_ids = {r["main_output_product"] for r in rows if r.get("main_output_product")}
     bom_docs = {d["_id"]: d for d in db["bom_node_cache"].find({"_id": {"$in": list(product_ids)}})}

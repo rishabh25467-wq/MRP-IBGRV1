@@ -28,11 +28,36 @@ import time
 
 from datetime import datetime, timezone
 
-from production_confirmation_service import is_usable_stock_status
+from production_confirmation_service import is_usable_stock_status, load_stock_by_product, site_locations_for_product
 
 logger = logging.getLogger(__name__)
 
 COLLECTION = "store_requests"
+
+
+def refresh_component_locations(db, doc: dict, stock_by_product: dict = None) -> dict:
+    """Aug 2026 fix: a component's `locations` breakdown used to be
+    captured ONCE when the request was created and never touched again.
+    Real incident: a Goods Receipt posted an hour earlier had already
+    reached inventory_cache (confirmed live on the Inventory page), but
+    an already-open Store Approval request still showed the old, lower
+    RM quantity - and worse, start_issue()'s rm_location lookup would
+    have silently skipped the movement since the genuinely-new RM
+    location didn't exist yet in the frozen snapshot. Called on every
+    read (get_request/list_requests/list_balance_pending/journal) AND
+    again right before start_issue() computes anything, so both what's
+    shown and what the SAP call actually uses are always as fresh as the
+    last inventory_cache refresh (~30 min old at worst, not however old
+    the request itself is). Mutates and returns `doc` for convenience;
+    `stock_by_product` can be pre-loaded once by a caller refreshing many
+    docs at once (list views) to avoid re-reading inventory_cache per row."""
+    stock_by_product = stock_by_product if stock_by_product is not None else load_stock_by_product(db)
+    site_id = doc["site_id"]
+    for c in doc["components"]:
+        fresh = site_locations_for_product(stock_by_product, c["product_id"], site_id)
+        if fresh is not None:
+            c["locations"] = fresh
+    return doc
 COUNTER_COLLECTION = "store_request_counters"
 
 # Flip SAP_GOODS_MOVEMENT_DRY_RUN=false in .env only after a batch of
@@ -238,21 +263,27 @@ def list_requests(db) -> list:
     """Public queue for the unauthenticated /storeapproval screen - every
     request still needing action or currently mid-issue ("issuing" - a
     background Goods Movement job is actively running against it)."""
-    return list(db[COLLECTION].find({"status": {"$in": ["pending", "issuing", "partial_pending_planner"]}}).sort("created_at", -1))
+    docs = list(db[COLLECTION].find({"status": {"$in": ["pending", "issuing", "partial_pending_planner"]}}).sort("created_at", -1))
+    stock_by_product = load_stock_by_product(db)
+    return [refresh_component_locations(db, d, stock_by_product) for d in docs]
 
 
 def list_all_requests(db) -> list:
     """Full journal/history for /storeapproval - every request regardless
     of status, most recent first."""
-    return list(db[COLLECTION].find({}).sort("created_at", -1))
+    docs = list(db[COLLECTION].find({}).sort("created_at", -1))
+    stock_by_product = load_stock_by_product(db)
+    return [refresh_component_locations(db, d, stock_by_product) for d in docs]
 
 
 def get_request(db, request_id: str):
-    return db[COLLECTION].find_one({"_id": request_id})
+    doc = db[COLLECTION].find_one({"_id": request_id})
+    return refresh_component_locations(db, doc) if doc else None
 
 
 def get_request_by_job(db, job_id: str):
-    return db[COLLECTION].find_one({"job_id": job_id}, sort=[("created_at", -1)])
+    doc = db[COLLECTION].find_one({"job_id": job_id}, sort=[("created_at", -1)])
+    return refresh_component_locations(db, doc) if doc else None
 
 
 def _rm_warehouse(site_id: str) -> str:
@@ -370,6 +401,12 @@ def start_issue(db, request_id: str, issued: list, decision: str, store_actor: s
     if doc["status"] not in ("pending", "resolved_balance_pending"):
         raise ValueError(f"This request is not awaiting a stock issue (current status: {doc['status']})")
     is_reopen = doc["status"] == "resolved_balance_pending"
+    # Refresh locations one more time right before computing anything -
+    # the store may be acting minutes/hours after they last viewed this
+    # request, and run_issue_movements()'s rm_location lookup below reads
+    # straight off doc["components"][i]["locations"], so this is what
+    # actually determines whether a genuinely-new RM location is found.
+    doc = refresh_component_locations(db, doc)
 
     issued_map = {i["product_id"]: i for i in issued}
     components = []
@@ -521,7 +558,9 @@ def list_balance_pending(db) -> list:
     """New (Aug 2026, Rule 2) dedicated view for the store team - every
     request with an outstanding balance they can reopen once more stock
     physically arrives in the RM warehouse."""
-    return list(db[COLLECTION].find({"status": "resolved_balance_pending"}).sort("updated_at", -1))
+    docs = list(db[COLLECTION].find({"status": "resolved_balance_pending"}).sort("updated_at", -1))
+    stock_by_product = load_stock_by_product(db)
+    return [refresh_component_locations(db, d, stock_by_product) for d in docs]
 
 
 def planner_decision(db, request_id: str, decision: str, planner_actor: str):

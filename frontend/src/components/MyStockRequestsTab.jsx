@@ -19,6 +19,16 @@ const STATUS_BADGE = {
   cancelled: { label: "Cancelled", tone: "bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]" },
 };
 
+// Only match against columns actually rendered for the current group-by
+// level - JSON.stringify(row) previously also matched hidden internals
+// (job_id, proposal id, warehouse locations/UUIDs), confusing users
+// (testing agent iteration_104).
+const SEARCH_FIELDS = {
+  request: ["_id", "material_id", "site_id", "status"],
+  item: ["request_id", "product_id", "description", "status"],
+  product: ["product_id", "description"],
+};
+
 const formatUnit = (u) => (u === "MASS" ? "KG" : u || "");
 const formatQty = (v) => (v == null ? "\u2014" : Number(v).toLocaleString("en-IN", { maximumFractionDigits: 2 }));
 const formatDate = (iso) => (iso ? new Date(iso).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "\u2014");
@@ -83,12 +93,19 @@ export const MyStockRequestsTab = ({ actorName }) => {
     short_count: r.components.filter((c) => (c.shortfall || 0) > 0).length,
   })), [mine]);
 
-  const itemRows = useMemo(() => mine.flatMap((r) => r.components.map((c) => ({
-    request_id: r._id, status: r.status, material_id: r.material_id, site_id: r.site_id,
-    created_at: r.created_at, updated_at: r.updated_at,
-    product_id: c.product_id, description: c.description, unit_of_measure: c.unit_of_measure,
-    required_qty: c.required_qty, issued_qty: c.issued_qty || 0, shortfall: c.shortfall || 0,
-  }))), [mine]);
+  const itemRows = useMemo(() => mine.flatMap((r) => r.components.map((c) => {
+    const issuedQty = c.issued_qty ?? 0;
+    // A component the store hasn't acted on yet (issued_qty/shortfall
+    // still null) has its FULL required_qty outstanding, not 0 - testing
+    // agent iteration_104 found this under-reported outstanding demand.
+    const shortfall = c.shortfall ?? Math.max(0, (c.required_qty || 0) - issuedQty);
+    return {
+      request_id: r._id, status: r.status, material_id: r.material_id, site_id: r.site_id,
+      created_at: r.created_at, updated_at: r.updated_at,
+      product_id: c.product_id, description: c.description, unit_of_measure: c.unit_of_measure,
+      required_qty: c.required_qty, issued_qty: issuedQty, shortfall,
+    };
+  })), [mine]);
 
   const productRows = useMemo(() => {
     const map = new Map();
@@ -113,7 +130,10 @@ export const MyStockRequestsTab = ({ actorName }) => {
   const filtered = useMemo(() => {
     let rows = activeRows;
     const term = search.trim().toLowerCase();
-    if (term) rows = rows.filter((r) => JSON.stringify(r).toLowerCase().includes(term));
+    if (term) {
+      const fields = SEARCH_FIELDS[groupBy];
+      rows = rows.filter((r) => fields.some((f) => String(r[f] ?? "").toLowerCase().includes(term)));
+    }
     if (statusFilter !== "all" && groupBy !== "product") rows = rows.filter((r) => r.status === statusFilter);
     const dir = sortDir === "asc" ? 1 : -1;
     return [...rows].sort((a, b) => {

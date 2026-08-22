@@ -1,0 +1,52 @@
+{
+  "summary": "Full scope run for Rule 1 (locked 'finished' checkbox), Rule 2 (partial issue -> reopen balance lifecycle), the stale-stock live-refresh fix, and the two new table views. Backend: 16/16 pytest cases passed (11 Rule-2 lifecycle/state-machine + 5 stale-stock refresh), all against synthetic Mongo seeds with empty/fake locations so no real SAP write. Frontend: Store Approval 'Balance Pending' tab + reopen detail flow end-to-end (issued remaining 2 of 5 -> 'Balance fully issued - this request is now closed.'), Production Confirmation 'My Stock Requests' tab (empty-state, case-insensitive requester filter, Request/Item/Product group-by, aggregation, search, status filter, column sort), and Rule 1 checkbox verified inside a real lot's confirmation dialog (checked + disabled, unchanged with a partial qty of 1; dialog cancelled, nothing posted to SAP). All synthetic store_requests / background_jobs / inventory_cache items / auth users+sessions created by me were cleaned up and verified gone.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "ALL /api/* (public URL)", "issue": "For ~2-4 minutes after any backend reload/restart every public endpoint returns 502 after a 60s ingress timeout while localhost:8001 answers the SAME request in 14ms (verified side by side). Startup + the SAP background loops (valuation/BOM refresh, order-resume polling with 30s connect timeouts against my431827.businessbydesign.cloud.sap) saturate the process so the ingress gives up. Not caused by this session's changes, but it makes the store screens look 'empty' (list calls fail silently -> 0 rows) right after a deploy."},
+      {"endpoint": "store_approval_service.get_request", "issue": "refresh_component_locations() -> load_stock_by_product() re-reads the entire inventory_cache 'latest' doc (3211 items) on EVERY single-request read. Correct but wasteful; a short TTL/module cache would avoid a multi-MB Mongo read per detail poll (the store detail page polls while issuing)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "My Stock Requests - Item & Product level shortfall", "issue": "Components of requests the store has NOT acted on yet (issued_qty/shortfall still null) are coerced to 0, so a component with 7 required and nothing issued displays 'Shortfall 0 EA' and Product level reports 'Outstanding Shortfall 0 EA'. Verified live: TEST_UI104_C (7 required, 0 issued) showed 0 outstanding, and TEST_UI104_A aggregated 15 required / 9 issued / only 2 outstanding (should arguably be 8 if pending demand counts). The Product-level view is the one meant to tell a planner how much is still outstanding, so this under-reports. Suggest shortfall = required - issued for non-resolved statuses, or render '\u2014' for un-actioned rows.", "affected_selectors": ["myreq-item-row-0", "myreq-product-row-0"]},
+      {"flow": "My Stock Requests - search", "issue": "Search filters with JSON.stringify(row).includes(term), so it also matches hidden internals (job_id, proposal id, locations, warehouse ids). A store/planner typing a warehouse or UUID fragment gets unexplained matches. Minor - restrict to the visible columns.", "affected_selectors": ["myreq-search-input"]}
+    ],
+    "design_issues": [
+      {"screen": "Store Approval queue/balance table", "issues": ["Request ID column truncates with an ellipsis ('TEST_UI104-\u2026') with no title/tooltip - fine for the real short IDs (P1-000001) but there is no way to read a longer one without opening the row."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_balance_pending_reopen.py",
+    "/app/backend/tests/test_stale_stock_refresh.py",
+    "/app/tests/seed_ui_104.py",
+    "/app/test_reports/pytest/rule2_results.xml",
+    "/app/test_reports/pytest/stale_stock_results.xml"
+  ],
+  "action_items": [
+    "Decide whether Item/Product level 'Shortfall / Outstanding Shortfall' should count un-actioned (pending) demand instead of showing 0 - currently under-reports outstanding need.",
+    "Optional: scope MyStockRequestsTab search to visible columns instead of JSON.stringify(row).",
+    "Housekeeping: leftover synthetic auth artifacts from an earlier session are still in Mongo - auth_users '2a94b71e-...:TEST-UI-BAL' + 2 auth_sessions 'TESTUIBAL*'. Delete them if no longer needed (mine were all removed).",
+    "Be aware SAP_GOODS_MOVEMENT_DRY_RUN is currently \"false\" in backend/.env, so ANY issue submit with a real matching RM location fires a live SAP movement - keep using empty/fake locations for tests."
+  ],
+  "critical_code_review_comments": [
+    "start_issue()/run_issue_movements() reopen bookkeeping is correct: issued_qty is cumulative & clamped to required_qty, only issued_this_round is sent to SAP, and a round with issued_this_round==0 preserves the earlier goods_movement result (verified over three reopen rounds 3->1->1 and an over-issue of 99 clamped to 5).",
+    "refresh_component_locations() is read-time only - it does NOT persist the refreshed locations back into the stored doc (asserted), so the historical snapshot stays intact while display + the movement source are fresh. Also correctly preserves the frozen snapshot when the product has no inventory_cache entry at all (None vs []) and never leaks other sites' locations.",
+    "order_resumed guard works: the linked create-and-release job was resumed exactly once on the first partial issue and was NOT touched again on the reopen round (sentinel status survived).",
+    "planner_decision('approve') with a remaining shortfall correctly lands in resolved_balance_pending (and is then reopenable to completion); with no shortfall it lands in plain resolved; 'reject' -> cancelled and out of the Balance Pending tab.",
+    "Static routes /store-requests/journal and /store-requests/balance-pending are declared before /store-requests/{request_id} and are not shadowed; no Mongo _id/$oid leakage in any of the three list endpoints.",
+    "ProductionConfirmationPage.js is 1453 lines - over the 700-line guideline; the confirm dialog, lot table and create-order tab are natural extraction points."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_stale_stock_refresh.py (new)",
+    "/app/tests/seed_ui_104.py (new, UI seed/cleanup helper)"
+  ],
+  "success_rate": {"backend": "100% (16/16 pytest cases)", "frontend": "100% of the flows exercised (Rule 1 checkbox, Balance Pending tab + reopen submit, My Stock Requests all 3 group-by levels/filters/sort)"},
+  "seed_data_creation": "All synthetic and removed after use: store_requests TEST_BALANCE_REOPEN-*/TEST_STALE-*/TEST_UI104-* (site ZZ95/ZZ96/ZZ97), matching background_jobs, one inventory_cache item TEST_STALE_PROD_1 (pulled out of the 'latest' doc afterwards), and auth_users/auth_sessions TEST-TID-104 + TEST-BAL-QA. Verified 0 leftovers for all of them.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "/app/memory/test_credentials.md exists; /storeapproval needs none. For /production-confirmation I used a synthetic Entra session (auth_users + auth_sessions + 'vms_session' cookie) created by /app/tests/seed_ui_104.py - it prints the token and --cleanup removes it.",
+  "context_for_next_testing_agent": "Reusable regression suites: /app/backend/tests/test_balance_pending_reopen.py (Rule 2 state machine incl. planner-approve-with-shortfall and the double-resume guard) and /app/backend/tests/test_stale_stock_refresh.py (live inventory_cache refresh on detail/queue/journal/balance-pending + start_issue). Both are safe (empty or fake locations only). NOTE: writing/editing any file under /app/backend triggers a uvicorn WatchFiles reload, after which ALL public /api calls 502 for a couple of minutes - wait ~60-90s after touching backend files before hitting the public URL, otherwise tests fail for environmental reasons (this cost one full run here). SAP_GOODS_MOVEMENT_DRY_RUN=\"false\", so never submit an issue against a request with real RM locations.",
+  "rca_of_the_issue": "Stale-stock fix confirmed working at the source: refresh_component_locations() re-reads inventory_cache via load_stock_by_product()/site_locations_for_product() on every read AND inside start_issue(); a synthetic request created with only an SFG row immediately showed a newly injected RM row (25 EA, owner RT) on GET /store-requests/{id}, on the queue, journal and balance-pending lists, and the subsequent issue actually attempted the movement instead of falling into the old 'No stock on file in this site's RM warehouse' branch. The earlier all-fail run of the same file was an environment artifact (backend reload + SAP-polling saturation -> public 502s), not a product defect; it passed 5/5 unchanged once the backend settled."
+}
