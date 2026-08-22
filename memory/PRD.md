@@ -1,3 +1,11 @@
+## Session update (2026-08-22) - verified 2 P0 bug fixes from prior session (no code changes needed)
+
+Both P0 bugs reported by user were found ALREADY FIXED in code from the previous session (interrupted before verification) - self-tested via screenshot only (user explicitly declined a testing_agent run this round):
+1. **"Short Components" tooltip scoped to SFG only**: `_check_availability_against_stock()` in `production_confirmation_service.py` now filters `site_locations` down to `logistics_area_id` ending in `-SFG` before summing `available_qty` - verified live on lot 13457 (6800-003605: "need 400 EA, have no data" instead of an inflated site-wide number).
+2. **"MASS" -> "KG" display**: `formatUnit()` is applied everywhere on both `StoreApprovalPage.js` and `ProductionConfirmationPage.js` - verified live on request P2-000117 (SH4.5HR): "Required by Production" shows "1,61,360 KG", warehouse breakdown shows "841.42 KG" (SFG) vs "3,994.94 KG" (RM) - both in KG, matching the user's exact reported case.
+
+No code changes were needed this session - purely verification of already-completed work.
+
 ## Session update (2026-08-21, part 8) - Bulk import Net/Gross Weight + Surface Area from Excel, bulk push to SAP
 
 User's ask: set Gross Wt./Net Wt./Surface Area on ~260 components from an uploaded "L1-L2 Item Report" Excel (sheet "Gross & Net Wt.": Product ID, Net Wt., Gross Wt., SA columns) instead of one at a time.

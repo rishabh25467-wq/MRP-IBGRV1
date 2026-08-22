@@ -217,7 +217,17 @@ def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, con
             # (company name + site code), never the bare site code - match on
             # the "-{site_id}" suffix, not exact equality (was always 0 before).
             site_locations = [loc for loc in locations if (loc.get("site") or "").endswith(f"-{site_id}")] if locations is not None else None
-            available_qty = None if site_locations is None else sum(loc["qty"] for loc in site_locations)
+            # "Available for production" must be SFG (Semi-Finish Godown)
+            # stock only - RM (raw material) hasn't been issued/moved into
+            # production yet, so it isn't actually consumable, even though
+            # it's on-hand at this site. Bug found (Aug 2026): this summed
+            # every warehouse at the site (RM + SFG + Scrap etc.), so a
+            # component sitting almost entirely in RM (e.g. 3,995kg RM +
+            # 841kg SFG) looked like it had 4,836kg "available" when only
+            # 841kg was actually ready to consume - masking real shortages
+            # that should have triggered a Store Approval request.
+            sfg_locations = [loc for loc in (site_locations or []) if (loc.get("logistics_area_id") or "").endswith("-SFG")]
+            available_qty = None if site_locations is None else sum(loc["qty"] for loc in sfg_locations)
             components.append({
                 "product_id": item["product_id"],
                 "description": item.get("description"),
