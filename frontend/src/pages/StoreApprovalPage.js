@@ -61,10 +61,21 @@ const downloadCsv = (filename, csv) => {
   URL.revokeObjectURL(url);
 };
 
-const LocationBreakdown = ({ locations, unit }) => {
+// Aug 2026, matches production_confirmation_service.is_usable_stock_status()
+// on the backend - SAP's stock_status can carry a real "Inspection"
+// (Quality Inspection hold)/"Blocked" value that physically sits in a
+// warehouse but is NOT usable for production. User's explicit ask after
+// testing: show this directly on THIS screen (not just discover it after
+// a failed/rejected SAP movement).
+const RESTRICTED_STOCK_STATUSES = new Set(["inspection", "quality inspection", "blocked", "restricted-use", "restricted", "in transit"]);
+const isRestrictedStatus = (status) => RESTRICTED_STOCK_STATUSES.has((status || "").trim().toLowerCase());
+
+const LocationBreakdown = ({ locations, unit, sourceWarehouseId }) => {
   if (!locations || locations.length === 0) {
     return <span className="text-[#98A2B3]">no stock at this site</span>;
   }
+  const rmHasUsableStock = locations.some((loc) => loc.warehouse_id === sourceWarehouseId && !isRestrictedStatus(loc.stock_status));
+  const rmHasOnlyRestrictedStock = !rmHasUsableStock && locations.some((loc) => loc.warehouse_id === sourceWarehouseId && isRestrictedStatus(loc.stock_status));
   return (
     <div className="space-y-0.5">
       {locations.map((loc, i) => {
@@ -73,12 +84,20 @@ const LocationBreakdown = ({ locations, unit }) => {
         // fall back to the (unscoped) site code instead of a confusing
         // "Unknown Warehouse" for those legacy, already-open requests.
         const label = loc.warehouse || (loc.site ? loc.site.split("-").pop() : "Unknown Warehouse");
+        const restricted = isRestrictedStatus(loc.stock_status);
         return (
-          <div key={i}>
-            <span className="text-[#667085]">{label}{loc.stock_status ? ` (${loc.stock_status})` : ""}:</span> {formatQty(loc.qty)} {formatUnit(unit)}
+          <div key={i} data-testid={restricted ? "location-restricted-row" : undefined}>
+            <span className={restricted ? "text-[#B54708] font-bold" : "text-[#667085]"}>
+              {label}{loc.stock_status ? ` (${loc.stock_status})` : ""}{restricted ? " \u26A0 On Hold - not usable" : ""}:
+            </span> {formatQty(loc.qty)} {formatUnit(unit)}
           </div>
         );
       })}
+      {rmHasOnlyRestrictedStock && (
+        <div className="text-[#B42318] font-bold" data-testid="rm-restricted-warning">
+          {"\u26A0 RM stock is only on Quality Hold - not usable, will be treated as no stock to issue from."}
+        </div>
+      )}
     </div>
   );
 };
@@ -645,7 +664,7 @@ export default function StoreApprovalPage() {
                     <td className="border border-[#D0D5DD] px-2 py-1.5 align-top">{c.product_id}{c.description ? ` - ${c.description}` : ""}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums align-top">{formatQty(c.required_qty)} {formatUnit(c.unit_of_measure)}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums align-top" data-testid={`store-locations-${i}`}>
-                      <LocationBreakdown locations={c.locations} unit={c.unit_of_measure} />
+                      <LocationBreakdown locations={c.locations} unit={c.unit_of_measure} sourceWarehouseId={`${selected.site_id}/${selected.site_id}-RM`} />
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 align-top text-[11px]" data-testid={`store-issue-source-${i}`}>
                       {/* Aug 2026, user's fixed business rule - always Site RM -> Site SFG, no picker anymore */}

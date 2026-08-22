@@ -61,6 +61,12 @@ const formatQty = (v) => (v == null ? "—" : v.toLocaleString("en-IN", { maximu
 // sent back to the API, etc.) are untouched - this is a display-only map.
 const formatUnit = (u) => (u === "MASS" ? "KG" : u || "");
 
+// Aug 2026, matches production_confirmation_service.is_usable_stock_status()
+// - flags Quality Inspection/Blocked stock in this planner-facing view too
+// (same underlying store_requests data as the Store Approval screen).
+const RESTRICTED_STOCK_STATUSES = new Set(["inspection", "quality inspection", "blocked", "restricted-use", "restricted", "in transit"]);
+const isRestrictedStatus = (status) => RESTRICTED_STOCK_STATUSES.has((status || "").trim().toLowerCase());
+
 // User's explicit ask: today posting/WIP-clearing/by-product outcomes
 // only ever show as a toast at confirm-time, then vanish - this renders
 // the LAST confirmation's outcome persistently on the row itself.
@@ -1087,9 +1093,14 @@ const CreateOrderTab = ({ actorName }) => {
                                 <td className="border border-[#FEDF89] px-2 py-1 align-top">{c.product_id}{c.description ? ` - ${c.description}` : ""}</td>
                                 <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums align-top">{formatQty(c.required_qty)} {formatUnit(c.unit_of_measure)}</td>
                                 <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums align-top">
-                                  {(c.locations && c.locations.length > 0) ? c.locations.map((loc, li) => (
-                                    <div key={li}>{loc.warehouse || (loc.site ? loc.site.split("-").pop() : "Unknown Warehouse")}{loc.stock_status ? ` (${loc.stock_status})` : ""}: {formatQty(loc.qty)} {formatUnit(c.unit_of_measure)}</div>
-                                  )) : "no stock at this site"}
+                                  {(c.locations && c.locations.length > 0) ? c.locations.map((loc, li) => {
+                                    const restricted = isRestrictedStatus(loc.stock_status);
+                                    return (
+                                      <div key={li} className={restricted ? "text-[#B54708] font-bold" : ""}>
+                                        {loc.warehouse || (loc.site ? loc.site.split("-").pop() : "Unknown Warehouse")}{loc.stock_status ? ` (${loc.stock_status})` : ""}{restricted ? " \u26A0 On Hold" : ""}: {formatQty(loc.qty)} {formatUnit(c.unit_of_measure)}
+                                      </div>
+                                    );
+                                  }) : "no stock at this site"}
                                 </td>
                                 {j.status === "partial_pending_planner" && (
                                   <>

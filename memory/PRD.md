@@ -6,6 +6,14 @@ Both P0 bugs reported by user were found ALREADY FIXED in code from the previous
 
 No code changes were needed this session - purely verification of already-completed work.
 
+## Session update (2026-08-22, part 5) - flag restricted stock directly on the Store Approval screen
+
+User tested with real scenarios (insufficient stock, restricted stock, request P9-000002) and asked: "if stock is restricted, show here itself for the store user" - the Inspection/Blocked exclusion from part 3 was correct internally but invisible on screen until AFTER a failed/skipped movement.
+
+- `StoreApprovalPage.js`: `LocationBreakdown` now visually flags any warehouse row whose `stock_status` is restricted (amber/bold text + "On Hold - not usable" suffix), and shows a standalone red warning line under the breakdown when the component's RM warehouse has ONLY restricted stock on file ("RM stock is only on Quality Hold - not usable, will be treated as no stock to issue from") - visible immediately, before the store user even submits.
+- Same flagging added to the planner's read-only Active Orders expandable row in `ProductionConfirmationPage.js` (same underlying `store_requests` data, different persona).
+- Verified live on the real P9-000002 request (component 8205-002287-004): "RAW MATERIAL GODOWN-P9 (Inspection)" now shows bold/amber "⚠ On Hold - not usable", plus the red RM-only warning line - matches the "not moved" reason already shown in the SAP Stock Movement column for that row.
+
 ## Session update (2026-08-22, part 4) - fixed "stuck forever" order-creation job + startup safety net
 
 **Root cause of the "285s, still Checking Stock" screenshot**: my own backend restarts/hot-reloads while fixing the previous 2 bugs this session killed the user's in-flight `_run_create_and_release_job` asyncio task (material 6801-002850, site P9, qty 15,000 EA) mid-run - the job doc was left sitting at `checking_stock` in Mongo forever since nothing was left running to ever move it forward or mark it failed (documented precedent: PRD Aug 20 part-5 session hit the same thing once and manually patched Mongo).
