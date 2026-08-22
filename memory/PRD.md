@@ -6,6 +6,15 @@ Both P0 bugs reported by user were found ALREADY FIXED in code from the previous
 
 No code changes were needed this session - purely verification of already-completed work.
 
+## Session update (2026-08-22, part 4) - fixed "stuck forever" order-creation job + startup safety net
+
+**Root cause of the "285s, still Checking Stock" screenshot**: my own backend restarts/hot-reloads while fixing the previous 2 bugs this session killed the user's in-flight `_run_create_and_release_job` asyncio task (material 6801-002850, site P9, qty 15,000 EA) mid-run - the job doc was left sitting at `checking_stock` in Mongo forever since nothing was left running to ever move it forward or mark it failed (documented precedent: PRD Aug 20 part-5 session hit the same thing once and manually patched Mongo).
+
+- New `job_store.recover_orphaned_jobs()` + `ORPHANABLE_JOB_STATUSES = {running, checking_stock, creating_proposal, waiting_for_order, releasing_order}` - statuses that can ONLY exist while an asyncio task is actively running inside the current process. Deliberately excludes `waiting_store_approval`/`partial_pending_planner` (real human-driven pauses that must survive a restart).
+- Called once at `server.py` startup (right after `job_store.ensure_indexes`) - marks every job still in one of those statuses as `failed` with a clear message ("Interrupted by a backend restart/deploy while this step was running - please retry this action.") BEFORE any new request can be served. This is now a permanent safety net - any future backend restart/hot-reload will auto-recover orphaned jobs instead of leaving them stuck forever in the UI.
+- Verified live: this exact stuck job (and 1 other orphaned job from an earlier reload) were both recovered on the very next restart - confirmed in Mongo (`status: "failed"`, the new message) and via a health check (`/api/store-requests` -> 200). The frontend's existing polling loop already handles `status === "failed"` correctly (toast + removes from Active Orders) - no frontend change needed.
+- User needs to just retry creating the 6801-002850 @ P9 order.
+
 ## Session update (2026-08-22, part 3) - never source/count Quality Inspection or Blocked stock
 
 User asked directly: "making sure u would not move restricted stock?" - checked, and this WAS a real gap (not yet handled): confirmed live in this tenant's own `inventory_cache` that SAP's `stock_status` field carries a real "Inspection" value (Quality Inspection hold, e.g. product `100162723-14` has 2,000 units in Inspection at P2-RM) alongside the normal free/unrestricted "Not Assigned" status - the code had no filter on this at all.

@@ -43,3 +43,28 @@ def get_job(db, job_id: str):
     doc = dict(doc)
     doc.pop("_id", None)
     return doc
+
+
+# Statuses that only ever exist while an asyncio task is actively running
+# INSIDE this process - "waiting_store_approval"/"partial_pending_planner"
+# are deliberately excluded (those are real, human-driven pauses that must
+# survive a restart). If a job doc is still in one of these at process
+# startup, the task that would ever move it forward is gone for good (the
+# previous process crashed, was redeployed, or hot-reloaded) - it will
+# otherwise sit "stuck forever" in the UI since nothing will ever poll it
+# to completion again. Real incident (Aug 2026): a user's in-flight
+# Create Production Order job showed "Checking Stock" for 5+ minutes after
+# an unrelated backend restart killed its background task mid-run.
+ORPHANABLE_JOB_STATUSES = {"running", "checking_stock", "creating_proposal", "waiting_for_order", "releasing_order"}
+
+
+def recover_orphaned_jobs(db, message: str) -> int:
+    """Call once at process startup, before any new job can be created -
+    marks every job still sitting in an ORPHANABLE_JOB_STATUSES status as
+    failed with `message`, so the UI never keeps polling a job that will
+    never resolve on its own. Returns how many were recovered."""
+    result = db[COLLECTION_NAME].update_many(
+        {"status": {"$in": list(ORPHANABLE_JOB_STATUSES)}},
+        {"$set": {"status": "failed", "error": message}},
+    )
+    return result.modified_count

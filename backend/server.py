@@ -110,6 +110,12 @@ job_store.ensure_indexes(db)
 auth_service.ensure_indexes(db)
 store_approval_service.ensure_indexes(db)
 
+_recovered_jobs = job_store.recover_orphaned_jobs(
+    db, "Interrupted by a backend restart/deploy while this step was running - please retry this action."
+)
+if _recovered_jobs:
+    logger.warning(f"Startup: recovered {_recovered_jobs} orphaned background job(s) stuck in an in-process-only status from before this restart.")
+
 sap_soap_client = SAPSoapBOMClient(
     endpoint=os.environ['SAP_SOAP_ENDPOINT'],
     username=os.environ['SAP_SOAP_USERNAME'],
