@@ -235,6 +235,55 @@ def load_stock_by_product(db) -> dict:
     return stock_by_product
 
 
+def apply_goods_movement_to_cache(db, product_id: str, source_warehouse_id: str, target_warehouse_id: str, qty: float) -> None:
+    """Aug 2026 - user feedback: "if the movement was successful, the app
+    must update its cache so production confirmation can continue" (the
+    Stock/Short badge was still showing pre-movement quantities for up to
+    30 min after a genuinely successful Store Approval issue, since it
+    only ever reads the scheduled/cache-only inventory_cache - see
+    load_stock_by_product above). Rather than trigger a fresh live SAP
+    pull (tried and explicitly reverted in an earlier session - it made
+    the UI look "stuck" for minutes whenever this flaky tenant's cost
+    lookups were slow), this surgically patches the SAME inventory_cache
+    document with a movement we OURSELVES just confirmed SAP accepted -
+    no new SAP call at all, so it can never hang or fail. Decrements the
+    source (RM) location's qty and increments (or creates) the target
+    (SFG) location's qty for this exact product only. A no-op (safe,
+    silent) if this product/location isn't in the cache yet - the next
+    scheduled refresh will pick it up normally."""
+    if not qty or qty <= 0:
+        return
+    doc = db["inventory_cache"].find_one({"_id": "latest"}, {"items": 1})
+    if not doc:
+        return
+    items = doc.get("items", [])
+    item = next((it for it in items if it.get("product_id") == product_id), None)
+    if item is None:
+        return
+    locations = item.setdefault("locations", [])
+    source_loc = next(
+        (loc for loc in locations if loc.get("logistics_area_id") == source_warehouse_id and is_usable_stock_status(loc.get("stock_status"))),
+        None,
+    )
+    if source_loc:
+        source_loc["qty"] = round((source_loc.get("qty") or 0) - qty, 4)
+    target_loc = next(
+        (loc for loc in locations if loc.get("logistics_area_id") == target_warehouse_id and is_usable_stock_status(loc.get("stock_status"))),
+        None,
+    )
+    if target_loc:
+        target_loc["qty"] = round((target_loc.get("qty") or 0) + qty, 4)
+    else:
+        template = source_loc or (locations[0] if locations else {})
+        locations.append({
+            "site": template.get("site"), "logistics_area": target_warehouse_id.split("/")[-1],
+            "logistics_area_id": target_warehouse_id, "stock_status": "Not Assigned", "qty": qty,
+            "company_code": template.get("company_code"), "company_name": template.get("company_name"),
+        })
+    item["total_qty"] = round(sum(loc.get("qty") or 0 for loc in locations), 4)
+    db["inventory_cache"].update_one({"_id": "latest"}, {"$set": {"items": items}})
+
+
 def site_locations_for_product(stock_by_product: dict, product_id: str, site_id: str):
     """Returns this product's locations at `site_id`, in the app's
     standard per-component display/movement-source shape (warehouse,

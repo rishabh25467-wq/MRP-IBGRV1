@@ -28,7 +28,7 @@ import time
 
 from datetime import datetime, timezone
 
-from production_confirmation_service import is_usable_stock_status, load_stock_by_product, site_locations_for_product
+from production_confirmation_service import apply_goods_movement_to_cache, is_usable_stock_status, load_stock_by_product, site_locations_for_product
 
 logger = logging.getLogger(__name__)
 
@@ -472,6 +472,13 @@ def run_issue_movements(db, request_id: str, sap_client, progress_cb=None) -> di
                     sap_client, rm_location["owner"], c["product_id"], source_warehouse, target_warehouse,
                     issued_this_round, c.get("unit_of_measure") or "EA", site_id,
                 )
+                if movement.get("ok") and not is_dry_run():
+                    # Movement genuinely landed in SAP - reflect it in
+                    # inventory_cache RIGHT NOW so the Production
+                    # Confirmation Stock/Short badge doesn't have to wait
+                    # up to 30 min for the next scheduled refresh (Aug
+                    # 2026 user feedback).
+                    apply_goods_movement_to_cache(db, c["product_id"], source_warehouse, target_warehouse, issued_this_round)
             elif rm_locations_all:
                 movement = {"attempted": False, "ok": False, "reason": "Stock on file in this site's RM warehouse is held in Quality Inspection/Blocked status - not usable for production until released."}
             else:
