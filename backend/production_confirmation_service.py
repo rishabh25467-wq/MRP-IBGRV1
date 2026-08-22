@@ -409,7 +409,14 @@ def check_component_availability(
     stock_by_product = None
     if sap_inventory_client is not None:
         try:
-            live_rows = sap_inventory_client.get_inventory_detail()
+            # Aug 2026 - user's own follow-up ask: scope this live pull to
+            # just THIS order's site, same verified $filter=CSITE_UUID
+            # this function already receives site_id for anyway - cuts
+            # this pre-flight check from ~47-60s to ~12s. Kept at SITE
+            # (not RM-warehouse) scope because this same check also needs
+            # SFG availability (line ~348 below) and a full RM/SFG/QC
+            # breakdown for the Component Stock Check panel's display.
+            live_rows = sap_inventory_client.get_inventory_detail(site_id=site_id)
             stock_by_product = {}
             for row in live_rows:
                 stock_by_product.setdefault(row["product_id"], []).append({

@@ -263,24 +263,25 @@ def refresh_inventory_cache(db, sap_inventory_client, sap_valuation_client) -> d
     return {"items": items, "categories": categories, "updated_at": updated_at}
 
 
-def refresh_stock_quantities_for_site(db, sap_inventory_client, site_id: str) -> dict:
-    """"Refresh Live Stock Now" v3 (Aug 2026) - user's own follow-up ask:
-    "poll the particular site... for stock update, specific." Verified
-    live that SAP's inventory report accepts `$filter=CSITE_UUID eq
-    '{site_id}'` cleanly (does NOT trigger the $select/CMATERIAL_UUID
-    quirk documented in sap_inventory_client - that's about restricting
-    $select, this only adds $filter) - P9 alone came back in ~12s vs
-    60s+ for the whole company. Only merges THIS site's locations into
-    inventory_cache; every other site's locations, and all cost/
-    valuation data everywhere, are left completely untouched. Deliberately
+def _refresh_stock_quantities_scoped(db, sap_inventory_client, site_id: str = None, warehouse_id: str = None) -> dict:
+    """Shared merge logic behind refresh_stock_quantities_for_warehouse
+    below (site_id kept as an option here since get_inventory_detail
+    supports both verified filters, even though only the warehouse-scoped
+    wrapper currently calls this) - exactly one of site_id/warehouse_id
+    scopes BOTH the live SAP pull itself AND which of a product's
+    existing cached locations get replaced vs left alone. Deliberately
     does NOT bump the cache doc's top-level `updated_at` - that timestamp
     represents the last FULL company-wide refresh, and would mislead the
-    Inventory page into showing every other site as freshly-checked too
-    if a partial, single-site pull touched it."""
-    site_rows = sap_inventory_client.get_inventory_detail(site_id=site_id)
+    Inventory page into showing everything else as freshly-checked too
+    if a partial pull touched it."""
+    fresh_rows = sap_inventory_client.get_inventory_detail(site_id=site_id, warehouse_id=warehouse_id)
+    in_scope = (
+        (lambda loc: loc.get("logistics_area_id") == warehouse_id) if warehouse_id
+        else (lambda loc: (loc.get("logistics_area_id") or "").startswith(f"{site_id}/"))
+    )
 
     fresh_by_product = {}
-    for row in site_rows:
+    for row in fresh_rows:
         product_id = row["product_id"]
         entry = fresh_by_product.setdefault(product_id, {"description": row.get("description"), "uom": row.get("uom"), "locations": []})
         entry["locations"].append({
@@ -291,13 +292,11 @@ def refresh_stock_quantities_for_site(db, sap_inventory_client, site_id: str) ->
 
     cached = get_cached_inventory(db)
     items_by_id = {it["product_id"]: it for it in cached["items"]}
-    site_prefix = f"{site_id}/"
-    # Anything with fresh data at this site OR that previously had (now
-    # possibly stale/gone) locations at this site needs re-checking - the
+    # Anything with fresh data in-scope OR that previously had (now
+    # possibly stale/gone) in-scope locations needs re-checking - the
     # latter covers stock that's been fully consumed since the last pull.
     touched_ids = set(fresh_by_product.keys()) | {
-        pid for pid, it in items_by_id.items()
-        if any((loc.get("logistics_area_id") or "").startswith(site_prefix) for loc in it.get("locations", []))
+        pid for pid, it in items_by_id.items() if any(in_scope(loc) for loc in it.get("locations", []))
     }
     component_docs = {
         doc["_id"]: doc for doc in db["component_master"].find({"_id": {"$in": list(touched_ids)}}, {"description": 1})
@@ -305,12 +304,9 @@ def refresh_stock_quantities_for_site(db, sap_inventory_client, site_id: str) ->
 
     for product_id in touched_ids:
         existing = items_by_id.get(product_id)
-        other_site_locations = [
-            loc for loc in (existing.get("locations", []) if existing else [])
-            if not (loc.get("logistics_area_id") or "").startswith(site_prefix)
-        ]
-        new_site_locations = fresh_by_product.get(product_id, {}).get("locations", [])
-        locations = other_site_locations + new_site_locations
+        kept_locations = [loc for loc in (existing.get("locations", []) if existing else []) if not in_scope(loc)]
+        new_locations = fresh_by_product.get(product_id, {}).get("locations", [])
+        locations = kept_locations + new_locations
         locations.sort(key=lambda loc: -loc["qty"])
         total_qty = round(sum(loc["qty"] for loc in locations), 4)
         if existing:
@@ -333,7 +329,21 @@ def refresh_stock_quantities_for_site(db, sap_inventory_client, site_id: str) ->
         {"$set": {"items": items, "categories": categories}},
         upsert=True,
     )
-    return {"items": items, "categories": categories, "site_id": site_id, "rows_found": len(site_rows)}
+    return {"items": items, "categories": categories, "rows_found": len(fresh_rows)}
+
+
+def refresh_stock_quantities_for_warehouse(db, sap_inventory_client, warehouse_id: str) -> dict:
+    """"Refresh Live Stock Now" v4 (Aug 2026) - user's further follow-up:
+    scope the Store Approval button down to the ONE warehouse (RM) it
+    actually cares about, not the whole site. Verified live:
+    `$filter=CLOG_AREA_UUID eq '{warehouse_id}'` (e.g. "P9/P9-RM") is even
+    faster than the site-level filter (~7.5s vs ~12s, fewer rows). Only
+    that exact warehouse's locations are replaced - every OTHER warehouse
+    at the same site (SFG, QC...) is left completely untouched, unlike
+    the site-scoped version above."""
+    result = _refresh_stock_quantities_scoped(db, sap_inventory_client, warehouse_id=warehouse_id)
+    result["warehouse_id"] = warehouse_id
+    return result
 
 
 def deep_backfill_uuids(db, sap_soap_client, sap_material_client=None, progress_callback=None) -> dict:

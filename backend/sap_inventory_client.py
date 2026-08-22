@@ -53,9 +53,15 @@ class SAPInventoryClient:
         self.report_url = report_url.rstrip("/")
         self.auth = HTTPBasicAuth(username, password)
 
-    def _fetch_page(self, skip: int, site_id: str = None) -> list:
+    def _fetch_page(self, skip: int, site_id: str = None, warehouse_id: str = None) -> list:
         params = {"$format": "json", "$top": PAGE_SIZE, "$skip": skip}
-        if site_id:
+        if warehouse_id:
+            # Verified live (Aug 2026): CLOG_AREA_UUID (the raw warehouse/
+            # logistics-area characteristic, e.g. "P9/P9-RM") filters just
+            # as cleanly as CSITE_UUID below - even fewer rows, even
+            # faster (~7.5s for one warehouse vs ~12s for a whole site).
+            params["$filter"] = f"CLOG_AREA_UUID eq '{warehouse_id}'"
+        elif site_id:
             # Verified live (Aug 2026): $filter on the raw CSITE_UUID
             # characteristic works cleanly and does NOT trigger the
             # CMATERIAL_UUID-resolves-to-a-surrogate-key quirk documented
@@ -87,15 +93,15 @@ class SAPInventoryClient:
             except (requests.exceptions.RequestException, SAPInventoryError) as e:
                 last_exc = e
                 if attempt < _MAX_ATTEMPTS - 1:
-                    logger.warning(f"SAP inventory page fetch (skip={skip}, site={site_id}) failed on attempt {attempt + 1}/{_MAX_ATTEMPTS}, retrying: {e}")
+                    logger.warning(f"SAP inventory page fetch (skip={skip}, site={site_id}, warehouse={warehouse_id}) failed on attempt {attempt + 1}/{_MAX_ATTEMPTS}, retrying: {e}")
                     time.sleep(_RETRY_BACKOFF_SECONDS[attempt])
-        raise SAPInventoryError(f"SAP inventory report failed after {_MAX_ATTEMPTS} attempts (skip={skip}, site={site_id}): {last_exc}")
+        raise SAPInventoryError(f"SAP inventory report failed after {_MAX_ATTEMPTS} attempts (skip={skip}, site={site_id}, warehouse={warehouse_id}): {last_exc}")
 
-    def _fetch_all_rows(self, site_id: str = None) -> list:
+    def _fetch_all_rows(self, site_id: str = None, warehouse_id: str = None) -> list:
         rows = []
         skip = 0
         while True:
-            page = self._fetch_page(skip, site_id=site_id)
+            page = self._fetch_page(skip, site_id=site_id, warehouse_id=warehouse_id)
             rows.extend(page)
             if len(page) < PAGE_SIZE:
                 break
@@ -117,7 +123,7 @@ class SAPInventoryClient:
             stock[product_id] = stock.get(product_id, 0.0) + qty
         return stock
 
-    def get_inventory_detail(self, site_id: str = None) -> list:
+    def get_inventory_detail(self, site_id: str = None, warehouse_id: str = None) -> list:
         """Returns one row per material x site x logistics-area x stock
         status - the un-aggregated counterpart to get_on_hand_stock(), for
         the Inventory page's location breakdown. Each row:
@@ -130,10 +136,13 @@ class SAPInventoryClient:
         tags every single row with which SAP company code it belongs to,
         used by the Inventory page's Entity filter (Ray vs Radish).
         Pass `site_id` (e.g. "P9") to scope the live pull down to just one
-        site - verified live to take ~12s vs 60s+ for the whole company,
-        see the $filter note on _fetch_page above."""
+        site - verified live to take ~12s vs 60s+ for the whole company.
+        Pass `warehouse_id` (e.g. "P9/P9-RM") to scope down to just one
+        warehouse at one site - verified live even faster (~7.5s). Only
+        one of the two is applied if both are somehow passed (warehouse
+        wins - see _fetch_page). See the $filter note on _fetch_page."""
         detail = []
-        for row in self._fetch_all_rows(site_id=site_id):
+        for row in self._fetch_all_rows(site_id=site_id, warehouse_id=warehouse_id):
             product_id = row.get("CMATERIAL_UUID")
             if not product_id:
                 continue

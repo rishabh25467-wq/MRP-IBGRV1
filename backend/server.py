@@ -41,7 +41,7 @@ import quota_arrangement_service
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
-from inventory_service import get_cached_inventory, refresh_inventory_cache, refresh_stock_quantities_for_site, deep_backfill_uuids
+from inventory_service import get_cached_inventory, refresh_inventory_cache, refresh_stock_quantities_for_warehouse, deep_backfill_uuids
 import l1_l2_report_service
 from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids, categorize_full_inventory, backfill_drawing_urls, refresh_attachments_now, REFRESH_ATTACHMENTS_MAX_IDS
 from oms_client import OMSClient, OMSError
@@ -2683,27 +2683,29 @@ async def get_store_requests_balance_pending():
 
 @api_router.post("/store-requests/refresh-live-stock")
 async def refresh_live_stock_for_store(site_id: str):
-    """"Refresh Live Stock Now" v3 (Aug 2026) - store person's on-demand
+    """"Refresh Live Stock Now" v4 (Aug 2026) - store person's on-demand
     button for the exact "I just posted a Goods Receipt, is it visible
     yet" gap. Deliberately its OWN endpoint (not /api/inventory, which
     sits behind the `inventory` page permission) under the /store-requests
-    prefix already exempted from auth for this public workflow. Scoped to
-    ONE site (`refresh_stock_quantities_for_site` - verified live: a
-    $filter=CSITE_UUID eq '{site}' pull takes ~12s vs 60s+ for the whole
-    company, and does NOT trigger the CMATERIAL_UUID-resolution quirk
-    since $select is untouched) - both faster AND lighter on SAP than
-    even the (now-removed) company-wide quantities-only v2. Declared
-    BEFORE /store-requests/{request_id} so this literal path isn't
-    swallowed by that dynamic route."""
+    prefix already exempted from auth for this public workflow. User's
+    own follow-up ask ("target the specific warehouse, not the whole
+    site") - a store person only ever cares whether RM has the new
+    receipt, so this now scopes ALL THE WAY down to just the RM warehouse
+    at this site (`refresh_stock_quantities_for_warehouse` - verified
+    live: a $filter=CLOG_AREA_UUID eq '{site}/{site}-RM' pull takes
+    ~7.5s, even faster and lighter than the earlier site-wide v3).
+    Declared BEFORE /store-requests/{request_id} so this literal path
+    isn't swallowed by that dynamic route."""
     job_id = str(uuid.uuid4())
     job_store.create_job(db, job_id, {"status": "running", "error": None})
+    rm_warehouse_id = f"{site_id}/{site_id}-RM"
 
     async def run():
         try:
-            await asyncio.to_thread(refresh_stock_quantities_for_site, db, sap_inventory_client, site_id)
+            await asyncio.to_thread(refresh_stock_quantities_for_warehouse, db, sap_inventory_client, rm_warehouse_id)
             job_store.update_job(db, job_id, {"status": "done", "error": None})
         except Exception as e:
-            logger.error(f"Store screen live stock refresh job {job_id} (site {site_id}) failed: {e}")
+            logger.error(f"Store screen live stock refresh job {job_id} (warehouse {rm_warehouse_id}) failed: {e}")
             job_store.update_job(db, job_id, {"status": "failed", "error": str(e)})
 
     asyncio.create_task(run())
