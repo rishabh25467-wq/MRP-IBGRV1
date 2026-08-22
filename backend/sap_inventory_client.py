@@ -53,7 +53,20 @@ class SAPInventoryClient:
         self.report_url = report_url.rstrip("/")
         self.auth = HTTPBasicAuth(username, password)
 
-    def _fetch_page(self, skip: int) -> list:
+    def _fetch_page(self, skip: int, site_id: str = None) -> list:
+        params = {"$format": "json", "$top": PAGE_SIZE, "$skip": skip}
+        if site_id:
+            # Verified live (Aug 2026): $filter on the raw CSITE_UUID
+            # characteristic works cleanly and does NOT trigger the
+            # CMATERIAL_UUID-resolves-to-a-surrogate-key quirk documented
+            # above - that quirk is specifically about restricting
+            # $select, and this only adds $filter, $select is untouched.
+            # An earlier attempt to filter by CMATERIAL_UUID hit a
+            # generic 500, but that was later root-caused (see PRD) to
+            # SAP's own "too many CONCURRENT requests against the same
+            # analytics data source" limit, not a filter-syntax problem -
+            # a single, semaphore-gated filtered call like this is fine.
+            params["$filter"] = f"CSITE_UUID eq '{site_id}'"
         last_exc = None
         for attempt in range(_MAX_ATTEMPTS):
             try:
@@ -63,7 +76,7 @@ class SAPInventoryClient:
                         auth=self.auth,
                         timeout=60,
                         headers={"Accept": "application/json"},
-                        params={"$format": "json", "$top": PAGE_SIZE, "$skip": skip},
+                        params=params,
                     )
                 if resp.status_code != 200:
                     raise SAPInventoryError(f"SAP inventory report returned HTTP {resp.status_code}: {resp.text[:300]}")
@@ -74,15 +87,15 @@ class SAPInventoryClient:
             except (requests.exceptions.RequestException, SAPInventoryError) as e:
                 last_exc = e
                 if attempt < _MAX_ATTEMPTS - 1:
-                    logger.warning(f"SAP inventory page fetch (skip={skip}) failed on attempt {attempt + 1}/{_MAX_ATTEMPTS}, retrying: {e}")
+                    logger.warning(f"SAP inventory page fetch (skip={skip}, site={site_id}) failed on attempt {attempt + 1}/{_MAX_ATTEMPTS}, retrying: {e}")
                     time.sleep(_RETRY_BACKOFF_SECONDS[attempt])
-        raise SAPInventoryError(f"SAP inventory report failed after {_MAX_ATTEMPTS} attempts (skip={skip}): {last_exc}")
+        raise SAPInventoryError(f"SAP inventory report failed after {_MAX_ATTEMPTS} attempts (skip={skip}, site={site_id}): {last_exc}")
 
-    def _fetch_all_rows(self) -> list:
+    def _fetch_all_rows(self, site_id: str = None) -> list:
         rows = []
         skip = 0
         while True:
-            page = self._fetch_page(skip)
+            page = self._fetch_page(skip, site_id=site_id)
             rows.extend(page)
             if len(page) < PAGE_SIZE:
                 break
@@ -104,7 +117,7 @@ class SAPInventoryClient:
             stock[product_id] = stock.get(product_id, 0.0) + qty
         return stock
 
-    def get_inventory_detail(self) -> list:
+    def get_inventory_detail(self, site_id: str = None) -> list:
         """Returns one row per material x site x logistics-area x stock
         status - the un-aggregated counterpart to get_on_hand_stock(), for
         the Inventory page's location breakdown. Each row:
@@ -115,9 +128,12 @@ class SAPInventoryClient:
         TINV_STOCK_STATUS_CODE). `company_code`/`company_name` come from
         CCO_UUID/TCO_UUID (e.g. 'RI'/'RAY INTERNATIONAL') - this report
         tags every single row with which SAP company code it belongs to,
-        used by the Inventory page's Entity filter (Ray vs Radish)."""
+        used by the Inventory page's Entity filter (Ray vs Radish).
+        Pass `site_id` (e.g. "P9") to scope the live pull down to just one
+        site - verified live to take ~12s vs 60s+ for the whole company,
+        see the $filter note on _fetch_page above."""
         detail = []
-        for row in self._fetch_all_rows():
+        for row in self._fetch_all_rows(site_id=site_id):
             product_id = row.get("CMATERIAL_UUID")
             if not product_id:
                 continue

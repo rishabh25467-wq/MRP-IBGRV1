@@ -683,7 +683,7 @@ export default function StoreApprovalPage() {
   const refreshLiveStock = async () => {
     setRefreshingStock(true);
     try {
-      const { data } = await axios.post(`${API}/store-requests/refresh-live-stock`);
+      const { data } = await axios.post(`${API}/store-requests/refresh-live-stock`, null, { params: { site_id: selected.site_id } });
       await new Promise((resolve) => {
         const interval = setInterval(async () => {
           try {
@@ -794,7 +794,7 @@ export default function StoreApprovalPage() {
                   disabled={refreshingStock || submitting || isIssuing}
                   onClick={refreshLiveStock}
                   data-testid="store-refresh-live-stock-button"
-                  title="Just posted a Goods Receipt? Pull live SAP quantities now instead of waiting up to 30 min for the scheduled refresh"
+                  title="Just posted a Goods Receipt at this site? Pull live SAP quantities for THIS site now instead of waiting up to 30 min for the scheduled refresh"
                 >
                   <ArrowClockwise size={13} className={`mr-1.5 ${refreshingStock ? "animate-spin" : ""}`} />
                   {refreshingStock ? `Refreshing (${refreshElapsed}s)...` : "Refresh Live Stock Now"}
