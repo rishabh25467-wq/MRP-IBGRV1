@@ -104,8 +104,18 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
   const [reason, setReason] = useState("none");
   const [finished, setFinished] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savingElapsed, setSavingElapsed] = useState(0);
   const [availability, setAvailability] = useState(null);
   const [checkingAvailability, setCheckingAvailability] = useState(false);
+
+  useEffect(() => {
+    if (!saving) {
+      setSavingElapsed(0);
+      return;
+    }
+    const interval = setInterval(() => setSavingElapsed((s) => s + 1), 1000);
+    return () => clearInterval(interval);
+  }, [saving]);
 
   useEffect(() => {
     if (row) {
@@ -196,7 +206,7 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
     }
     setSaving(true);
     try {
-      const { data } = await axios.post(`${API}/production-confirmation/confirm`, {
+      const { data: jobData } = await axios.post(`${API}/production-confirmation/confirm`, {
         production_lot_id: row.production_lot_id,
         production_lot_uuid: row.production_lot_uuid,
         confirmation_group_uuid: row.confirmation_group_uuid,
@@ -220,6 +230,24 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
         new_byproduct_unit_code: canAutoCreateByproduct && byproductQty > 0 ? "KGM" : null,
         actor: actorName.trim(),
       });
+      // Runs as a background job (Aug 2026 fix) - posting to SAP can take
+      // long enough (by-product + main + finish task + WIP clearing, up
+      // to 4 sequential SOAP calls) to blow past the platform's ingress
+      // timeout and surface as a raw, unhelpful Cloudflare error instead
+      // of a real SAP message (reproduced live on Lot 70222 with short
+      // stock). Polling here instead means that can never happen again.
+      let job;
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const { data } = await axios.get(`${API}/production-confirmation/confirm/status/${jobData.job_id}`);
+        job = data;
+        if (job.status === "done" || job.status === "failed") break;
+      }
+      if (job.status === "failed") {
+        toast.error(job.error || "Failed to post confirmation to SAP");
+        return;
+      }
+      const data = job.result;
       if (data.success) {
         toast.success(`Confirmation posted to SAP for Lot ${row.production_lot_id}`);
         if (data.byproduct_confirmation) {
@@ -359,7 +387,7 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
         <DialogFooter>
           <Button variant="outline" onClick={onClose} data-testid="confirm-cancel-button">Cancel</Button>
           <Button onClick={submit} disabled={saving} data-testid="confirm-submit-button">
-            {saving ? "Posting to SAP..." : "Post Confirmation"}
+            {saving ? `Posting to SAP (${savingElapsed}s)...` : "Post Confirmation"}
           </Button>
         </DialogFooter>
       </DialogContent>

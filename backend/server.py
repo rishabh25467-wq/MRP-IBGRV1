@@ -1989,11 +1989,56 @@ class ConfirmProductionRequest(BaseModel):
     actor: str
 
 
+def _clarify_confirm_error(raw_error: str, production_lot_id: str) -> str:
+    """Aug 2026 - a real Cloudflare-level "invalid/incomplete response"
+    error reached the user posting Lot 70222's confirmation while stock
+    was short: `confirm_production` used to run entirely inline in the
+    HTTP request (up to 4 sequential SOAP calls - by-product, main
+    ReportingPoint, Finish Task, WIP Clearing - none of which retry, but
+    a genuinely slow/hanging one is enough to blow past the platform's
+    ingress timeout, and NOTHING was ever logged to history for this lot,
+    confirming the call itself hung rather than SAP cleanly rejecting it).
+    Now run as a background job (see confirm_production/poll below, same
+    pattern as Store Approval's issue flow and Create-and-Release) so
+    this can never happen again regardless of how slow SAP is - this
+    clarifier just makes whatever SAP eventually does say easier to read."""
+    text = raw_error or ""
+    if re.search(r"negative stock not permitted|insufficient|not enough|shortage", text, re.IGNORECASE):
+        return f"SAP rejected this confirmation for Lot {production_lot_id} - insufficient component stock for backflush. Check the Component Stock Check panel or raise a Store Approval request, then retry."
+    if re.search(r"authentication failed|authorization role missing", text, re.IGNORECASE):
+        return f"SAP login/authorization failed while posting Lot {production_lot_id}'s confirmation. Contact IT."
+    if re.search(r"unreachable|timeout|connection", text, re.IGNORECASE):
+        return f"Could not reach SAP to post Lot {production_lot_id}'s confirmation. Please retry in a moment."
+    return f"SAP rejected Lot {production_lot_id}'s confirmation: {text}"
+
+
 @api_router.post("/production-confirmation/confirm")
 async def confirm_production(payload: ConfirmProductionRequest):
     if not payload.actor.strip():
         raise HTTPException(status_code=400, detail="actor (your name) is required")
+    job_id = str(uuid.uuid4())
+    job_store.create_job(db, job_id, {"status": "running"})
+    asyncio.create_task(_run_confirm_production_job(job_id, payload))
+    return {"job_id": job_id}
 
+
+@api_router.get("/production-confirmation/confirm/status/{job_id}")
+async def get_confirm_production_status(job_id: str):
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return job
+
+
+async def _run_confirm_production_job(job_id: str, payload: ConfirmProductionRequest):
+    try:
+        await _confirm_production_inner(job_id, payload)
+    except Exception as e:
+        logger.error(f"Confirm production job {job_id} (Lot {payload.production_lot_id}) crashed unexpectedly: {e}")
+        job_store.update_job(db, job_id, {"status": "failed", "error": f"Unexpected error posting Lot {payload.production_lot_id}'s confirmation - please retry."})
+
+
+async def _confirm_production_inner(job_id: str, payload: ConfirmProductionRequest):
     # The by-product's Output Products line (e.g. IRON-SCR) MUST be
     # confirmed BEFORE the main ReportingPoint call when
     # confirmation_finished=True - confirm_reporting_point internally also
@@ -2048,9 +2093,11 @@ async def confirm_production(payload: ConfirmProductionRequest):
             confirmation_finished=payload.confirmation_finished,
         )
     except SAPProductionLotAuthError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        job_store.update_job(db, job_id, {"status": "failed", "error": str(e)})
+        return
     except SAPProductionLotError as e:
-        raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+        job_store.update_job(db, job_id, {"status": "failed", "error": _clarify_confirm_error(str(e), payload.production_lot_id)})
+        return
 
     if byproduct_confirmation is not None:
         result["byproduct_confirmation"] = byproduct_confirmation
@@ -2068,7 +2115,7 @@ async def confirm_production(payload: ConfirmProductionRequest):
             result["wip_clearing"] = {"success": False, "log": str(e)}
 
     await asyncio.to_thread(production_confirmation_service.log_confirmation, db, payload.actor, payload.dict(), result)
-    return result
+    job_store.update_job(db, job_id, {"status": "done", "result": result})
 
 
 @api_router.get("/production-confirmation/history")
