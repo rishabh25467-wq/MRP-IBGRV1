@@ -2593,40 +2593,6 @@ async def get_store_requests_balance_pending():
     return {"requests": await asyncio.to_thread(store_approval_service.list_balance_pending, db)}
 
 
-@api_router.post("/store-requests/refresh-live-stock")
-async def refresh_live_stock_for_store():
-    """Store user's "Refresh Live Stock Now" button (Aug 2026) - lets the
-    unauthenticated store screen force the SAME full SAP inventory pull the
-    Inventory page's own "Refresh" button triggers (~47s), instead of
-    waiting up to 30 min for the scheduled background loop. Deliberately
-    its OWN endpoint (not just reusing /api/inventory) because that one
-    sits behind the `inventory` page permission - this needs to stay
-    public, under the /store-requests prefix already exempted for the
-    Store Approval workflow. Declared BEFORE /store-requests/{request_id}
-    so this literal path isn't swallowed by that dynamic route."""
-    job_id = str(uuid.uuid4())
-    job_store.create_job(db, job_id, {"status": "running", "error": None})
-
-    async def run():
-        try:
-            await asyncio.to_thread(refresh_inventory_cache, db, sap_inventory_client, sap_valuation_client)
-            job_store.update_job(db, job_id, {"status": "done", "error": None})
-        except Exception as e:
-            logger.error(f"Store screen live stock refresh job {job_id} failed: {e}")
-            job_store.update_job(db, job_id, {"status": "failed", "error": str(e)})
-
-    asyncio.create_task(run())
-    return {"job_id": job_id}
-
-
-@api_router.get("/store-requests/refresh-live-stock/{job_id}")
-async def get_refresh_live_stock_status(job_id: str):
-    job = job_store.get_job(db, job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Unknown job_id")
-    return {"status": job["status"], "error": job.get("error")}
-
-
 @api_router.get("/store-requests/{request_id}")
 async def get_store_request_public(request_id: str):
     doc = await asyncio.to_thread(store_approval_service.get_request, db, request_id)
