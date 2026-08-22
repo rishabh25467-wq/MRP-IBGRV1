@@ -120,6 +120,46 @@ class SAPProductionOrderReleaseClient:
         unavailable - callers should treat that as "unknown", not False."""
         return self.get_life_cycle_status(order_id)["code"] in RELEASED_OR_LATER_CODES
 
+    def get_requested_material(self, order_id: str) -> dict | None:
+        """Reads the order's own ProductionOrderRequestSegmentReference -
+        its ID field is "{material_id}_{n}" and RequestedQuantity is the
+        originally-requested output qty, BOTH available immediately (even
+        while the order is still LifeCycleStatusCode=1 "In Preparation",
+        confirmed live) since they describe the conversion request itself,
+        not the fulfilled Lot. Used to verify a self-detected "new In
+        Preparation" order really belongs to THIS job's material before
+        ever touching it - list_ids_by_status() is tenant-wide, not
+        site/material-scoped, so any concurrent SAP activity (another
+        user, another job, SAP's own MRP run) creating an unrelated order
+        at the same moment would otherwise get falsely claimed as "ours".
+        Real incident (Aug 2026): Proposal 224458 for BK-0021 (site P2,
+        qty 2 EA) got wrongly tagged onto Order 70151, which turned out to
+        actually be material 5989828 @ P9, qty 147 EA - a completely
+        unrelated order that just happened to appear "In Preparation" in
+        the same polling window. Returns None if the segment reference
+        isn't available/parseable (caller should treat that as "cannot
+        verify, don't risk it" - not as a match)."""
+        resp = requests.get(
+            f"{self.base_url}/{self.entity_set}",
+            params={"$filter": f"ID eq '{order_id}'", "$format": "json", "$expand": "ProductionOrderRequestSegmentReference"},
+            auth=self.auth, headers={"Accept": "application/json"}, timeout=30,
+        )
+        if resp.status_code != 200:
+            raise SAPProductionOrderReleaseError(self._error_message(resp))
+        results = resp.json().get("d", {}).get("results", [])
+        if not results:
+            return None
+        segments = results[0].get("ProductionOrderRequestSegmentReference") or []
+        if not segments:
+            return None
+        seg_id = segments[0].get("ID") or ""
+        material_id = seg_id.rsplit("_", 1)[0] if "_" in seg_id else seg_id
+        try:
+            quantity = float(segments[0].get("RequestedQuantity"))
+        except (TypeError, ValueError):
+            quantity = None
+        return {"material_id": material_id, "quantity": quantity}
+
     def tag_with_proposal_id(self, order_id: str, proposal_id: str) -> None:
         """Best-effort: writes the source Proposal ID onto the Order's own
         Z_ProductionProposalID custom field (added Aug 2026) so it's

@@ -6,6 +6,29 @@ Both P0 bugs reported by user were found ALREADY FIXED in code from the previous
 
 No code changes were needed this session - purely verification of already-completed work.
 
+## Session update (2026-08-22, part 7) - corrected 224458/70130 record + concurrency guard against duplicate order claims
+
+User confirmed via SAP: Proposal 224458 (BK-0021 @ P2, qty 2)'s TRUE order is **70130** (verified live: `get_requested_material('70130')` -> `{'material_id': 'BK-0021', 'quantity': 2.0}`, status Finished). Corrective actions taken:
+- Tagged Order 70130 in SAP with `Z_ProductionProposalIDcontent_SDK = 224458` (was blank).
+- Corrected `production_order_creation_history` doc `6a8939294cfb318f359f2ad9` and `background_jobs` doc `87fc8470-...` to reference `production_order_id: "70130"` instead of the wrong 70151, with a `correction_note` explaining why.
+- Per user's explicit instruction, Order 70151's incorrect tag (224458) was left AS-IS in SAP (not cleared).
+
+**User's follow-up ask**: "many people will be using the app concurrently + someone could be doing the same process in SAP UI. need a guard." Implemented a second layer on top of part 6's material/quantity check:
+- New `order_claims` Mongo collection (natural `_id` = order_id, so Mongo's own unique-`_id` constraint gives a real atomic claim with zero extra index work) + `_claim_order_id(db, order_id, job_id)` helper - a plain unique-insert, returns `False` (never raises) if another job already claimed that order_id first.
+- Applied at BOTH detection paths in `_continue_order_creation`: the Lot-poll match (now also filtered to `main_output_product == payload.material_id`, which it wasn't before - same site-wide/material-blind gap as part 6) and the self-release/In-Preparation-poll match (claim attempted BEFORE calling Release, to shrink the race window as much as possible). If the claim fails, that ID is folded into the baseline and never reconsidered - the job keeps polling for a genuinely free, matching order.
+- This fully guards against two of OUR OWN concurrent jobs (same material+site, e.g. two users) racing for the same order. It does NOT and CANNOT guard against a human independently working the exact same material+site+quantity in the SAP UI at literally the same moment - that residual risk is already minimized to near-zero by the material+quantity match (part 6), but a true guarantee is not possible from application code when SAP has no native "which Proposal produced this Order" link exposed via any of the 3 custom OData services checked this session.
+- Verified the claim mechanism directly: first insert for a given order_id succeeds, a second concurrent insert for the same ID is correctly rejected (`DuplicateKeyError`).
+
+## Session update (2026-08-22, part 6) - ROOT CAUSE FOUND: wrong Order tagged to a Proposal (real data corruption)
+
+User asked why "BK-0021 (Proposal 224458 -> Order 70151)" doesn't match reality in SAP. Investigated live against SAP - **confirmed real data corruption, not a display bug**:
+- Order 70151 in SAP is actually material **5989828** @ site **P9**, qty **147 EA** (verified via `$expand=ProductionOrderRequestSegmentReference`) - NOT BK-0021 @ P2 qty 2 as our app's history and SAP's own `Z_ProductionProposalIDcontent_SDK` field on that order both claim.
+- **Root cause**: `_continue_order_creation`'s "self-release" fallback (server.py) calls `sap_production_order_release_client.list_ids_by_status("1")`, which is **tenant-wide** ("this entity doesn't expose Site" per its own docstring) - any new "In Preparation" order from ANY concurrent SAP activity (another user, another job, SAP's own MRP run) in the same polling window was picked up, blindly released, and tagged with OUR proposal_id with zero verification it was actually ours. Order 70151 happened to appear "In Preparation" in the same window as job 87fc8470 (proposal 224458 for BK-0021) and got wrongly claimed.
+- **Fix**: new `SAPProductionOrderReleaseClient.get_requested_material(order_id)` reads the order's `ProductionOrderRequestSegmentReference` (available even pre-Release) to get its real material_id + RequestedQuantity. The self-release branch in `_continue_order_creation` now verifies a candidate's material_id AND quantity match `payload.material_id`/`payload.quantity` BEFORE ever calling Release/tag on it; a mismatched candidate is folded into `baseline_prep_ids` (never reconsidered) and polling continues for the real match.
+- Verified fix logic live: `get_requested_material('70151')` -> `{'material_id': '5989828', 'quantity': 147.0}`, confirms it would now correctly reject this candidate against a BK-0021/qty-2 payload.
+- **NOT YET DONE (needs user confirmation before any live SAP write)**: Order 70151's `Z_ProductionProposalIDcontent_SDK` field in SAP still incorrectly reads "224458" - this is real SAP data that should be cleared/corrected. Also unclear what the TRUE resulting order for Proposal 224458 (BK-0021 @ P2, qty 2) actually is/was - needs manual SAP-side reconciliation.
+- This same tenant-wide-poll gap could theoretically also affect the (separate, unrelated) `list_ids_by_status` calls elsewhere if any exist - only this one call site was found/fixed this session.
+
 ## Session update (2026-08-22, part 5) - flag restricted stock directly on the Store Approval screen
 
 User tested with real scenarios (insufficient stock, restricted stock, request P9-000002) and asked: "if stock is restricted, show here itself for the store user" - the Inspection/Blocked exclusion from part 3 was correct internally but invisible on screen until AFTER a failed/skipped movement.

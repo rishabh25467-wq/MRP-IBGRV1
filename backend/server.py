@@ -16,6 +16,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ValidationError
 from pymongo import MongoClient
+from pymongo.errors import DuplicateKeyError
 from starlette.middleware.cors import CORSMiddleware
 
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
@@ -2256,6 +2257,20 @@ async def _create_proposal_for_payload(payload: "CreateProductionProposalRequest
                 await asyncio.sleep(10)
 
 
+def _claim_order_id(db, order_id: str, job_id: str) -> bool:
+    """Atomically claims `order_id` for `job_id` via a unique-`_id` insert
+    into `order_claims` - the ONLY reliable guard against two concurrent
+    create-and-release jobs (e.g. two users triggering the same material+
+    site at once, or a retriggered poll racing itself) both matching the
+    same newly-appeared SAP order. Returns False (never raises) if another
+    job already claimed it first."""
+    try:
+        db.order_claims.insert_one({"_id": order_id, "job_id": job_id, "claimed_at": datetime.now(timezone.utc)})
+        return True
+    except DuplicateKeyError:
+        return False
+
+
 async def _run_create_and_release_job(job_id: str, payload: "CreateProductionProposalRequest", avail_dt):
     """One-click orchestration, run fully in the background so it is never
     bound by the platform's ~60s ingress timeout: Create Proposal -> (settle
@@ -2387,13 +2402,24 @@ async def _continue_order_creation(job_id: str, payload: "CreateProductionPropos
                 last_trigger = time.monotonic() - elapsed_start
                 await asyncio.sleep(SAP_SETTLE_DELAY_SECONDS)  # give SAP a beat to act on the trigger before the very next lookup
             try:
-                current_ids = {r["production_lot_id"] for r in await asyncio.to_thread(
+                current_rows = await asyncio.to_thread(
                     sap_production_lot_client.find_open_lots, open_statuses, payload.site_id, 999
-                )}
+                )
+                # Same site-wide gap as the self-release branch below - two
+                # concurrent orders for DIFFERENT materials at this site
+                # could both appear as "new" here. Only consider ones for
+                # OUR material (find_open_lots rows already carry it).
+                current_ids = {r["production_lot_id"] for r in current_rows if r.get("main_output_product") == payload.material_id}
                 new_ids = current_ids - baseline_ids
                 if new_ids:
-                    new_order_id = max(new_ids, key=lambda x: int(x) if x.isdigit() else -1)
-                    break
+                    candidate_id = max(new_ids, key=lambda x: int(x) if x.isdigit() else -1)
+                    # Atomic claim - guards against a SECOND concurrent job
+                    # for this same material+site (another user, or the
+                    # same user double-clicking) grabbing the same order.
+                    if await asyncio.to_thread(_claim_order_id, db, candidate_id, job_id):
+                        new_order_id = candidate_id
+                        break
+                    baseline_ids = current_ids  # already claimed by another job - never reconsider it
             except SAPProductionLotError as e:
                 # SAP's tenant sees frequent transient connection timeouts under
                 # load - a single failed poll attempt must NEVER kill the job,
@@ -2410,12 +2436,29 @@ async def _continue_order_creation(job_id: str, payload: "CreateProductionPropos
                 new_prep_ids = current_prep_ids - baseline_prep_ids
                 if new_prep_ids:
                     candidate_id = max(new_prep_ids, key=lambda x: int(x) if x.isdigit() else -1)
-                    release_result = await asyncio.to_thread(sap_production_order_release_client.release_order, candidate_id, True)
-                    if release_result.get("success"):
-                        new_order_id = candidate_id
-                        order_self_released = True
-                        break
-                    baseline_prep_ids = current_prep_ids  # don't retry the same non-releasable candidate every loop
+                    # list_ids_by_status() is tenant-wide (no Site/Material
+                    # filter exists on this entity) - verify this candidate
+                    # is really OUR material+quantity before ever touching
+                    # it (real incident: see get_requested_material docstring).
+                    candidate_matches = False
+                    try:
+                        requested = await asyncio.to_thread(sap_production_order_release_client.get_requested_material, candidate_id)
+                        candidate_matches = bool(requested) and requested["material_id"] == payload.material_id and (
+                            requested["quantity"] is None or abs(requested["quantity"] - payload.quantity) < 0.001
+                        )
+                    except SAPProductionOrderReleaseError as e:
+                        logger.warning(f"create-and-release job {job_id}: could not verify candidate order {candidate_id}'s material, skipping it this round: {e}")
+                    # Claim BEFORE releasing anything - guards against a
+                    # SECOND concurrent job for this same material+quantity
+                    # (or a same-material job at a different site racing
+                    # the tenant-wide list) claiming/releasing the same order.
+                    if candidate_matches and await asyncio.to_thread(_claim_order_id, db, candidate_id, job_id):
+                        release_result = await asyncio.to_thread(sap_production_order_release_client.release_order, candidate_id, True)
+                        if release_result.get("success"):
+                            new_order_id = candidate_id
+                            order_self_released = True
+                            break
+                    baseline_prep_ids = current_prep_ids  # don't re-consider this same candidate (mismatched material, already claimed, or matched-but-not-releasable) next loop
             except SAPProductionOrderReleaseError as e:
                 logger.warning(f"create-and-release job {job_id}: In-Preparation-order poll/self-release hit a transient SAP error, will retry: {e}")
             await asyncio.sleep(CREATE_RELEASE_POLL_INTERVAL_SECONDS)
