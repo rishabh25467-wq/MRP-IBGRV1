@@ -69,6 +69,13 @@ const downloadCsv = (filename, csv) => {
 // a failed/rejected SAP movement).
 const RESTRICTED_STOCK_STATUSES = new Set(["inspection", "quality inspection", "blocked", "restricted-use", "restricted", "in transit"]);
 const isRestrictedStatus = (status) => RESTRICTED_STOCK_STATUSES.has((status || "").trim().toLowerCase());
+// Aug 2026: only RM + QC (Quality Hold) warehouse rows ever reach this
+// screen now (see store_approval_service.refresh_component_locations) -
+// a QC-warehouse row reports stock_status "Not Assigned" in SAP's own
+// feed (NOT "Inspection"), so it would otherwise slip through the check
+// above as if it were normal usable stock. Being in the QC warehouse AT
+// ALL means it's on hold, regardless of what stock_status says.
+const isQcWarehouse = (warehouseId) => (warehouseId || "").endsWith("-QC");
 
 const LocationBreakdown = ({ locations, unit, sourceWarehouseId }) => {
   if (!locations || locations.length === 0) {
@@ -84,7 +91,7 @@ const LocationBreakdown = ({ locations, unit, sourceWarehouseId }) => {
         // fall back to the (unscoped) site code instead of a confusing
         // "Unknown Warehouse" for those legacy, already-open requests.
         const label = loc.warehouse || (loc.site ? loc.site.split("-").pop() : "Unknown Warehouse");
-        const restricted = isRestrictedStatus(loc.stock_status);
+        const restricted = isRestrictedStatus(loc.stock_status) || isQcWarehouse(loc.warehouse_id);
         return (
           <div key={i} data-testid={restricted ? "location-restricted-row" : undefined}>
             <span className={restricted ? "text-[#B54708] font-bold" : "text-[#667085]"}>

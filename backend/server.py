@@ -2093,7 +2093,7 @@ async def _confirm_production_inner(job_id: str, payload: ConfirmProductionReque
             confirmation_finished=payload.confirmation_finished,
         )
     except SAPProductionLotAuthError as e:
-        job_store.update_job(db, job_id, {"status": "failed", "error": str(e)})
+        job_store.update_job(db, job_id, {"status": "failed", "error": _clarify_confirm_error(str(e), payload.production_lot_id)})
         return
     except SAPProductionLotError as e:
         job_store.update_job(db, job_id, {"status": "failed", "error": _clarify_confirm_error(str(e), payload.production_lot_id)})
@@ -2113,6 +2113,17 @@ async def _confirm_production_inner(job_id: str, payload: ConfirmProductionReque
             result["wip_clearing"] = wip_result
         except SAPWipClearingError as e:
             result["wip_clearing"] = {"success": False, "log": str(e)}
+
+    # testing_agent iteration_105: a normal (non-exception) SAP business
+    # rejection - e.g. backflush failing for insufficient stock, exactly
+    # the Lot 70222 scenario this whole fix was born from - came back as
+    # status="done"/success=False with only SAP's raw Log note ("Modif-
+    # ication failed"), never through _clarify_confirm_error at all. Apply
+    # the same clarifier here so the frontend banner reads the same way
+    # regardless of whether SAP failed via an exception or a normal reject.
+    if not result.get("success"):
+        raw_notes = "; ".join(l.get("note", "") for l in result.get("logs", []) if l.get("note")) or "SAP did not return a clear reason"
+        result["clarified_error"] = _clarify_confirm_error(raw_notes, payload.production_lot_id)
 
     await asyncio.to_thread(production_confirmation_service.log_confirmation, db, payload.actor, payload.dict(), result)
     job_store.update_job(db, job_id, {"status": "done", "result": result})

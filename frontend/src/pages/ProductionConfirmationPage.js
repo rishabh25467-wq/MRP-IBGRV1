@@ -14,6 +14,7 @@ import {
   Plus,
   CircleNotch,
   Circle,
+  X,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -107,6 +108,12 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
   const [savingElapsed, setSavingElapsed] = useState(0);
   const [availability, setAvailability] = useState(null);
   const [checkingAvailability, setCheckingAvailability] = useState(false);
+  const [confirmError, setConfirmError] = useState(null);
+  // testing_agent iteration_105: abort the poll loop below if this dialog
+  // is closed/switched to a different row mid-poll - the background SAP
+  // job itself keeps running regardless (nothing is lost), this just
+  // stops updating THIS closed instance's state on a stale poll.
+  const pollAbortRef = useRef(false);
 
   useEffect(() => {
     if (!saving) {
@@ -129,12 +136,17 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
       // confirmations against the same lot.
       setFinished(true);
       setAvailability(null);
+      setConfirmError(null);
+      pollAbortRef.current = false;
       if (row.main_output_product) {
         axios.get(`${API}/production-confirmation/scrap-calc/${encodeURIComponent(row.main_output_product)}`)
           .then(({ data }) => setScrapCalc(data))
           .catch(() => setScrapCalc(null));
       }
     }
+    return () => {
+      pollAbortRef.current = true;
+    };
   }, [row]);
 
   // NOTE: Confirmed Scrap is a manually-entered REJECTED QUANTITY (defective
@@ -205,6 +217,7 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
       return;
     }
     setSaving(true);
+    setConfirmError(null);
     try {
       const { data: jobData } = await axios.post(`${API}/production-confirmation/confirm`, {
         production_lot_id: row.production_lot_id,
@@ -236,15 +249,37 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
       // timeout and surface as a raw, unhelpful Cloudflare error instead
       // of a real SAP message (reproduced live on Lot 70222 with short
       // stock). Polling here instead means that can never happen again.
-      let job;
-      for (;;) {
+      // testing_agent iteration_105: bounded to a 3-min deadline (well
+      // above the realistic worst case for up to 4 sequential SOAP
+      // calls) and retries a single transient status-GET failure instead
+      // of immediately reporting a false failure - the background job
+      // keeps running server-side either way, nothing is lost.
+      const deadline = Date.now() + 3 * 60 * 1000;
+      let job = null;
+      while (Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 3000));
-        const { data } = await axios.get(`${API}/production-confirmation/confirm/status/${jobData.job_id}`);
-        job = data;
+        if (pollAbortRef.current) return;
+        try {
+          const { data } = await axios.get(`${API}/production-confirmation/confirm/status/${jobData.job_id}`);
+          job = data;
+        } catch {
+          continue; // transient network hiccup - just retry on the next tick
+        }
         if (job.status === "done" || job.status === "failed") break;
+        job = null;
+      }
+      if (pollAbortRef.current) return;
+      if (!job) {
+        setConfirmError(`Still waiting on SAP for Lot ${row.production_lot_id} after 3 minutes - it may still complete in the background. Check History shortly before retrying to avoid a duplicate confirmation.`);
+        return;
       }
       if (job.status === "failed") {
-        toast.error(job.error || "Failed to post confirmation to SAP");
+        // Persistent on-screen banner instead of a toast (Aug 2026 user
+        // feedback: "the error is a toast, instead show a message on
+        // screen user will close so it does not disappear") - a real SAP
+        // rejection/timeout message here is important enough that it
+        // must stay visible until the user dismisses it themselves.
+        setConfirmError(job.error || "Failed to post confirmation to SAP");
         return;
       }
       const data = job.result;
@@ -266,10 +301,14 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
         }
         onConfirmed(row);
       } else {
-        toast.error(`SAP reported an issue: ${data.logs?.map((l) => l.note).join("; ") || "see history for details"}`);
+        // clarified_error (Aug 2026, testing_agent iteration_105): a
+        // normal SAP business rejection (no exception) now gets the same
+        // readable guidance as an exception/timeout path instead of raw
+        // SAP log text like "Modification failed".
+        setConfirmError(data.clarified_error || `SAP reported an issue: ${data.logs?.map((l) => l.note).join("; ") || "see history for details"}`);
       }
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Failed to post confirmation to SAP");
+      if (!pollAbortRef.current) setConfirmError(e.response?.data?.detail || "Failed to post confirmation to SAP");
     } finally {
       setSaving(false);
     }
@@ -285,6 +324,22 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3 py-1">
+          {confirmError && (
+            <Alert variant="destructive" className="relative pr-9 rounded-sm border-[#F04438]/40 bg-[#FEF3F2]" data-testid="confirm-error-banner">
+              <WarningCircle size={16} />
+              <AlertTitle className="font-heading text-sm">Confirmation failed</AlertTitle>
+              <AlertDescription className="font-sans text-[13px] break-words">{confirmError}</AlertDescription>
+              <button
+                type="button"
+                onClick={() => setConfirmError(null)}
+                className="absolute top-3 right-3 text-[#B42318]/70 hover:text-[#B42318]"
+                data-testid="confirm-error-banner-close"
+                aria-label="Dismiss error"
+              >
+                <X size={16} />
+              </button>
+            </Alert>
+          )}
           <div className="text-xs text-[#667085] bg-[#F9FAFB] border border-[#EAECF0] rounded-sm px-3 py-2">
             Planned: <strong className="text-[#1D2939]">{formatQty(row.planned_quantity)}</strong> {formatUnit(row.unit_code)} ·
             {" "}Open: <strong className="text-[#1D2939]">{formatQty(row.open_quantity)}</strong> {formatUnit(row.unit_code)}

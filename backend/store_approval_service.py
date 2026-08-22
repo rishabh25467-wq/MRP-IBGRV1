@@ -50,13 +50,30 @@ def refresh_component_locations(db, doc: dict, stock_by_product: dict = None) ->
     last inventory_cache refresh (~30 min old at worst, not however old
     the request itself is). Mutates and returns `doc` for convenience;
     `stock_by_product` can be pre-loaded once by a caller refreshing many
-    docs at once (list views) to avoid re-reading inventory_cache per row."""
+    docs at once (list views) to avoid re-reading inventory_cache per row.
+
+    Display-only restriction (Aug 2026 user feedback: seeing SFG/FG/other
+    warehouses on this screen confused the store person about what's
+    actually at THEIR RM warehouse) - only RM and QC (Quality Hold)
+    warehouse rows are kept; every other warehouse at the site (SFG, FG,
+    Job Work, RTV, Scrap, Segregation, Production...) is dropped from
+    what's shown here. QC is kept ON PURPOSE (not just RM) - a real Aug
+    2026 requirement to also clearly surface stock currently sitting in
+    Quality Hold, distinct from actual usable RM stock. Safe to filter
+    here even though this ALSO feeds start_issue()'s movement logic -
+    that logic (see run_issue_movements) only ever matches locations
+    against the RM warehouse id anyway, so dropping non-RM/QC rows has
+    zero effect on which stock actually gets moved, only on what a store
+    person sees."""
     stock_by_product = stock_by_product if stock_by_product is not None else load_stock_by_product(db)
     site_id = doc["site_id"]
     for c in doc["components"]:
         fresh = site_locations_for_product(stock_by_product, c["product_id"], site_id)
         if fresh is not None:
-            c["locations"] = fresh
+            c["locations"] = [
+                loc for loc in fresh
+                if (loc.get("warehouse_id") or "").endswith(("-RM", "-QC"))
+            ]
     return doc
 COUNTER_COLLECTION = "store_request_counters"
 

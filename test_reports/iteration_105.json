@@ -1,0 +1,39 @@
+{
+  "summary": "Verified the two Aug-2026 Production Confirmation fixes end-to-end: (1) POST /api/production-confirmation/confirm now returns {job_id} instantly and the UI polls GET /confirm/status/{job_id}; (2) confirmation failures now render a PERSISTENT destructive Alert banner inside the dialog (confirm-error-banner) that only closes on the explicit X. Got past the Entra SSO wall using the documented synthetic Mongo session + Playwright cookie injection (worked fine in this harness). Frontend: page loads, 113 reporting-point rows / 100 distinct lots, dialog fields + locked finished checkbox + Component Stock Check panel all correct, elapsed 'Posting to SAP (Ns)...' ticker increments, banner verified for BOTH failure shapes (job status=failed and status=done+result.success=false), banner survives 8-9s without auto-dismissing, closes only on X, re-submit after dismissal works, success path still shows the 'Confirmation posted to SAP' + 'WIP Clearing Run triggered' toasts and removes the row. Active Orders 'Stop' button verified (Stop -> Stopping... -> cancel POST -> row removed on cancelled status). Backend: 3/3 pytest passed (instant confirm response 0.1-0.3s, poll to terminal state, 404 'Unknown job_id'). NO real SAP write was made anywhere - confirm POST/status were Playwright-intercepted in the UI tests and only zero/fake UUIDs were used in the backend test (SAP rejected them, as intended).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/production-confirmation/confirm (job result)", "issue": "A SAP BUSINESS rejection comes back as status='done' with result.success=false + raw logs (live-observed note: 'Modification failed'), and _clarify_confirm_error() is applied ONLY to the exception paths. So the exact scenario the fix was born from (Lot 70222 insufficient stock) will most likely surface to the user as the raw SAP log text ('SAP reported an issue: <raw note>') and never get the friendly 'insufficient component stock for backflush - check the Component Stock Check panel or raise a Store Approval request' guidance. Recommend running the joined log notes through _clarify_confirm_error() before returning/rendering."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Confirm polling loop (ConfirmDialog.submit)", "issue": "The `for(;;)` poll has no max-attempt/timeout guard and no cancel on dialog close - a job stuck in 'running' polls forever. Also a single transient network error on the status GET falls into the catch-all and shows 'Failed to post confirmation to SAP' even though the background SAP job is still running and may well succeed, which could tempt the user into a duplicate confirmation. Suggest retrying transient status-GET failures (like pollJob does with `continue`) and adding a poll deadline.", "affected_selectors": ["confirm-submit-button", "confirm-error-banner"]}
+    ],
+    "design_issues": [
+      {"screen": "Confirm Production Task dialog", "issues": ["Banner contrast/placement is good (red on #FEF3F2, top of dialog, X clearly visible). No issues found.", "Cosmetic: for lots with Open = 0 the qty input defaults to 0 and the amber 'exceeds Open Quantity' note fires as soon as any qty is typed - correct but noisy on the many already-fully-confirmed lots listed in the Open filter."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_confirm_job_flow.py",
+    "/app/test_reports/pytest/iteration_105_confirm_job.xml"
+  ],
+  "action_items": [
+    "Apply _clarify_confirm_error() (or an equivalent mapping) to the status='done' + result.success=false log notes so an insufficient-stock rejection shows the readable guidance instead of raw SAP text like 'Modification failed'.",
+    "Harden the ConfirmDialog poll loop: retry transient status-GET failures instead of treating them as a confirmation failure, and add a poll deadline / abort on dialog close."
+  ],
+  "critical_code_review_comments": [
+    "server.py _confirm_production_inner: SAPProductionLotAuthError writes str(e) straight into job.error while every other path goes through _clarify_confirm_error - inconsistent user-facing message quality.",
+    "ProductionConfirmationPage.js is 1531 lines - ConfirmDialog / CreateOrder tab / Active Orders table should be split into separate modules.",
+    "The confirm status endpoint returns the whole job document; verified no Mongo _id leaks (job_store strips it) - keep it that way."
+  ],
+  "updated_files": ["/app/backend/tests/test_confirm_job_flow.py"],
+  "success_rate": {"backend": "100% (3/3)", "frontend": "100% of tested flows (dialog, failure banner x2 shapes, success toasts, elapsed ticker, Stop button)"},
+  "seed_data_creation": "Two synthetic Entra sessions (auth_users + auth_sessions docs, role super_admin) created for browser and pytest access - BOTH DELETED after testing. Also removed a stale leftover test user 'testtid:testoid-scrapcalc' from an earlier iteration. No SAP data created.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "Entra SSO only - used the documented synthetic Mongo session technique (/app/memory/test_credentials.md). Playwright page.context.add_cookies with {name: vms_session, domain: sap-data-sync.preview.emergentagent.com, path: /, httpOnly: true, secure: true, sameSite: Lax} WORKS in this harness - the main agent's earlier failure was environment-specific, not an app bug.",
+  "context_for_next_testing_agent": "Cookie injection recipe above works; /app/backend/tests/_setup_pc_session.py prints a fresh token (set allowed_pages or rely on super_admin). Open-lots list is real and large (113 rows) - confirm-button-0 is legitimately DISABLED (lot already Finished), use '[data-testid^=\"confirm-button-\"]:not([disabled])'. NEVER click Post Confirmation against a real lot without Playwright-routing '**/api/production-confirmation/confirm' and '**/api/production-confirmation/confirm/status/**' - a real submit writes an irreversible confirmation + WIP clearing to the LIVE SAP tenant. Active Orders rows hydrate from localStorage key 'productionConfirmationActiveJobs', so a fake running job can be seeded via add_init_script to test the Stop button.",
+  "rca_of_the_issue": "Original Cloudflare 'invalid/incomplete response' was caused by the synchronous confirm endpoint exceeding ingress timeout; verified fixed - endpoint now answers in ~0.1-0.3s with a job_id and the SAP work runs as an asyncio background task polled every 3s. The toast-vs-persistent-message complaint is also fixed: all three failure paths set confirmError state which renders a destructive Alert (data-testid=confirm-error-banner) that never auto-dismisses and clears only via confirm-error-banner-close."
+}
