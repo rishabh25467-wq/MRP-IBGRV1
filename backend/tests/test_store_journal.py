@@ -112,7 +112,8 @@ class TestJournalEndpoint:
         assert seeded["partial_pending_planner"]["_id"] in ids
         assert seeded["resolved"]["_id"] not in ids
         assert seeded["cancelled"]["_id"] not in ids
-        assert {x["status"] for x in reqs} <= {"pending", "partial_pending_planner"}
+        # "issuing" added Aug 2026 (async Issue-Stock background job in flight)
+        assert {x["status"] for x in reqs} <= {"pending", "issuing", "partial_pending_planner"}
 
     def test_journal_sorted_desc_by_created_at(self, seeded):
         reqs = requests.get(f"{API}/store-requests/journal", timeout=60).json()["requests"]
@@ -157,7 +158,7 @@ class TestJournalEndpoint:
             "decision": None, "actor": "TEST_STORE_USER",
         }, timeout=60)
         assert r.status_code == 400, r.text
-        assert "no longer pending" in r.json()["detail"].lower()
+        assert "not awaiting a stock issue" in r.json()["detail"].lower()
 
     def test_real_production_docs_untouched(self, db, seeded):
         real = db[COLL].count_documents({"_id": {"$not": {"$regex": f"^{TAG}_"}}, "requester": "Ankit"})

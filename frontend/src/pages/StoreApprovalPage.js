@@ -104,7 +104,9 @@ const LocationBreakdown = ({ locations, unit, sourceWarehouseId }) => {
 
 const STATUS_BADGE = {
   pending: { label: "Awaiting Store", tone: "bg-[#FFFAEB] text-[#B54708] border-[#FEDF89]" },
+  issuing: { label: "Issuing Stock...", tone: "bg-[#EFF8FF] text-[#0E7C86] border-[#B2DDFF]" },
   partial_pending_planner: { label: "Awaiting Requester", tone: "bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]" },
+  resolved_balance_pending: { label: "Balance Pending", tone: "bg-[#FEF6EE] text-[#B93815] border-[#F9DBAF]" },
   resolved: { label: "Resolved", tone: "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]" },
   cancelled: { label: "Cancelled", tone: "bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]" },
 };
@@ -139,11 +141,13 @@ export default function StoreApprovalPage() {
   const [viewMode, setViewMode] = useState("queue"); // "queue" | "journal"
   const [requests, setRequests] = useState([]);
   const [journalRequests, setJournalRequests] = useState([]);
+  const [balanceRequests, setBalanceRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(null);
   const [issuedQty, setIssuedQty] = useState({});
   const [submitting, setSubmitting] = useState(false);
   const [submitElapsed, setSubmitElapsed] = useState(0);
+  const [issueProgress, setIssueProgress] = useState(null);
   const [resultMessage, setResultMessage] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [userSearch, setUserSearch] = useState("");
@@ -170,11 +174,9 @@ export default function StoreApprovalPage() {
     return () => clearInterval(interval);
   }, [submitting]);
 
-  const submitProgressMessage = submitElapsed < 5
-    ? "Recording issued quantities and posting the SAP Goods Movement..."
-    : submitElapsed < 20
-    ? "Still working - SAP is taking a little longer than usual to confirm the movement..."
-    : "Almost there - retrying once more with SAP before giving up...";
+  const submitProgressMessage = issueProgress && issueProgress.progress_total > 0
+    ? `Moving stock for component ${issueProgress.progress_current} of ${issueProgress.progress_total}${issueProgress.current_component ? ` (${issueProgress.current_component})` : ""}...`
+    : "Recording issued quantities and posting the SAP Goods Movement...";
 
   const loadRequests = useCallback(async () => {
     setLoading(true);
@@ -200,12 +202,49 @@ export default function StoreApprovalPage() {
     }
   }, []);
 
+  // Rule 2 (Aug 2026): requests where the store already issued a partial
+  // quantity, the order proceeded, but a balance is still outstanding -
+  // reopen one of these once more stock physically arrives in RM.
+  const loadBalancePending = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data } = await axios.get(`${API}/store-requests/balance-pending`);
+      setBalanceRequests(data.requests);
+    } catch {
+      toast.error("Failed to load balance-pending requests");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
-    const refresh = () => (viewMode === "queue" ? loadRequests() : loadJournal());
+    const refresh = () => {
+      if (viewMode === "queue") return loadRequests();
+      if (viewMode === "balance") return loadBalancePending();
+      return loadJournal();
+    };
     refresh();
     const interval = setInterval(refresh, 8000);
     return () => clearInterval(interval);
-  }, [viewMode, loadRequests, loadJournal]);
+  }, [viewMode, loadRequests, loadJournal, loadBalancePending]);
+
+  // Aug 2026 fix (testing_agent iteration_103): a request can be "issuing"
+  // because a DIFFERENT session/tab started the job - pollIssueJob() only
+  // exists for the tab that actually clicked submit, so without this the
+  // detail view sat on "Issuing Stock..." forever despite promising it
+  // would update automatically.
+  useEffect(() => {
+    if (!selected || selected.status !== "issuing" || submitting) return;
+    const interval = setInterval(async () => {
+      try {
+        const { data } = await axios.get(`${API}/store-requests/${selected._id}`);
+        setSelected(data);
+      } catch {
+        // transient - next tick will retry
+      }
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [selected, submitting]);
 
   const handleSort = (field) => {
     if (sortField === field) {
@@ -216,7 +255,7 @@ export default function StoreApprovalPage() {
     }
   };
 
-  const rawList = viewMode === "queue" ? requests : journalRequests;
+  const rawList = viewMode === "queue" ? requests : viewMode === "balance" ? balanceRequests : journalRequests;
   const siteOptions = useMemo(() => Array.from(new Set(rawList.map((r) => r.site_id).filter(Boolean))).sort(), [rawList]);
 
   const displayedRequests = useMemo(() => {
@@ -283,7 +322,12 @@ export default function StoreApprovalPage() {
     setResultMessage(null);
     const defaults = {};
     r.components.forEach((c) => {
-      defaults[c.product_id] = c.issued_qty != null ? String(c.issued_qty) : String(c.required_qty);
+      // Reopening a balance-pending request: default each component's
+      // input to its REMAINING shortfall (what's still owed), not the
+      // original required_qty or the already-issued cumulative total.
+      defaults[c.product_id] = r.status === "resolved_balance_pending"
+        ? String(c.shortfall ?? 0)
+        : (c.issued_qty != null ? String(c.issued_qty) : String(c.required_qty));
     });
     setIssuedQty(defaults);
   };
@@ -291,7 +335,9 @@ export default function StoreApprovalPage() {
   const backToQueue = () => {
     setSelected(null);
     setResultMessage(null);
-    viewMode === "queue" ? loadRequests() : loadJournal();
+    if (viewMode === "queue") loadRequests();
+    else if (viewMode === "balance") loadBalancePending();
+    else loadJournal();
   };
 
   if (!selected) {
@@ -337,6 +383,14 @@ export default function StoreApprovalPage() {
                 data-testid="store-view-mode-journal"
               >
                 Journal (All Requests)
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("balance")}
+                className={`px-3 py-1.5 text-xs font-bold rounded-sm ${viewMode === "balance" ? "bg-[#0E7C86] text-white" : "text-[#344054]"}`}
+                data-testid="store-view-mode-balance"
+              >
+                Balance Pending
               </button>
               <button
                 type="button"
@@ -423,7 +477,7 @@ export default function StoreApprovalPage() {
                 </SelectContent>
               </Select>
             </div>
-            <Button variant="outline" onClick={() => (viewMode === "queue" ? loadRequests() : loadJournal())} data-testid="store-refresh-button">
+            <Button variant="outline" onClick={() => (viewMode === "queue" ? loadRequests() : viewMode === "balance" ? loadBalancePending() : loadJournal())} data-testid="store-refresh-button">
               <ArrowClockwise size={14} className="mr-1.5" /> Refresh
             </Button>
             {viewMode === "movements" && (
@@ -551,7 +605,7 @@ export default function StoreApprovalPage() {
                 ))}
                 {!loading && displayedRequests.length === 0 && (
                   <tr><td colSpan={11} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="store-requests-empty-state">
-                    {rawList.length === 0 ? (viewMode === "journal" ? "No requests recorded yet." : "No pending stock requests right now.") : "No requests match your filters."}
+                    {rawList.length === 0 ? (viewMode === "journal" ? "No requests recorded yet." : viewMode === "balance" ? "No requests with an outstanding balance right now." : "No pending stock requests right now.") : "No requests match your filters."}
                   </td></tr>
                 )}
               </tbody>
@@ -564,6 +618,8 @@ export default function StoreApprovalPage() {
   }
 
   const isPending = selected.status === "pending";
+  const isIssuing = selected.status === "issuing";
+  const isReopenable = selected.status === "resolved_balance_pending";
   const hasShortfall = isPending && selected.components.some((c) => {
     const q = Number(issuedQty[c.product_id]);
     return Number.isNaN(q) || q < c.required_qty;
@@ -581,23 +637,58 @@ export default function StoreApprovalPage() {
     }
     setSubmitting(true);
     try {
+      // Aug 2026: this endpoint now returns almost instantly (job_id) - the
+      // real SAP Goods Movement calls run in a background job, polled
+      // below, so a request with several components can never trip the
+      // platform's ingress/Cloudflare timeout the way one long synchronous
+      // POST used to.
       const { data } = await axios.post(`${API}/store-requests/${selected._id}/issue`, {
         issued, decision: hasShortfall ? decision : null, actor: storeName.trim(),
       });
-      if (data.status === "resolved") {
-        setResultMessage("Stock issue recorded - the automated Production Order pipeline is resuming now.");
-        toast.success("Recorded - order creation resuming");
-      } else if (data.status === "partial_pending_planner") {
-        setResultMessage("Sent to the requester for approval - they'll decide whether to proceed with the partial stock.");
-        toast.success("Sent to requester for approval");
-      }
-      setSelected(data);
+      setSelected(data.request);
+      await pollIssueJob(data.job_id, selected._id);
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed to submit issued quantities");
-    } finally {
       setSubmitting(false);
     }
   };
+
+  const pollIssueJob = (jobId, requestId) => new Promise((resolve) => {
+    const interval = setInterval(async () => {
+      try {
+        const { data: job } = await axios.get(`${API}/store-requests/issue-status/${jobId}`);
+        setIssueProgress(job);
+        if (job.status === "done" || job.status === "failed") {
+          clearInterval(interval);
+          setSubmitting(false);
+          setIssueProgress(null);
+          const { data: freshRequest } = await axios.get(`${API}/store-requests/${requestId}`);
+          setSelected(freshRequest);
+          if (job.status === "failed") {
+            toast.error(job.error || "Stock issue failed - the request has been reverted so you can retry");
+          } else if (freshRequest.status === "resolved") {
+            setResultMessage(freshRequest.resolution === "balance_completed"
+              ? "Balance fully issued - this request is now closed."
+              : "Stock issue recorded - the automated Production Order pipeline is resuming now.");
+            toast.success(freshRequest.resolution === "balance_completed" ? "Balance fully issued - closed" : "Recorded - order creation resuming");
+          } else if (freshRequest.status === "resolved_balance_pending") {
+            setResultMessage("Recorded - a balance is still outstanding on this request. You'll find it under \"Balance Pending\" to reopen once more stock arrives.");
+            toast.success("Recorded - balance still outstanding");
+          } else if (freshRequest.status === "partial_pending_planner") {
+            setResultMessage("Sent to the requester for approval - they'll decide whether to proceed with the partial stock.");
+            toast.success("Sent to requester for approval");
+          }
+          resolve();
+        }
+      } catch {
+        clearInterval(interval);
+        setSubmitting(false);
+        setIssueProgress(null);
+        toast.error("Lost connection while tracking the stock issue - refresh to check its current status");
+        resolve();
+      }
+    }, 2000);
+  });
 
   return (
     <div className="min-h-screen bg-[#F2F4F7] text-[#1D2939]">
@@ -626,7 +717,7 @@ export default function StoreApprovalPage() {
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              {isPending && (
+              {(isPending || isReopenable) && (
                 <Input
                   value={storeName}
                   onChange={(e) => setStoreName(e.target.value)}
@@ -680,6 +771,19 @@ export default function StoreApprovalPage() {
                           className="h-7 w-28 text-right tabular-nums"
                           data-testid={`store-issued-qty-input-${i}`}
                         />
+                      ) : isReopenable && c.shortfall > 0 ? (
+                        <div className="space-y-0.5" data-testid={`store-reopen-issue-cell-${i}`}>
+                          <p className="text-[10px] text-[#667085]">Already issued: {formatQty(c.issued_qty)} {formatUnit(c.unit_of_measure)}</p>
+                          <Input
+                            type="number"
+                            value={issuedQty[c.product_id] ?? ""}
+                            onChange={(e) => setIssuedQty((prev) => ({ ...prev, [c.product_id]: e.target.value }))}
+                            className="h-7 w-28 text-right tabular-nums"
+                            data-testid={`store-issued-qty-input-${i}`}
+                          />
+                        </div>
+                      ) : isReopenable ? (
+                        <span className="tabular-nums text-[#027A48]" data-testid={`store-issued-qty-complete-${i}`}>{formatQty(c.issued_qty)} {formatUnit(c.unit_of_measure)} (fully issued)</span>
                       ) : (
                         <span className="tabular-nums">{formatQty(c.issued_qty)} {formatUnit(c.unit_of_measure)}</span>
                       )}
@@ -709,18 +813,7 @@ export default function StoreApprovalPage() {
               <div className="bg-[#F0FDF9] border border-[#A6F4C5] rounded-sm px-3 py-2 text-xs text-[#027A48]" data-testid="store-issue-movement-notice">
                 Issuing stock records a SAP Goods Movement <strong>{selected.site_id}/{selected.site_id}-RM &rarr; {selected.site_id}/{selected.site_id}-SFG</strong> (fixed by site - not user-chosen). This is LIVE - stock physically moves in SAP the moment you confirm.
               </div>
-              {submitting ? (
-                <div className="bg-white border border-[#D0D5DD] rounded-sm px-3 py-3 space-y-2" data-testid="store-issue-progress">
-                  <div className="h-1.5 w-full bg-[#EAECF0] rounded-full overflow-hidden">
-                    <div className="h-full w-1/3 bg-[#0E7C86] rounded-full animate-[store-issue-progress_1.1s_ease-in-out_infinite]" />
-                  </div>
-                  <p className="text-xs text-[#344054] flex items-center gap-1.5" data-testid="store-issue-progress-message">
-                    <ArrowClockwise size={12} className="animate-spin text-[#0E7C86]" />
-                    {submitProgressMessage}
-                    <span className="text-[#98A2B3] tabular-nums ml-1" data-testid="store-issue-progress-elapsed">{submitElapsed}s</span>
-                  </p>
-                </div>
-              ) : hasShortfall ? (
+              {hasShortfall ? (
                 <>
                   <p className="text-[11px] text-[#B54708]">One or more components are still short of the required quantity. Choose how to proceed:</p>
                   <div className="flex flex-wrap gap-2">
@@ -737,6 +830,30 @@ export default function StoreApprovalPage() {
                   Confirm Stock Fully Issued
                 </Button>
               )}
+            </div>
+          )}
+
+          {isReopenable && !resultMessage && (
+            <div className="space-y-2">
+              <div className="bg-[#FEF6EE] border border-[#F9DBAF] rounded-sm px-3 py-2 text-xs text-[#B93815]" data-testid="store-reopen-notice">
+                This request still has an outstanding balance. Enter what you can issue now for the short component(s) above (defaults to the remaining balance) - you can reopen this again later if there's still a balance left.
+              </div>
+              <Button disabled={submitting} onClick={() => submitIssue(null)} data-testid="store-submit-reopen-button">
+                Issue Remaining Balance
+              </Button>
+            </div>
+          )}
+
+          {(submitting || isIssuing) && !resultMessage && (
+            <div className="bg-white border border-[#D0D5DD] rounded-sm px-3 py-3 space-y-2" data-testid="store-issue-progress">
+              <div className="h-1.5 w-full bg-[#EAECF0] rounded-full overflow-hidden">
+                <div className="h-full w-1/3 bg-[#0E7C86] rounded-full animate-[store-issue-progress_1.1s_ease-in-out_infinite]" />
+              </div>
+              <p className="text-xs text-[#344054] flex items-center gap-1.5" data-testid="store-issue-progress-message">
+                <ArrowClockwise size={12} className="animate-spin text-[#0E7C86]" />
+                {submitting ? submitProgressMessage : "A stock issue is already being processed for this request (started from another session) - this page will update automatically."}
+                {submitting && <span className="text-[#98A2B3] tabular-nums ml-1" data-testid="store-issue-progress-elapsed">({submitElapsed}s)</span>}
+              </p>
             </div>
           )}
         </div>

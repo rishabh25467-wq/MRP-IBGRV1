@@ -103,6 +103,17 @@ def job_status(db, job_id):
     return doc and doc.get("status")
 
 
+def wait_for_request_status(db, req_id, expected, timeout=60):
+    """The issue flow is now a background job - poll the store_request doc."""
+    end = time.time() + timeout
+    while time.time() < end:
+        doc = db["store_requests"].find_one({"_id": req_id})
+        if doc and doc.get("status") == expected:
+            return True
+        time.sleep(1)
+    return False
+
+
 def wait_for_job_status(db, job_id, expected, timeout=15):
     end = time.time() + timeout
     while time.time() < end:
@@ -160,7 +171,9 @@ class TestPublicStoreRequestReads:
         ids = [x["_id"] for x in body["requests"]]
         assert req_id in ids
         assert planner_req in ids
-        assert all(x["status"] in ("pending", "partial_pending_planner") for x in body["requests"])
+        # "issuing" (background Goods Movement job in flight) is also an open
+        # queue status as of the Aug 2026 async conversion.
+        assert all(x["status"] in ("pending", "issuing", "partial_pending_planner") for x in body["requests"])
 
     def test_detail_is_public_with_components(self, db, tracker):
         _, req_id = seed(db, tracker)
@@ -188,14 +201,17 @@ class TestStoreIssue:
             "decision": None, "actor": "QA Store",
         }, timeout=60)
         assert r.status_code == 200, r.text
-        d = r.json()
-        assert d["status"] == "resolved"
-        assert d["resolution"] == "full_issue"
+        # Aug 2026: the issue endpoint is now async - it returns {job_id, request}
+        # with request.status == "issuing"; the SAP loop finishes in the background.
+        d = r.json()["request"]
+        assert d["status"] == "issuing"
         assert d["store_actor"] == "QA Store"
         assert all(c["shortfall"] == 0 for c in d["components"])
-        # persisted
+        # persisted final state after the background job completes
+        assert wait_for_request_status(db, req_id, "resolved"), db["store_requests"].find_one({"_id": req_id})["status"]
         got = requests.get(f"{API}/store-requests/{req_id}", timeout=60).json()
         assert got["status"] == "resolved"
+        assert got["resolution"] == "full_issue"
         # job resumed
         assert wait_for_job_status(db, job_id, "waiting_for_order"), job_status(db, job_id)
         # resolved requests drop off the public queue
@@ -210,8 +226,12 @@ class TestStoreIssue:
             "decision": "proceed", "actor": "QA Store",
         }, timeout=60)
         assert r.status_code == 200, r.text
-        d = r.json()
-        assert d["status"] == "resolved"
+        d = r.json()["request"]
+        assert d["status"] == "issuing"
+        # Rule 2 (Aug 2026): a remaining shortfall now lands in the
+        # reopenable "resolved_balance_pending" state, not plain "resolved".
+        assert wait_for_request_status(db, req_id, "resolved_balance_pending"), db["store_requests"].find_one({"_id": req_id})["status"]
+        d = requests.get(f"{API}/store-requests/{req_id}", timeout=60).json()
         assert d["resolution"] == "store_proceeded_partial"
         comps = {c["product_id"]: c for c in d["components"]}
         assert comps["TEST_COMP_A"]["issued_qty"] == 4
@@ -227,10 +247,11 @@ class TestStoreIssue:
             "decision": "send_to_planner", "actor": "QA Store",
         }, timeout=60)
         assert r.status_code == 200, r.text
-        d = r.json()
-        assert d["status"] == "partial_pending_planner"
+        assert r.json()["request"]["status"] == "issuing"
+        assert wait_for_request_status(db, req_id, "partial_pending_planner"), db["store_requests"].find_one({"_id": req_id})["status"]
+        d = requests.get(f"{API}/store-requests/{req_id}", timeout=60).json()
         assert d["resolution"] is None
-        assert job_status(db, job_id) == "partial_pending_planner"
+        assert wait_for_job_status(db, job_id, "partial_pending_planner"), job_status(db, job_id)
         job = db["background_jobs"].find_one({"_id": job_id})
         assert job["store_request_id"] == req_id
 
@@ -251,7 +272,7 @@ class TestStoreIssue:
             "decision": "send_to_planner", "actor": "QA Store",
         }, timeout=60)
         assert r.status_code == 200, r.text
-        comps = {c["product_id"]: c for c in r.json()["components"]}
+        comps = {c["product_id"]: c for c in r.json()["request"]["components"]}
         assert comps["TEST_COMP_B"]["issued_qty"] == 0
         assert comps["TEST_COMP_B"]["shortfall"] == 5
 
@@ -272,7 +293,7 @@ class TestStoreIssue:
             "decision": None, "actor": "QA Store",
         }, timeout=60)
         assert r.status_code == 400, r.text
-        assert "no longer pending" in r.json()["detail"]
+        assert "not awaiting a stock issue" in r.json()["detail"]
 
     def test_issue_unknown_request_404(self):
         r = requests.post(f"{API}/store-requests/{uuid.uuid4()}/issue", json={

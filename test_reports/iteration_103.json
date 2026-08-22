@@ -1,0 +1,52 @@
+{
+  "summary": "Tested the Aug 2026 conversion of POST /api/store-requests/{id}/issue from a synchronous SAP loop into a trackable background job (fixes the Cloudflare/ingress timeout), plus the /storeapproval polling UI and the restricted-stock / MASS->KG regressions. Backend: created /app/backend/tests/test_store_issue_job.py (11 new tests) and updated 5 stale assertions in the existing store suites for the new response shape/status - 42/42 backend tests now pass. Frontend: full Playwright pass of the pending->issuing->resolved flow, the 'Issuing Stock...' queue badge + status-filter option, the second-session no-double-submit view, and the Quality-Hold + KG regressions. ONE real frontend bug found: the request detail view does NOT auto-update for a session that did not itself submit (it stays on 'Issuing Stock...' forever even though the on-screen message promises 'this page will update automatically').",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/store-requests/{id}/issue, GET /store-requests/issue-status/{job_id}", "issue": "job_store.create_job/update_job/get_job are synchronous pymongo calls made directly on the event loop (every other DB call in these handlers uses asyncio.to_thread). Harmless today but inconsistent with the surrounding code."},
+      {"endpoint": "store_approval_service.submit_issue()", "issue": "~80 lines of dead, now-unreachable code kept as a 'DEPRECATED reference' duplicate of run_issue_movements() - a real DRY/maintenance hazard (the two copies of the movement logic will drift). Recommend deleting it; git history is the reference."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "StoreApprovalPage detail view (second session / non-submitting tab)", "issue": "When status is 'issuing' but this tab never called submitIssue, the progress block correctly hides the submit buttons and shows 'A stock issue is already being processed ... this page will update automatically.' - but there is NO polling for `selected` in that case (the only refresh interval updates the queue/journal lists, not the open detail doc). Verified: flipped the request to 'resolved' in Mongo while the detail was open and 20s later the page still showed 'Issuing Stock...' with the progress bar spinning. The store user must go Back to queue and re-open to ever see the result, and there is no manual refresh button on the detail view.", "selector": "[data-testid=\"store-issue-progress\"] / [data-testid=\"store-issue-progress-message\"]", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/storeapproval request detail - progress message", "issues": ["Elapsed counter is concatenated with no separator: 'Recording issued quantities and posting the SAP Goods Movement...0s' (the ml-1 span sits after a text node ending in '...'). Add a space/parentheses, e.g. '... (0s)'."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_store_issue_job.py",
+    "/app/backend/tests/test_store_approval.py",
+    "/app/backend/tests/test_store_journal.py",
+    "/app/tests/seed_store_ui_requests.py",
+    "/app/test_reports/pytest/store_issue_job.xml"
+  ],
+  "action_items": [
+    "FIX (HIGH): poll GET /store-requests/{id} every few seconds while `selected.status === 'issuing'` and !submitting, so a second tab/session actually auto-updates as the message promises (and/or add a Refresh button on the detail view).",
+    "Add a space before the elapsed-seconds counter in the progress message.",
+    "Delete the deprecated store_approval_service.submit_issue() dead copy of the movement loop.",
+    "Optional: wrap job_store.create_job/update_job/get_job in asyncio.to_thread inside the issue endpoints for consistency."
+  ],
+  "critical_code_review_comments": [
+    "start_issue() correctly flips status to 'issuing' inside the same synchronous call that validates, so the second-submit race is closed (verified: a second POST on an 'issuing' request returns 400 'no longer pending').",
+    "run_issue_movements() persists each component's goods_movement with a targeted `components.{idx}` $set right after its own SAP call - progress is durable mid-run; verified via progress_current/progress_total snapshots on the job doc.",
+    "Startup recovery works: after a uvicorn reload the log showed \"Startup: recovered 1 orphaned store request(s) stuck in 'issuing'\" and the doc was back to 'pending' (revert_to_pending_if_safe correctly refuses when any goods_movement already exists).",
+    "_run_store_issue_job() passes updated['job_id'] to _resume_order_creation_job(); for a store request with no linked order job this only logs an error and returns - safe, but consider skipping the call when job_id is falsy to avoid noisy ERROR logs.",
+    "ENV NOTE (not an app bug): uvicorn --reload watches /app/backend recursively, so pytest writing tests/__pycache__ restarts the backend mid-run, and startup takes ~80-120s before it serves again. Run backend tests with PYTHONDONTWRITEBYTECODE=1 -p no:cacheprovider and never edit files under /app/backend while a suite is in flight (my first run showed 6 spurious ReadTimeout failures purely from this)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_store_issue_job.py (new)",
+    "/app/backend/tests/test_store_approval.py (4 TestStoreIssue tests + queue-status assertion updated to the new async {job_id, request} shape / 'issuing' status)",
+    "/app/backend/tests/test_store_journal.py (queue-status assertion now allows 'issuing')",
+    "/app/tests/seed_store_ui_requests.py (new - safe synthetic seeds for UI testing, kept outside /app/backend so it cannot trigger a uvicorn reload)"
+  ],
+  "success_rate": {"backend": "100% (42/42)", "frontend": "90% (all flows pass except second-session auto-update)"},
+  "seed_data_creation": "All synthetic and fully cleaned up: store_requests ZZ97-UI0001/0002/0003 + TEST_STORE_ISSUE_JOB-* (site ZZ98) / TEST_* (ZZ99), their background_jobs, and the ZZ97/ZZ98/ZZ99 store_request_counters were deleted after the run. No component had usable RM `locations`, so NO real SAP Goods Movement was ever fired (every movement took the 'No stock on file' attempted=False branch); no live pending request (BK-0021 / MAZ42117272-TA at P2) was touched.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "N/A - /storeapproval is unauthenticated by design; used actor name 'QA Tester'.",
+  "context_for_next_testing_agent": "New regression suite: /app/backend/tests/test_store_issue_job.py covers POST /issue returning {job_id, request} with status 'issuing' in <10s, the pollable GET /store-requests/issue-status/{job_id} (progress_current/progress_total/current_component), final resolved / partial_pending_planner transitions, issue_id format '{site}-I000123', double-submit 400, blank-actor 400, unknown request/job 404, and queue/journal shape. Seed helper /app/tests/seed_store_ui_requests.py (--cleanup) creates safe pending/issuing/restricted-stock docs at site ZZ97 for UI testing. ALWAYS run backend pytest with PYTHONDONTWRITEBYTECODE=1 -p no:cacheprovider, otherwise __pycache__ writes restart uvicorn mid-suite. Remaining open issue: detail view does not poll when another session's issue job is running.",
+  "rca_of_the_issue": "Second-session staleness: StoreApprovalPage only polls the issue-status endpoint inside pollIssueJob(), which is started from submitIssue(). The component-level 8s interval refreshes `requests`/`journalRequests` but never re-fetches the currently-`selected` document, so when isIssuing is true because ANOTHER session started the job, nothing ever updates `selected` - the progress block renders indefinitely despite its 'will update automatically' copy. Fix: a useEffect that, while selected?.status === 'issuing' && !submitting, GETs /store-requests/{selected._id} every ~3s and setSelected(fresh)."
+}

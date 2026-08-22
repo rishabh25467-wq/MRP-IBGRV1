@@ -236,8 +236,9 @@ def create_request(db, job_id: str, payload_dict: dict, proposal_id: str, short_
 
 def list_requests(db) -> list:
     """Public queue for the unauthenticated /storeapproval screen - every
-    request still needing action from either the store or the planner."""
-    return list(db[COLLECTION].find({"status": {"$in": ["pending", "partial_pending_planner"]}}).sort("created_at", -1))
+    request still needing action or currently mid-issue ("issuing" - a
+    background Goods Movement job is actively running against it)."""
+    return list(db[COLLECTION].find({"status": {"$in": ["pending", "issuing", "partial_pending_planner"]}}).sort("created_at", -1))
 
 
 def list_all_requests(db) -> list:
@@ -263,32 +264,18 @@ def _sfg_warehouse(site_id: str) -> str:
 
 
 def submit_issue(db, request_id: str, issued: list, decision: str, store_actor: str, sap_client=None):
-    """Store records actual issued quantity per component. If everything
-    was issued in full, resolves immediately. If short, the store must pick
-    `decision`: "proceed" (continue the order pipeline anyway) or
-    "send_to_planner" (defer to the requester to decide).
-
-    Aug 2026, user's explicit business rule: the Goods Movement is ALWAYS
-    Raw Material -> Semi-Finished Goods at the request's own site - no
-    picking a source warehouse or typing a target bin anymore (that manual
-    picker from the previous iteration is gone). `_rm_warehouse`/
-    `_sfg_warehouse` build the fixed SAP Logistics Area IDs (confirmed live
-    against real inventory data, e.g. "P2/P2-RM" -> "P2/P2-SFG"). Site
-    itself is not yet locked to the logged-in user (planned, not built -
-    user's words: "will be fixed later") - for now it's whatever site the
-    original shortage request was raised for.
-
-    The Owner Party ID can't be picked either now - it's read off whichever
-    of the component's own `locations` sits in the RM warehouse (SAP's real
-    stock owner for that exact bin, "RI"/"RT"). If the component has no
-    stock on file in the RM warehouse at all, the movement is skipped with
-    a `{"attempted": False, "reason": ...}` marker (distinguishes "nothing
-    to move from" from a genuinely-attempted-and-failed SAP call) - never
-    a hard block on the approval itself.
-
-    Also generates a separate `issue_id` (one per submit_issue() call,
-    distinct from the Request ID so the two can't be confused when read
-    aloud to the requester/planner)."""
+    """DEPRECATED (Aug 2026) for the live endpoint - fully synchronous,
+    kept only because tests/test_gm_edge_cases.py, tests/test_direct_sap_
+    goods_movement.py and tests/test_gm_warehouse_id_fix.py still call it
+    directly to exercise the RM-matching/goods-movement business logic
+    (which is otherwise identical to run_issue_movements() below). The
+    original problem: this loop could take long enough (up to 3 retries x
+    5s per component x N components) to exceed the platform's ingress/
+    Cloudflare timeout, leaving the browser with a hard error even though
+    the backend kept working. The live POST /store-requests/{id}/issue
+    endpoint uses start_issue() + run_issue_movements() instead, run as a
+    trackable background job from server.py (same pattern as
+    create-and-release-order) - do not call this from any new code."""
     doc = db[COLLECTION].find_one({"_id": request_id})
     if not doc:
         return None
@@ -360,6 +347,183 @@ def submit_issue(db, request_id: str, issued: list, decision: str, store_actor: 
     return db[COLLECTION].find_one({"_id": request_id})
 
 
+def start_issue(db, request_id: str, issued: list, decision: str, store_actor: str) -> dict:
+    """Fast, synchronous first half of the issue flow (Aug 2026 split) -
+    validates the request is pending OR "resolved_balance_pending" (a
+    reopened request with an outstanding balance - user's explicit Rule 2:
+    "if store has 3 of 5, issue 3 now and come back for the balance 2
+    later"), computes issued_qty/shortfall per component (pure math, no
+    SAP calls), and flips status to "issuing" so a second submit attempt
+    is rejected immediately instead of racing the background job. The
+    actual SAP Goods Movement calls happen afterward in
+    run_issue_movements(), run as a background asyncio task by server.py
+    so this endpoint always returns in well under a second - never
+    risking the platform's ingress timeout.
+
+    On a reopen, `issued_qty` on each component becomes the CUMULATIVE
+    total ever issued (previous rounds' total + this round's new amount,
+    clamped to required_qty) - only the NEW delta (`issued_this_round`) is
+    ever sent to SAP, never the whole cumulative amount again."""
+    doc = db[COLLECTION].find_one({"_id": request_id})
+    if not doc:
+        return None
+    if doc["status"] not in ("pending", "resolved_balance_pending"):
+        raise ValueError(f"This request is not awaiting a stock issue (current status: {doc['status']})")
+    is_reopen = doc["status"] == "resolved_balance_pending"
+
+    issued_map = {i["product_id"]: i for i in issued}
+    components = []
+    shortfall_exists = False
+    for c in doc["components"]:
+        i = issued_map.get(c["product_id"], {})
+        issued_this_round = i.get("issued_qty")
+        issued_this_round = 0 if issued_this_round is None else float(issued_this_round)
+        if issued_this_round < 0:
+            raise ValueError("Issued quantities must be valid, non-negative numbers")
+        prev_cumulative = (c.get("issued_qty") or 0) if is_reopen else 0
+        cumulative = min(c["required_qty"], prev_cumulative + issued_this_round)
+        shortfall = max(0.0, round(c["required_qty"] - cumulative, 4))
+        if shortfall > 0:
+            shortfall_exists = True
+        components.append({**c, "issued_qty": cumulative, "issued_this_round": issued_this_round, "shortfall": shortfall})
+
+    if not is_reopen and shortfall_exists and decision not in ("proceed", "send_to_planner"):
+        raise ValueError("Some components are short - choose 'proceed' or 'send_to_planner'")
+
+    now = datetime.now(timezone.utc)
+    update = {"components": components, "store_actor": store_actor, "status": "issuing", "updated_at": now}
+    if not is_reopen:
+        update["store_decision"] = decision if shortfall_exists else None
+    db[COLLECTION].update_one({"_id": request_id}, {"$set": update})
+    return db[COLLECTION].find_one({"_id": request_id})
+
+
+def run_issue_movements(db, request_id: str, sap_client, progress_cb=None) -> dict:
+    """Second half - the actual SAP Goods Movement loop (the slow part,
+    up to 3 retries x 5s per component x N components). Runs entirely
+    inside the background job; persists each component's real result
+    right after its own SAP call (not batched at the end) so progress is
+    visible mid-run and never lost if the process is interrupted partway.
+    `progress_cb(current, total, product_id)` if given, is called after
+    each component so the job doc can be updated with live progress.
+
+    Only moves `issued_this_round` (the NEW delta) per component, never
+    the cumulative `issued_qty` - critical on a reopen round, otherwise
+    already-moved stock from a previous round would be moved again. A
+    component with nothing new to move this round (issued_this_round==0,
+    e.g. the store only had stock for SOME of the short components) is
+    skipped entirely, preserving its previous round's goods_movement
+    result rather than overwriting it with a fresh "not attempted"."""
+    doc = db[COLLECTION].find_one({"_id": request_id})
+    if not doc:
+        raise ValueError("Store request not found")
+    is_reopen_round = doc.get("resolution") is not None
+
+    site_id = doc["site_id"]
+    source_warehouse = _rm_warehouse(site_id)
+    target_warehouse = _sfg_warehouse(site_id)
+    components = doc["components"]
+    total = len(components)
+
+    for idx, c in enumerate(components):
+        issued_this_round = c.get("issued_this_round") or 0
+        if issued_this_round > 0 and sap_client is not None:
+            rm_locations_all = [loc for loc in (c.get("locations") or []) if loc.get("warehouse_id") == source_warehouse]
+            rm_location = next((loc for loc in rm_locations_all if is_usable_stock_status(loc.get("stock_status"))), None)
+            if rm_location and rm_location.get("owner"):
+                movement = _trigger_goods_movement(
+                    sap_client, rm_location["owner"], c["product_id"], source_warehouse, target_warehouse,
+                    issued_this_round, c.get("unit_of_measure") or "EA", site_id,
+                )
+            elif rm_locations_all:
+                movement = {"attempted": False, "ok": False, "reason": "Stock on file in this site's RM warehouse is held in Quality Inspection/Blocked status - not usable for production until released."}
+            else:
+                movement = {"attempted": False, "ok": False, "reason": "No stock on file in this site's RM warehouse for this component"}
+            c["goods_movement"] = movement
+            c["issued_from_warehouse"] = source_warehouse if movement.get("attempted") else None
+            c["issued_from_owner"] = rm_location.get("owner") if rm_location else None
+            db[COLLECTION].update_one({"_id": request_id}, {"$set": {f"components.{idx}": c}})
+        if progress_cb:
+            progress_cb(idx + 1, total, c["product_id"])
+
+    now = datetime.now(timezone.utc)
+    shortfall_exists = any(c["shortfall"] > 0 for c in components)
+    decision = doc.get("store_decision")
+    update = {
+        "updated_at": now, "target_logistics_area_id": target_warehouse,
+        "issue_id": _generate_issue_id_for_site(db, site_id),
+    }
+    if not shortfall_exists:
+        update.update({"status": "resolved", "resolution": "balance_completed" if is_reopen_round else "full_issue", "resolved_at": now})
+    elif not is_reopen_round and decision == "send_to_planner":
+        update.update({"status": "partial_pending_planner"})
+    else:
+        # Rule 2: a remaining shortfall NEVER dead-ends the request anymore -
+        # "resolved_balance_pending" means the order pipeline has already
+        # been unblocked (see server.py's order_resumed guard) but the
+        # store can reopen this SAME request as many times as needed until
+        # the full quantity is eventually issued.
+        update.update({"status": "resolved_balance_pending", "resolution": "balance_pending" if is_reopen_round else "store_proceeded_partial", "resolved_at": now})
+    db[COLLECTION].update_one({"_id": request_id}, {"$set": update})
+    return db[COLLECTION].find_one({"_id": request_id})
+
+
+def mark_order_resumed(db, request_id: str) -> None:
+    """Called once, right after _resume_order_creation_job() actually
+    fires for this request - guards against firing it a second time on a
+    later reopen round (the order-creation job has already moved on)."""
+    db[COLLECTION].update_one({"_id": request_id}, {"$set": {"order_resumed": True}})
+
+
+# Statuses (Aug 2026) that only ever exist while an asyncio task is
+# actively running the Goods Movement loop inside this process - same
+# reasoning as job_store.ORPHANABLE_JOB_STATUSES.
+ORPHANABLE_REQUEST_STATUSES = {"issuing"}
+
+
+def revert_to_prior_status_if_safe(db, request_id: str) -> bool:
+    """Shared by recover_orphaned_issues() (startup) and the background
+    job's own except-handler (a mid-run exception, no restart needed) -
+    only safe to hand the request back to its PRIOR status (so it can be
+    cleanly resubmitted) if NONE of its components got a NEW goods_movement
+    result yet this round. The prior status is "resolved_balance_pending"
+    if this was a reopen round (doc already has a `resolution` from an
+    earlier round), otherwise plain "pending" - reverting a reopen to
+    "pending" would silently reset the cumulative-issued bookkeeping on
+    the next resubmit."""
+    doc = db[COLLECTION].find_one({"_id": request_id})
+    if not doc or doc["status"] != "issuing":
+        return False
+    if any(c.get("issued_this_round") and c.get("goods_movement") for c in doc.get("components", [])):
+        logger.warning(
+            f"Store request {request_id} is stuck in 'issuing' AND already has at least one real SAP Goods "
+            f"Movement recorded this round - left as-is, needs manual review before any resubmission."
+        )
+        return False
+    prior_status = "resolved_balance_pending" if doc.get("resolution") is not None else "pending"
+    db[COLLECTION].update_one({"_id": request_id}, {"$set": {"status": prior_status}})
+    return True
+
+
+def recover_orphaned_issues(db, message: str) -> int:
+    """Call once at process startup. A request stuck in "issuing" means
+    the background job that would move it forward died with the previous
+    process."""
+    recovered = 0
+    for doc in db[COLLECTION].find({"status": {"$in": list(ORPHANABLE_REQUEST_STATUSES)}}):
+        if revert_to_prior_status_if_safe(db, doc["_id"]):
+            db[COLLECTION].update_one({"_id": doc["_id"]}, {"$set": {"recovery_note": message}})
+            recovered += 1
+    return recovered
+
+
+def list_balance_pending(db) -> list:
+    """New (Aug 2026, Rule 2) dedicated view for the store team - every
+    request with an outstanding balance they can reopen once more stock
+    physically arrives in the RM warehouse."""
+    return list(db[COLLECTION].find({"status": "resolved_balance_pending"}).sort("updated_at", -1))
+
+
 def planner_decision(db, request_id: str, decision: str, planner_actor: str):
     doc = db[COLLECTION].find_one({"_id": request_id})
     if not doc:
@@ -368,9 +532,15 @@ def planner_decision(db, request_id: str, decision: str, planner_actor: str):
         raise ValueError(f"This request is not awaiting a planner decision (current status: {doc['status']})")
 
     now = datetime.now(timezone.utc)
-    new_status = "resolved" if decision == "approve" else "cancelled"
+    if decision == "approve":
+        # Rule 2: approving doesn't necessarily mean fully issued - if a
+        # shortfall remains, this stays reopenable instead of dead-ending.
+        shortfall_exists = any(c["shortfall"] > 0 for c in doc["components"])
+        new_status = "resolved_balance_pending" if shortfall_exists else "resolved"
+    else:
+        new_status = "cancelled"
     update = {"status": new_status, "planner_actor": planner_actor, "planner_decision": decision, "updated_at": now}
-    if new_status == "resolved":
+    if new_status in ("resolved", "resolved_balance_pending"):
         update.update({"resolution": "planner_approved_partial", "resolved_at": now})
     db[COLLECTION].update_one({"_id": request_id}, {"$set": update})
     return db[COLLECTION].find_one({"_id": request_id})

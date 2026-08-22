@@ -117,6 +117,12 @@ _recovered_jobs = job_store.recover_orphaned_jobs(
 if _recovered_jobs:
     logger.warning(f"Startup: recovered {_recovered_jobs} orphaned background job(s) stuck in an in-process-only status from before this restart.")
 
+_recovered_issues = store_approval_service.recover_orphaned_issues(
+    db, "Reverted to pending after a backend restart interrupted the stock issue before any SAP movement fired."
+)
+if _recovered_issues:
+    logger.warning(f"Startup: recovered {_recovered_issues} orphaned store request(s) stuck in 'issuing' from before this restart.")
+
 sap_soap_client = SAPSoapBOMClient(
     endpoint=os.environ['SAP_SOAP_ENDPOINT'],
     username=os.environ['SAP_SOAP_USERNAME'],
@@ -2577,6 +2583,16 @@ async def get_store_requests_journal():
     return {"requests": await asyncio.to_thread(store_approval_service.list_all_requests, db)}
 
 
+@api_router.get("/store-requests/balance-pending")
+async def get_store_requests_balance_pending():
+    """Rule 2 (Aug 2026): requests where the store already issued a
+    partial quantity and the linked order proceeded, but a balance is
+    still outstanding - reopen one of these once more stock physically
+    arrives in the RM warehouse. Declared BEFORE /store-requests/{request_id}
+    for the same routing reason as /journal above."""
+    return {"requests": await asyncio.to_thread(store_approval_service.list_balance_pending, db)}
+
+
 @api_router.get("/store-requests/{request_id}")
 async def get_store_request_public(request_id: str):
     doc = await asyncio.to_thread(store_approval_service.get_request, db, request_id)
@@ -2587,22 +2603,59 @@ async def get_store_request_public(request_id: str):
 
 @api_router.post("/store-requests/{request_id}/issue")
 async def issue_store_request(request_id: str, payload: StoreIssueRequest):
+    """Returns immediately with a job_id - the actual SAP Goods Movement
+    calls (up to 3 retries x 5s per component x N components) now run in
+    the background (Aug 2026, fixed a real Cloudflare/ingress timeout on
+    requests with several short components), same pattern as
+    create-and-release-order. Poll GET /store-requests/issue-status/{job_id}."""
     if not payload.actor.strip():
         raise HTTPException(status_code=400, detail="actor (store user's name) is required")
     try:
         updated = await asyncio.to_thread(
-            store_approval_service.submit_issue, db, request_id, payload.issued, payload.decision, payload.actor.strip(),
-            sap_goods_movement_client,
+            store_approval_service.start_issue, db, request_id, payload.issued, payload.decision, payload.actor.strip(),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if updated is None:
         raise HTTPException(status_code=404, detail="Store request not found")
-    if updated["status"] == "resolved":
-        await _resume_order_creation_job(updated["job_id"])
-    elif updated["status"] == "partial_pending_planner":
-        job_store.update_job(db, updated["job_id"], {"status": "partial_pending_planner", "store_request_id": updated["_id"]})
-    return updated
+    job_id = str(uuid.uuid4())
+    job_store.create_job(db, job_id, {
+        "status": "running", "store_request_id": request_id,
+        "progress_current": 0, "progress_total": len(updated["components"]),
+    })
+    asyncio.create_task(_run_store_issue_job(job_id, request_id))
+    return {"job_id": job_id, "request": updated}
+
+
+@api_router.get("/store-requests/issue-status/{job_id}")
+async def get_store_issue_status(job_id: str):
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return job
+
+
+async def _run_store_issue_job(job_id: str, request_id: str):
+    def progress_cb(current, total, product_id):
+        job_store.update_job(db, job_id, {"progress_current": current, "progress_total": total, "current_component": product_id})
+    try:
+        updated = await asyncio.to_thread(
+            store_approval_service.run_issue_movements, db, request_id, sap_goods_movement_client, progress_cb,
+        )
+        job_store.update_job(db, job_id, {"status": "done", "result": {"request_status": updated["status"], "request_id": request_id}})
+        if updated["status"] in ("resolved", "resolved_balance_pending") and not updated.get("order_resumed"):
+            # order_resumed guard: fires exactly once - Rule 2 means this
+            # SAME request can reach "resolved_balance_pending" again on a
+            # later reopen round, but the order-creation job has already
+            # moved on by then and must NOT be resumed a second time.
+            await _resume_order_creation_job(updated["job_id"])
+            await asyncio.to_thread(store_approval_service.mark_order_resumed, db, request_id)
+        elif updated["status"] == "partial_pending_planner":
+            job_store.update_job(db, updated["job_id"], {"status": "partial_pending_planner", "store_request_id": updated["_id"]})
+    except Exception as e:
+        logger.error(f"store issue job {job_id} for request {request_id} failed: {e}")
+        await asyncio.to_thread(store_approval_service.revert_to_prior_status_if_safe, db, request_id)
+        job_store.update_job(db, job_id, {"status": "failed", "error": str(e)})
 
 
 @api_router.get("/production-confirmation/store-requests/by-job/{job_id}")
@@ -2627,8 +2680,9 @@ async def decide_store_request(request_id: str, payload: PlannerStoreDecisionReq
         raise HTTPException(status_code=400, detail=str(e))
     if updated is None:
         raise HTTPException(status_code=404, detail="Store request not found")
-    if updated["status"] == "resolved":
+    if updated["status"] in ("resolved", "resolved_balance_pending") and not updated.get("order_resumed"):
         await _resume_order_creation_job(updated["job_id"])
+        await asyncio.to_thread(store_approval_service.mark_order_resumed, db, request_id)
     elif updated["status"] == "cancelled":
         job_store.update_job(db, updated["job_id"], {"status": "cancelled", "result": {
             "production_proposal_id": updated["production_proposal_id"], "production_order_id": None, "released": False,
