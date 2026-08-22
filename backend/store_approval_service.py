@@ -84,6 +84,41 @@ _GOODS_MOVEMENT_MAX_ATTEMPTS = 3
 _GOODS_MOVEMENT_RETRY_DELAY_SECONDS = 5
 
 
+# Aug 2026 - the store screen was showing the raw SOAP Fault/Log XML
+# straight to the warehouse floor (illegible - the actual failure reason
+# was buried after 400+ chars of envelope/namespace boilerplate). This
+# turns the raw text into a short bilingual (English/Hindi) message,
+# matched against the real SAP Application Log wording seen live this
+# session; the raw text is kept in `error_detail` (shown only as a hover
+# tooltip) so IT/support can still look it up if a pattern isn't covered.
+def _clarify_goods_movement_error(raw_error: str, material_id: str) -> dict:
+    text = raw_error or ""
+    if re.search(r"negative stock not permitted", text, re.IGNORECASE):
+        return {
+            "error": f"Not enough stock in the source warehouse to issue this quantity for {material_id}. Issue a lower quantity or check the RM warehouse balance in SAP.",
+            "error_hi": f"{material_id} के लिए इतनी मात्रा जारी करने हेतु सोर्स गोदाम (RM) में पर्याप्त स्टॉक नहीं है। कृपया कम मात्रा जारी करें या SAP में गोदाम का बैलेंस जांचें।",
+        }
+    if re.search(r"logistics area is invalid", text, re.IGNORECASE):
+        return {
+            "error": f"SAP rejected this movement for {material_id} - the warehouse ID sent was invalid. Contact IT.",
+            "error_hi": f"{material_id} के लिए यह मूवमेंट SAP द्वारा अस्वीकृत किया गया - भेजा गया गोदाम ID अमान्य है। कृपया IT टीम से संपर्क करें।",
+        }
+    if re.search(r"authentication failed", text, re.IGNORECASE):
+        return {
+            "error": "SAP login failed while trying to move this stock. Contact IT.",
+            "error_hi": "यह स्टॉक मूव करने के लिए SAP लॉगिन विफल रहा। कृपया IT टीम से संपर्क करें।",
+        }
+    if re.search(r"unreachable|timeout|connection", text, re.IGNORECASE):
+        return {
+            "error": f"Could not reach SAP to move stock for {material_id}. Please retry in a moment.",
+            "error_hi": f"{material_id} का स्टॉक मूव करने के लिए SAP से संपर्क नहीं हो सका। कृपया कुछ देर बाद पुनः प्रयास करें।",
+        }
+    return {
+        "error": f"SAP rejected this stock movement for {material_id}. Contact IT with the Request/Issue ID if this keeps happening.",
+        "error_hi": f"{material_id} के लिए यह स्टॉक मूवमेंट SAP द्वारा अस्वीकृत किया गया। यदि यह बार-बार हो रहा है तो Request/Issue ID के साथ IT टीम से संपर्क करें।",
+    }
+
+
 def _trigger_goods_movement(sap_client, owner_party_id, product_id, source_warehouse, target_warehouse, quantity, uom, site_id) -> dict:
     last_error = None
     for attempt in range(_GOODS_MOVEMENT_MAX_ATTEMPTS):
@@ -95,7 +130,10 @@ def _trigger_goods_movement(sap_client, owner_party_id, product_id, source_wareh
             )
             sap_error = _has_sap_log_error(result)
             if sap_error and result.get("ok"):
-                result = {**result, "ok": False, "error": f"SAP rejected the movement: {sap_error}"}
+                result = {
+                    **result, "ok": False, "error_detail": f"SAP rejected the movement: {sap_error}",
+                    **_clarify_goods_movement_error(sap_error, product_id),
+                }
             return {**result, "attempted": True}
         except Exception as e:
             # Broad catch is deliberate (iteration_98 review) - a
@@ -116,7 +154,7 @@ def _trigger_goods_movement(sap_client, owner_party_id, product_id, source_wareh
                 f"hit a transient error, retrying: {e}"
             )
             time.sleep(_GOODS_MOVEMENT_RETRY_DELAY_SECONDS)
-    return {"attempted": True, "ok": False, "error": str(last_error)}
+    return {"attempted": True, "ok": False, "error_detail": str(last_error), **_clarify_goods_movement_error(str(last_error), product_id)}
 
 # Human-shareable, traceable-by-site request/issue ID (Aug 2026, per user
 # request - a full uuid4() was unusable to read aloud/type over chat with

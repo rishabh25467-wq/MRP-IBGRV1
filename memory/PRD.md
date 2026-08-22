@@ -6,6 +6,17 @@ Both P0 bugs reported by user were found ALREADY FIXED in code from the previous
 
 No code changes were needed this session - purely verification of already-completed work.
 
+## Session update (2026-08-22, part 2) - bilingual (EN/Hindi) human-readable Goods Movement errors
+
+User reported the Store Approval screen was showing raw SAP SOAP Fault XML (`<soap-env:Fault>...<faultText>Negative stock not permitted...`) directly to the store floor instead of a readable message, and asked for English + Hindi.
+
+- New `store_approval_service._clarify_goods_movement_error(raw_error, material_id)`: pattern-matches known SAP fault text (negative stock / invalid logistics area / auth failure / unreachable-timeout, else a generic fallback) and returns a short `error` (English) + `error_hi` (Hindi) pair naming the material. Raw SOAP/Log text is preserved as a new `error_detail` field (not shown inline, only as a hover tooltip) for IT/support lookup.
+- `_trigger_goods_movement()` now always runs failures through this before returning, both the `_has_sap_log_error` (HTTP 200 but Log SeverityCode 3+) and the exception-catch (SOAP Fault / network) paths.
+- Frontend (`StoreApprovalPage.js`): the per-component "SAP Stock Movement" cell now shows the English message (bold) with the Hindi translation on the line below (`lang="hi"`), raw detail moved to `title` tooltip; Movement History table's compact "Failed" cell keeps its tooltip but now shows detail+Hindi together.
+- **Root cause of the specific failure shown**: not a display bug alone - SAP genuinely rejected the movement because the actual RAW MATERIAL warehouse balance (16,200 EA / 33,000 EA) was less than the 40,000 EA the store user tried to issue from RM (other warehouses shown in the breakdown, e.g. RETURN TO VENDOR/SEMI FINISH, aren't valid RM source stock) - now surfaced clearly instead of an illegible fault dump.
+- Backfilled 3 existing `store_requests` docs in Mongo with the same clarify function so historical "Resolved" records (e.g. P9-000001) also show the new bilingual message instead of raw XML.
+- Self-tested via screenshot on the real P9-000001 record (material 8201-000427/8201-000187) - confirmed both English and Hindi lines render correctly, tooltip still carries the raw SAP text.
+
 ## Session update (2026-08-21, part 8) - Bulk import Net/Gross Weight + Surface Area from Excel, bulk push to SAP
 
 User's ask: set Gross Wt./Net Wt./Surface Area on ~260 components from an uploaded "L1-L2 Item Report" Excel (sheet "Gross & Net Wt.": Product ID, Net Wt., Gross Wt., SA columns) instead of one at a time.

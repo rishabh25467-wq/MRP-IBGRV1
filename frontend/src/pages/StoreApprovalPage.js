@@ -469,7 +469,7 @@ export default function StoreApprovalPage() {
                         ) : row.movement.ok ? (
                           <span className="text-[#175CD3] font-bold">{row.movement.dry_run ? "Dry Run OK" : "Moved"} ({row.movement.external_id})</span>
                         ) : (
-                          <span className="text-[#B42318]" title={row.movement.error || (row.movement.faults || []).map((f) => f.note).join("; ") || ""}>Failed</span>
+                          <span className="text-[#B42318]" title={[row.movement.error_detail, row.movement.error_hi].filter(Boolean).join(" / ") || (row.movement.faults || []).map((f) => f.note).join("; ") || ""}>Failed</span>
                         )}
                       </td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5 whitespace-nowrap">
@@ -671,7 +671,12 @@ export default function StoreApprovalPage() {
                       ) : c.goods_movement.ok ? (
                         <span className="text-[#175CD3] font-bold">{c.goods_movement.dry_run ? "Dry Run OK" : "Moved"} ({c.goods_movement.external_id})</span>
                       ) : (
-                        <span className="text-[#B42318]">Failed - {c.goods_movement.error || (c.goods_movement.faults || []).map((f) => f.note).join("; ") || "unknown error"}</span>
+                        <div className="text-[#B42318]" title={c.goods_movement.error_detail || ""}>
+                          <p className="font-bold" data-testid={`store-goods-movement-error-en-${i}`}>Failed - {c.goods_movement.error || (c.goods_movement.faults || []).map((f) => f.note).join("; ") || "unknown error"}</p>
+                          {c.goods_movement.error_hi && (
+                            <p className="text-[#912018]" lang="hi" data-testid={`store-goods-movement-error-hi-${i}`}>{c.goods_movement.error_hi}</p>
+                          )}
+                        </div>
                       )}
                     </td>
                   </tr>
