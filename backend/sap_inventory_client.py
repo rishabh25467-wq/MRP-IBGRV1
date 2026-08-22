@@ -53,14 +53,16 @@ class SAPInventoryClient:
         self.report_url = report_url.rstrip("/")
         self.auth = HTTPBasicAuth(username, password)
 
-    def _fetch_page(self, skip: int, site_id: str = None, warehouse_id: str = None) -> list:
+    def _fetch_page(self, skip: int, site_id: str = None, warehouse_ids: list = None) -> list:
         params = {"$format": "json", "$top": PAGE_SIZE, "$skip": skip}
-        if warehouse_id:
+        if warehouse_ids:
             # Verified live (Aug 2026): CLOG_AREA_UUID (the raw warehouse/
             # logistics-area characteristic, e.g. "P9/P9-RM") filters just
             # as cleanly as CSITE_UUID below - even fewer rows, even
             # faster (~7.5s for one warehouse vs ~12s for a whole site).
-            params["$filter"] = f"CLOG_AREA_UUID eq '{warehouse_id}'"
+            # Multiple warehouses (e.g. RM + QC) OR together in one call -
+            # verified live too (~6.9s for both at once).
+            params["$filter"] = " or ".join(f"CLOG_AREA_UUID eq '{w}'" for w in warehouse_ids)
         elif site_id:
             # Verified live (Aug 2026): $filter on the raw CSITE_UUID
             # characteristic works cleanly and does NOT trigger the
@@ -93,15 +95,15 @@ class SAPInventoryClient:
             except (requests.exceptions.RequestException, SAPInventoryError) as e:
                 last_exc = e
                 if attempt < _MAX_ATTEMPTS - 1:
-                    logger.warning(f"SAP inventory page fetch (skip={skip}, site={site_id}, warehouse={warehouse_id}) failed on attempt {attempt + 1}/{_MAX_ATTEMPTS}, retrying: {e}")
+                    logger.warning(f"SAP inventory page fetch (skip={skip}, site={site_id}, warehouses={warehouse_ids}) failed on attempt {attempt + 1}/{_MAX_ATTEMPTS}, retrying: {e}")
                     time.sleep(_RETRY_BACKOFF_SECONDS[attempt])
-        raise SAPInventoryError(f"SAP inventory report failed after {_MAX_ATTEMPTS} attempts (skip={skip}, site={site_id}, warehouse={warehouse_id}): {last_exc}")
+        raise SAPInventoryError(f"SAP inventory report failed after {_MAX_ATTEMPTS} attempts (skip={skip}, site={site_id}, warehouses={warehouse_ids}): {last_exc}")
 
-    def _fetch_all_rows(self, site_id: str = None, warehouse_id: str = None) -> list:
+    def _fetch_all_rows(self, site_id: str = None, warehouse_ids: list = None) -> list:
         rows = []
         skip = 0
         while True:
-            page = self._fetch_page(skip, site_id=site_id, warehouse_id=warehouse_id)
+            page = self._fetch_page(skip, site_id=site_id, warehouse_ids=warehouse_ids)
             rows.extend(page)
             if len(page) < PAGE_SIZE:
                 break
@@ -123,7 +125,7 @@ class SAPInventoryClient:
             stock[product_id] = stock.get(product_id, 0.0) + qty
         return stock
 
-    def get_inventory_detail(self, site_id: str = None, warehouse_id: str = None) -> list:
+    def get_inventory_detail(self, site_id: str = None, warehouse_ids: list = None) -> list:
         """Returns one row per material x site x logistics-area x stock
         status - the un-aggregated counterpart to get_on_hand_stock(), for
         the Inventory page's location breakdown. Each row:
@@ -137,12 +139,13 @@ class SAPInventoryClient:
         used by the Inventory page's Entity filter (Ray vs Radish).
         Pass `site_id` (e.g. "P9") to scope the live pull down to just one
         site - verified live to take ~12s vs 60s+ for the whole company.
-        Pass `warehouse_id` (e.g. "P9/P9-RM") to scope down to just one
-        warehouse at one site - verified live even faster (~7.5s). Only
-        one of the two is applied if both are somehow passed (warehouse
-        wins - see _fetch_page). See the $filter note on _fetch_page."""
+        Pass `warehouse_ids` (e.g. ["P9/P9-RM", "P9/P9-QC"]) to scope down
+        to just those warehouses (any site) - verified live even faster
+        (~7s for one, ~7s for two OR'd together). warehouse_ids takes
+        priority over site_id if both are somehow passed - see
+        _fetch_page. See the $filter note on _fetch_page."""
         detail = []
-        for row in self._fetch_all_rows(site_id=site_id, warehouse_id=warehouse_id):
+        for row in self._fetch_all_rows(site_id=site_id, warehouse_ids=warehouse_ids):
             product_id = row.get("CMATERIAL_UUID")
             if not product_id:
                 continue

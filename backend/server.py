@@ -41,7 +41,7 @@ import quota_arrangement_service
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
-from inventory_service import get_cached_inventory, refresh_inventory_cache, refresh_stock_quantities_for_warehouse, deep_backfill_uuids
+from inventory_service import get_cached_inventory, refresh_inventory_cache, refresh_stock_quantities_for_warehouses, deep_backfill_uuids
 import l1_l2_report_service
 from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids, categorize_full_inventory, backfill_drawing_urls, refresh_attachments_now, REFRESH_ATTACHMENTS_MAX_IDS
 from oms_client import OMSClient, OMSError
@@ -2391,7 +2391,7 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
                 logger.warning(f"create-and-release job {job_id}: real-BOM-for-model lookup failed, using cached default instead: {e}")
         availability = await asyncio.to_thread(
             production_confirmation_service.check_component_availability, db, payload.material_id, payload.quantity, payload.site_id,
-            sap_inventory_client, override_bom_id, sap_soap_client,
+            sap_inventory_client, override_bom_id, sap_soap_client, True,
         )
         short = [c for c in availability["components"] if not c["sufficient"]] if availability["checked"] else []
 
@@ -2683,29 +2683,28 @@ async def get_store_requests_balance_pending():
 
 @api_router.post("/store-requests/refresh-live-stock")
 async def refresh_live_stock_for_store(site_id: str):
-    """"Refresh Live Stock Now" v4 (Aug 2026) - store person's on-demand
+    """"Refresh Live Stock Now" v5 (Aug 2026) - store person's on-demand
     button for the exact "I just posted a Goods Receipt, is it visible
     yet" gap. Deliberately its OWN endpoint (not /api/inventory, which
     sits behind the `inventory` page permission) under the /store-requests
     prefix already exempted from auth for this public workflow. User's
-    own follow-up ask ("target the specific warehouse, not the whole
-    site") - a store person only ever cares whether RM has the new
-    receipt, so this now scopes ALL THE WAY down to just the RM warehouse
-    at this site (`refresh_stock_quantities_for_warehouse` - verified
-    live: a $filter=CLOG_AREA_UUID eq '{site}/{site}-RM' pull takes
-    ~7.5s, even faster and lighter than the earlier site-wide v3).
+    own follow-up asks: (1) "target the specific warehouse, not the whole
+    site" and (2) also cover QC (Quality Hold) so the store person can see
+    material stuck there too - so this now pulls RM + QC together in one
+    filtered SAP call (`refresh_stock_quantities_for_warehouses` -
+    verified live: ~6.9s for both at once, even faster than either alone).
     Declared BEFORE /store-requests/{request_id} so this literal path
     isn't swallowed by that dynamic route."""
     job_id = str(uuid.uuid4())
     job_store.create_job(db, job_id, {"status": "running", "error": None})
-    rm_warehouse_id = f"{site_id}/{site_id}-RM"
+    warehouse_ids = [f"{site_id}/{site_id}-RM", f"{site_id}/{site_id}-QC"]
 
     async def run():
         try:
-            await asyncio.to_thread(refresh_stock_quantities_for_warehouse, db, sap_inventory_client, rm_warehouse_id)
+            await asyncio.to_thread(refresh_stock_quantities_for_warehouses, db, sap_inventory_client, warehouse_ids)
             job_store.update_job(db, job_id, {"status": "done", "error": None})
         except Exception as e:
-            logger.error(f"Store screen live stock refresh job {job_id} (warehouse {rm_warehouse_id}) failed: {e}")
+            logger.error(f"Store screen live stock refresh job {job_id} (warehouses {warehouse_ids}) failed: {e}")
             job_store.update_job(db, job_id, {"status": "failed", "error": str(e)})
 
     asyncio.create_task(run())

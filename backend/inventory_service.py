@@ -263,20 +263,21 @@ def refresh_inventory_cache(db, sap_inventory_client, sap_valuation_client) -> d
     return {"items": items, "categories": categories, "updated_at": updated_at}
 
 
-def _refresh_stock_quantities_scoped(db, sap_inventory_client, site_id: str = None, warehouse_id: str = None) -> dict:
-    """Shared merge logic behind refresh_stock_quantities_for_warehouse
+def _refresh_stock_quantities_scoped(db, sap_inventory_client, site_id: str = None, warehouse_ids: list = None) -> dict:
+    """Shared merge logic behind refresh_stock_quantities_for_warehouses
     below (site_id kept as an option here since get_inventory_detail
     supports both verified filters, even though only the warehouse-scoped
-    wrapper currently calls this) - exactly one of site_id/warehouse_id
+    wrapper currently calls this) - exactly one of site_id/warehouse_ids
     scopes BOTH the live SAP pull itself AND which of a product's
     existing cached locations get replaced vs left alone. Deliberately
     does NOT bump the cache doc's top-level `updated_at` - that timestamp
     represents the last FULL company-wide refresh, and would mislead the
     Inventory page into showing everything else as freshly-checked too
     if a partial pull touched it."""
-    fresh_rows = sap_inventory_client.get_inventory_detail(site_id=site_id, warehouse_id=warehouse_id)
+    fresh_rows = sap_inventory_client.get_inventory_detail(site_id=site_id, warehouse_ids=warehouse_ids)
+    warehouse_id_set = set(warehouse_ids) if warehouse_ids else None
     in_scope = (
-        (lambda loc: loc.get("logistics_area_id") == warehouse_id) if warehouse_id
+        (lambda loc: loc.get("logistics_area_id") in warehouse_id_set) if warehouse_id_set
         else (lambda loc: (loc.get("logistics_area_id") or "").startswith(f"{site_id}/"))
     )
 
@@ -332,17 +333,17 @@ def _refresh_stock_quantities_scoped(db, sap_inventory_client, site_id: str = No
     return {"items": items, "categories": categories, "rows_found": len(fresh_rows)}
 
 
-def refresh_stock_quantities_for_warehouse(db, sap_inventory_client, warehouse_id: str) -> dict:
-    """"Refresh Live Stock Now" v4 (Aug 2026) - user's further follow-up:
-    scope the Store Approval button down to the ONE warehouse (RM) it
-    actually cares about, not the whole site. Verified live:
-    `$filter=CLOG_AREA_UUID eq '{warehouse_id}'` (e.g. "P9/P9-RM") is even
-    faster than the site-level filter (~7.5s vs ~12s, fewer rows). Only
-    that exact warehouse's locations are replaced - every OTHER warehouse
-    at the same site (SFG, QC...) is left completely untouched, unlike
-    the site-scoped version above."""
-    result = _refresh_stock_quantities_scoped(db, sap_inventory_client, warehouse_id=warehouse_id)
-    result["warehouse_id"] = warehouse_id
+def refresh_stock_quantities_for_warehouses(db, sap_inventory_client, warehouse_ids: list) -> dict:
+    """"Refresh Live Stock Now" v5 (Aug 2026) - user's further follow-up:
+    the store screen needs to see both RM (has it just arrived) AND QC
+    (is it stuck on Quality Hold) for a site, in one refresh. Verified
+    live: `$filter=(CLOG_AREA_UUID eq 'P9/P9-RM') or (CLOG_AREA_UUID eq
+    'P9/P9-QC')` returns both in a SINGLE call, ~6.9s - even faster than
+    the single-warehouse v4. Only these exact warehouses' locations are
+    replaced - every OTHER warehouse at the same site (SFG...) is left
+    completely untouched."""
+    result = _refresh_stock_quantities_scoped(db, sap_inventory_client, warehouse_ids=warehouse_ids)
+    result["warehouse_ids"] = warehouse_ids
     return result
 
 

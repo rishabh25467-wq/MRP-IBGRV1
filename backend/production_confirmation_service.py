@@ -369,6 +369,7 @@ def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, con
 def check_component_availability(
     db, main_output_product: str, confirmed_quantity: float, site_id: str,
     sap_inventory_client=None, override_bom_id: str = None, sap_soap_client=None,
+    sfg_only: bool = False,
 ) -> dict:
     """Compares BOM component requirements (from the app's own bom_node_cache,
     scaled to the quantity about to be confirmed) against on-hand stock at
@@ -385,6 +386,19 @@ def check_component_availability(
     INTERVAL_SECONDS in server.py) - this is what the open-lots list's
     Stock badges use, deliberately kept cache-only/instant since it's a
     glance-view checked on every page load, not a gate before a write.
+
+    `sfg_only` (Aug 2026, order-creation pre-flight only): "sufficient" was
+    ALWAYS SFG-only (see _check_availability_against_stock - RM/QC are
+    only ever used for display, never for the sufficiency verdict itself).
+    This flag just also scopes the LIVE SAP PULL down to only the SFG
+    warehouse at this site (verified live even faster than a whole-site
+    pull) - safe because the order-creation caller only needs the
+    sufficient/short verdict, not a full RM/SFG/QC display breakdown (any
+    component that ends up short gets its RM/QC locations correctly
+    refreshed anyway the first time anyone views the resulting Store
+    Approval request - see store_approval_service.refresh_component_
+    locations). The Confirm dialog's live availability panel does want
+    that full breakdown for display, so it leaves this False (default).
 
     `override_bom_id` (Aug 2026, new-order flow only - see
     sap_production_model_client.SAPProductionModelBomClient): when the
@@ -409,14 +423,10 @@ def check_component_availability(
     stock_by_product = None
     if sap_inventory_client is not None:
         try:
-            # Aug 2026 - user's own follow-up ask: scope this live pull to
-            # just THIS order's site, same verified $filter=CSITE_UUID
-            # this function already receives site_id for anyway - cuts
-            # this pre-flight check from ~47-60s to ~12s. Kept at SITE
-            # (not RM-warehouse) scope because this same check also needs
-            # SFG availability (line ~348 below) and a full RM/SFG/QC
-            # breakdown for the Component Stock Check panel's display.
-            live_rows = sap_inventory_client.get_inventory_detail(site_id=site_id)
+            if sfg_only:
+                live_rows = sap_inventory_client.get_inventory_detail(warehouse_ids=[f"{site_id}/{site_id}-SFG"])
+            else:
+                live_rows = sap_inventory_client.get_inventory_detail(site_id=site_id)
             stock_by_product = {}
             for row in live_rows:
                 stock_by_product.setdefault(row["product_id"], []).append({
