@@ -67,6 +67,7 @@ def refresh_component_locations(db, doc: dict, stock_by_product: dict = None) ->
     person sees."""
     stock_by_product = stock_by_product if stock_by_product is not None else load_stock_by_product(db)
     site_id = doc["site_id"]
+    rm_warehouse_id = _rm_warehouse(site_id)
     # Aug 2026, user's ask ("is this a RM item or a manufactured part?") -
     # reuses the app's own SAP BOM cache (bom_node_cache) rather than
     # guessing: if SAP has a real BOM/recipe on file for a product_id, it's
@@ -84,7 +85,7 @@ def refresh_component_locations(db, doc: dict, stock_by_product: dict = None) ->
         if fresh is not None:
             c["locations"] = [
                 loc for loc in fresh
-                if (loc.get("warehouse_id") or "").endswith(("-RM", "-QC"))
+                if loc.get("warehouse_id") == rm_warehouse_id or (loc.get("warehouse_id") or "").endswith("-QC")
             ]
         c["is_manufactured"] = bom_flags.get(c["product_id"])
     return doc
@@ -316,8 +317,18 @@ def get_request_by_job(db, job_id: str):
     return refresh_component_locations(db, doc) if doc else None
 
 
+# Aug 2026, user's explicit ask: site P3 has NO standard "-RM" warehouse
+# in SAP at all - confirmed live (0 rows at "P3/P3-RM" vs 422 at
+# "P3/P3-Z1-01-A") that its raw material stock lives entirely in this
+# one zone/bin warehouse instead ("P3-RM-Zone-1-01-A"). Every other site
+# keeps the default "{site}-RM" pattern - this is the ONLY per-site
+# override, not a general zone-scanning mechanism (user's explicit
+# choice: just this one warehouse for now, not "any P3-Z*-*").
+_SITE_RM_WAREHOUSE_OVERRIDE = {"P3": "P3-Z1-01-A"}
+
+
 def _rm_warehouse(site_id: str) -> str:
-    return f"{site_id}/{site_id}-RM"
+    return f"{site_id}/{_SITE_RM_WAREHOUSE_OVERRIDE.get(site_id, f'{site_id}-RM')}"
 
 
 def _sfg_warehouse(site_id: str) -> str:

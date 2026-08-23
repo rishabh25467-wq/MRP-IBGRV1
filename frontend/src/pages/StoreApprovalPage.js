@@ -28,8 +28,13 @@ const formatUnit = (u) => (u === "MASS" ? "KG" : u || "");
 // the fixed movement notice, Movement History table). Display-only -
 // the underlying warehouse_id values sent to the API are untouched.
 const WAREHOUSE_TYPE_LABELS = { RM: "Raw Material (RM)", QC: "Quality Hold (QC)", SFG: "Semi-Finished Goods (SFG)", FG: "Finished Goods (FG)" };
+// Full-ID overrides for warehouses that don't fit the generic
+// "{site}-{TYPE}" pattern the splitter below assumes - keep in sync with
+// the backend's _SITE_RM_WAREHOUSE_OVERRIDE (store_approval_service.py).
+const WAREHOUSE_ID_LABELS = { "P3/P3-Z1-01-A": "P3 - Raw Material Zone 1-01-A (RM)" };
 const humanizeWarehouseId = (id) => {
   if (!id) return id;
+  if (WAREHOUSE_ID_LABELS[id]) return WAREHOUSE_ID_LABELS[id];
   const raw = id.includes("/") ? id.split("/").pop() : id; // "P1/P1-RM" -> "P1-RM"
   const dashIdx = raw.lastIndexOf("-");
   if (dashIdx === -1) return raw;
@@ -37,6 +42,13 @@ const humanizeWarehouseId = (id) => {
   const suffix = raw.slice(dashIdx + 1);
   return `${site} - ${WAREHOUSE_TYPE_LABELS[suffix] || suffix}`;
 };
+// Aug 2026, user's explicit ask: site P3 has no standard "-RM" warehouse
+// in SAP at all - its raw material stock lives entirely in this one
+// zone/bin warehouse instead (confirmed live against SAP). Mirrors the
+// backend's _SITE_RM_WAREHOUSE_OVERRIDE (store_approval_service.py) -
+// keep both in sync if this ever changes.
+const SITE_RM_WAREHOUSE_OVERRIDE = { P3: "P3-Z1-01-A" };
+const rmWarehouseIdForSite = (siteId) => `${siteId}/${SITE_RM_WAREHOUSE_OVERRIDE[siteId] || `${siteId}-RM`}`;
 
 // Aging (Aug 2026, user's explicit ask): "time since requested" text +
 // severity tier, reused for the Pending Queue's live badge and the
@@ -771,7 +783,7 @@ export default function StoreApprovalPage() {
   // used in the location breakdown above) - a store person should never
   // be able to type in more than what's actually free to issue from the
   // RM warehouse, regardless of how much production still needs.
-  const rmWarehouseId = `${selected.site_id}/${selected.site_id}-RM`;
+  const rmWarehouseId = rmWarehouseIdForSite(selected.site_id);
   const usableRmQty = (c) => (c.locations || [])
     .filter((loc) => loc.warehouse_id === rmWarehouseId && !isLocationRestricted(loc))
     .reduce((sum, loc) => sum + (Number(loc.qty) || 0), 0);
@@ -991,11 +1003,11 @@ export default function StoreApprovalPage() {
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums align-top">{formatQty(c.required_qty)} {formatUnit(c.unit_of_measure)}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums align-top" data-testid={`store-locations-${i}`}>
-                      <LocationBreakdown locations={c.locations} unit={c.unit_of_measure} sourceWarehouseId={`${selected.site_id}/${selected.site_id}-RM`} />
+                      <LocationBreakdown locations={c.locations} unit={c.unit_of_measure} sourceWarehouseId={rmWarehouseIdForSite(selected.site_id)} />
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 align-top text-[11px]" data-testid={`store-issue-source-${i}`}>
                       {/* Aug 2026, user's fixed business rule - always Site RM -> Site SFG, no picker anymore */}
-                      {humanizeWarehouseId(c.issued_from_warehouse || `${selected.site_id}/${selected.site_id}-RM`)}
+                      {humanizeWarehouseId(c.issued_from_warehouse || rmWarehouseIdForSite(selected.site_id))}
                       {c.issued_from_owner ? ` \u00b7 ${c.issued_from_owner}` : ""}
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 align-top">
@@ -1061,7 +1073,7 @@ export default function StoreApprovalPage() {
           {isPending && !resultMessage && (
             <div className="space-y-2">
               <div className="bg-[#F0FDF9] border border-[#A6F4C5] rounded-sm px-3 py-2 text-xs text-[#027A48]" data-testid="store-issue-movement-notice">
-                Issuing stock records a SAP Goods Movement <strong>{humanizeWarehouseId(`${selected.site_id}/${selected.site_id}-RM`)} &rarr; {humanizeWarehouseId(`${selected.site_id}/${selected.site_id}-SFG`)}</strong> (fixed by site - not user-chosen). This is LIVE - stock physically moves in SAP the moment you confirm.
+                Issuing stock records a SAP Goods Movement <strong>{humanizeWarehouseId(rmWarehouseIdForSite(selected.site_id))} &rarr; {humanizeWarehouseId(`${selected.site_id}/${selected.site_id}-SFG`)}</strong> (fixed by site - not user-chosen). This is LIVE - stock physically moves in SAP the moment you confirm.
               </div>
               {hasShortfall ? (
                 <>
