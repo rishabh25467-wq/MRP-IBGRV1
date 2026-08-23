@@ -437,8 +437,8 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose} data-testid="confirm-cancel-button">Cancel</Button>
-          <Button onClick={submit} disabled={saving} data-testid="confirm-submit-button">
-            {saving ? `Posting to SAP (${savingElapsed}s)...` : "Post Confirmation"}
+          <Button onClick={submit} disabled={saving || checkingAvailability} data-testid="confirm-submit-button">
+            {saving ? `Posting to SAP (${savingElapsed}s)...` : checkingAvailability ? "Checking stock..." : "Post Confirmation"}
           </Button>
         </DialogFooter>
       </DialogContent>

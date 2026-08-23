@@ -1,3 +1,7 @@
+## Session update (2026-08-23, part 6) - Post Confirmation button no longer clickable mid stock-check
+- User's explicit ask: don't let "Post Confirmation" be clicked while the live component-stock check is still running (was previously only disabled during `saving`, so a user could post against a stale/previous-quantity stock panel).
+- `ProductionConfirmationPage.js` ConfirmDialog: submit button now also disabled while `checkingAvailability` is true, showing "Checking stock..." label. Verified via screenshot - button stays disabled ~4s (real live SAP stock lookup) until the panel populates, then re-enables.
+
 ## Session update (2026-08-23, part 5) - "Show mine"/"Show all" + "Sort by latest" on Production Confirmation table
 - Backend (`production_confirmation_service.get_order_creators`, `server.py::_attach_order_creators`): now returns/attaches both `created_by` (actor name) AND `order_created_at` (timestamp) per row, joined from `production_order_creation_history` by `production_order_id`.
 - Frontend (`ProductionConfirmationPage.js`): added a "Show mine"/"Show all" dropdown (case-insensitive match against the signed-in Entra ID user's name/email) and a "Sort by latest" toggle button (sorts by `order_created_at` desc, rows with no matching order-creation record sort last). Added a "Created By" column and a dedicated empty-state message when the "mine" filter matches nothing.
