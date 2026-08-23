@@ -358,10 +358,12 @@ def submit_issue(db, request_id: str, issued: list, decision: str, store_actor: 
         if shortfall > 0:
             shortfall_exists = True
         rm_locations_all = [loc for loc in (c.get("locations") or []) if loc.get("warehouse_id") == source_warehouse]
-        # Never source a movement from Quality Inspection/Blocked stock -
-        # confirmed live this tenant's RM stock can carry an "Inspection"
-        # status (production_confirmation_service.is_usable_stock_status).
-        rm_location = next((loc for loc in rm_locations_all if is_usable_stock_status(loc.get("stock_status"))), None)
+        # Never source a movement from Quality Inspection/Blocked/
+        # Restricted-Use stock - confirmed live this tenant's RM stock can
+        # carry an "Inspection" status OR a separate CRESTRICTED_IND flag
+        # even while stock_status itself reads "Not Assigned" (see
+        # production_confirmation_service.is_usable_stock_status).
+        rm_location = next((loc for loc in rm_locations_all if is_usable_stock_status(loc.get("stock_status"), loc.get("restricted"))), None)
         movement = None
         if issued_qty > 0 and sap_client is not None:
             if rm_location and rm_location.get("owner"):
@@ -496,7 +498,7 @@ def run_issue_movements(db, request_id: str, sap_client, progress_cb=None) -> di
         issued_this_round = c.get("issued_this_round") or 0
         if issued_this_round > 0 and sap_client is not None:
             rm_locations_all = [loc for loc in (c.get("locations") or []) if loc.get("warehouse_id") == source_warehouse]
-            rm_location = next((loc for loc in rm_locations_all if is_usable_stock_status(loc.get("stock_status"))), None)
+            rm_location = next((loc for loc in rm_locations_all if is_usable_stock_status(loc.get("stock_status"), loc.get("restricted"))), None)
             if rm_location and rm_location.get("owner"):
                 movement = _trigger_goods_movement(
                     sap_client, rm_location["owner"], c["product_id"], source_warehouse, target_warehouse,

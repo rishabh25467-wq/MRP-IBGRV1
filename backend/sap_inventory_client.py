@@ -167,6 +167,17 @@ class SAPInventoryClient:
                 # against the fixed "{site}/{site}-RM" ID and never matching.
                 "logistics_area_id": row.get("CLOG_AREA_UUID"),
                 "stock_status": row.get("TINV_STOCK_STATUS_CODE"),
+                # Aug 2026 bug fix: real SAP incident - a row can report a
+                # perfectly normal stock_status ("Not Assigned") while ALSO
+                # being flagged Restricted Use (CRESTRICTED_IND / the
+                # "Restr." checkbox on SAP's own Stock Overview screen) -
+                # this is a SEPARATE SAP field from stock_status entirely,
+                # not another status value, so it was silently missed by
+                # every "is this stock usable" check in this app (both the
+                # Store Approval/Production Confirmation display AND the
+                # actual movement-matching logic) until caught against a
+                # real 1kg restricted-use row at site P2.
+                "restricted": bool(row.get("CRESTRICTED_IND")),
                 "qty": qty,
                 "uom": row.get("CON_HAND_STOCK_UOM"),
                 "company_code": row.get("CCO_UUID"),

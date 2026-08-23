@@ -27,8 +27,15 @@ HISTORY_COLLECTION = "production_confirmation_history"
 _NON_USABLE_STOCK_STATUSES = {"inspection", "quality inspection", "blocked", "restricted-use", "restricted", "in transit"}
 
 
-def is_usable_stock_status(stock_status) -> bool:
-    return (stock_status or "").strip().lower() not in _NON_USABLE_STOCK_STATUSES
+def is_usable_stock_status(stock_status, restricted=False) -> bool:
+    """`restricted` is SAP's CRESTRICTED_IND flag (see sap_inventory_client.
+    get_inventory_detail) - a SEPARATE field from stock_status, not another
+    status value. Real incident (Aug 2026): a 1kg lot at site P2 reported
+    stock_status "Not Assigned" (normally unrestricted) while ALSO being
+    flagged Restricted Use in SAP's own Stock Overview ("Restr." checkbox)
+    - every usability check in this app missed it until this was added,
+    since none of them looked at anything but stock_status text."""
+    return (stock_status or "").strip().lower() not in _NON_USABLE_STOCK_STATUSES and not restricted
 
 DEFAULT_DEVIATION_REASONS = [
     {"code": "001", "label": "Resource Failure"},
@@ -262,13 +269,13 @@ def apply_goods_movement_to_cache(db, product_id: str, source_warehouse_id: str,
         return
     locations = item.setdefault("locations", [])
     source_loc = next(
-        (loc for loc in locations if loc.get("logistics_area_id") == source_warehouse_id and is_usable_stock_status(loc.get("stock_status"))),
+        (loc for loc in locations if loc.get("logistics_area_id") == source_warehouse_id and is_usable_stock_status(loc.get("stock_status"), loc.get("restricted"))),
         None,
     )
     if source_loc:
         source_loc["qty"] = round((source_loc.get("qty") or 0) - qty, 4)
     target_loc = next(
-        (loc for loc in locations if loc.get("logistics_area_id") == target_warehouse_id and is_usable_stock_status(loc.get("stock_status"))),
+        (loc for loc in locations if loc.get("logistics_area_id") == target_warehouse_id and is_usable_stock_status(loc.get("stock_status"), loc.get("restricted"))),
         None,
     )
     if target_loc:
@@ -277,7 +284,7 @@ def apply_goods_movement_to_cache(db, product_id: str, source_warehouse_id: str,
         template = source_loc or (locations[0] if locations else {})
         locations.append({
             "site": template.get("site"), "logistics_area": target_warehouse_id.split("/")[-1],
-            "logistics_area_id": target_warehouse_id, "stock_status": "Not Assigned", "qty": qty,
+            "logistics_area_id": target_warehouse_id, "stock_status": "Not Assigned", "restricted": False, "qty": qty,
             "company_code": template.get("company_code"), "company_name": template.get("company_name"),
         })
     item["total_qty"] = round(sum(loc.get("qty") or 0 for loc in locations), 4)
@@ -287,12 +294,12 @@ def apply_goods_movement_to_cache(db, product_id: str, source_warehouse_id: str,
 def site_locations_for_product(stock_by_product: dict, product_id: str, site_id: str):
     """Returns this product's locations at `site_id`, in the app's
     standard per-component display/movement-source shape (warehouse,
-    stock_status, qty, owner, warehouse_id), or None if the product has
-    no cache entry at all (distinct from an empty list, which means
-    "cached, but zero stock at this site"). inventory_cache stores full
-    site names like "RADISH TECHNOLOGY-P2" (company name + site code),
-    never the bare site code - match on the "-{site_id}" suffix, not
-    exact equality (was always 0 before)."""
+    stock_status, restricted, qty, owner, warehouse_id), or None if the
+    product has no cache entry at all (distinct from an empty list, which
+    means "cached, but zero stock at this site"). inventory_cache stores
+    full site names like "RADISH TECHNOLOGY-P2" (company name + site
+    code), never the bare site code - match on the "-{site_id}" suffix,
+    not exact equality (was always 0 before)."""
     locations = stock_by_product.get(product_id)
     if locations is None:
         return None
@@ -300,6 +307,13 @@ def site_locations_for_product(stock_by_product: dict, product_id: str, site_id:
     return [
         {
             "warehouse": loc.get("logistics_area"), "stock_status": loc.get("stock_status"), "qty": loc["qty"],
+            # SAP's CRESTRICTED_IND flag - a SEPARATE field from
+            # stock_status (see is_usable_stock_status docstring). Carried
+            # through so both the Store Approval/Production Confirmation
+            # displays AND the actual movement-matching logic below treat
+            # this stock as not usable, even when stock_status itself
+            # still reads a normal "Not Assigned".
+            "restricted": loc.get("restricted", False),
             # SAP Owner Party for this exact stock (e.g. "RI"/"RT") - carried
             # through so the Store Approval issue flow can auto-fill the
             # Goods Movement API's owner_party_id from whichever location
@@ -345,7 +359,7 @@ def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, con
             # warehouse but isn't actually free to consume yet.
             sfg_locations = [
                 loc for loc in (site_locations or [])
-                if (loc.get("warehouse_id") or "").endswith("-SFG") and is_usable_stock_status(loc.get("stock_status"))
+                if (loc.get("warehouse_id") or "").endswith("-SFG") and is_usable_stock_status(loc.get("stock_status"), loc.get("restricted"))
             ]
             available_qty = None if site_locations is None else sum(loc["qty"] for loc in sfg_locations)
             components.append({
@@ -432,7 +446,7 @@ def check_component_availability(
                 stock_by_product.setdefault(row["product_id"], []).append({
                     "site": row.get("site"), "logistics_area": row.get("logistics_area"),
                     "logistics_area_id": row.get("logistics_area_id"),
-                    "stock_status": row.get("stock_status"), "qty": row["qty"],
+                    "stock_status": row.get("stock_status"), "restricted": row.get("restricted", False), "qty": row["qty"],
                     "company_code": row.get("company_code"),
                 })
         except Exception:

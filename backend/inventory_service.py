@@ -96,6 +96,7 @@ def build_inventory(db, sap_inventory_client, sap_valuation_client) -> list:
             "logistics_area": row.get("logistics_area"),
             "logistics_area_id": row.get("logistics_area_id"),
             "stock_status": row.get("stock_status"),
+            "restricted": row.get("restricted", False),
             "qty": row["qty"],
             "company_code": row.get("company_code"),
             "company_name": row.get("company_name"),
@@ -288,6 +289,7 @@ def _refresh_stock_quantities_scoped(db, sap_inventory_client, site_id: str = No
         entry["locations"].append({
             "site": row.get("site"), "logistics_area": row.get("logistics_area"),
             "logistics_area_id": row.get("logistics_area_id"), "stock_status": row.get("stock_status"),
+            "restricted": row.get("restricted", False),
             "qty": row["qty"], "company_code": row.get("company_code"), "company_name": row.get("company_name"),
         })
 

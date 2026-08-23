@@ -102,6 +102,13 @@ const downloadCsv = (filename, csv) => {
 // a failed/rejected SAP movement).
 const RESTRICTED_STOCK_STATUSES = new Set(["inspection", "quality inspection", "blocked", "restricted-use", "restricted", "in transit"]);
 const isRestrictedStatus = (status) => RESTRICTED_STOCK_STATUSES.has((status || "").trim().toLowerCase());
+// Aug 2026 bug fix: a real SAP row can report a totally normal
+// stock_status ("Not Assigned") while ALSO being flagged Restricted Use
+// (SAP's own "Restr." checkbox on Stock Overview, CRESTRICTED_IND on the
+// backend) - a SEPARATE field from stock_status, not another status
+// value. Missed entirely until caught against a real 1kg restricted lot
+// at site P2 that showed as plain usable stock on this screen.
+const isLocationRestricted = (loc) => isRestrictedStatus(loc?.stock_status) || !!loc?.restricted;
 // Aug 2026: only RM + QC (Quality Hold) warehouse rows ever reach this
 // screen now (see store_approval_service.refresh_component_locations) -
 // a QC-warehouse row reports stock_status "Not Assigned" in SAP's own
@@ -114,8 +121,8 @@ const LocationBreakdown = ({ locations, unit, sourceWarehouseId }) => {
   if (!locations || locations.length === 0) {
     return <span className="text-[#98A2B3]">no stock at this site</span>;
   }
-  const rmHasUsableStock = locations.some((loc) => loc.warehouse_id === sourceWarehouseId && !isRestrictedStatus(loc.stock_status));
-  const rmHasOnlyRestrictedStock = !rmHasUsableStock && locations.some((loc) => loc.warehouse_id === sourceWarehouseId && isRestrictedStatus(loc.stock_status));
+  const rmHasUsableStock = locations.some((loc) => loc.warehouse_id === sourceWarehouseId && !isLocationRestricted(loc));
+  const rmHasOnlyRestrictedStock = !rmHasUsableStock && locations.some((loc) => loc.warehouse_id === sourceWarehouseId && isLocationRestricted(loc));
   return (
     <div className="space-y-0.5">
       {locations.map((loc, i) => {
@@ -124,11 +131,11 @@ const LocationBreakdown = ({ locations, unit, sourceWarehouseId }) => {
         // fall back to the (unscoped) site code instead of a confusing
         // "Unknown Warehouse" for those legacy, already-open requests.
         const label = loc.warehouse || (loc.site ? loc.site.split("-").pop() : "Unknown Warehouse");
-        const restricted = isRestrictedStatus(loc.stock_status) || isQcWarehouse(loc.warehouse_id);
+        const restricted = isLocationRestricted(loc) || isQcWarehouse(loc.warehouse_id);
         return (
           <div key={i} data-testid={restricted ? "location-restricted-row" : undefined}>
             <span className={restricted ? "text-[#B54708] font-bold" : "text-[#667085]"}>
-              {label}{loc.stock_status ? ` (${loc.stock_status})` : ""}{restricted ? " \u26A0 On Hold - not usable" : ""}:
+              {label}{loc.stock_status ? ` (${loc.stock_status})` : ""}{restricted && !isRestrictedStatus(loc.stock_status) && !isQcWarehouse(loc.warehouse_id) ? " (Restricted Use)" : ""}{restricted ? " \u26A0 On Hold - not usable" : ""}:
             </span> {formatQty(loc.qty)} {formatUnit(unit)}
           </div>
         );

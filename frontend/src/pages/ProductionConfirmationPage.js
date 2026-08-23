@@ -68,6 +68,12 @@ const formatUnit = (u) => (u === "MASS" ? "KG" : u || "");
 // (same underlying store_requests data as the Store Approval screen).
 const RESTRICTED_STOCK_STATUSES = new Set(["inspection", "quality inspection", "blocked", "restricted-use", "restricted", "in transit"]);
 const isRestrictedStatus = (status) => RESTRICTED_STOCK_STATUSES.has((status || "").trim().toLowerCase());
+// Aug 2026 bug fix: SAP's CRESTRICTED_IND flag is a SEPARATE field from
+// stock_status - a row can read stock_status "Not Assigned" (normally
+// usable) while still being Restricted Use. See the matching backend
+// docstring on is_usable_stock_status for the real incident this was
+// traced to.
+const isLocationRestricted = (loc) => isRestrictedStatus(loc?.stock_status) || !!loc?.restricted;
 
 // User's explicit ask: today posting/WIP-clearing/by-product outcomes
 // only ever show as a toast at confirm-time, then vanish - this renders
@@ -1231,7 +1237,7 @@ const CreateOrderTab = ({ actorName }) => {
                                 <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums align-top">{formatQty(c.required_qty)} {formatUnit(c.unit_of_measure)}</td>
                                 <td className="border border-[#FEDF89] px-2 py-1 text-right tabular-nums align-top">
                                   {(c.locations && c.locations.length > 0) ? c.locations.map((loc, li) => {
-                                    const restricted = isRestrictedStatus(loc.stock_status);
+                                    const restricted = isLocationRestricted(loc);
                                     return (
                                       <div key={li} className={restricted ? "text-[#B54708] font-bold" : ""}>
                                         {loc.warehouse || (loc.site ? loc.site.split("-").pop() : "Unknown Warehouse")}{loc.stock_status ? ` (${loc.stock_status})` : ""}{restricted ? " \u26A0 On Hold" : ""}: {formatQty(loc.qty)} {formatUnit(c.unit_of_measure)}
