@@ -146,14 +146,6 @@ export const MyStockRequestsTab = ({ actorName }) => {
     });
   }, [activeRows, search, statusFilter, sortField, sortDir, groupBy]);
 
-  if (!actorName.trim()) {
-    return (
-      <div className="bg-white border border-[#D0D5DD] rounded-sm p-6 text-center text-sm text-[#667085]" data-testid="myreq-no-name">
-        Enter your name in the "Your name" field at the top to see the stock requests you've raised.
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-3" data-testid="my-stock-requests-tab">
       <div className="flex flex-wrap items-end gap-3">

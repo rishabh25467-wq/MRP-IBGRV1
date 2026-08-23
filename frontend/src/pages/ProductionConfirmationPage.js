@@ -30,16 +30,10 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { NavTabs } from "@/components/NavTabs";
 import { MyStockRequestsTab } from "@/components/MyStockRequestsTab";
+import { useAuth } from "@/contexts/AuthContext";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
-const ACTOR_NAME_STORAGE_KEY = "productionConfirmationActorName";
-
-const useActorName = () => {
-  const [name, setName] = useState(() => localStorage.getItem(ACTOR_NAME_STORAGE_KEY) || "");
-  useEffect(() => localStorage.setItem(ACTOR_NAME_STORAGE_KEY, name), [name]);
-  return [name, setName];
-};
 
 const rowKey = (r) => `${r.production_lot_id}::${r.confirmation_group_uuid}::${r.reporting_point_uuid}`;
 
@@ -208,10 +202,6 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
   const qtyExceedsOpen = confirmedQty !== "" && !Number.isNaN(qtyNum) && qtyNum > row.open_quantity;
 
   const submit = async () => {
-    if (!actorName.trim()) {
-      toast.error("Enter your name first (top-right of the page)");
-      return;
-    }
     const qty = confirmedQty === "" ? null : Number(confirmedQty);
     const scrap = confirmedScrap === "" ? null : Number(confirmedScrap);
     if (qty !== null && (Number.isNaN(qty) || qty < 0)) {
@@ -889,10 +879,6 @@ const CreateOrderTab = ({ actorName }) => {
   }, []);
 
   const createProposal = async () => {
-    if (!actorName.trim()) {
-      toast.error("Enter your name first (top-right of the page)");
-      return;
-    }
     if (sosOptions.length > 1 && !selectedSosOption) {
       toast.error("This material has multiple valid Production Models - pick one from the Source of Supply list before creating the order");
       return;
@@ -945,10 +931,6 @@ const CreateOrderTab = ({ actorName }) => {
   };
 
   const decideStoreRequest = async (jobId, requestId, decision) => {
-    if (!actorName.trim()) {
-      toast.error("Enter your name first (top-right of the page)");
-      return;
-    }
     if (!requestId) return;
     setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, deciding: true } : j)));
     try {
@@ -996,10 +978,6 @@ const CreateOrderTab = ({ actorName }) => {
   };
 
   const releaseOrder = async () => {
-    if (!actorName.trim()) {
-      toast.error("Enter your name first (top-right of the page)");
-      return;
-    }
     if (!releaseOrderId.trim()) {
       toast.error("Enter the Production Order ID to release");
       return;
@@ -1318,7 +1296,12 @@ const CreateOrderTab = ({ actorName }) => {
 
 // -------------------- Main page --------------------
 export default function ProductionConfirmationPage() {
-  const [actorName, setActorName] = useActorName();
+  // Aug 2026, user's explicit ask (same change as Store Approval): the
+  // manual "Your name" box is gone - this page already requires Entra ID
+  // login, so the acting person's name comes straight from their
+  // signed-in session instead.
+  const { user } = useAuth();
+  const actorName = user?.name || user?.email || "";
   const [statusFilter, setStatusFilter] = useState("open");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1418,17 +1401,6 @@ export default function ProductionConfirmationPage() {
         <div className="w-px h-7 bg-white/25 shrink-0" />
         <div className="flex items-center gap-3 flex-1 justify-start min-w-0">
           <NavTabs />
-        </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          <span className="font-sans text-[11px] text-white/70 hidden md:inline">Your name:</span>
-          <input
-            type="text"
-            placeholder="Your name..."
-            value={actorName}
-            onChange={(e) => setActorName(e.target.value)}
-            className="h-7 w-20 sm:w-36 px-2.5 text-[13px] rounded-full border border-white/25 bg-white/15 text-white placeholder:text-white/50 focus:outline-none focus:border-white/70 focus:bg-white/25"
-            data-testid="actor-name-input"
-          />
         </div>
       </header>
 
