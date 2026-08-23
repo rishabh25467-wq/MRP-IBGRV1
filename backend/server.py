@@ -2721,8 +2721,8 @@ async def refresh_live_stock_for_store(site_id: str):
 
     async def run():
         try:
-            await asyncio.to_thread(refresh_stock_quantities_for_warehouses, db, sap_inventory_client, warehouse_ids)
-            job_store.update_job(db, job_id, {"status": "done", "error": None})
+            result = await asyncio.to_thread(refresh_stock_quantities_for_warehouses, db, sap_inventory_client, warehouse_ids)
+            job_store.update_job(db, job_id, {"status": "done", "error": None, "result": {"rows_found": result.get("rows_found")}})
         except Exception as e:
             logger.error(f"Store screen live stock refresh job {job_id} (warehouses {warehouse_ids}) failed: {e}")
             job_store.update_job(db, job_id, {"status": "failed", "error": str(e)})
@@ -2736,7 +2736,7 @@ async def get_refresh_live_stock_status(job_id: str):
     job = job_store.get_job(db, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id")
-    return {"status": job["status"], "error": job.get("error")}
+    return {"status": job["status"], "error": job.get("error"), "result": job.get("result")}
 
 
 @api_router.get("/store-requests/{request_id}")

@@ -21,6 +21,22 @@ const formatQty = (v) => (v == null ? "\u2014" : Number(v).toLocaleString("en-IN
 // to the API, CSV export raw data) are untouched.
 const formatUnit = (u) => (u === "MASS" ? "KG" : u || "");
 
+// Aug 2026, user's explicit ask: raw SAP logistics area IDs like
+// "P1/P1-RM" are meaningless to a store person - show "P1 - Raw Material
+// (RM)" everywhere one of these IDs is displayed (Issued From column,
+// the fixed movement notice, Movement History table). Display-only -
+// the underlying warehouse_id values sent to the API are untouched.
+const WAREHOUSE_TYPE_LABELS = { RM: "Raw Material (RM)", QC: "Quality Hold (QC)", SFG: "Semi-Finished Goods (SFG)", FG: "Finished Goods (FG)" };
+const humanizeWarehouseId = (id) => {
+  if (!id) return id;
+  const raw = id.includes("/") ? id.split("/").pop() : id; // "P1/P1-RM" -> "P1-RM"
+  const dashIdx = raw.lastIndexOf("-");
+  if (dashIdx === -1) return raw;
+  const site = raw.slice(0, dashIdx);
+  const suffix = raw.slice(dashIdx + 1);
+  return `${site} - ${WAREHOUSE_TYPE_LABELS[suffix] || suffix}`;
+};
+
 // Aging (Aug 2026, user's explicit ask): "time since requested" text +
 // severity tier, reused for the Pending Queue's live badge and the
 // Movement History report's "Age at Issue" column/CSV export.
@@ -157,6 +173,7 @@ export default function StoreApprovalPage() {
   const [issueProgress, setIssueProgress] = useState(null);
   const [refreshingStock, setRefreshingStock] = useState(false);
   const [refreshElapsed, setRefreshElapsed] = useState(0);
+  const [refreshStatus, setRefreshStatus] = useState(null);
   const [resultMessage, setResultMessage] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [userSearch, setUserSearch] = useState("");
@@ -582,8 +599,8 @@ export default function StoreApprovalPage() {
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{row.site_id}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{row.product_id}{row.description ? ` - ${row.description}` : ""}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(row.issued_qty)} {formatUnit(row.unit_of_measure)}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.warehouse ? `${row.warehouse}${row.owner ? ` \u00b7 ${row.owner}` : ""}` : "\u2014"}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.target_bin || "\u2014"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.warehouse ? `${humanizeWarehouseId(row.warehouse)}${row.owner ? ` \u00b7 ${row.owner}` : ""}` : "\u2014"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.target_bin ? humanizeWarehouseId(row.target_bin) : "\u2014"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{row.requester || "\u2014"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{row.store_actor || "\u2014"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5 text-[11px]">
@@ -709,34 +726,39 @@ export default function StoreApprovalPage() {
   // screen on failure - just toasts and leaves the existing data as-is.
   const refreshLiveStock = async () => {
     setRefreshingStock(true);
+    setRefreshStatus(`Connecting to SAP for Site ${selected.site_id}...`);
     try {
       const { data } = await axios.post(`${API}/store-requests/refresh-live-stock`, null, { params: { site_id: selected.site_id } });
-      await new Promise((resolve) => {
+      setRefreshStatus(`Checking live stock at Site ${selected.site_id} (Raw Material & Quality Hold)...`);
+      const job = await new Promise((resolve) => {
         const interval = setInterval(async () => {
           try {
             const { data: job } = await axios.get(`${API}/store-requests/refresh-live-stock/${data.job_id}`);
             if (job.status === "done" || job.status === "failed") {
               clearInterval(interval);
-              if (job.status === "failed") {
-                toast.error(job.error || "Live stock refresh failed - still showing the last known data");
-              } else {
-                toast.success("Live SAP stock refreshed");
-              }
-              resolve();
+              resolve(job);
             }
           } catch {
             clearInterval(interval);
-            toast.error("Lost connection while refreshing live stock");
-            resolve();
+            resolve({ status: "failed", error: "Lost connection while refreshing live stock" });
           }
-        }, 3000);
+        }, 2000);
       });
+      if (job.status === "failed") {
+        toast.error(job.error || "Live stock refresh failed - still showing the last known data");
+      } else {
+        const found = job.result?.rows_found;
+        setRefreshStatus(found != null ? `Found ${found} record(s) at Site ${selected.site_id} - updating table...` : "Updating table...");
+        await new Promise((r) => setTimeout(r, 700));
+        toast.success("Live SAP stock refreshed");
+      }
       const { data: fresh } = await axios.get(`${API}/store-requests/${selected._id}`);
       setSelected(fresh);
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed to start a live stock refresh");
     } finally {
       setRefreshingStock(false);
+      setRefreshStatus(null);
     }
   };
 
@@ -813,23 +835,36 @@ export default function StoreApprovalPage() {
                   data-testid="store-actor-name-input-detail"
                 />
               )}
-              {(isPending || isReopenable) && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-8"
-                  disabled={refreshingStock || submitting || isIssuing}
-                  onClick={refreshLiveStock}
-                  data-testid="store-refresh-live-stock-button"
-                  title="Just posted a Goods Receipt at this site? Pull live SAP quantities for THIS site now instead of waiting up to 30 min for the scheduled refresh"
-                >
-                  <ArrowClockwise size={13} className={`mr-1.5 ${refreshingStock ? "animate-spin" : ""}`} />
-                  {refreshingStock ? `Refreshing (${refreshElapsed}s)...` : "Refresh Live Stock Now"}
-                </Button>
-              )}
               <Badge className={`${STATUS_BADGE[selected.status]?.tone || "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]"} border`}>{STATUS_BADGE[selected.status]?.label || selected.status}</Badge>
             </div>
           </div>
+
+          {(isPending || isReopenable) && (
+            <div className="flex flex-wrap items-center gap-3 bg-[#F9FAFB] border border-[#EAECF0] rounded-sm px-3 py-2" data-testid="store-refresh-live-stock-control">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 bg-white shrink-0"
+                disabled={refreshingStock || submitting || isIssuing}
+                onClick={refreshLiveStock}
+                data-testid="store-refresh-live-stock-button"
+                title="Just posted a Goods Receipt at this site? Pull live SAP quantities for THIS site now instead of waiting up to 30 min for the scheduled refresh"
+              >
+                <ArrowClockwise size={13} className={`mr-1.5 ${refreshingStock ? "animate-spin" : ""}`} />
+                {refreshingStock ? `Refreshing (${refreshElapsed}s)...` : "Refresh Live Stock Now"}
+              </Button>
+              {refreshingStock ? (
+                <div className="flex-1 min-w-[240px] max-w-md space-y-1">
+                  <div className="h-1.5 w-full bg-[#EAECF0] rounded-full overflow-hidden">
+                    <div className="h-full w-1/3 bg-[#0E7C86] rounded-full animate-[store-issue-progress_1.1s_ease-in-out_infinite]" />
+                  </div>
+                  <p className="text-[11px] text-[#667085]" data-testid="store-refresh-live-stock-status">{refreshStatus}</p>
+                </div>
+              ) : (
+                <p className="text-[11px] text-[#667085]">Just posted a Goods Receipt? Pull live SAP quantities for this site before issuing.</p>
+              )}
+            </div>
+          )}
 
           {resultMessage && (
             <div className="bg-[#ECFDF3] border border-[#ABEFC6] rounded-sm px-3 py-2 text-xs text-[#027A48]" data-testid="store-result-message">{resultMessage}</div>
@@ -860,7 +895,7 @@ export default function StoreApprovalPage() {
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 align-top text-[11px]" data-testid={`store-issue-source-${i}`}>
                       {/* Aug 2026, user's fixed business rule - always Site RM -> Site SFG, no picker anymore */}
-                      {c.issued_from_warehouse || `${selected.site_id}/${selected.site_id}-RM`}
+                      {humanizeWarehouseId(c.issued_from_warehouse || `${selected.site_id}/${selected.site_id}-RM`)}
                       {c.issued_from_owner ? ` \u00b7 ${c.issued_from_owner}` : ""}
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 align-top">
@@ -912,7 +947,7 @@ export default function StoreApprovalPage() {
           {isPending && !resultMessage && (
             <div className="space-y-2">
               <div className="bg-[#F0FDF9] border border-[#A6F4C5] rounded-sm px-3 py-2 text-xs text-[#027A48]" data-testid="store-issue-movement-notice">
-                Issuing stock records a SAP Goods Movement <strong>{selected.site_id}/{selected.site_id}-RM &rarr; {selected.site_id}/{selected.site_id}-SFG</strong> (fixed by site - not user-chosen). This is LIVE - stock physically moves in SAP the moment you confirm.
+                Issuing stock records a SAP Goods Movement <strong>{humanizeWarehouseId(`${selected.site_id}/${selected.site_id}-RM`)} &rarr; {humanizeWarehouseId(`${selected.site_id}/${selected.site_id}-SFG`)}</strong> (fixed by site - not user-chosen). This is LIVE - stock physically moves in SAP the moment you confirm.
               </div>
               {hasShortfall ? (
                 <>

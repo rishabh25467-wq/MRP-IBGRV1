@@ -1423,3 +1423,12 @@ User's explicit business rule: the Goods Movement source is ALWAYS `{site}/{site
 - **Movement History**: new "Age at Issue" column (time from request creation to when it was actually issued) + a "Download CSV" button exporting the currently filtered rows (client-side blob download, no backend endpoint needed) with all visible columns plus Requested At/Issued At/Age at Issue for offline record-keeping.
 - Self-tested via screenshot against real data (aging correctly color-coded on 3 real pending P2 requests, ~7h old each; CSV downloaded and verified content against 2 real resolved movements).
 
+
+## Session Update (cont'd) - Aug 23, 2026: "Refresh Live Stock Now" UX overhaul (placement, progress, human-readable warehouse labels)
+User feedback (with screenshot): the refresh button was in the wrong place, gave no feedback during the ~5-8s SAP call, and the app showed raw SAP logistics area IDs like "P1/P1-RM" instead of something readable.
+- **Placement**: moved from the top-right header corner to its own row directly above the components table (user's explicit ask: "after store clicks process > then somewhere above the table").
+- **Progress + status messages**: `refreshLiveStock()` now sets a `refreshStatus` string through 3 real stages - "Connecting to SAP for Site X...", "Checking live stock at Site X (Raw Material & Quality Hold)...", "Found N record(s) at Site X - updating table..." (N = actual `rows_found` from the SAP response, not simulated), rendered under an indeterminate progress bar (reused the existing `store-issue-progress` CSS animation).
+- Backend: `POST /store-requests/refresh-live-stock` background job now stores `result: {rows_found}` on completion; `GET .../refresh-live-stock/{job_id}` returns it.
+- **Human-readable warehouse IDs**: new `humanizeWarehouseId()` formatter (`"P1/P1-RM"` -> `"P1 - Raw Material (RM)"`, also handles QC/SFG/FG suffixes). Applied to the "Issued From" column, the fixed SAP movement notice banner, and the Movement History table's "From Warehouse"/"To Bin" columns. CSV export intentionally left with raw IDs (default choice, not yet explicitly confirmed with user - flag if they want it humanized too).
+- Self-tested via screenshot: verified button position above the table, all 3 progress messages rendering with real data ("Found 102 record(s) at Site P1"), and humanized warehouse labels throughout the detail view.
+
