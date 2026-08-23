@@ -2,13 +2,14 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import "@/App.css";
-import { Package, ArrowLeft, ArrowClockwise, WarningCircle, CaretUp, CaretDown, MagnifyingGlass, DownloadSimple } from "@phosphor-icons/react";
+import { Package, ArrowLeft, ArrowClockwise, WarningCircle, CaretUp, CaretDown, MagnifyingGlass, DownloadSimple, Shield } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Toaster, toast } from "@/components/ui/sonner";
+import { NavTabs } from "@/components/NavTabs";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -497,14 +498,21 @@ export default function StoreApprovalPage() {
     return (
       <div className="min-h-screen bg-[#F2F4F7] text-[#1D2939]">
         <Toaster position="top-right" />
-        <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center px-4 sm:px-6 gap-3" data-testid="store-approval-header">
-          <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center">
-            <Package size={18} weight="fill" className="text-white" />
+        <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4" data-testid="store-approval-header">
+          <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
+            <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
+              <Shield size={18} weight="fill" className="text-white" />
+            </div>
+            <div className="flex flex-col leading-tight">
+              <span className="font-heading text-[16px] font-bold text-white tracking-tight">Materials Hub</span>
+              <span className="font-sans text-[12px] text-white/70 hidden sm:inline">Store Approval</span>
+            </div>
           </div>
-          <div className="flex flex-col leading-tight">
-            <span className="font-heading text-[16px] font-bold text-white tracking-tight">Store Approval</span>
-            <span className="font-sans text-[12px] text-white/70">Process stock requests from Production Planning</span>
+          <div className="w-px h-7 bg-white/25 shrink-0" />
+          <div className="flex items-center gap-3 flex-1 justify-start min-w-0">
+            <NavTabs />
           </div>
+          <div className="shrink-0 w-8" />
         </header>
         <main className="max-w-6xl mx-auto p-4 sm:p-6 space-y-4">
           <div className="flex flex-wrap items-end gap-3">
@@ -911,11 +919,21 @@ export default function StoreApprovalPage() {
   return (
     <div className="min-h-screen bg-[#F2F4F7] text-[#1D2939]">
       <Toaster position="top-right" />
-      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center px-4 sm:px-6 gap-3">
-        <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center">
-          <Package size={18} weight="fill" className="text-white" />
+      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
+        <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
+          <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
+            <Shield size={18} weight="fill" className="text-white" />
+          </div>
+          <div className="flex flex-col leading-tight">
+            <span className="font-heading text-[16px] font-bold text-white tracking-tight">Materials Hub</span>
+            <span className="font-sans text-[12px] text-white/70 hidden sm:inline">Store Approval</span>
+          </div>
         </div>
-        <span className="font-heading text-[16px] font-bold text-white tracking-tight">Store Approval</span>
+        <div className="w-px h-7 bg-white/25 shrink-0" />
+        <div className="flex items-center gap-3 flex-1 justify-start min-w-0">
+          <NavTabs />
+        </div>
+        <div className="shrink-0 w-8" />
       </header>
       <main className="max-w-6xl mx-auto p-4 sm:p-6 space-y-4">
         <button onClick={backToQueue} className="flex items-center gap-1.5 text-sm text-[#344054] hover:text-[#0E7C86]" data-testid="store-back-to-queue-button">

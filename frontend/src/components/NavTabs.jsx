@@ -31,9 +31,15 @@ import { useAuth } from "@/contexts/AuthContext";
 const TABS = [
   { to: "/", label: "BOM Management", testId: "nav-bom-explorer", page: "bom_explorer" },
   { to: "/purchasing-plan", label: "Procurement Planning", testId: "nav-purchasing-plan", page: "purchasing_plan" },
-  { to: "/production-plan", label: "Production Planning", testId: "nav-production-plan", page: "production_plan" },
   { to: "/production-confirmation", label: "Production Confirmation", testId: "nav-production-confirmation", page: "production_confirmation" },
-  { to: "/inventory", label: "Inventory Management", testId: "nav-inventory", page: "inventory" },
+];
+
+const INVENTORY_SUBTABS = [
+  { to: "/inventory", label: "Stock Overview", testId: "nav-inventory-stock-overview", page: "inventory" },
+  // Aug 2026, user's explicit ask: links out to the existing Store
+  // Approval screen (public/unauthenticated route, unchanged) - just a
+  // shortcut into it from the main nav, no backend permission change.
+  { to: "/storeapproval", label: "Goods Issue", testId: "nav-inventory-goods-issue", page: "inventory" },
 ];
 
 const PURCHASING_STRATEGY_SUBTABS = [
@@ -53,9 +59,11 @@ export const NavTabs = () => {
   const { user, hasPageAccess, logout } = useAuth();
   const visibleTabs = TABS.filter((t) => hasPageAccess(t.page));
   const visiblePurchasingStrategySubtabs = PURCHASING_STRATEGY_SUBTABS.filter((t) => hasPageAccess(t.page));
+  const visibleInventorySubtabs = INVENTORY_SUBTABS.filter((t) => hasPageAccess(t.page));
   const visibleAdminSubtabs = ADMIN_SUBTABS.filter((t) => hasPageAccess(t.page));
   const adminActive = ADMIN_SUBTABS.some((t) => t.to === pathname);
   const purchasingStrategyActive = PURCHASING_STRATEGY_SUBTABS.some((t) => t.to === pathname);
+  const inventoryActive = pathname === "/inventory" || pathname.startsWith("/storeapproval");
   return (
     <>
       {/* Desktop / large tablet nav - unchanged pill tabs */}
@@ -88,6 +96,28 @@ export const NavTabs = () => {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="min-w-[180px] bg-white border border-[#D0D5DD]" data-testid="nav-purchasing-strategy-dropdown-content">
             {visiblePurchasingStrategySubtabs.map((tab) => (
+              <DropdownMenuItem key={tab.to} asChild>
+                <Link to={tab.to} className="w-full cursor-pointer" data-testid={tab.testId}>
+                  {tab.label}
+                </Link>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+      {visibleInventorySubtabs.length > 0 && (
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            className={`flex items-center gap-1 px-3.5 py-1.5 rounded-full text-[13px] font-bold font-heading transition-colors duration-150 outline-none ${
+              inventoryActive ? "bg-white text-[#0B6B74]" : "text-white/85 hover:bg-white/15 hover:text-white"
+            }`}
+            data-testid="nav-inventory"
+          >
+            Inventory Management
+            <CaretDown size={10} weight="bold" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="min-w-[180px] bg-white border border-[#D0D5DD]" data-testid="nav-inventory-dropdown-content">
+            {visibleInventorySubtabs.map((tab) => (
               <DropdownMenuItem key={tab.to} asChild>
                 <Link to={tab.to} className="w-full cursor-pointer" data-testid={tab.testId}>
                   {tab.label}
@@ -190,7 +220,7 @@ export const NavTabs = () => {
                 );
               })}
 
-              {(visiblePurchasingStrategySubtabs.length > 0 || visibleAdminSubtabs.length > 0) && (
+              {(visiblePurchasingStrategySubtabs.length > 0 || visibleInventorySubtabs.length > 0 || visibleAdminSubtabs.length > 0) && (
                 <Accordion type="multiple" className="mt-1">
                   {visiblePurchasingStrategySubtabs.length > 0 && (
                     <AccordionItem value="purchasing-strategy" className="border-b-0">
@@ -204,6 +234,31 @@ export const NavTabs = () => {
                       </AccordionTrigger>
                       <AccordionContent className="pl-3">
                         {visiblePurchasingStrategySubtabs.map((tab) => (
+                          <SheetClose asChild key={tab.to}>
+                            <Link
+                              to={tab.to}
+                              className="flex items-center min-h-11 px-3 rounded-lg text-[14px] font-medium text-[#475467] hover:bg-slate-100"
+                              data-testid={`mobile-${tab.testId}`}
+                            >
+                              {tab.label}
+                            </Link>
+                          </SheetClose>
+                        ))}
+                      </AccordionContent>
+                    </AccordionItem>
+                  )}
+                  {visibleInventorySubtabs.length > 0 && (
+                    <AccordionItem value="inventory" className="border-b-0">
+                      <AccordionTrigger
+                        className={`px-3 min-h-11 text-[14px] font-bold font-heading no-underline hover:no-underline ${
+                          inventoryActive ? "text-[#0B6B74]" : "text-[#344054]"
+                        }`}
+                        data-testid="mobile-nav-inventory"
+                      >
+                        Inventory Management
+                      </AccordionTrigger>
+                      <AccordionContent className="pl-3">
+                        {visibleInventorySubtabs.map((tab) => (
                           <SheetClose asChild key={tab.to}>
                             <Link
                               to={tab.to}
