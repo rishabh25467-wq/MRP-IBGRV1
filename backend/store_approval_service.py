@@ -67,6 +67,18 @@ def refresh_component_locations(db, doc: dict, stock_by_product: dict = None) ->
     person sees."""
     stock_by_product = stock_by_product if stock_by_product is not None else load_stock_by_product(db)
     site_id = doc["site_id"]
+    # Aug 2026, user's ask ("is this a RM item or a manufactured part?") -
+    # reuses the app's own SAP BOM cache (bom_node_cache) rather than
+    # guessing: if SAP has a real BOM/recipe on file for a product_id, it's
+    # manufactured internally (a semi-finished part); if SAP has no BOM at
+    # all for it, it's a purchased/bought-out raw material (a true leaf
+    # item). `found=True` with `groups` populated ⇒ manufactured, `found=
+    # False` ⇒ bought-out, no doc yet ⇒ unknown (never checked). Purely a
+    # display flag for now - does not affect what's shown/issuable.
+    bom_flags = {
+        b["_id"]: bool(b.get("found"))
+        for b in db["bom_node_cache"].find({"_id": {"$in": [c["product_id"] for c in doc["components"]]}}, {"found": 1})
+    }
     for c in doc["components"]:
         fresh = site_locations_for_product(stock_by_product, c["product_id"], site_id)
         if fresh is not None:
@@ -74,6 +86,7 @@ def refresh_component_locations(db, doc: dict, stock_by_product: dict = None) ->
                 loc for loc in fresh
                 if (loc.get("warehouse_id") or "").endswith(("-RM", "-QC"))
             ]
+        c["is_manufactured"] = bom_flags.get(c["product_id"])
     return doc
 COUNTER_COLLECTION = "store_request_counters"
 

@@ -24,7 +24,7 @@ function AuthGate({ children }) {
   const { user, loading, isPendingAccess } = useAuth();
   const location = useLocation();
 
-  if (location.pathname === "/storeapproval") return children;
+  if (location.pathname.startsWith("/storeapproval")) return children;
   if (loading) return null;
   if (!user) return <LoginPage />;
   if (isPendingAccess) return <PendingAccessPage />;
@@ -50,6 +50,10 @@ function App() {
             <Route path="/admin/l1-l2-report" element={<ProtectedRoute page="admin"><L1L2ReportPage /></ProtectedRoute>} />
             <Route path="/admin/access-management" element={<ProtectedRoute superAdminOnly><AccessManagementPage /></ProtectedRoute>} />
             <Route path="/storeapproval" element={<StoreApprovalPage />} />
+            <Route path="/storeapproval/journal" element={<StoreApprovalPage />} />
+            <Route path="/storeapproval/balance" element={<StoreApprovalPage />} />
+            <Route path="/storeapproval/movements" element={<StoreApprovalPage />} />
+            <Route path="/storeapproval/request/:requestId" element={<StoreApprovalPage />} />
           </Routes>
         </AuthGate>
       </BrowserRouter>

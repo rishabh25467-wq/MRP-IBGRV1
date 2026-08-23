@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import "@/App.css";
 import { Package, ArrowLeft, ArrowClockwise, WarningCircle, CaretUp, CaretDown, MagnifyingGlass, DownloadSimple } from "@phosphor-icons/react";
@@ -53,6 +54,22 @@ const ageParts = (fromIso, toIso) => {
 };
 
 const AGE_TIER_CLASS = { fresh: "text-[#027A48]", warn: "text-[#B54708] font-bold", overdue: "text-[#B42318] font-bold" };
+
+// Aug 2026, user's ask: is this component actually a raw material, or a
+// manufactured (semi-finished) part just being stocked/issued through the
+// RM warehouse? Backend derives this from the SAP BOM cache (see
+// store_approval_service.refresh_component_locations) - true/false/null
+// (never checked yet in SAP). Display-only for now (user's explicit
+// choice: "add a badge for now, let us check reliability" before any
+// hiding logic).
+const MaterialTypeBadge = ({ isManufactured, testId }) => {
+  if (isManufactured == null) return null;
+  return isManufactured ? (
+    <Badge className="ml-1.5 bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF] border text-[10px] font-bold align-middle" data-testid={testId}>Manufactured</Badge>
+  ) : (
+    <Badge className="ml-1.5 bg-[#FFFAEB] text-[#B54708] border-[#FEDF89] border text-[10px] font-bold align-middle" data-testid={testId}>Bought-Out (RM)</Badge>
+  );
+};
 
 const AgeBadge = ({ fromIso, toIso, testId }) => {
   const age = ageParts(fromIso, toIso);
@@ -160,8 +177,26 @@ const SortableHeader = ({ label, field, sortField, sortDir, onSort }) => (
 );
 
 export default function StoreApprovalPage() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { requestId } = useParams();
+  const [searchParams] = useSearchParams();
   const [storeName, setStoreName] = useState(() => localStorage.getItem(STORE_NAME_KEY) || "");
-  const [viewMode, setViewMode] = useState("queue"); // "queue" | "journal"
+  // Aug 2026, user's ask: real sub-routes instead of hidden component
+  // state, so a specific tab or a request's detail is shareable/
+  // bookmarkable and survives browser back/forward + a page refresh.
+  // viewMode is the underlying LIST tab (queue/journal/balance/movements)
+  // - kept even while a request's detail is open (carried via the
+  // ?from= query param on /storeapproval/request/:id) so "Back to queue"
+  // returns to the right tab and the background 8s poll further below
+  // keeps that tab's data fresh the whole time the detail view is open.
+  const viewMode = requestId
+    ? (searchParams.get("from") || "queue")
+    : location.pathname.endsWith("/journal") ? "journal"
+    : location.pathname.endsWith("/balance") ? "balance"
+    : location.pathname.endsWith("/movements") ? "movements"
+    : "queue";
+  const listPath = (mode) => (mode === "queue" ? "/storeapproval" : `/storeapproval/${mode}`);
   const [requests, setRequests] = useState([]);
   const [journalRequests, setJournalRequests] = useState([]);
   const [balanceRequests, setBalanceRequests] = useState([]);
@@ -384,30 +419,60 @@ export default function StoreApprovalPage() {
     return list.sort((a, b) => new Date(b.when || 0) - new Date(a.when || 0));
   }, [journalRequests, siteFilter, searchTerm, userSearch, dateFrom, dateTo]);
 
+  // Fetches the request behind /storeapproval/request/:requestId (direct
+  // link, refresh, or browser back/forward all land here the same way -
+  // no reliance on already having the row from a list fetch).
+  useEffect(() => {
+    if (!requestId) {
+      setSelected(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await axios.get(`${API}/store-requests/${requestId}`);
+        if (cancelled) return;
+        setSelected(data);
+        setResultMessage(null);
+        const defaults = {};
+        data.components.forEach((c) => {
+          defaults[c.product_id] = data.status === "resolved_balance_pending"
+            ? String(c.shortfall ?? 0)
+            : (c.issued_qty != null ? String(c.issued_qty) : String(c.required_qty));
+        });
+        setIssuedQty(defaults);
+      } catch {
+        if (cancelled) return;
+        toast.error("Could not load that request - it may not exist anymore");
+        navigate(listPath(viewMode), { replace: true });
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestId]);
+
   const openRequest = (r) => {
-    setSelected(r);
-    setResultMessage(null);
-    const defaults = {};
-    r.components.forEach((c) => {
-      // Reopening a balance-pending request: default each component's
-      // input to its REMAINING shortfall (what's still owed), not the
-      // original required_qty or the already-issued cumulative total.
-      defaults[c.product_id] = r.status === "resolved_balance_pending"
-        ? String(c.shortfall ?? 0)
-        : (c.issued_qty != null ? String(c.issued_qty) : String(c.required_qty));
-    });
-    setIssuedQty(defaults);
+    navigate(`/storeapproval/request/${r._id}?from=${viewMode}`);
   };
 
   const backToQueue = () => {
-    setSelected(null);
-    setResultMessage(null);
+    navigate(listPath(viewMode));
     if (viewMode === "queue") loadRequests();
     else if (viewMode === "balance") loadBalancePending();
     else loadJournal();
   };
 
   if (!selected) {
+    if (requestId) {
+      return (
+        <div className="min-h-screen bg-[#F2F4F7] text-[#1D2939]">
+          <Toaster position="top-right" />
+          <main className="max-w-6xl mx-auto p-4 sm:p-6" data-testid="store-request-loading">
+            <p className="text-sm text-[#667085] flex items-center gap-1.5"><ArrowClockwise size={14} className="animate-spin" /> Loading request {requestId}...</p>
+          </main>
+        </div>
+      );
+    }
     return (
       <div className="min-h-screen bg-[#F2F4F7] text-[#1D2939]">
         <Toaster position="top-right" />
@@ -437,7 +502,7 @@ export default function StoreApprovalPage() {
             <div className="flex gap-1 bg-white border border-[#D0D5DD] rounded-sm p-1">
               <button
                 type="button"
-                onClick={() => setViewMode("queue")}
+                onClick={() => navigate("/storeapproval")}
                 className={`px-3 py-1.5 text-xs font-bold rounded-sm ${viewMode === "queue" ? "bg-[#0E7C86] text-white" : "text-[#344054]"}`}
                 data-testid="store-view-mode-queue"
               >
@@ -445,7 +510,7 @@ export default function StoreApprovalPage() {
               </button>
               <button
                 type="button"
-                onClick={() => setViewMode("journal")}
+                onClick={() => navigate("/storeapproval/journal")}
                 className={`px-3 py-1.5 text-xs font-bold rounded-sm ${viewMode === "journal" ? "bg-[#0E7C86] text-white" : "text-[#344054]"}`}
                 data-testid="store-view-mode-journal"
               >
@@ -453,7 +518,7 @@ export default function StoreApprovalPage() {
               </button>
               <button
                 type="button"
-                onClick={() => setViewMode("balance")}
+                onClick={() => navigate("/storeapproval/balance")}
                 className={`px-3 py-1.5 text-xs font-bold rounded-sm ${viewMode === "balance" ? "bg-[#0E7C86] text-white" : "text-[#344054]"}`}
                 data-testid="store-view-mode-balance"
               >
@@ -461,7 +526,7 @@ export default function StoreApprovalPage() {
               </button>
               <button
                 type="button"
-                onClick={() => setViewMode("movements")}
+                onClick={() => navigate("/storeapproval/movements")}
                 className={`px-3 py-1.5 text-xs font-bold rounded-sm ${viewMode === "movements" ? "bg-[#0E7C86] text-white" : "text-[#344054]"}`}
                 data-testid="store-view-mode-movements"
               >
@@ -880,7 +945,7 @@ export default function StoreApprovalPage() {
             <table className="w-full text-[12px] border-collapse" data-testid="store-detail-components-table">
               <thead>
                 <tr>
-                  {["Component", "Required by Production", "In Stock at This Site (By Warehouse)", "Issued From (Site RM)", "Issued Qty", "SAP Stock Movement (RM \u2192 SFG)"].map((h) => (
+                  {["Component", "Required Qty", "In Stock (Warehouse)", "Issued From", "Issued Qty", "Stock Movement (RM \u2192 SFG)"].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -888,7 +953,10 @@ export default function StoreApprovalPage() {
               <tbody>
                 {selected.components.map((c, i) => (
                   <tr key={c.product_id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"}>
-                    <td className="border border-[#D0D5DD] px-2 py-1.5 align-top">{c.product_id}{c.description ? ` - ${c.description}` : ""}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 align-top">
+                      {c.product_id}{c.description ? ` - ${c.description}` : ""}
+                      <MaterialTypeBadge isManufactured={c.is_manufactured} testId={`store-material-type-${i}`} />
+                    </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums align-top">{formatQty(c.required_qty)} {formatUnit(c.unit_of_measure)}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums align-top" data-testid={`store-locations-${i}`}>
                       <LocationBreakdown locations={c.locations} unit={c.unit_of_measure} sourceWarehouseId={`${selected.site_id}/${selected.site_id}-RM`} />
