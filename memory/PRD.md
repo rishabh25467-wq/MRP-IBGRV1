@@ -1,4 +1,33 @@
+## Session update (2026-08-23, part 2) - real root cause of "Stop shows Unknown job_id, nothing stops" + Store Approval toast spam fixed & verified
+
+User retested and reported the Stop-button bug from the previous session's entry (below) was **still happening** - the earlier session's fix (pollJob's 404 handling) was real but incomplete; it did not address the actual root cause.
+
+**Root cause found (reproduced live via Playwright + browser console capture)**: `ProductionConfirmationPage.js`'s `CreateOrderTab` restored `activeJobs` from `localStorage` via a post-mount `useEffect`, guarded by a `skipFirstPersistRef` meant to stop the sibling "persist" effect from writing back `"[]"` before hydration landed. Under React 18 **StrictMode's dev-only double-invoke of mount effects**, this guard was bypassed - the persist effect's second invocation ran with the still-stale `activeJobs=[]` closure and wrote `"[]"` to `localStorage` a beat before the restore effect's `setActiveJobs()` ever committed. Net effect: any in-flight order's tracking (and its Stop button) silently vanished on every page reload, before it could ever render - confirmed via console log capture (`localStorage` intact right after the `load` event, wiped to `[]` by the time `networkidle` settled).
+
+**Fix**: `activeJobs` now hydrates via a **lazy `useState(() => ...)` initializer** (reads `localStorage` synchronously during render, not via an effect) - removed `skipFirstPersistRef` entirely; the persist effect now safely re-writes on every render including the first (idempotent). A separate mount-only effect just kicks off `pollJob()` for whatever was hydrated (safe under StrictMode's double-invoke thanks to `pollJob`'s existing `pollingJobIdsRef` guard).
+- Verified live: with a job seeded in `localStorage`, the row + 4-step tracker + working Stop button now render **immediately** after a reload (previously vanished within ~200ms).
+- Also fixed: backend now honors `cancel_requested` at 2 earlier checkpoints in `_run_create_and_release_job` (before the stock check API call and right before the one-way `_create_proposal_for_payload` SAP write) - previously a Stop clicked during `checking_stock`/`creating_proposal` sat unread until (if ever) the job reached the later `waiting_for_order` loop. `stopTrackingJob()` also gets a 30s client-side deadline so the button can never stay stuck on "Stopping..." forever.
+
+**Store Approval toast spam ("Failed to load the requests journal"/"...pending stock requests") - real fix this time**: `loadRequests`/`loadJournal`/`loadBalancePending` (StoreApprovalPage.js, polled every 8s) now share a `pollFailureCountRef` - a single transient failure is silent (console-logged only), a toast only fires after 3 CONSECUTIVE failures of the same poll, and the counter resets after toasting (so a longer outage nags only every 3rd tick, not every tick). Investigated backend logs for a real crash on these pure-Mongo-read endpoints - found none directly, but did find the background SAP valuation/BOM refresh jobs flooding the backend with `ConnectTimeoutError`s and at least one live 502 on an unrelated user-facing SAP lookup during the same window - most likely real source of the "transient blips" (ties into the already-backlogged **Background Job Throttling** item, not fixed this session).
+
+**Also fixed 2 minor UI follow-ups from testing_agent iteration_106**: the red "you must pick a Production Model" Source-of-Supply warning now turns neutral/informational once an option is actually selected (previously stayed red/alarming forever).
+
+**Testing**: `testing_agent` iteration_106, frontend-only, **6/6 scenarios pass** - Stop button (fresh create, mid-flight reload, real cancel, stale-404 cleanup) and Store Approval toast suppression (75s live observation, 3 tabs, injected-failure threshold check) all verified. Synthetic auth session/user + job docs cleaned up after testing, DB verified clean.
+
+---
+
+
 **REVERTED same session**: the button caused visible long "Refreshing (128s+)..." stalls in real use - traced to genuine SAP tenant slowness on cost/valuation lookups at the time (repeated `ConnectTimeoutError`, pre-existing/documented flakiness, not a bug in the new code), but user judged the UX (a store user staring at a stuck-looking spinner) not worth it and asked to remove it. Removed: the button, its state/handler/elapsed-ticker in `StoreApprovalPage.js`, and both backend endpoints (`POST/GET /store-requests/refresh-live-stock*`) from `server.py`. Store Approval is back to relying solely on the scheduled 30-min `inventory_cache` refresh + `refresh_component_locations()`'s read-time freshness (part 11). If this comes up again, the real fix is the already-backlogged **Background Job Throttling** item (SAP refresh jobs starving the request thread pool) rather than a manual trigger button.
+
+## Session update (2026-08-23) - fixed "Unknown job_id" toast + spinner stuck forever on Active Orders
+
+User reported clicking "Stop" on an Active Order showed "Unknown job_id" and the spinner kept rotating regardless.
+
+**Root cause found in `ProductionConfirmationPage.js`'s `pollJob`**: the status-poll's `catch` block treated EVERY error the same way - `continue` (retry next tick) - including a genuine 404 (the job's Mongo doc truly doesn't exist, e.g. a stale `localStorage`-persisted `job_id` from an old session outliving its backend record). A 404 is permanent, not transient, so this polled forever with no way to ever stop, and clicking "Stop" hit the same dead job via the cancel endpoint (also a real 404, not a bug in that endpoint - verified its 404 contract earlier this session).
+
+**Fix**: `pollJob` now checks `e.response?.status === 404` specifically - on a real 404 it toasts a clear message and removes the row for good (`removeActiveJob`), instead of retrying indefinitely; any OTHER error (network blip) still retries as before. `stopTrackingJob` got the same treatment - a 404 on cancel now just removes the row (nothing left to stop) instead of leaving it stuck with a bare error toast.
+
+Also investigated the separate "Failed to load the requests journal"/"Failed to load pending stock requests" toasts reported the same day - both `/api/store-requests` and `/api/store-requests/journal` return clean 200s now and have zero non-200 entries in backend access logs; most likely transient, hit during one of this session's many rapid `server.py`/`inventory_service.py` hot-reloads (each causes a brief unavailability window) - no code fix needed, confirmed stable on retest.
 
 ## Session update (2026-08-22, part 21) - Store Approval refresh now covers RM + QC together; order-creation check narrowed to SFG-only
 

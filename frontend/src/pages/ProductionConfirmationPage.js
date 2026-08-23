@@ -652,7 +652,20 @@ const CreateOrderTab = ({ actorName }) => {
   // about, tracked in the "Active Orders" table below - NOT tied to the
   // form, so submitting one order never blocks starting another while the
   // first is still running/paused in the background.
-  const [activeJobs, setActiveJobs] = useState([]);
+  // Lazily hydrated straight from localStorage during the initial render
+  // (not via a post-mount effect) - fixes a real bug where React 18
+  // StrictMode's dev-only double-invoke of effects on mount raced the old
+  // "restore, then persist" effect pair and clobbered localStorage with
+  // "[]" before the restored job ever reached state, silently wiping an
+  // in-flight order's tracking (and its Stop button) on every refresh.
+  const [activeJobs, setActiveJobs] = useState(() => {
+    let stored = [];
+    try { stored = JSON.parse(localStorage.getItem(ACTIVE_JOBS_STORAGE_KEY) || "[]"); } catch { stored = []; }
+    return stored.map((s) => ({
+      ...s, status: "running", elapsedSeconds: Math.round((Date.now() - s.startedAt) / 1000),
+      storeRequest: null, deciding: false, expanded: false,
+    }));
+  });
   const productInputWrapperRef = useRef(null);
   const suggestionDebounceRef = useRef(null);
   const suggestionRequestRef = useRef(null);
@@ -788,7 +801,19 @@ const CreateOrderTab = ({ actorName }) => {
           let job;
           try {
             ({ data: job } = await axios.get(`${API}/production-confirmation/create-and-release-order/status/${jobId}`));
-          } catch {
+          } catch (e) {
+            if (e.response?.status === 404) {
+              // Real bug reproduced live (Aug 2026): a genuinely-gone job
+              // (e.g. a stale localStorage entry from a much older
+              // session whose Mongo doc no longer exists) used to be
+              // treated the same as a transient network hiccup below,
+              // so this loop retried FOREVER and the row's spinner never
+              // stopped, no matter what the user clicked. A 404 here is
+              // permanent, not transient - stop tracking it for good.
+              toast.error(`Lost track of this order (job no longer exists) - it may already be done; check History`);
+              removeActiveJob(jobId);
+              break;
+            }
             continue; // transient network hiccup - keep tracking this job, try again next round
           }
           if (PAUSED_STATUSES.includes(job.status)) {
@@ -839,36 +864,21 @@ const CreateOrderTab = ({ actorName }) => {
     })();
   }, [loadHistory]);
 
-  const skipFirstPersistRef = useRef(true);
-
   // Persist the (small) seed info for every active job so a page refresh
-  // doesn't lose track of orders still running in the background. Skips
-  // its very first mount invocation - on mount BOTH this effect and the
-  // restore effect below fire within the same commit using the render's
-  // still-stale `activeJobs` ([]), so writing on that first pass would
-  // always clobber the not-yet-read localStorage seed with "[]" before
-  // hydration could use it. The restore effect's setActiveJobs() triggers
-  // a second render, which re-runs this effect (now un-skipped) with the
-  // real hydrated value.
+  // doesn't lose track of orders still running in the background. Safe to
+  // run on every render including the very first (it just re-writes back
+  // the same data `activeJobs` was hydrated from above) - no skip-guard
+  // needed now that hydration itself happens synchronously in useState.
   useEffect(() => {
-    if (skipFirstPersistRef.current) {
-      skipFirstPersistRef.current = false;
-      return;
-    }
     const seed = activeJobs.map(({ job_id, material_id, site_id, quantity, unit_code, startedAt }) => ({ job_id, material_id, site_id, quantity, unit_code, startedAt }));
     localStorage.setItem(ACTIVE_JOBS_STORAGE_KEY, JSON.stringify(seed));
   }, [activeJobs]);
 
+  // Kick off polling once for whatever was hydrated above - pollJob's own
+  // pollingJobIdsRef guard makes this safe even under StrictMode's dev
+  // double-invoke of mount effects.
   useEffect(() => {
-    let stored = [];
-    try { stored = JSON.parse(localStorage.getItem(ACTIVE_JOBS_STORAGE_KEY) || "[]"); } catch { stored = []; }
-    if (stored.length > 0) {
-      setActiveJobs(stored.map((s) => ({
-        ...s, status: "running", elapsedSeconds: Math.round((Date.now() - s.startedAt) / 1000),
-        storeRequest: null, deciding: false, expanded: false,
-      })));
-      stored.forEach((s) => pollJob(s.job_id));
-    }
+    activeJobs.forEach((j) => pollJob(j.job_id));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -956,7 +966,24 @@ const CreateOrderTab = ({ actorName }) => {
     setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, stopping: true } : j)));
     try {
       await axios.post(`${API}/production-confirmation/create-and-release-order/${jobId}/cancel`);
+      // The backend only checks this flag at specific checkpoints (stock
+      // check, proposal creation, the order/release poll loop) - give it
+      // a reasonable window to land before re-enabling the button, so a
+      // Stop clicked at an awkward moment doesn't leave "Stopping..."
+      // disabled forever with no feedback (pollJob's own "cancelled"
+      // handling removes the row well before this if it lands sooner).
+      setTimeout(() => {
+        setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId && j.stopping ? { ...j, stopping: false } : j)));
+      }, 30000);
     } catch (e) {
+      if (e.response?.status === 404) {
+        // Same stale-job case as pollJob's 404 handling above - nothing
+        // to actually stop, so just drop it from the list instead of
+        // leaving the row spinning forever on a job that's already gone.
+        toast.error("This order no longer exists - removing it from the list");
+        removeActiveJob(jobId);
+        return;
+      }
       toast.error(e.response?.data?.detail || "Failed to stop this order run");
       setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, stopping: false } : j)));
     }
@@ -1048,9 +1075,14 @@ const CreateOrderTab = ({ actorName }) => {
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="text-xs font-bold text-[#B54708] mt-1" data-testid={sosOptions.length > 1 ? "sos-choice-required-warning" : undefined}>
+                <p
+                  className={`text-xs mt-1 ${sosOptions.length > 1 && !selectedSosOption ? "font-bold text-[#B54708]" : "text-[#667085]"}`}
+                  data-testid={sosOptions.length > 1 && !selectedSosOption ? "sos-choice-required-warning" : undefined}
+                >
                   {sosOptions.length > 1
-                    ? `This material has ${sosOptions.length} valid Production Model/Site combinations - you must pick one before creating the order (it sets the Site for you; not auto-picked since one option may be short on stock while another isn't).`
+                    ? selectedSosOption
+                      ? `Using ${selectedSosOption.production_model_id} (Site ${selectedSosOption.site_id}).`
+                      : `This material has ${sosOptions.length} valid Production Model/Site combinations - you must pick one before creating the order (it sets the Site for you; not auto-picked since one option may be short on stock while another isn't).`
                     : "Picking this confirms the Production Model - and its Site - SAP will use."}
                 </p>
               </div>

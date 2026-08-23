@@ -2365,6 +2365,16 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
         # platform's ~60s ingress timeout the way a blocking pre-flight in
         # the POST endpoint itself would have been.
         job_store.update_job(db, job_id, {"status": "checking_stock"})
+        # User-requested stop, checked before anything happens in SAP at all
+        # (before this point nothing was ever written) - a Stop clicked
+        # during "checking_stock" now takes effect immediately instead of
+        # sitting unread until a much-later checkpoint further below.
+        if job_store.get_job(db, job_id).get("cancel_requested"):
+            job_store.update_job(db, job_id, {"status": "cancelled", "result": {
+                "production_proposal_id": None, "production_order_id": None, "released": False,
+                "note": "Stopped before anything was created in SAP - nothing to clean up.",
+            }})
+            return
         override_bom_id = None
         if payload.production_model_uuid:
             # User explicitly picked a Production Model via the Source of
@@ -2396,6 +2406,16 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
         short = [c for c in availability["components"] if not c["sufficient"]] if availability["checked"] else []
 
         job_store.update_job(db, job_id, {"status": "creating_proposal"})
+        # Same check, once more right before the one-way SAP write below -
+        # this is the LAST point a Stop can still avoid creating a real,
+        # undeletable SAP Proposal (see _continue_order_creation's own
+        # check for every checkpoint AFTER a Proposal exists).
+        if job_store.get_job(db, job_id).get("cancel_requested"):
+            job_store.update_job(db, job_id, {"status": "cancelled", "result": {
+                "production_proposal_id": None, "production_order_id": None, "released": False,
+                "note": "Stopped before anything was created in SAP - nothing to clean up.",
+            }})
+            return
         proposal_id = await _create_proposal_for_payload(payload, avail_dt, job_id)
         await asyncio.to_thread(
             production_confirmation_service.log_proposal_creation, db, payload.actor, payload.dict(),

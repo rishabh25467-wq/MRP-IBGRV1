@@ -1,0 +1,65 @@
+{
+  "summary": "Frontend-only retest of the 2 reported bugs. BUG 1 (Stop button / vanishing Active Orders row) - FIXED & VERIFIED: with an in-flight job seeded in localStorage, the row + 4-step tracker + Stop button are present 600ms after a page reload and stay there (localStorage no longer wiped to '[]'), verified across 2 consecutive reloads; clicking Stop calls POST /create-and-release-order/{job_id}/cancel -> 200, button switches to 'Stopping...', NO 'Unknown job_id' toast. Cancel-removal path verified (job flipped to 'cancelled' in Mongo -> row removed + toast 'Order creation stopped by the user' + localStorage back to []). Stale/unknown job path verified (404 -> row removed + 'Lost track of this order' toast, no endless spinner). Full create flow also exercised end-to-end (product MAZ42117269, 3 Source-of-Supply options, site auto-set to P2, correct POST payload with logistic_relationship_uuid + production_model_uuid, success toast, form cleared, row with tracker + Stop) - the create POST was Playwright-intercepted and pointed at a synthetic Mongo job, so NO real SAP Production Proposal was created by this test pass. BUG 2 (Store Approval toast spam) - FIXED & VERIFIED: page left open ~75s across all 3 tabs (Pending Queue 7 rows, Journal 23 rows, Balance Pending genuinely empty - matches API) with ZERO toasts; injected failures confirm 2 consecutive poll failures are console-only/silent and the toast appears only on the 3rd consecutive failure. Synthetic auth session/user and both synthetic job docs were deleted after testing (DB verified clean).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/production-confirmation/create-and-release-order/{job_id}/cancel",
+        "issue": "cancel_requested is only honored inside the waiting_for_order loop in _run_create_and_release_job (server.py ~line 2460). If the user hits Stop while the job is in 'checking_stock'/'creating_proposal', the flag sits unread until (and only if) the job reaches that loop - the row stays on 'Stopping...' (button disabled) for as long as the stock check + proposal creation + SAP settle takes, and if the job instead pauses at 'waiting_store_approval'/'partial_pending_planner' the Stop is silently DISCARDED forever (paused rows render View/Confirm/Delete, never Stop again). Suggest checking cancel_requested at the top of each phase (stock check, proposal creation, and the resume/pause branches) so a Stop always terminates the job."
+      },
+      {
+        "endpoint": "SAP OData (background Standard-Costs / valuation refresh)",
+        "issue": "backend.err.log is flooded with 'Connection to my431827.businessbydesign.cloud.sap timed out (connect timeout=30)' for materialvaluationdata chunks (many per minute, 08:39-09:10). One user-facing GET /production-confirmation/source-of-supply-options/MAZ42117269 also returned a 502 during testing while direct curls of the same endpoint took only 1.8s - i.e. the aggressive background SAP refresh is the most likely real source of the 'transient blips' that produced the original Store Approval toast spam. Worth throttling/backing off the background refresh when SAP is unreachable."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "CreateOrderTab - Source of Supply block",
+        "issue": "The red warning 'This material has 3 valid Production Model/Site combinations - you must pick one before creating the order' stays visible (unchanged, still red/imperative) AFTER an option has been picked, so the form looks like it still has an error.",
+        "selector": "[data-testid=\"source-of-supply-picker\"]",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Active Orders -> Stop",
+        "issue": "stopTrackingJob() has no client-side deadline: once the POST succeeds the row is stuck on 'Stopping...' (button disabled) until the backend flips the job to 'cancelled'. Combined with the backend gap above, an early Stop or a Stop on a job that then pauses for store approval leaves the user with no way to stop/remove the row. Suggest a timeout after N poll ticks that drops the row locally with an explanatory toast.",
+        "affected_selectors": ["active-order-stop-button-0"]
+      },
+      {
+        "flow": "Store Approval background poll",
+        "issue": "pollFailureCountRef is never reset once it crosses 3, so during a longer outage a toast fires on EVERY subsequent 8s tick (spam returns, just delayed by 24s). The counter is also shared by all 3 loaders, so switching tabs during a flaky period can trip the threshold with fewer failures per endpoint than intended. Suggest resetting the counter after toasting (or toast only once per outage) and keying it per view.",
+        "affected_selectors": ["store-view-mode-queue", "store-view-mode-journal", "store-view-mode-balance"]
+      }
+    ],
+    "design_issues": [
+      {
+        "screen": "Production Confirmation - Create Production Order",
+        "issues": ["Source-of-Supply lookup only fires on blur of the Product ID field or on clicking a suggestion; typing a full valid ID and clicking 'Create Production Order' directly produced only the guard toast with no visible hint that the lookup hadn't run yet.", "Requested End Date uses the browser-native date input (mm/dd/yyyy) instead of the shadcn calendar used elsewhere."]
+      }
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/_seed_active_job_106.py"],
+  "action_items": [
+    "Honor cancel_requested in the checking_stock / creating_proposal / paused branches of the create-and-release job so Stop always terminates the run (currently only the waiting_for_order loop checks it).",
+    "Add a client-side deadline in stopTrackingJob() so a row can never sit on 'Stopping...' indefinitely.",
+    "Reset pollFailureCountRef after the toast fires (and/or make it per-view) so a long outage does not toast every 8s.",
+    "Clear/soften the red 'you must pick one' Source-of-Supply warning once an option is selected.",
+    "Throttle/back off the background SAP valuation refresh while SAP connects are timing out - it is flooding logs and is the likely cause of the user-facing transient 502s/poll blips."
+  ],
+  "critical_code_review_comments": [
+    "ProductionConfirmationPage.js: the lazy useState hydration + unconditional persist effect is correct and StrictMode-safe now; pollJob's pollingJobIdsRef guard prevents double polling on the dev double-invoke - verified live.",
+    "ProductionConfirmationPage.js is very large (>1250 lines with multiple tab components in one file) - split CreateOrderTab / ConfirmDialog / history tabs into separate modules.",
+    "StoreApprovalPage.js: the 3 loaders are near-identical (10+ duplicated lines each) - extract a single pollingLoader(url, setter, label) helper."
+  ],
+  "updated_files": ["/app/backend/tests/_seed_active_job_106.py"],
+  "success_rate": {"backend": "not tested (per request)", "frontend": "100% on the 2 fixes under test (6/6 scenarios passed)"},
+  "seed_data_creation": "Synthetic auth_users/auth_sessions doc (user 2a94b71e...:TEST-QA-106, page production_confirmation) + 2 synthetic background_jobs docs (statuses checking_stock / creating_proposal). ALL deleted after testing - verified 0 remaining TESTQA sessions/users/jobs and 0 TEST_ store_requests. No SAP write of any kind was performed.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "No end-user login; used the documented synthetic Mongo session technique from /app/memory/test_credentials.md (cookie vms_session on the preview host) - worked as documented.",
+  "context_for_next_testing_agent": "Reusable helper: /app/backend/tests/_seed_active_job_106.py (seed|cancel|status|cleanup) creates a synthetic session + an in-flight create-and-release job doc so the Active Orders row/Stop/reload flows can be tested WITHOUT any SAP write. Note the create POST must be Playwright-intercepted (route.fulfill with the synthetic job_id) to avoid creating a real SAP Production Proposal. Both bugs of iteration_106 are fixed; the remaining open items are the backend cancel_requested phase coverage and the pollFailureCountRef reset. The historical planner_decision 'shortfall is None' TypeError did NOT recur in backend logs during this pass.",
+  "rca_of_the_issue": "Bug 1 root cause (activeJobs restore-effect race under React 18 StrictMode) is genuinely fixed by the lazy useState initializer - localStorage now keeps the seed across reloads (observed intact at t=0.6s and t=6.6s post-reload) and the row/Stop button render immediately. Bug 2 is fixed by the consecutive-failure counter: 1-2 transient poll failures are console-only, the 3rd consecutive one toasts. The underlying transient failures themselves are still occurring at the infrastructure level (SAP connect timeouts flooding the backend + an observed 502 on a user GET), which is now merely smoothed over, not eliminated."
+}

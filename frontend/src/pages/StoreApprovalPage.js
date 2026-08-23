@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import axios from "axios";
 import "@/App.css";
 import { Package, ArrowLeft, ArrowClockwise, WarningCircle, CaretUp, CaretDown, MagnifyingGlass, DownloadSimple } from "@phosphor-icons/react";
@@ -201,13 +201,28 @@ export default function StoreApprovalPage() {
     ? `Moving stock for component ${issueProgress.progress_current} of ${issueProgress.progress_total}${issueProgress.current_component ? ` (${issueProgress.current_component})` : ""}...`
     : "Recording issued quantities and posting the SAP Goods Movement...";
 
+  // Shared across all 3 loaders below (only one runs per 8s poll tick,
+  // picked by viewMode) - a single transient network/Cloudflare blip on
+  // this background poll used to pop a loud toast every single time,
+  // even though the very next 8s tick almost always succeeds. Now it
+  // fails silently (logged to console for diagnosis) and only surfaces a
+  // toast once the SAME poll has failed 3 times in a row - a real,
+  // persistent problem worth interrupting the user for, not one blip.
+  const pollFailureCountRef = useRef(0);
+
   const loadRequests = useCallback(async () => {
     setLoading(true);
     try {
       const { data } = await axios.get(`${API}/store-requests`);
       setRequests(data.requests);
-    } catch {
-      toast.error("Failed to load pending stock requests");
+      pollFailureCountRef.current = 0;
+    } catch (e) {
+      pollFailureCountRef.current += 1;
+      console.error("Failed to load pending stock requests:", e);
+      if (pollFailureCountRef.current >= 3) {
+        toast.error("Still unable to reach the server for the stock request queue - check your connection");
+        pollFailureCountRef.current = 0; // re-arm for another 3 before nagging again during a longer outage
+      }
     } finally {
       setLoading(false);
     }
@@ -218,8 +233,14 @@ export default function StoreApprovalPage() {
     try {
       const { data } = await axios.get(`${API}/store-requests/journal`);
       setJournalRequests(data.requests);
-    } catch {
-      toast.error("Failed to load the requests journal");
+      pollFailureCountRef.current = 0;
+    } catch (e) {
+      pollFailureCountRef.current += 1;
+      console.error("Failed to load the requests journal:", e);
+      if (pollFailureCountRef.current >= 3) {
+        toast.error("Still unable to reach the server for the requests journal - check your connection");
+        pollFailureCountRef.current = 0;
+      }
     } finally {
       setLoading(false);
     }
@@ -233,8 +254,14 @@ export default function StoreApprovalPage() {
     try {
       const { data } = await axios.get(`${API}/store-requests/balance-pending`);
       setBalanceRequests(data.requests);
-    } catch {
-      toast.error("Failed to load balance-pending requests");
+      pollFailureCountRef.current = 0;
+    } catch (e) {
+      pollFailureCountRef.current += 1;
+      console.error("Failed to load balance-pending requests:", e);
+      if (pollFailureCountRef.current >= 3) {
+        toast.error("Still unable to reach the server for balance-pending requests - check your connection");
+        pollFailureCountRef.current = 0;
+      }
     } finally {
       setLoading(false);
     }
