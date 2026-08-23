@@ -441,11 +441,13 @@ export default function StoreApprovalPage() {
         if (cancelled) return;
         setSelected(data);
         setResultMessage(null);
+        // Aug 2026, user's explicit ask: leave Issued Qty blank rather
+        // than prefilling the required/shortfall amount - the store
+        // person types what they actually issue, validated against
+        // usable RM stock below (see usableRmQty/overIssueErrors).
         const defaults = {};
         data.components.forEach((c) => {
-          defaults[c.product_id] = data.status === "resolved_balance_pending"
-            ? String(c.shortfall ?? 0)
-            : (c.issued_qty != null ? String(c.issued_qty) : String(c.required_qty));
+          defaults[c.product_id] = "";
         });
         setIssuedQty(defaults);
       } catch {
@@ -764,9 +766,32 @@ export default function StoreApprovalPage() {
     return Number.isNaN(q) || q < c.required_qty;
   });
 
+  // Aug 2026, user's explicit ask: "allowable" = usable RM stock only
+  // (excludes Inspection/Restricted-Use rows, matches isLocationRestricted
+  // used in the location breakdown above) - a store person should never
+  // be able to type in more than what's actually free to issue from the
+  // RM warehouse, regardless of how much production still needs.
+  const rmWarehouseId = `${selected.site_id}/${selected.site_id}-RM`;
+  const usableRmQty = (c) => (c.locations || [])
+    .filter((loc) => loc.warehouse_id === rmWarehouseId && !isLocationRestricted(loc))
+    .reduce((sum, loc) => sum + (Number(loc.qty) || 0), 0);
+  const overIssueErrors = {};
+  selected.components.forEach((c) => {
+    const raw = issuedQty[c.product_id];
+    if (raw === "" || raw == null) return;
+    const q = Number(raw);
+    const max = usableRmQty(c);
+    if (!Number.isNaN(q) && q > max) overIssueErrors[c.product_id] = max;
+  });
+  const hasOverIssueError = Object.keys(overIssueErrors).length > 0;
+
   const submitIssue = async (decision) => {
     if (!storeName.trim()) {
       toast.error("Enter your name first");
+      return;
+    }
+    if (hasOverIssueError) {
+      toast.error("One or more issued quantities exceed the usable stock available - fix them before submitting");
       return;
     }
     const issued = selected.components.map((c) => ({ product_id: c.product_id, issued_qty: Number(issuedQty[c.product_id]) || 0 }));
@@ -975,23 +1000,37 @@ export default function StoreApprovalPage() {
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 align-top">
                       {isPending ? (
-                        <Input
-                          type="number"
-                          value={issuedQty[c.product_id] ?? ""}
-                          onChange={(e) => setIssuedQty((prev) => ({ ...prev, [c.product_id]: e.target.value }))}
-                          className="h-7 w-28 text-right tabular-nums"
-                          data-testid={`store-issued-qty-input-${i}`}
-                        />
+                        <div className="space-y-0.5">
+                          <Input
+                            type="number"
+                            placeholder="Enter qty..."
+                            value={issuedQty[c.product_id] ?? ""}
+                            onChange={(e) => setIssuedQty((prev) => ({ ...prev, [c.product_id]: e.target.value }))}
+                            className={`h-7 w-28 text-right tabular-nums ${overIssueErrors[c.product_id] !== undefined ? "border-[#B42318] focus-visible:ring-[#B42318]" : ""}`}
+                            data-testid={`store-issued-qty-input-${i}`}
+                          />
+                          {overIssueErrors[c.product_id] !== undefined && (
+                            <p className="text-[10px] text-[#B42318] font-bold" data-testid={`store-issued-qty-error-${i}`}>
+                              Exceeds usable stock ({formatQty(overIssueErrors[c.product_id])} {formatUnit(c.unit_of_measure)} available)
+                            </p>
+                          )}
+                        </div>
                       ) : isReopenable && c.shortfall > 0 ? (
                         <div className="space-y-0.5" data-testid={`store-reopen-issue-cell-${i}`}>
                           <p className="text-[10px] text-[#667085]">Already issued: {formatQty(c.issued_qty)} {formatUnit(c.unit_of_measure)}</p>
                           <Input
                             type="number"
+                            placeholder="Enter qty..."
                             value={issuedQty[c.product_id] ?? ""}
                             onChange={(e) => setIssuedQty((prev) => ({ ...prev, [c.product_id]: e.target.value }))}
-                            className="h-7 w-28 text-right tabular-nums"
+                            className={`h-7 w-28 text-right tabular-nums ${overIssueErrors[c.product_id] !== undefined ? "border-[#B42318] focus-visible:ring-[#B42318]" : ""}`}
                             data-testid={`store-issued-qty-input-${i}`}
                           />
+                          {overIssueErrors[c.product_id] !== undefined && (
+                            <p className="text-[10px] text-[#B42318] font-bold" data-testid={`store-issued-qty-error-${i}`}>
+                              Exceeds usable stock ({formatQty(overIssueErrors[c.product_id])} {formatUnit(c.unit_of_measure)} available)
+                            </p>
+                          )}
                         </div>
                       ) : isReopenable ? (
                         <span className="tabular-nums text-[#027A48]" data-testid={`store-issued-qty-complete-${i}`}>{formatQty(c.issued_qty)} {formatUnit(c.unit_of_measure)} (fully issued)</span>
@@ -1028,16 +1067,16 @@ export default function StoreApprovalPage() {
                 <>
                   <p className="text-[11px] text-[#B54708]">One or more components are still short of the required quantity. Choose how to proceed:</p>
                   <div className="flex flex-wrap gap-2">
-                    <Button disabled={submitting} onClick={() => submitIssue("proceed")} data-testid="store-submit-proceed-button">
+                    <Button disabled={submitting || hasOverIssueError} onClick={() => submitIssue("proceed")} data-testid="store-submit-proceed-button">
                       Proceed with Partial Stock
                     </Button>
-                    <Button variant="outline" disabled={submitting} onClick={() => submitIssue("send_to_planner")} data-testid="store-submit-send-to-planner-button">
+                    <Button variant="outline" disabled={submitting || hasOverIssueError} onClick={() => submitIssue("send_to_planner")} data-testid="store-submit-send-to-planner-button">
                       Send to Requester for Approval
                     </Button>
                   </div>
                 </>
               ) : (
-                <Button disabled={submitting} onClick={() => submitIssue(null)} data-testid="store-submit-full-button">
+                <Button disabled={submitting || hasOverIssueError} onClick={() => submitIssue(null)} data-testid="store-submit-full-button">
                   Confirm Stock Fully Issued
                 </Button>
               )}
@@ -1047,9 +1086,9 @@ export default function StoreApprovalPage() {
           {isReopenable && !resultMessage && (
             <div className="space-y-2">
               <div className="bg-[#FEF6EE] border border-[#F9DBAF] rounded-sm px-3 py-2 text-xs text-[#B93815]" data-testid="store-reopen-notice">
-                This request still has an outstanding balance. Enter what you can issue now for the short component(s) above (defaults to the remaining balance) - you can reopen this again later if there's still a balance left.
+                This request still has an outstanding balance. Enter what you can issue now for the short component(s) above - you can reopen this again later if there's still a balance left.
               </div>
-              <Button disabled={submitting} onClick={() => submitIssue(null)} data-testid="store-submit-reopen-button">
+              <Button disabled={submitting || hasOverIssueError} onClick={() => submitIssue(null)} data-testid="store-submit-reopen-button">
                 Issue Remaining Balance
               </Button>
             </div>
