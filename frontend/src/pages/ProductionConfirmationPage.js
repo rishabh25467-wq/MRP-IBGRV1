@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, Fragment } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
 import "@/App.css";
 import axios from "axios";
 import {
@@ -1303,6 +1303,8 @@ export default function ProductionConfirmationPage() {
   const { user } = useAuth();
   const actorName = user?.name || user?.email || "";
   const [statusFilter, setStatusFilter] = useState("open");
+  const [creatorFilter, setCreatorFilter] = useState("all");
+  const [sortLatestFirst, setSortLatestFirst] = useState(false);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState(null);
@@ -1384,6 +1386,26 @@ export default function ProductionConfirmationPage() {
     setRows((prev) => prev.filter((r) => rowKey(r) !== rowKey(row)));
   };
 
+  // "Show mine" compares against the same actor string this app itself
+  // writes on order creation (see createProposal's `actor: actorName.trim()`
+  // below) - a case-insensitive match so a slightly different casing from
+  // Entra ID doesn't silently hide a user's own orders.
+  const visibleRows = useMemo(() => {
+    let out = rows;
+    if (creatorFilter === "mine") {
+      const mine = actorName.trim().toLowerCase();
+      out = out.filter((r) => (r.created_by || "").trim().toLowerCase() === mine);
+    }
+    if (sortLatestFirst) {
+      out = [...out].sort((a, b) => {
+        const at = a.order_created_at ? new Date(a.order_created_at).getTime() : -Infinity;
+        const bt = b.order_created_at ? new Date(b.order_created_at).getTime() : -Infinity;
+        return bt - at;
+      });
+    }
+    return out;
+  }, [rows, creatorFilter, sortLatestFirst, actorName]);
+
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]">
       <Toaster position="top-right" />
@@ -1451,6 +1473,22 @@ export default function ProductionConfirmationPage() {
             <ArrowClockwise size={14} className="mr-1.5" /> Refresh
           </Button>
           <div className="w-px h-6 bg-[#D0D5DD] mx-1" />
+          <Select value={creatorFilter} onValueChange={setCreatorFilter}>
+            <SelectTrigger className="w-40 bg-white" data-testid="creator-filter-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all" data-testid="creator-filter-all">Show all</SelectItem>
+              <SelectItem value="mine" data-testid="creator-filter-mine">Show mine</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button
+            variant="outline"
+            onClick={() => setSortLatestFirst((s) => !s)}
+            className={sortLatestFirst ? "bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]" : ""}
+            data-testid="sort-latest-toggle-button"
+          >
+            <ClockCounterClockwise size={14} className="mr-1.5" /> Sort by latest {sortLatestFirst ? "✓" : ""}
+          </Button>
+          <div className="w-px h-6 bg-[#D0D5DD] mx-1" />
           <Input
             placeholder="Enter Production Lot ID..."
             value={manualLotId}
@@ -1472,8 +1510,8 @@ export default function ProductionConfirmationPage() {
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-md">
-          <StatCard icon={ListChecks} label="Reporting Points Shown" value={rows.length} testId="stat-reporting-points" />
-          <StatCard icon={CheckCircle} label="Distinct Lots" value={new Set(rows.map((r) => r.production_lot_id)).size} testId="stat-distinct-lots" />
+          <StatCard icon={ListChecks} label="Reporting Points Shown" value={visibleRows.length} testId="stat-reporting-points" />
+          <StatCard icon={CheckCircle} label="Distinct Lots" value={new Set(visibleRows.map((r) => r.production_lot_id)).size} testId="stat-distinct-lots" />
         </div>
 
         {loading ? (
@@ -1483,13 +1521,13 @@ export default function ProductionConfirmationPage() {
             <table className="w-full text-[13px] border-collapse" data-testid="production-lots-table">
               <thead>
                 <tr>
-                  {["Lot ID", "Output Product", "Site", "Status", "Reporting Point", "Planned", "Confirmed So Far", "Open", "UOM", "Finished", "Stock", "Last Confirmation", ""].map((h) => (
+                  {["Lot ID", "Output Product", "Site", "Status", "Reporting Point", "Planned", "Confirmed So Far", "Open", "UOM", "Finished", "Created By", "Stock", "Last Confirmation", ""].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r, i) => {
+                {visibleRows.map((r, i) => {
                   const stock = stockByRow[rowKey(r)];
                   const lastConf = lastConfirmationByLot[r.production_lot_id];
                   return (
@@ -1506,6 +1544,7 @@ export default function ProductionConfirmationPage() {
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums font-bold text-[#B54708]">{formatQty(r.open_quantity)}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">{formatUnit(r.unit_code) || "—"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{r.confirmation_finished ? "Yes" : "No"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]" data-testid={`created-by-cell-${i}`}>{r.created_by || "—"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
                       {!stock ? (
                         <span className="text-[11px] text-[#98A2B3]" data-testid={`stock-badge-loading-${i}`}>…</span>
@@ -1549,10 +1588,13 @@ export default function ProductionConfirmationPage() {
                   );
                 })}
                 {rows.length === 0 && authError && (
-                  <tr><td colSpan={12} className="text-center py-8 text-[#B54708] bg-[#FFFAEB] border border-[#D0D5DD]" data-testid="blocked-state">Blocked by SAP authorization - see banner above.</td></tr>
+                  <tr><td colSpan={13} className="text-center py-8 text-[#B54708] bg-[#FFFAEB] border border-[#D0D5DD]" data-testid="blocked-state">Blocked by SAP authorization - see banner above.</td></tr>
                 )}
                 {rows.length === 0 && !authError && !loadError && (
-                  <tr><td colSpan={12} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="empty-state">No open production lots found.</td></tr>
+                  <tr><td colSpan={13} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="empty-state">No open production lots found.</td></tr>
+                )}
+                {rows.length > 0 && visibleRows.length === 0 && (
+                  <tr><td colSpan={13} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="filtered-empty-state">No rows match "Show mine" - no open lots were created by you.</td></tr>
                 )}
               </tbody>
             </table>

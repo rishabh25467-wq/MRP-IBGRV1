@@ -1951,6 +1951,22 @@ async def po_selection_history(internal_pono: Optional[float] = Query(None), ite
 # BOM components from the confirmed output, per the user's explicit
 # requirement.
 # ---------------------------------------------------------------------
+def _attach_order_creators(rows: list, db) -> list:
+    """Aug 2026, user's ask: "Show mine"/"Sort by latest" on the Production
+    Confirmation table need to know who created/released each row's
+    production order, and when - joins against
+    production_order_creation_history (see
+    production_confirmation_service.get_order_creators)."""
+    order_ids = [r.get("production_order_id") for r in rows if r.get("production_order_id")]
+    creators = production_confirmation_service.get_order_creators(db, order_ids)
+    for r in rows:
+        info = creators.get(r.get("production_order_id")) or {}
+        r["created_by"] = info.get("name")
+        at = info.get("at")
+        r["order_created_at"] = at.isoformat() if at else None
+    return rows
+
+
 @api_router.get("/production-confirmation/open-lots")
 async def get_open_production_lots(status: str = Query("open", description="'open' (Released+Started), 'all', or comma-separated status codes"), site_id: Optional[str] = None, limit: int = 100):
     if status == "open":
@@ -1965,7 +1981,7 @@ async def get_open_production_lots(status: str = Query("open", description="'ope
         raise HTTPException(status_code=403, detail=str(e))
     except SAPProductionLotError as e:
         raise HTTPException(status_code=502, detail=f"SAP error: {e}")
-    return {"rows": rows}
+    return {"rows": await asyncio.to_thread(_attach_order_creators, rows, db)}
 
 
 @api_router.get("/production-confirmation/lot/{production_lot_id}")
@@ -1978,7 +1994,7 @@ async def get_production_lot_by_id(production_lot_id: str):
         raise HTTPException(status_code=502, detail=f"SAP error: {e}")
     if not rows:
         raise HTTPException(status_code=404, detail=f"No production lot found for ID '{production_lot_id}'")
-    return {"rows": rows}
+    return {"rows": await asyncio.to_thread(_attach_order_creators, rows, db)}
 
 
 class ConfirmProductionRequest(BaseModel):
@@ -2897,8 +2913,18 @@ async def get_proposal_and_release_history():
 
 @api_router.get("/production-confirmation/component-availability")
 async def get_component_availability(main_output_product: str, confirmed_quantity: float, site_id: str):
+    # Aug 2026 bug fix: this endpoint gates the Confirm dialog's real SAP
+    # write, so it's supposed to pull LIVE SFG/RM/QC stock (see
+    # check_component_availability's docstring) rather than the
+    # periodically-refreshed cache - but `sap_inventory_client` was never
+    # actually passed here, so it silently always fell back to the stale
+    # cache. Confirmed live against a real case (PALL-433727 at site P2):
+    # a goods movement outside this app's own tracked Store Approval flow
+    # moved SFG stock from 0.24 to 4.24 in SAP itself, and this endpoint
+    # kept reporting the old 0.24 (short) until this fix.
     result = await asyncio.to_thread(
-        production_confirmation_service.check_component_availability, db, main_output_product, confirmed_quantity, site_id,
+        production_confirmation_service.check_component_availability,
+        db, main_output_product, confirmed_quantity, site_id, sap_inventory_client,
     )
     return result
 

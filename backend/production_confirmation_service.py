@@ -223,6 +223,30 @@ def get_proposal_and_release_history(db, limit: int = 200) -> list:
     ]
 
 
+def get_order_creators(db, production_order_ids: list) -> dict:
+    """{production_order_id: {"name": actor_name, "at": datetime}} for the
+    "Show mine"/"Sort by latest" controls (user's explicit ask, Aug 2026)
+    on the Production Confirmation table - "mine" means orders I
+    created/released, not orders I've merely confirmed. Prefers
+    `released_by` (the merged proposal_created row, the normal one-click
+    flow) over `actor` (the standalone manual Release-an-Order form,
+    which has no linked proposal row). `at` is the order-creation
+    timestamp, used so "latest" reflects when the order was actually
+    created rather than SAP's own (unexposed) lot ordering."""
+    if not production_order_ids:
+        return {}
+    docs = db[PROPOSAL_HISTORY_COLLECTION].find(
+        {"production_order_id": {"$in": production_order_ids}},
+        {"production_order_id": 1, "released_by": 1, "actor": 1, "at": 1, "released_at": 1},
+    ).sort("_id", 1)
+    creators = {}
+    for d in docs:
+        order_id = d.get("production_order_id")
+        if order_id:
+            creators[order_id] = {"name": d.get("released_by") or d.get("actor"), "at": d.get("released_at") or d.get("at")}
+    return creators
+
+
 def load_stock_by_product(db) -> dict:
     """Loads the current inventory_cache (refreshed every 30 min from live
     SAP, see server.py's start_inventory_cache_refresh_loop) into a
