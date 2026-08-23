@@ -8,7 +8,11 @@ import { useAuth } from "@/contexts/AuthContext";
 // protected the same way as a regular page.
 export const ProtectedRoute = ({ page, superAdminOnly = false, children }) => {
   const { user, hasPageAccess } = useAuth();
-  const allowed = superAdminOnly ? user?.role === "super_admin" : hasPageAccess(page);
+  // Aug 2026: "admin" is a new tier alongside super_admin that can also
+  // access Access Management (user's explicit ask) - kept the existing
+  // `superAdminOnly` prop name (single usage site) rather than renaming
+  // it everywhere for what both roles are now allowed to see.
+  const allowed = superAdminOnly ? (user?.role === "super_admin" || user?.role === "admin") : hasPageAccess(page);
 
   if (!allowed) {
     return (

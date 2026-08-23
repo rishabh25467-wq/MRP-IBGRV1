@@ -206,6 +206,24 @@ def _compute_no_bom_flags(db) -> dict:
     return {"roots_with_bom": roots_with_bom, "leaf_ids": leaf_ids, "historical_leaf_ids": historical_leaf_ids}
 
 
+def list_known_sites(db):
+    """Full list of real SAP site codes (P1, P2, P3...) derived from
+    inventory_cache's location data - same pattern InventoryPage.js already
+    uses client-side for its own Site filter. Aug 2026 bug fix: the Store
+    Approval Plant/Site filter previously only listed sites that happened
+    to have a currently-open request, so a real site like P9 silently
+    never showed up as an option whenever it had no pending request at
+    that exact moment."""
+    doc = db[INVENTORY_CACHE_COLLECTION].find_one({"_id": INVENTORY_CACHE_ID}, {"items.locations.site": 1})
+    sites = set()
+    for item in (doc or {}).get("items", []):
+        for loc in item.get("locations", []):
+            site = loc.get("site")
+            if site:
+                sites.add(site.split("-")[-1])
+    return sorted(sites)
+
+
 def get_cached_inventory(db):
     """Instant read of the last-refreshed inventory snapshot - what the
     Inventory page loads on every visit. Returns

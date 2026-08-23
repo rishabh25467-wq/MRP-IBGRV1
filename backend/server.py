@@ -41,7 +41,7 @@ import quota_arrangement_service
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
-from inventory_service import get_cached_inventory, refresh_inventory_cache, refresh_stock_quantities_for_warehouses, deep_backfill_uuids
+from inventory_service import get_cached_inventory, refresh_inventory_cache, refresh_stock_quantities_for_warehouses, deep_backfill_uuids, list_known_sites
 import l1_l2_report_service
 from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids, categorize_full_inventory, backfill_drawing_urls, refresh_attachments_now, REFRESH_ATTACHMENTS_MAX_IDS
 from oms_client import OMSClient, OMSError
@@ -420,16 +420,16 @@ async def auth_me(request: Request):
 @api_router.get("/admin/pages")
 async def admin_list_pages(request: Request):
     user = await asyncio.to_thread(auth_service.get_current_user, request, db)
-    if not user or user.get("role") != "super_admin":
-        raise HTTPException(status_code=403, detail="Super admin access required")
+    if not user or user.get("role") not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
     return {"pages": auth_service.PAGE_CATALOG}
 
 
 @api_router.get("/admin/users")
 async def admin_list_users(request: Request):
     user = await asyncio.to_thread(auth_service.get_current_user, request, db)
-    if not user or user.get("role") != "super_admin":
-        raise HTTPException(status_code=403, detail="Super admin access required")
+    if not user or user.get("role") not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
     docs = await asyncio.to_thread(
         lambda: list(db[auth_service.USERS_COLLECTION].find({}).sort("last_login_at", -1))
     )
@@ -444,10 +444,27 @@ class UpdateUserAccessRequest(BaseModel):
 @api_router.put("/admin/users/{user_id}/access")
 async def admin_update_user_access(user_id: str, body: UpdateUserAccessRequest, request: Request):
     requester = await asyncio.to_thread(auth_service.get_current_user, request, db)
-    if not requester or requester.get("role") != "super_admin":
-        raise HTTPException(status_code=403, detail="Super admin access required")
-    if body.role not in ("user", "super_admin"):
+    if not requester or requester.get("role") not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if body.role not in ("user", "admin", "super_admin"):
         raise HTTPException(status_code=400, detail="Invalid role")
+    # Aug 2026, user's explicit ask: "admin" can grant/revoke pages and set
+    # someone's role to "user", but can NEVER hand out "admin" or
+    # "super_admin" - only an existing super_admin may create either.
+    # Enforced here (not just hidden in the UI) since that's the actual
+    # security boundary.
+    if requester.get("role") == "admin" and body.role != "user":
+        raise HTTPException(status_code=403, detail="Only a super admin can assign the admin/super admin role")
+    target = await asyncio.to_thread(db[auth_service.USERS_COLLECTION].find_one, {"_id": user_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    # An admin also can't touch a super_admin's access at all (demote,
+    # revoke pages, etc.) - only another super_admin can. Not explicitly
+    # requested but a natural extension of "admin can't act at the
+    # super_admin tier" - prevents an admin from ever locking out the
+    # only super_admin(s).
+    if requester.get("role") == "admin" and target.get("role") == "super_admin":
+        raise HTTPException(status_code=403, detail="Only a super admin can modify another super admin's access")
     invalid_pages = set(body.allowed_pages) - auth_service.PAGE_KEYS
     if invalid_pages:
         raise HTTPException(status_code=400, detail=f"Unknown page keys: {sorted(invalid_pages)}")
@@ -2676,8 +2693,10 @@ class PlannerStoreDecisionRequest(BaseModel):
 
 @api_router.get("/store-requests")
 async def list_store_requests():
-    """Unauthenticated by design (user's explicit choice) - the store team
-    needs to see the open queue of stock requests without a login."""
+    """Aug 2026: now requires Entra ID login + the "store_approval" page
+    permission (was previously unauthenticated by design) - user's
+    explicit ask, now that the actor's name comes from their signed-in
+    session instead of a free-text box."""
     return {"requests": await asyncio.to_thread(store_approval_service.list_requests, db)}
 
 
@@ -2701,18 +2720,33 @@ async def get_store_requests_balance_pending():
     return {"requests": await asyncio.to_thread(store_approval_service.list_balance_pending, db)}
 
 
+@api_router.get("/store-requests/known-sites")
+async def get_store_requests_known_sites():
+    """User's bug report (Aug 2026): the Plant/Site filter only listed
+    sites that happened to have a currently-PENDING request, so a real
+    site like P9 was invisible whenever it had no open request at that
+    moment. Sources the full site list from inventory_cache instead
+    (same pattern InventoryPage.js already uses for its own Site
+    filter) - every site SAP actually has stock data for, not just
+    whichever ones happen to be in the queue right now. Declared BEFORE
+    /store-requests/{request_id} for the same routing reason as
+    /journal above."""
+    return {"sites": await asyncio.to_thread(list_known_sites, db)}
+
+
 @api_router.post("/store-requests/refresh-live-stock")
 async def refresh_live_stock_for_store(site_id: str):
     """"Refresh Live Stock Now" v5 (Aug 2026) - store person's on-demand
     button for the exact "I just posted a Goods Receipt, is it visible
     yet" gap. Deliberately its OWN endpoint (not /api/inventory, which
     sits behind the `inventory` page permission) under the /store-requests
-    prefix already exempted from auth for this public workflow. User's
-    own follow-up asks: (1) "target the specific warehouse, not the whole
-    site" and (2) also cover QC (Quality Hold) so the store person can see
-    material stuck there too - so this now pulls RM + QC together in one
-    filtered SAP call (`refresh_stock_quantities_for_warehouses` -
-    verified live: ~6.9s for both at once, even faster than either alone).
+    prefix, now gated by the "store_approval" page permission like the
+    rest of this workflow. User's own follow-up asks: (1) "target the
+    specific warehouse, not the whole site" and (2) also cover QC (Quality
+    Hold) so the store person can see material stuck there too - so this
+    now pulls RM + QC together in one filtered SAP call
+    (`refresh_stock_quantities_for_warehouses` - verified live: ~6.9s for
+    both at once, even faster than either alone).
     Declared BEFORE /store-requests/{request_id} so this literal path
     isn't swallowed by that dynamic route."""
     job_id = str(uuid.uuid4())

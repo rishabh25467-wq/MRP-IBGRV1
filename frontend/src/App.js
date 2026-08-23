@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, useLocation } from "react-router-dom";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
 import BomExplorerPage from "@/pages/BomExplorerPage";
 import PurchasingPlanPage from "@/pages/PurchasingPlanPage";
 import ProductionPlanPage from "@/pages/ProductionPlanPage";
@@ -17,14 +17,12 @@ import AccessManagementPage from "@/pages/AccessManagementPage";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 
-// /storeapproval is intentionally left OUTSIDE the login gate - the
-// warehouse/store team processing stock requests should not need an
-// Entra ID account (explicit user choice, Store Approval workflow).
+// Aug 2026: Store Approval now requires Entra ID login like every other
+// page (was previously exempted here) - user's explicit ask, now that
+// the actor's name comes from the signed-in session, not a manual box.
 function AuthGate({ children }) {
   const { user, loading, isPendingAccess } = useAuth();
-  const location = useLocation();
 
-  if (location.pathname.startsWith("/storeapproval")) return children;
   if (loading) return null;
   if (!user) return <LoginPage />;
   if (isPendingAccess) return <PendingAccessPage />;
@@ -49,11 +47,11 @@ function App() {
             <Route path="/admin/create-material" element={<ProtectedRoute page="admin_create_material"><CreateMaterialPage /></ProtectedRoute>} />
             <Route path="/admin/l1-l2-report" element={<ProtectedRoute page="admin"><L1L2ReportPage /></ProtectedRoute>} />
             <Route path="/admin/access-management" element={<ProtectedRoute superAdminOnly><AccessManagementPage /></ProtectedRoute>} />
-            <Route path="/storeapproval" element={<StoreApprovalPage />} />
-            <Route path="/storeapproval/journal" element={<StoreApprovalPage />} />
-            <Route path="/storeapproval/balance" element={<StoreApprovalPage />} />
-            <Route path="/storeapproval/movements" element={<StoreApprovalPage />} />
-            <Route path="/storeapproval/request/:requestId" element={<StoreApprovalPage />} />
+            <Route path="/storeapproval" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
+            <Route path="/storeapproval/journal" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
+            <Route path="/storeapproval/balance" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
+            <Route path="/storeapproval/movements" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
+            <Route path="/storeapproval/request/:requestId" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
           </Routes>
         </AuthGate>
       </BrowserRouter>

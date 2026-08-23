@@ -34,6 +34,7 @@ export const PAGE_LABELS = {
   quota_allocation: "Quota Allocation",
   admin: "Component Master (Admin)",
   admin_sap_write: "SAP Write (Admin)",
+  store_approval: "Store Approval",
 };
 
 const AuthContext = createContext(null);

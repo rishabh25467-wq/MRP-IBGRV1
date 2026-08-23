@@ -1,0 +1,41 @@
+{
+  "summary": "Tested the Aug 2026 auth/role change end-to-end. Backend: 34/34 pytest cases pass in /app/backend/tests/test_roles_and_store_approval_auth.py (store-approval API now 401 unauthenticated, 403 without the 'store_approval' page, 200 with it / for admin / super_admin; /api/auth/me returns the full 11-key PAGE_CATALOG for role='admin'; /api/admin/pages + /api/admin/users now 200 for admin and 403 for plain users; PUT /api/admin/users/{id}/access correctly lets admin set role='user'+pages, 403s on role admin/super_admin, 403s on any super_admin target, and lets super_admin promote/demote and edit a super_admin; 400 on invalid role/unknown page key, 404 on unknown user - all with GET-verified persistence). Frontend (Playwright with synthetic Entra sessions injected via Mongo, all cleaned up): store_approval-only user loads /storeapproval with the standard Materials Hub header + NavTabs and their real signed-in name; store-actor-name-input / -detail testids and any 'Your Name' text are gone (0 occurrences); all 4 tabs route correctly to /storeapproval, /journal, /balance, /movements; Plant/Site selector persists P3 across reload and tab round-trip and persists 'All Sites' too (localStorage storeApprovalSelectedSite); Process -> /storeapproval/request/P3-000001?from=queue and the intercepted POST /issue body carries actor='TEST QA ui_store_user' (session identity, no manual entry); regression sweep passed - Manufactured/Bought-Out badges, red '\u26a0 On Hold - not usable' restricted stock lines, blank-by-default Issued Qty inputs, over-issue error 'Exceeds usable stock (0 EA available)' with submit buttons disabled, site P3 resolving to 'P3 - Raw Material Zone 1-01-A (RM)', and 'Refresh Live Stock Now' progressing to 'Live SAP stock refreshed'; user with 'inventory' but not 'store_approval' gets the Access Denied screen and only 'Stock Overview' in the Inventory dropdown; no 'Production Planning' nav tab for any role; Access Management reachable for role='admin' (locked 'Only a super admin can change this' on super_admin rows, no role control/save on them, page toggles + save = 'Access updated'), and 3-way User/Admin/Super Admin Select for super_admin viewers (promote to Admin and revert to User both verified via UI).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/store-requests (and /journal, /balance-pending)", "issue": "Flaky one-off: during the first full pytest run three unauthenticated requests that should return an instant 401 hung >60s and timed out; identical calls returned 401 in ~0.09s on retry and in all subsequent runs. Likely event-loop/thread starvation while a heavy sync SAP call was in flight - worth watching, not reproducible on demand."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Access Management (admin viewer)", "issues": ["An 'admin' viewer sees an enabled 'Demote to User' button on their OWN row, so an admin can silently self-demote and instantly lose access to the page (backend allows role='user' so it succeeds). Consider disabling/hiding it for the current user, as is already done for the super_admin's own row."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_roles_and_store_approval_auth.py",
+    "/app/backend/tests/_setup_role_sessions.py",
+    "/app/test_reports/pytest/roles_auth.xml"
+  ],
+  "action_items": [
+    "OPTIONAL (security hardening): POST /api/store-requests/{id}/issue still takes `actor` from the request body, so the audit trail (store_actor) is client-supplied and spoofable now that login is mandatory - derive it from request.state.user (name/email) and ignore/validate the body field. Same applies to the other endpoints that still require a free-text `actor`.",
+    "OPTIONAL (UX): prevent an admin from demoting themselves on the Access Management page."
+  ],
+  "critical_code_review_comments": [
+    "auth_service.PAGE_ROUTE_RULES ordering is correct today (/api/production-confirmation/ precedes /api/store-requests), but /api/store-requests/refresh-live-stock is now gated by 'store_approval' only - intentional per the docstring; keep a note that adding an /api/store-requests/* endpoint that reads other pages' data inherits only that permission.",
+    "GET /api/admin/users returns whole Mongo user docs (tid/oid/email of every user). String _id serializes fine, but consider projecting only the fields the UI needs.",
+    "frontend/src/pages/StoreApprovalPage.js is 1127 lines - above the 700-line guideline; queue/journal/balance/movements/detail could be split into sub-components."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_roles_and_store_approval_auth.py (new)",
+    "/app/backend/tests/_setup_role_sessions.py (new, synthetic session helper for UI role tests)"
+  ],
+  "success_rate": {"backend": "100% (34/34)", "frontend": "100% of tested flows"},
+  "seed_data_creation": "Synthetic auth_users/auth_sessions for roles user(store_approval), user(no pages), admin, super_admin plus two mutation targets. ALL deleted after the run (verified: 0 TEST* docs remain in auth_users/auth_sessions). No real request/SAP data was mutated - the issue POST for P3-000001 was intercepted and mocked in the browser so no live SAP goods movement was posted.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "No end-user credentials exist for Entra SSO; /app/memory/test_credentials.md holds only third-party integration creds. Use /app/backend/tests/_setup_role_sessions.py to mint synthetic vms_session cookies for role testing (remember --cleanup).",
+  "context_for_next_testing_agent": "Reusable regression suite: /app/backend/tests/test_roles_and_store_approval_auth.py (run serially with `-n 0`; pytest.ini forces -n 2 so `-p no:xdist` errors). For UI role tests run `python tests/_setup_role_sessions.py`, add the printed token as cookie vms_session on the preview domain, then `--cleanup`. Store request _id IS the request id (no request_id field); POST /api/store-requests/refresh-live-stock needs ?site_id=. Live pending requests P1-000004, P3-000001, P1-000001 exist. Intercept **/api/store-requests/*/issue in Playwright to avoid real SAP postings.",
+  "rca_of_the_issue": "No functional defect found in the reviewed change set. The only anomaly was a non-reproducible 60s stall on three unauthenticated 401 requests during the first suite run; the auth middleware offloads the Mongo session lookup via asyncio.to_thread, so a saturated default thread-pool / blocked event loop during concurrent sync SAP work is the most likely cause."
+}

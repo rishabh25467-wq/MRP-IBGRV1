@@ -72,6 +72,10 @@ PAGE_CATALOG = [
     {"key": "admin", "label": "Admin"},
     {"key": "admin_sap_write", "label": "Admin - SAP Write"},
     {"key": "admin_create_material", "label": "Admin - Create Material"},
+    # Aug 2026 - Store Approval moved from unauthenticated/public to
+    # requiring Entra ID login (user's explicit ask), so it now needs its
+    # own grantable page permission like every other page.
+    {"key": "store_approval", "label": "Store Approval"},
 ]
 PAGE_KEYS = {p["key"] for p in PAGE_CATALOG}
 
@@ -105,18 +109,13 @@ PAGE_ROUTE_RULES = [
     ("/api/admin/categories", {"admin"}),
     ("/api/admin/create-material", {"admin_create_material"}),
     ("/api/admin/delete-material", {"admin_create_material"}),
+    ("/api/store-requests", {"store_approval"}),
 ]
 
 # Paths the auth middleware never gates - login must stay reachable while
 # logged out, and /auth/me must never itself 401 (the frontend uses it to
 # find out WHETHER it's logged in).
 PUBLIC_PATHS = {"/api/", "/api/auth/login", "/api/auth/callback", "/api/auth/me"}
-
-# Prefix version of the above - used for the Store Approval workflow's
-# `/storeapproval` screen, which the user explicitly asked to keep
-# unauthenticated for now ("not hidden behind a login right now") so a
-# warehouse/store user can act on a stock request without an account.
-PUBLIC_PATH_PREFIXES = ("/api/store-requests",)
 
 
 def ensure_indexes(db) -> None:
@@ -232,12 +231,16 @@ def logout(request: Request, db) -> JSONResponse:
 
 def user_public_view(user: dict) -> dict:
     role = user.get("role", "user")
+    # Aug 2026: "admin" is a new middle tier - full page access like
+    # super_admin, but (enforced server-side in the /admin/users/{id}/
+    # access endpoint, not here) can only ever assign the "user" role to
+    # others, never "admin"/"super_admin".
     return {
         "authenticated": True,
         "email": user.get("email"),
         "name": user.get("name"),
         "role": role,
-        "allowed_pages": sorted(PAGE_KEYS) if role == "super_admin" else user.get("allowed_pages", []),
+        "allowed_pages": sorted(PAGE_KEYS) if role in ("super_admin", "admin") else user.get("allowed_pages", []),
     }
 
 
@@ -252,7 +255,6 @@ def create_auth_middleware(db):
             request.method == "OPTIONS"
             or not path.startswith("/api/")
             or path in PUBLIC_PATHS
-            or path.startswith(PUBLIC_PATH_PREFIXES)
         ):
             return await call_next(request)
 
@@ -261,7 +263,7 @@ def create_auth_middleware(db):
             return JSONResponse({"detail": "Login required"}, status_code=401)
 
         required_pages = resolve_required_pages(path)
-        if required_pages and user.get("role") != "super_admin":
+        if required_pages and user.get("role") not in ("super_admin", "admin"):
             if not (set(user.get("allowed_pages", [])) & required_pages):
                 return JSONResponse({"detail": "Access denied"}, status_code=403)
 

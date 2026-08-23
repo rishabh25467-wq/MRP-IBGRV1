@@ -4,6 +4,7 @@ import { Shield, ShieldCheck } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { NavTabs } from "@/components/NavTabs";
 import { useAuth, PAGE_LABELS } from "@/contexts/AuthContext";
@@ -12,6 +13,18 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
 const PAGE_KEYS = Object.keys(PAGE_LABELS);
+
+// Aug 2026, user's explicit ask: a new "admin" tier between "user" and
+// "super_admin" - full page access automatically like super_admin, can
+// grant/revoke pages and set someone's role, but can NEVER hand out
+// "admin"/"super_admin" (only an existing super_admin can) and can't
+// touch a super_admin's row at all (enforced server-side too, see
+// server.py's admin_update_user_access - this is display/UX only).
+const ROLE_BADGE = {
+  super_admin: { label: "Super Admin", className: "bg-[#0E7C86] text-white" },
+  admin: { label: "Admin", className: "bg-[#175CD3] text-white" },
+  user: { label: "User", className: "bg-[#F2F4F7] text-[#344054]" },
+};
 
 export default function AccessManagementPage() {
   const { user: currentUser } = useAuth();
@@ -55,11 +68,8 @@ export default function AccessManagementPage() {
     });
   };
 
-  const toggleRole = (userId) => {
-    setDrafts((prev) => ({
-      ...prev,
-      [userId]: { ...prev[userId], role: prev[userId].role === "super_admin" ? "user" : "super_admin" },
-    }));
+  const setRole = (userId, role) => {
+    setDrafts((prev) => ({ ...prev, [userId]: { ...prev[userId], role } }));
   };
 
   const isDirty = (u) => {
@@ -121,8 +131,9 @@ export default function AccessManagementPage() {
           <div className="bg-white border border-[#E4E7EC] rounded-xl overflow-hidden">
             {users.map((u) => {
               const draft = drafts[u._id] || { role: "user", allowed_pages: [] };
-              const isSuperAdmin = draft.role === "super_admin";
+              const hasAllPages = draft.role === "admin" || draft.role === "super_admin";
               const isSelf = currentUser && u.email === currentUser.email;
+              const viewerIsSuperAdmin = currentUser?.role === "super_admin";
               return (
                 <div
                   key={u._id}
@@ -138,26 +149,40 @@ export default function AccessManagementPage() {
                       <div className="text-xs text-[#667085]">{u.email}</div>
                     </div>
                     <div className="flex items-center gap-3">
-                      <Badge
-                        className={isSuperAdmin ? "bg-[#0E7C86] text-white" : "bg-[#F2F4F7] text-[#344054]"}
-                        data-testid={`access-management-role-badge-${u._id}`}
-                      >
-                        {isSuperAdmin ? "Super Admin" : "User"}
+                      <Badge className={ROLE_BADGE[draft.role].className} data-testid={`access-management-role-badge-${u._id}`}>
+                        {ROLE_BADGE[draft.role].label}
                       </Badge>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={isSelf}
-                        onClick={() => toggleRole(u._id)}
-                        className="text-xs border-[#D0D5DD]"
-                        data-testid={`access-management-toggle-role-${u._id}`}
-                      >
-                        {isSuperAdmin ? "Demote to User" : "Promote to Super Admin"}
-                      </Button>
+                      {viewerIsSuperAdmin ? (
+                        <Select value={draft.role} onValueChange={(v) => setRole(u._id, v)} disabled={isSelf}>
+                          <SelectTrigger className="h-8 w-[140px] text-xs bg-white" data-testid={`access-management-role-select-${u._id}`}>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="user">User</SelectItem>
+                            <SelectItem value="admin">Admin</SelectItem>
+                            <SelectItem value="super_admin">Super Admin</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      ) : draft.role === "admin" ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={isSelf}
+                          onClick={() => setRole(u._id, "user")}
+                          className="text-xs border-[#D0D5DD]"
+                          data-testid={`access-management-toggle-role-${u._id}`}
+                        >
+                          Demote to User
+                        </Button>
+                      ) : draft.role === "super_admin" ? (
+                        <span className="text-xs text-[#98A2B3]" data-testid={`access-management-locked-${u._id}`}>
+                          Only a super admin can change this
+                        </span>
+                      ) : null}
                     </div>
                   </div>
 
-                  {!isSuperAdmin && (
+                  {!hasAllPages ? (
                     <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2">
                       {PAGE_KEYS.map((pageKey) => (
                         <label
@@ -174,9 +199,10 @@ export default function AccessManagementPage() {
                         </label>
                       ))}
                     </div>
-                  )}
-                  {isSuperAdmin && (
-                    <div className="mt-2 text-xs text-[#667085]">Super Admins automatically have every page.</div>
+                  ) : (
+                    <div className="mt-2 text-xs text-[#667085]">
+                      {draft.role === "admin" ? "Admins" : "Super Admins"} automatically have every page.
+                    </div>
                   )}
 
                   {isDirty(u) && (

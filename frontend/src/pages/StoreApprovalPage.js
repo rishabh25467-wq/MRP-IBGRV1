@@ -10,10 +10,11 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { NavTabs } from "@/components/NavTabs";
+import { useAuth } from "@/contexts/AuthContext";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
-const STORE_NAME_KEY = "storeApprovalActorName";
+const SITE_FILTER_KEY = "storeApprovalSelectedSite";
 
 const formatQty = (v) => (v == null ? "\u2014" : Number(v).toLocaleString("en-IN", { maximumFractionDigits: 2 }));
 
@@ -201,7 +202,16 @@ export default function StoreApprovalPage() {
   const location = useLocation();
   const { requestId } = useParams();
   const [searchParams] = useSearchParams();
-  const [storeName, setStoreName] = useState(() => localStorage.getItem(STORE_NAME_KEY) || "");
+  // Aug 2026, user's explicit ask: Store Approval now requires Entra ID
+  // login (was previously anonymous with a manual "Your Name" box) - the
+  // acting store person's name comes straight from their signed-in
+  // session instead.
+  const { user } = useAuth();
+  const storeActorName = user?.name || user?.email || "";
+  // Aug 2026, user's ask: "always load what they select once" - the
+  // chosen site persists across visits instead of resetting to "All
+  // Sites" every time.
+  const [siteFilter, setSiteFilter] = useState(() => localStorage.getItem(SITE_FILTER_KEY) || "all");
   // Aug 2026, user's ask: real sub-routes instead of hidden component
   // state, so a specific tab or a request's detail is shareable/
   // bookmarkable and survives browser back/forward + a page refresh.
@@ -233,13 +243,12 @@ export default function StoreApprovalPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [userSearch, setUserSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [siteFilter, setSiteFilter] = useState("all");
   const [sortField, setSortField] = useState("created_at");
   const [sortDir, setSortDir] = useState("desc");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
-  useEffect(() => localStorage.setItem(STORE_NAME_KEY, storeName), [storeName]);
+  useEffect(() => localStorage.setItem(SITE_FILTER_KEY, siteFilter), [siteFilter]);
 
   // Ticks while a Goods Movement POST is in flight (backend now retries up
   // to 3x with a 5s backoff on transient SAP errors, so this single
@@ -281,6 +290,15 @@ export default function StoreApprovalPage() {
   // toast once the SAME poll has failed 3 times in a row - a real,
   // persistent problem worth interrupting the user for, not one blip.
   const pollFailureCountRef = useRef(0);
+  // Aug 2026 bug fix (user's own report): the Plant/Site filter used to
+  // only list sites that happened to have a currently-open request, so a
+  // real site like P9 silently vanished from the dropdown whenever it had
+  // no pending request at that exact moment. Fetched once on mount from
+  // the full inventory_cache instead (see server.py's /known-sites).
+  const [knownSites, setKnownSites] = useState([]);
+  useEffect(() => {
+    axios.get(`${API}/store-requests/known-sites`).then(({ data }) => setKnownSites(data.sites || [])).catch(() => {});
+  }, []);
 
   const loadRequests = useCallback(async () => {
     setLoading(true);
@@ -378,7 +396,10 @@ export default function StoreApprovalPage() {
   };
 
   const rawList = viewMode === "queue" ? requests : viewMode === "balance" ? balanceRequests : journalRequests;
-  const siteOptions = useMemo(() => Array.from(new Set(rawList.map((r) => r.site_id).filter(Boolean))).sort(), [rawList]);
+  const siteOptions = useMemo(() => {
+    const fromRequests = rawList.map((r) => r.site_id).filter(Boolean);
+    return Array.from(new Set([...knownSites, ...fromRequests])).sort();
+  }, [rawList, knownSites]);
 
   const displayedRequests = useMemo(() => {
     let list = rawList.filter((r) => matchesSearch(r, searchTerm));
@@ -516,18 +537,6 @@ export default function StoreApprovalPage() {
         </header>
         <main className="max-w-6xl mx-auto p-4 sm:p-6 space-y-4">
           <div className="flex flex-wrap items-end gap-3">
-            {viewMode !== "movements" && (
-              <div>
-                <Label className="text-xs font-bold text-[#344054]">Your Name</Label>
-                <Input
-                  value={storeName}
-                  onChange={(e) => setStoreName(e.target.value)}
-                  placeholder="Store user name..."
-                  className="w-56 bg-white"
-                  data-testid="store-actor-name-input"
-                />
-              </div>
-            )}
             <div className="flex gap-1 bg-white border border-[#D0D5DD] rounded-sm p-1">
               <button
                 type="button"
@@ -806,10 +815,6 @@ export default function StoreApprovalPage() {
   const hasOverIssueError = Object.keys(overIssueErrors).length > 0;
 
   const submitIssue = async (decision) => {
-    if (!storeName.trim()) {
-      toast.error("Enter your name first");
-      return;
-    }
     if (hasOverIssueError) {
       toast.error("One or more issued quantities exceed the usable stock available - fix them before submitting");
       return;
@@ -827,7 +832,7 @@ export default function StoreApprovalPage() {
       // platform's ingress/Cloudflare timeout the way one long synchronous
       // POST used to.
       const { data } = await axios.post(`${API}/store-requests/${selected._id}/issue`, {
-        issued, decision: hasShortfall ? decision : null, actor: storeName.trim(),
+        issued, decision: hasShortfall ? decision : null, actor: storeActorName,
       });
       setSelected(data.request);
       await pollIssueJob(data.job_id, selected._id);
@@ -953,15 +958,6 @@ export default function StoreApprovalPage() {
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              {(isPending || isReopenable) && (
-                <Input
-                  value={storeName}
-                  onChange={(e) => setStoreName(e.target.value)}
-                  placeholder="Your name..."
-                  className="h-8 w-40 bg-white text-xs"
-                  data-testid="store-actor-name-input-detail"
-                />
-              )}
               <Badge className={`${STATUS_BADGE[selected.status]?.tone || "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]"} border`}>{STATUS_BADGE[selected.status]?.label || selected.status}</Badge>
             </div>
           </div>

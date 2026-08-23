@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="6" skipped="0" tests="34" time="230.188" timestamp="2026-08-23T13:30:41.687963+00:00" hostname="agent-env-025980c2-0ecc-461b-b2ad-6d583c87f706"><testcase classname="tests.test_roles_and_store_approval_auth.TestStoreApprovalAuthGate" name="test_unauthenticated_gets_401[/api/store-requests]" time="60.138"><failure message="requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='sap-data-sync.preview.emergentagent.com', port=443): Read timed out. (read timeout=60)">/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:534: in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/urllib3/connection.py:571: in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/http/client.py:1443: in getresponse
+    response.begin()
+/usr/local/lib/python3.11/http/client.py:337: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/http/client.py:298: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/socket.py:718: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/ssl.py:1314: in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/ssl.py:1166: in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:696: in send
+    resp = conn.urlopen(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:842: in urlopen
+    retries = retries.increment(
+/root/.venv/lib/python3.11/site-packages/urllib3/util/retry.py:498: in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/urllib3/util/util.py:39: in reraise
+    raise value
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:788: in urlopen
+    response = self._make_request(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:536: in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:367: in _raise_timeout
+    raise ReadTimeoutError(
+E   urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='sap-data-sync.preview.emergentagent.com', port=443): Read timed out. (read timeout=60)
+
+During handling of the above exception, another exception occurred:
+tests/test_roles_and_store_approval_auth.py:93: in test_unauthenticated_gets_401
+    r = sess().get(f"{BASE_URL}{path}", timeout=60)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:671: in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:651: in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:784: in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:742: in send
+    raise ReadTimeout(e, request=request)
+E   requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='sap-data-sync.preview.emergentagent.com', port=443): Read timed out. (read timeout=60)</failure></testcase><testcase classname="tests.test_roles_and_store_approval_auth.TestStoreApprovalAuthGate" name="test_unauthenticated_gets_401[/api/store-requests/journal]" time="60.150"><failure message="requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='sap-data-sync.preview.emergentagent.com', port=443): Read timed out. (read timeout=60)">/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:534: in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/urllib3/connection.py:571: in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/http/client.py:1443: in getresponse
+    response.begin()
+/usr/local/lib/python3.11/http/client.py:337: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/http/client.py:298: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/socket.py:718: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/ssl.py:1314: in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/ssl.py:1166: in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:696: in send
+    resp = conn.urlopen(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:842: in urlopen
+    retries = retries.increment(
+/root/.venv/lib/python3.11/site-packages/urllib3/util/retry.py:498: in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/urllib3/util/util.py:39: in reraise
+    raise value
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:788: in urlopen
+    response = self._make_request(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:536: in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:367: in _raise_timeout
+    raise ReadTimeoutError(
+E   urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='sap-data-sync.preview.emergentagent.com', port=443): Read timed out. (read timeout=60)
+
+During handling of the above exception, another exception occurred:
+tests/test_roles_and_store_approval_auth.py:93: in test_unauthenticated_gets_401
+    r = sess().get(f"{BASE_URL}{path}", timeout=60)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:671: in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:651: in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:784: in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:742: in send
+    raise ReadTimeout(e, request=request)
+E   requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='sap-data-sync.preview.emergentagent.com', port=443): Read timed out. (read timeout=60)</failure></testcase><testcase classname="tests.test_roles_and_store_approval_auth.TestStoreApprovalAuthGate" name="test_unauthenticated_gets_401[/api/store-requests/balance-pending]" time="60.155"><failure message="requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='sap-data-sync.preview.emergentagent.com', port=443): Read timed out. (read timeout=60)">/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:534: in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/urllib3/connection.py:571: in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/http/client.py:1443: in getresponse
+    response.begin()
+/usr/local/lib/python3.11/http/client.py:337: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/http/client.py:298: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/socket.py:718: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/ssl.py:1314: in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/ssl.py:1166: in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:696: in send
+    resp = conn.urlopen(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:842: in urlopen
+    retries = retries.increment(
+/root/.venv/lib/python3.11/site-packages/urllib3/util/retry.py:498: in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/urllib3/util/util.py:39: in reraise
+    raise value
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:788: in urlopen
+    response = self._make_request(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:536: in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:367: in _raise_timeout
+    raise ReadTimeoutError(
+E   urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='sap-data-sync.preview.emergentagent.com', port=443): Read timed out. (read timeout=60)
+
+During handling of the above exception, another exception occurred:
+tests/test_roles_and_store_approval_auth.py:93: in test_unauthenticated_gets_401
+    r = sess().get(f"{BASE_URL}{path}", timeout=60)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:671: in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:651: in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:784: in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:742: in send
+    raise ReadTimeout(e, request=request)
+E   requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='sap-data-sync.preview.emergentagent.com', port=443): Read timed out. (read timeout=60)</failure></testcase><testcase classname="tests.test_roles_and_store_approval_auth.TestStoreApprovalAuthGate" name="test_unauthenticated_gets_401[/api/store-requests/P1-000004]" time="44.257" /><testcase classname="tests.test_roles_and_store_approval_auth.TestStoreApprovalAuthGate" name="test_unauthenticated_issue_post_401" time="0.179" /><testcase classname="tests.test_roles_and_store_approval_auth.TestStoreApprovalAuthGate" name="test_user_with_store_approval_can_read[/api/store-requests]" time="0.137" /><testcase classname="tests.test_roles_and_store_approval_auth.TestStoreApprovalAuthGate" name="test_user_with_store_approval_can_read[/api/store-requests/journal]" time="0.150" /><testcase classname="tests.test_roles_and_store_approval_auth.TestStoreApprovalAuthGate" name="test_user_with_store_approval_can_read[/api/store-requests/balance-pending]" time="0.173" /><testcase classname="tests.test_roles_and_store_approval_auth.TestStoreApprovalAuthGate" name="test_user_without_store_approval_403[/api/store-requests]" time="0.117" /><testcase classname="tests.test_roles_and_store_approval_auth.TestStoreApprovalAuthGate" name="test_user_without_store_approval_403[/api/store-requests/journal]" time="0.146" /><testcase classname="tests.test_roles_and_store_approval_auth.TestStoreApprovalAuthGate" name="test_admin_role_can_read_without_explicit_page" time="0.127" /><testcase classname="tests.test_roles_and_store_approval_auth.TestStoreApprovalAuthGate" name="test_super_admin_can_read" time="0.118" /><testcase classname="tests.test_roles_and_store_approval_auth.TestAuthMe" name="test_admin_gets_all_pages" time="0.097" /><testcase classname="tests.test_roles_and_store_approval_auth.TestAuthMe" name="test_super_admin_gets_all_pages" time="0.103" /><testcase classname="tests.test_roles_and_store_approval_auth.TestAuthMe" name="test_plain_user_pages_unchanged" time="0.114" /><testcase classname="tests.test_roles_and_store_approval_auth.TestAuthMe" name="test_store_user_pages" time="0.101" /><testcase classname="tests.test_roles_and_store_approval_auth.TestAuthMe" name="test_unauthenticated_me" time="0.113" /><testcase classname="tests.test_roles_and_store_approval_auth.TestAuthMe" name="test_store_approval_in_page_catalog" time="0.096" /><testcase classname="tests.test_roles_and_store_approval_auth.TestAdminEndpointAccess" name="test_pages_and_users_ok_for_admin" time="0.144" /><testcase classname="tests.test_roles_and_store_approval_auth.TestAdminEndpointAccess" name="test_pages_and_users_forbidden_for_plain_user" time="0.413" /><testcase classname="tests.test_roles_and_store_approval_auth.TestAdminEndpointAccess" name="test_users_unauthenticated_401" time="0.093" /><testcase classname="tests.test_roles_and_store_approval_auth.TestUpdateAccessRules" name="test_admin_can_set_user_role_and_pages" time="0.220" /><testcase classname="tests.test_roles_and_store_approval_auth.TestUpdateAccessRules" name="test_admin_cannot_assign_admin_role" time="0.224" /><testcase classname="tests.test_roles_and_store_approval_auth.TestUpdateAccessRules" name="test_admin_cannot_assign_super_admin_role" time="0.097" /><testcase classname="tests.test_roles_and_store_approval_auth.TestUpdateAccessRules" name="test_admin_cannot_touch_super_admin_target" time="0.244" /><testcase classname="tests.test_roles_and_store_approval_auth.TestUpdateAccessRules" name="test_plain_user_cannot_update_access" time="0.105" /><testcase classname="tests.test_roles_and_store_approval_auth.TestUpdateAccessRules" name="test_super_admin_can_promote_to_admin_and_back" time="0.655" /><testcase classname="tests.test_roles_and_store_approval_auth.TestUpdateAccessRules" name="test_super_admin_can_modify_super_admin" time="0.228" /><testcase classname="tests.test_roles_and_store_approval_auth.TestUpdateAccessRules" name="test_invalid_role_rejected" time="0.132" /><testcase classname="tests.test_roles_and_store_approval_auth.TestUpdateAccessRules" name="test_unknown_page_key_rejected" time="0.104" /><testcase classname="tests.test_roles_and_store_approval_auth.TestUpdateAccessRules" name="test_unknown_user_404" time="0.117" /><testcase classname="tests.test_roles_and_store_approval_auth.TestStoreApprovalRegression" name="test_queue_shape_and_material_type_and_restricted_flags" time="0.142"><failure message="AssertionError: assert ('request_id' in {'_id': 'P1-000004', 'job_id': '2c1f5cf4-ee5e-4ec9-a099-7da196d776cd', 'production_proposal_id': '224713', 'material_id': 'J6526WCA', ...} or 'id' in {'_id': 'P1-000004', 'job_id': '2c1f5cf4-ee5e-4ec9-a099-7da196d776cd', 'production_proposal_id': '224713', 'material_id': 'J6526WCA', ...} or 'short_id' in {'_id': 'P1-000004', 'job_id': '2c1f5cf4-ee5e-4ec9-a099-7da196d776cd', 'production_proposal_id': '224713', 'material_id': 'J6526WCA', ...})">tests/test_roles_and_store_approval_auth.py:272: in test_queue_shape_and_material_type_and_restricted_flags
+    assert "request_id" in row or "id" in row or "short_id" in row
+E   AssertionError: assert ('request_id' in {'_id': 'P1-000004', 'job_id': '2c1f5cf4-ee5e-4ec9-a099-7da196d776cd', 'production_proposal_id': '224713', 'material_id': 'J6526WCA', ...} or 'id' in {'_id': 'P1-000004', 'job_id': '2c1f5cf4-ee5e-4ec9-a099-7da196d776cd', 'production_proposal_id': '224713', 'material_id': 'J6526WCA', ...} or 'short_id' in {'_id': 'P1-000004', 'job_id': '2c1f5cf4-ee5e-4ec9-a099-7da196d776cd', 'production_proposal_id': '224713', 'material_id': 'J6526WCA', ...})</failure></testcase><testcase classname="tests.test_roles_and_store_approval_auth.TestStoreApprovalRegression" name="test_request_detail_components" time="0.161"><failure message="AssertionError: {&quot;detail&quot;:&quot;Store request not found&quot;}&#10;assert 404 == 200&#10; +  where 404 = &lt;Response [404]&gt;.status_code">tests/test_roles_and_store_approval_auth.py:284: in test_request_detail_components
+    assert r.status_code == 200, r.text[:300]
+E   AssertionError: {"detail":"Store request not found"}
+E   assert 404 == 200
+E    +  where 404 = &lt;Response [404]&gt;.status_code</failure></testcase><testcase classname="tests.test_roles_and_store_approval_auth.TestStoreApprovalRegression" name="test_refresh_live_stock_job_starts" time="0.110"><failure message="AssertionError: {&quot;detail&quot;:[{&quot;type&quot;:&quot;missing&quot;,&quot;loc&quot;:[&quot;query&quot;,&quot;site_id&quot;],&quot;msg&quot;:&quot;Field required&quot;,&quot;input&quot;:null,&quot;url&quot;:&quot;https://errors.pydantic.dev/2.13/v/missing&quot;}]}&#10;assert 422 in (200, 202)&#10; +  where 422 = &lt;Response [422]&gt;.status_code">tests/test_roles_and_store_approval_auth.py:292: in test_refresh_live_stock_job_starts
+    assert r.status_code in (200, 202), r.text[:300]
+E   AssertionError: {"detail":[{"type":"missing","loc":["query","site_id"],"msg":"Field required","input":null,"url":"https://errors.pydantic.dev/2.13/v/missing"}]}
+E   assert 422 in (200, 202)
+E    +  where 422 = &lt;Response [422]&gt;.status_code</failure></testcase></testsuite></testsuites>

@@ -39,7 +39,7 @@ const INVENTORY_SUBTABS = [
   // Aug 2026, user's explicit ask: links out to the existing Store
   // Approval screen (public/unauthenticated route, unchanged) - just a
   // shortcut into it from the main nav, no backend permission change.
-  { to: "/storeapproval", label: "Goods Issue", testId: "nav-inventory-goods-issue", page: "inventory" },
+  { to: "/storeapproval", label: "Goods Issue", testId: "nav-inventory-goods-issue", page: "store_approval" },
 ];
 
 const PURCHASING_STRATEGY_SUBTABS = [
@@ -163,7 +163,7 @@ export const NavTabs = () => {
           <DropdownMenuContent align="end" className="min-w-[220px] bg-white border border-[#D0D5DD]" data-testid="nav-user-menu-dropdown-content">
             <div className="px-3 py-2 text-xs text-[#667085] truncate">{user.email}</div>
             <DropdownMenuSeparator />
-            {user.role === "super_admin" && (
+            {(user.role === "super_admin" || user.role === "admin") && (
               <DropdownMenuItem asChild>
                 <Link to="/admin/access-management" className="w-full cursor-pointer flex items-center gap-2" data-testid="nav-access-management">
                   <ShieldCheck size={14} weight="bold" />
@@ -310,7 +310,7 @@ export const NavTabs = () => {
                     <span className="text-[11px] text-[#667085] truncate">{user.email}</span>
                   </div>
                 </div>
-                {user.role === "super_admin" && (
+                {(user.role === "super_admin" || user.role === "admin") && (
                   <SheetClose asChild>
                     <Link
                       to="/admin/access-management"
