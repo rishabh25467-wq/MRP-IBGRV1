@@ -109,6 +109,15 @@ PAGE_ROUTE_RULES = [
     ("/api/admin/categories", {"admin"}),
     ("/api/admin/create-material", {"admin_create_material"}),
     ("/api/admin/delete-material", {"admin_create_material"}),
+    # Bug fix (Aug 2026): /journal also backs MyStockRequestsTab, a
+    # requester-side view embedded INSIDE the Production Confirmation page
+    # (a production planner tracking their own submissions, not a store
+    # person) - checked BEFORE the general /api/store-requests rule below
+    # so a plain "user" with production_confirmation access (but no
+    # store_approval access) isn't 403'd out of their own requests. Every
+    # other /api/store-requests/* endpoint (queue, decision, issue, etc.)
+    # still requires store_approval specifically.
+    ("/api/store-requests/journal", {"store_approval", "production_confirmation"}),
     ("/api/store-requests", {"store_approval"}),
 ]
 

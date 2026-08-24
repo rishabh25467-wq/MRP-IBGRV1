@@ -645,6 +645,14 @@ const CreateOrderTab = ({ actorName }) => {
   const [materialUuid, setMaterialUuid] = useState(null);
   const [productSuggestions, setProductSuggestions] = useState([]);
   const [showProductSuggestions, setShowProductSuggestions] = useState(false);
+  // Holistic (every site/warehouse, not just this order's site) BOM
+  // Component Stock Status panel (Aug 2026, user's explicit ask) - fires
+  // automatically off the cache the moment a Production Model is picked
+  // below; bomStockLive tracks whether the currently-shown data came from
+  // the panel's own "Check Live Stock" button so its loading label reads
+  // right either way.
+  const [bomStockStatus, setBomStockStatus] = useState(null);
+  const [bomStockLoading, setBomStockLoading] = useState(false);
   // "Refresh Live SFG Stock" (Aug 2026, user's explicit ask): once a short
   // sub-assembly's own production order is confirmed, pull its updated
   // SFG warehouse stock right away instead of waiting for the scheduled
@@ -718,6 +726,36 @@ const CreateOrderTab = ({ actorName }) => {
     setSelectedSosKey(key);
     const option = sosOptions[Number(key)];
     if (option) { setSiteId(option.site_id); setSiteAutoFilled(true); } // model determines site in SAP, not the other way around
+  };
+
+  // Fires the cache-only (instant, no live SAP call) first look the
+  // moment a Production Model is actually picked - either explicitly
+  // here, or the single-option auto-pick in checkSourceOfSupply below.
+  useEffect(() => {
+    if (!selectedSosOption) {
+      setBomStockStatus(null);
+      return;
+    }
+    setBomStockLoading(true);
+    axios.get(`${API}/production-confirmation/bom-stock-status`, {
+      params: { main_output_product: materialId.trim(), production_model_uuid: selectedSosOption.production_model_uuid },
+    }).then(({ data }) => setBomStockStatus(data)).catch(() => setBomStockStatus(null)).finally(() => setBomStockLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSosOption]);
+
+  const checkLiveBomStock = async () => {
+    if (!selectedSosOption) return;
+    setBomStockLoading(true);
+    try {
+      const { data } = await axios.get(`${API}/production-confirmation/bom-stock-status`, {
+        params: { main_output_product: materialId.trim(), production_model_uuid: selectedSosOption.production_model_uuid, live: true },
+      });
+      setBomStockStatus(data);
+    } catch {
+      toast.error("Failed to check live BOM component stock - try again in a moment");
+    } finally {
+      setBomStockLoading(false);
+    }
   };
 
   const [lastCheckedId, setLastCheckedId] = useState(null);

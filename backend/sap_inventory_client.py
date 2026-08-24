@@ -53,9 +53,21 @@ class SAPInventoryClient:
         self.report_url = report_url.rstrip("/")
         self.auth = HTTPBasicAuth(username, password)
 
-    def _fetch_page(self, skip: int, site_id: str = None, warehouse_ids: list = None) -> list:
+    def _fetch_page(self, skip: int, site_id: str = None, warehouse_ids: list = None, product_ids: list = None) -> list:
         params = {"$format": "json", "$top": PAGE_SIZE, "$skip": skip}
-        if warehouse_ids:
+        if product_ids:
+            # Item-level targeting (Aug 2026, user's explicit ask): filter
+            # straight on CMATERIAL_UUID, OR'd together for multiple items
+            # (same pattern as warehouse_ids below) - HOLISTIC, i.e.
+            # deliberately no site/warehouse filter alongside this, so it
+            # returns that item's stock across every site/warehouse it
+            # exists in. Verified: filtering by CMATERIAL_UUID does work
+            # syntactically against this tenant - an earlier attempt once
+            # hit a generic 500, but that was root-caused to SAP's own
+            # "too many CONCURRENT requests" limit (see sap_semaphore
+            # below), not a filter problem.
+            params["$filter"] = " or ".join(f"CMATERIAL_UUID eq '{p}'" for p in product_ids)
+        elif warehouse_ids:
             # Verified live (Aug 2026): CLOG_AREA_UUID (the raw warehouse/
             # logistics-area characteristic, e.g. "P9/P9-RM") filters just
             # as cleanly as CSITE_UUID below - even fewer rows, even
@@ -95,15 +107,15 @@ class SAPInventoryClient:
             except (requests.exceptions.RequestException, SAPInventoryError) as e:
                 last_exc = e
                 if attempt < _MAX_ATTEMPTS - 1:
-                    logger.warning(f"SAP inventory page fetch (skip={skip}, site={site_id}, warehouses={warehouse_ids}) failed on attempt {attempt + 1}/{_MAX_ATTEMPTS}, retrying: {e}")
+                    logger.warning(f"SAP inventory page fetch (skip={skip}, site={site_id}, warehouses={warehouse_ids}, products={product_ids}) failed on attempt {attempt + 1}/{_MAX_ATTEMPTS}, retrying: {e}")
                     time.sleep(_RETRY_BACKOFF_SECONDS[attempt])
-        raise SAPInventoryError(f"SAP inventory report failed after {_MAX_ATTEMPTS} attempts (skip={skip}, site={site_id}, warehouses={warehouse_ids}): {last_exc}")
+        raise SAPInventoryError(f"SAP inventory report failed after {_MAX_ATTEMPTS} attempts (skip={skip}, site={site_id}, warehouses={warehouse_ids}, products={product_ids}): {last_exc}")
 
-    def _fetch_all_rows(self, site_id: str = None, warehouse_ids: list = None) -> list:
+    def _fetch_all_rows(self, site_id: str = None, warehouse_ids: list = None, product_ids: list = None) -> list:
         rows = []
         skip = 0
         while True:
-            page = self._fetch_page(skip, site_id=site_id, warehouse_ids=warehouse_ids)
+            page = self._fetch_page(skip, site_id=site_id, warehouse_ids=warehouse_ids, product_ids=product_ids)
             rows.extend(page)
             if len(page) < PAGE_SIZE:
                 break
@@ -125,7 +137,7 @@ class SAPInventoryClient:
             stock[product_id] = stock.get(product_id, 0.0) + qty
         return stock
 
-    def get_inventory_detail(self, site_id: str = None, warehouse_ids: list = None) -> list:
+    def get_inventory_detail(self, site_id: str = None, warehouse_ids: list = None, product_ids: list = None) -> list:
         """Returns one row per material x site x logistics-area x stock
         status - the un-aggregated counterpart to get_on_hand_stock(), for
         the Inventory page's location breakdown. Each row:
@@ -141,11 +153,17 @@ class SAPInventoryClient:
         site - verified live to take ~12s vs 60s+ for the whole company.
         Pass `warehouse_ids` (e.g. ["P9/P9-RM", "P9/P9-QC"]) to scope down
         to just those warehouses (any site) - verified live even faster
-        (~7s for one, ~7s for two OR'd together). warehouse_ids takes
-        priority over site_id if both are somehow passed - see
+        (~7s for one, ~7s for two OR'd together).
+        Pass `product_ids` (e.g. ["P27203", "P26671"]) for an item-level,
+        HOLISTIC (every site/warehouse that item exists in, unscoped) pull
+        - the BOM Component Stock Status panel's "Refresh Now" (Aug 2026)
+        uses this to show a production planner every location a BOM
+        component actually sits in, not just the order's own site.
+        `product_ids` takes priority over `warehouse_ids`, which takes
+        priority over `site_id`, if more than one is somehow passed - see
         _fetch_page. See the $filter note on _fetch_page."""
         detail = []
-        for row in self._fetch_all_rows(site_id=site_id, warehouse_ids=warehouse_ids):
+        for row in self._fetch_all_rows(site_id=site_id, warehouse_ids=warehouse_ids, product_ids=product_ids):
             product_id = row.get("CMATERIAL_UUID")
             if not product_id:
                 continue

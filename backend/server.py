@@ -3096,6 +3096,33 @@ async def get_component_availability(main_output_product: str, confirmed_quantit
     return result
 
 
+@api_router.get("/production-confirmation/bom-stock-status")
+async def get_bom_stock_status_endpoint(main_output_product: str, production_model_uuid: str = None, live: bool = False):
+    """Backs the Source of Supply picker's holistic BOM Component Stock
+    Status panel (Aug 2026, user's explicit ask) - see
+    production_confirmation_service.get_bom_stock_status. `live=false`
+    (default, fired the moment a Production Model is picked) is cache-only
+    for an instant first render; `live=true` (the panel's "Check Live
+    Stock" button) pulls fresh from SAP. `production_model_uuid`, when
+    given, resolves to that model's REAL linked BillOfMaterialID first -
+    same override_bom_id pattern as create-and-release-order's own
+    pre-flight check above - so this shows the exact BOM SAP will
+    actually use, not bom_cache_service's "highest revision" default guess."""
+    override_bom_id = None
+    if production_model_uuid:
+        try:
+            override_bom_id = await asyncio.to_thread(
+                sap_production_model_bom_client.get_bill_of_material_id_for_model, production_model_uuid,
+            )
+        except Exception as e:
+            logger.warning(f"BOM stock status: real-BOM-for-model lookup failed for model {production_model_uuid}, using cached default instead: {e}")
+    result = await asyncio.to_thread(
+        production_confirmation_service.get_bom_stock_status,
+        db, main_output_product, override_bom_id, sap_inventory_client if live else None, sap_soap_client,
+    )
+    return result
+
+
 class ComponentAvailabilityBatchRow(BaseModel):
     main_output_product: Optional[str] = None
     quantity: float

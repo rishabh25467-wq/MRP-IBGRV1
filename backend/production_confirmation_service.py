@@ -412,6 +412,21 @@ def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, con
     return {"checked": True, "reason": None, "components": components}
 
 
+def _resolve_bom_doc(db, main_output_product: str, override_bom_id: str = None, sap_soap_client=None) -> dict:
+    """Shared by check_component_availability and get_bom_stock_status -
+    see override_bom_id's docstring on check_component_availability."""
+    bom_doc = db["bom_node_cache"].find_one({"_id": main_output_product})
+    if override_bom_id and sap_soap_client is not None and override_bom_id != (bom_doc or {}).get("bom_id"):
+        try:
+            raw = sap_soap_client._fetch_bom_by_id(override_bom_id)
+        except Exception as e:
+            logger.warning(f"Component availability: live fetch of override BOM '{override_bom_id}' failed, falling back to cached default: {e}")
+            raw = None
+        if raw and raw.get("groups"):
+            bom_doc = {"bom_id": raw["bom_id"], "groups": raw["groups"]}
+    return bom_doc
+
+
 def check_component_availability(
     db, main_output_product: str, confirmed_quantity: float, site_id: str,
     sap_inventory_client=None, override_bom_id: str = None, sap_soap_client=None,
@@ -457,15 +472,7 @@ def check_component_availability(
     global cache change. Silently falls back to the cached default doc if
     the live fetch fails or `sap_soap_client` isn't provided, so this is
     purely additive/never blocks the pre-flight check on its own."""
-    bom_doc = db["bom_node_cache"].find_one({"_id": main_output_product})
-    if override_bom_id and sap_soap_client is not None and override_bom_id != (bom_doc or {}).get("bom_id"):
-        try:
-            raw = sap_soap_client._fetch_bom_by_id(override_bom_id)
-        except Exception as e:
-            logger.warning(f"Component availability: live fetch of override BOM '{override_bom_id}' failed, falling back to cached default: {e}")
-            raw = None
-        if raw and raw.get("groups"):
-            bom_doc = {"bom_id": raw["bom_id"], "groups": raw["groups"]}
+    bom_doc = _resolve_bom_doc(db, main_output_product, override_bom_id, sap_soap_client)
     stock_by_product = None
     if sap_inventory_client is not None:
         try:
@@ -493,6 +500,78 @@ def check_component_availability(
         d["_id"] for d in db["bom_node_cache"].find({"_id": {"$in": component_ids}, "groups": {"$ne": []}}, {"_id": 1})
     ) if component_ids else frozenset()
     return _check_availability_against_stock(bom_doc, stock_by_product, confirmed_quantity, site_id, sub_assembly_ids)
+
+
+def get_bom_stock_status(db, main_output_product: str, override_bom_id: str = None, sap_inventory_client=None, sap_soap_client=None) -> dict:
+    """Holistic (every site/warehouse, NOT just one order's own site) BOM
+    component stock status - Aug 2026, user's explicit ask: once a Source
+    of Supply (Production Model) is picked for a new order, show where
+    EACH of its BOM's components (RM and SFG alike, item-level) actually
+    sits across the whole company, informationally - a different view
+    from check_component_availability's single-site sufficiency verdict
+    above (this never blocks anything). `sap_inventory_client=None` (the
+    picker's default, on model selection) stays cache-only for an instant
+    first render; passed in (the page's "Check Live Stock" button) it
+    pulls this BOM's exact components straight from SAP via product_ids
+    (fast - filtered directly on CMATERIAL_UUID, see sap_inventory_client's
+    docstring) and silently falls back to the cache if that live pull
+    fails, same fallback pattern as check_component_availability."""
+    bom_doc = _resolve_bom_doc(db, main_output_product, override_bom_id, sap_soap_client)
+    if not bom_doc or not bom_doc.get("groups"):
+        return {"checked": False, "reason": "No cached BOM found locally for this product - cannot check component stock status.", "components": [], "source": None, "fetched_at": None}
+
+    component_meta = {}
+    for group in bom_doc["groups"]:
+        for item in group["items"]:
+            if not item.get("active"):
+                continue
+            component_meta[item["product_id"]] = {
+                "description": item.get("description"),
+                "unit_of_measure": item.get("unit_of_measure"),
+            }
+    if not component_meta:
+        return {"checked": True, "reason": None, "components": [], "source": None, "fetched_at": None}
+    product_ids = list(component_meta.keys())
+
+    source, fetched_at, stock_by_product = None, None, {}
+    if sap_inventory_client is not None:
+        try:
+            for row in sap_inventory_client.get_inventory_detail(product_ids=product_ids):
+                stock_by_product.setdefault(row["product_id"], []).append(row)
+            source, fetched_at = "live", datetime.now(timezone.utc).isoformat()
+        except Exception as e:
+            logger.warning(f"BOM stock status: live SAP pull for {len(product_ids)} component(s) of '{main_output_product}' failed, falling back to cache: {e}")
+    if source is None:
+        cache_stock = load_stock_by_product(db)
+        for pid in product_ids:
+            if pid in cache_stock:
+                stock_by_product[pid] = cache_stock[pid]
+        source = "cache"
+        cache_doc = db["inventory_cache"].find_one({"_id": "latest"}, {"updated_at": 1})
+        fetched_at = cache_doc["updated_at"].isoformat() if cache_doc and cache_doc.get("updated_at") else None
+
+    components = []
+    for product_id, meta in component_meta.items():
+        locations = [
+            {
+                "site": loc.get("site"),
+                "warehouse": loc.get("logistics_area"),
+                "warehouse_id": loc.get("logistics_area_id"),
+                "stock_status": loc.get("stock_status"),
+                "restricted": loc.get("restricted", False),
+                "qty": loc.get("qty", 0),
+            }
+            for loc in stock_by_product.get(product_id, [])
+        ]
+        total_usable_qty = round(sum(loc["qty"] for loc in locations if is_usable_stock_status(loc["stock_status"], loc["restricted"])), 4)
+        components.append({
+            "product_id": product_id,
+            "description": meta["description"],
+            "unit_of_measure": meta["unit_of_measure"],
+            "total_usable_qty": total_usable_qty,
+            "locations": locations,
+        })
+    return {"checked": True, "reason": None, "components": components, "source": source, "fetched_at": fetched_at}
 
 
 def check_component_availability_batch(db, rows: list) -> list:
