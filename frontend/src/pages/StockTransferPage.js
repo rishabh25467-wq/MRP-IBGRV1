@@ -11,6 +11,7 @@ import { Shield,
   CircleNotch,
   Robot,
   Wrench,
+  Printer,
 } from "@phosphor-icons/react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -386,6 +387,7 @@ export default function StockTransferPage() {
     if (!vehicleNo.trim()) return "Vehicle No. is required.";
     if (!placeOfSupply.trim()) return "Place Of Supply is required.";
     if (!grNo.trim()) return "G.R No. is required.";
+    if (!/^\d+$/.test(grNo.trim())) return "G.R No. must be numeric only.";
     if (!dateOfSupply) return "Date Of Supply is required.";
     return null;
   };
@@ -830,7 +832,7 @@ export default function StockTransferPage() {
           </div>
           <div>
             <Label className="text-xs font-bold text-[#344054]">G.R No.*</Label>
-            <Input value={grNo} onChange={(e) => setGrNo(e.target.value)} placeholder="e.g. 6839" data-testid="stock-transfer-gr-no-input" />
+            <Input value={grNo} onChange={(e) => setGrNo(e.target.value.replace(/\D/g, ""))} inputMode="numeric" placeholder="e.g. 6839" data-testid="stock-transfer-gr-no-input" />
           </div>
           <div>
             <Label className="text-xs font-bold text-[#344054]">Date Of Supply*</Label>
@@ -1122,7 +1124,16 @@ export default function StockTransferPage() {
           {selectedOrder && (
             <>
               <DialogHeader>
-                <DialogTitle>{selectedOrder.sto_id}</DialogTitle>
+                <div className="flex items-center justify-between gap-3 pr-6">
+                  <DialogTitle>{selectedOrder.sto_id}</DialogTitle>
+                  <Button
+                    size="sm" variant="outline" className="text-xs h-7"
+                    onClick={() => window.open(`/inventory/inter-plant-transfer/${selectedOrder.sto_id}/delivery-note`, "_blank")}
+                    data-testid="stock-transfer-print-delivery-note-btn"
+                  >
+                    <Printer size={13} className="mr-1" /> Print Delivery Note
+                  </Button>
+                </div>
                 <DialogDescription>
                   Created {new Date(selectedOrder.created_at).toLocaleString("en-IN")} by {selectedOrder.created_by}
                 </DialogDescription>

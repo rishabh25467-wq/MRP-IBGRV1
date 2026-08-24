@@ -4317,6 +4317,11 @@ async def get_stock_transfer_inventory(product_id: str, include_non_usable: bool
     return await asyncio.to_thread(stock_transfer_service.get_product_stock_locations, db, product_id, include_non_usable, sap_hsn_client)
 
 
+@api_router.get("/stock-transfer/{sto_id}/delivery-note")
+async def get_stock_transfer_delivery_note(sto_id: str):
+    return await asyncio.to_thread(stock_transfer_service.get_delivery_note_data, db, sap_valuation_client, sap_hsn_client, sto_id)
+
+
 @api_router.post("/stock-transfer/refresh-site-stock")
 async def post_refresh_site_stock(site_id: str):
     """"Refresh Site Stock" (Aug 27 2026, user's explicit ask) - a Goods

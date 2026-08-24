@@ -767,3 +767,57 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sap_hsn_clie
 
 def mark_erp_portal_failed(db, sto_id: str, error: str) -> None:
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"erp_portal_status": "failed", "erp_portal_error": error}})
+
+
+def get_delivery_note_data(db, sap_valuation_client, sap_hsn_client, sto_id: str) -> dict:
+    """Data for the in-app "Delivery Challan" print view (Aug 27 2026,
+    user's explicit ask, referencing SAP's own printed template as the
+    layout target) - live SAP Rate + HSN per item, same lookups as
+    sync_to_erp_portal, plus the ERP portal's own Sale_No/Sale_Noc as the
+    document's Serial Number (user's explicit ask - "display both")."""
+    doc = db[STO_COLLECTION].find_one({"_id": sto_id})
+    if not doc:
+        raise StockTransferOrderNotFoundError(f"Stock Transfer Order {sto_id} not found.")
+
+    product_ids = [item["product_id"] for item in doc["items"]]
+    product_uuid_by_id = {
+        c["_id"]: c.get("product_uuid")
+        for c in db["component_master"].find({"_id": {"$in": product_ids}}, {"product_uuid": 1})
+    }
+    product_uuids = [u for u in product_uuid_by_id.values() if u]
+    costs = sap_valuation_client.get_standard_costs(product_uuids) if product_uuids else {}
+    hsn_codes = sap_hsn_client.get_hsn_codes(product_ids)
+
+    items = []
+    total_amount = 0.0
+    for item in doc["items"]:
+        product_uuid = product_uuid_by_id.get(item["product_id"])
+        cost = costs.get(product_uuid.upper()) if product_uuid else None
+        rate = cost["amount"] if cost else 0.0
+        qty = item["requested_qty"]
+        amount = round(rate * qty, 3)
+        total_amount += amount
+        items.append({
+            "product_id": item["product_id"],
+            "description": item.get("description"),
+            "hsn_code": hsn_codes.get(item["product_id"]) or item.get("hsn_code"),
+            "qty": qty,
+            "unit": item.get("unit_of_measure") or "EA",
+            "rate": rate,
+            "amount": amount,
+        })
+
+    return {
+        "sto_id": sto_id,
+        "erp_sale_no": doc.get("erp_sale_no"),
+        "erp_sale_noc": doc.get("erp_sale_noc"),
+        "date_of_supply": doc.get("date_of_supply"),
+        "ship_from_site_id": doc["ship_from_site_id"],
+        "ship_to_site_id": doc["ship_to_site_id"],
+        "vehicle_no": doc.get("vehicle_no"),
+        "gr_no": doc.get("gr_no"),
+        "transportation_mode": doc.get("transportation_mode"),
+        "place_of_supply": doc.get("place_of_supply"),
+        "items": items,
+        "total_amount": round(total_amount, 2),
+    }
