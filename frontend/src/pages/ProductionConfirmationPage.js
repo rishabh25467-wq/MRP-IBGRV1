@@ -856,6 +856,15 @@ const CreateOrderTab = ({ actorName }) => {
             break;
           }
           if (job.status === "failed") {
+            // SFG-shortage block (Aug 2026, user's explicit ask): keep this
+            // row visible with a persistent, dismissible detail table
+            // instead of a toast that vanishes in a few seconds - a real
+            // "which component, how short" needs to stay on screen until
+            // the planner has acted on it.
+            if (job.result?.reason === "sfg_shortage") {
+              setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, status: "failed", failure: job.result, error: job.error } : j)));
+              break;
+            }
             toast.error(job.error || "Failed to create Production Order in SAP");
             removeActiveJob(jobId);
             break;
@@ -895,15 +904,16 @@ const CreateOrderTab = ({ actorName }) => {
     return () => clearInterval(interval);
   }, [refreshingSfgStock]);
 
-  const refreshLiveSfgStock = async () => {
-    if (!siteId.trim()) {
+  const refreshLiveSfgStock = async (siteOverride) => {
+    const site = (siteOverride || siteId).trim();
+    if (!site) {
       toast.error("Enter a Site first");
       return;
     }
     setRefreshingSfgStock(true);
-    setRefreshSfgStatus("Pulling live SFG stock from SAP...");
+    setRefreshSfgStatus(`Pulling live SFG stock for ${site} from SAP...`);
     try {
-      const { data } = await axios.post(`${API}/production-confirmation/refresh-live-sfg-stock`, null, { params: { site_id: siteId.trim() } });
+      const { data } = await axios.post(`${API}/production-confirmation/refresh-live-sfg-stock`, null, { params: { site_id: site } });
       let job = null;
       for (let i = 0; i < 30; i++) {
         await new Promise((r) => setTimeout(r, 1000));
@@ -912,7 +922,7 @@ const CreateOrderTab = ({ actorName }) => {
         if (job.status === "done" || job.status === "failed") break;
       }
       if (job?.status === "done") {
-        toast.success(`Live SFG stock refreshed for ${siteId.trim()} - retry creating the order now`);
+        toast.success(`Live SFG stock refreshed for ${site} - retry creating the order now`);
       } else {
         toast.error(job?.error || "Failed to refresh live SFG stock");
       }
@@ -1226,6 +1236,8 @@ const CreateOrderTab = ({ actorName }) => {
                             {PHASE_LABELS[j.status] || j.status}
                           </Badge>
                         </>
+                      ) : j.status === "failed" ? (
+                        <Badge variant="outline" className="border bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">SFG Shortage - Blocked</Badge>
                       ) : (
                         <OrderStepTracker status={j.status} elapsedSeconds={j.elapsedSeconds} />
                       )}
@@ -1241,6 +1253,8 @@ const CreateOrderTab = ({ actorName }) => {
                         j.storeRequest ? (
                           <Button size="sm" variant="outline" onClick={() => toggleJobExpand(j.job_id)} data-testid={`active-order-view-button-${i}`}>{j.expanded ? "Hide" : "View"}</Button>
                         ) : <span className="text-[11px] text-[#98A2B3]">Loading...</span>
+                      ) : j.status === "failed" ? (
+                        <Button size="sm" variant="outline" onClick={() => removeActiveJob(j.job_id)} data-testid={`active-order-dismiss-button-${i}`}>Dismiss</Button>
                       ) : (
                         <Button
                           size="sm"
@@ -1255,6 +1269,49 @@ const CreateOrderTab = ({ actorName }) => {
                       )}
                     </td>
                   </tr>
+                  {j.status === "failed" && j.failure && (
+                    <tr data-testid={`active-order-sfg-shortage-${i}`}>
+                      <td colSpan={6} className="border border-[#D0D5DD] px-2 py-2 bg-[#FEF3F2]">
+                        <p className="text-[11px] text-[#B42318] mb-1.5">
+                          Blocked before anything was created in SAP - {j.failure.short_components.length} sub-assembly component(s) short at {j.failure.site_id}.
+                          These are produced in-house, not stocked by the Store.
+                        </p>
+                        <table className="w-full text-[11px] border-collapse bg-white">
+                          <thead>
+                            <tr>
+                              {["Component", "Required by Production", `Available in ${j.failure.site_id}-SFG`, "Short By"].map((h) => (
+                                <th key={h} className="border border-[#FECDCA] px-2 py-1 text-left font-bold text-[#B42318]">{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {j.failure.short_components.map((c) => (
+                              <tr key={c.product_id} data-testid={`active-order-sfg-shortage-row-${i}-${c.product_id}`}>
+                                <td className="border border-[#FECDCA] px-2 py-1">{c.product_id}{c.description ? ` - ${c.description}` : ""}</td>
+                                <td className="border border-[#FECDCA] px-2 py-1 text-right tabular-nums">{formatQty(c.required_qty)} {formatUnit(c.unit_of_measure)}</td>
+                                <td className="border border-[#FECDCA] px-2 py-1 text-right tabular-nums">{c.available_qty == null ? "unknown" : `${formatQty(c.available_qty)} ${formatUnit(c.unit_of_measure)}`}</td>
+                                <td className="border border-[#FECDCA] px-2 py-1 text-right tabular-nums font-bold text-[#B42318]">{formatQty(Math.max(0, c.required_qty - (c.available_qty || 0)))} {formatUnit(c.unit_of_measure)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <p className="text-[11px] text-[#93370D] mt-1.5">
+                          Create/confirm a production order for these sub-assemblies first, then:
+                        </p>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={refreshingSfgStock}
+                          onClick={() => refreshLiveSfgStock(j.failure.site_id)}
+                          className="mt-1 h-7 text-[11px]"
+                          data-testid={`active-order-sfg-refresh-button-${i}`}
+                        >
+                          <ArrowClockwise size={12} className={`mr-1 ${refreshingSfgStock ? "animate-spin" : ""}`} />
+                          {refreshingSfgStock ? `Refreshing (${refreshSfgElapsed}s)...` : "Refresh Live SFG Stock & Retry"}
+                        </Button>
+                      </td>
+                    </tr>
+                  )}
                   {j.expanded && j.storeRequest && (
                     <tr data-testid={`active-order-details-${i}`}>
                       <td colSpan={6} className="border border-[#D0D5DD] px-2 py-2 bg-[#FFFAEB]">

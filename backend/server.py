@@ -2505,9 +2505,23 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
                 "Cannot create this order - the following sub-assembly component(s) don't have enough stock yet: "
                 + ", ".join(_fmt(c) for c in short_sfg)
                 + ". These are produced in-house, not stocked by the Store - create/confirm a production order for "
-                "them first (use \"Refresh Live SFG Stock\" below once that's done, then retry)."
+                "them first (use \"Refresh Live SFG Stock\" once that's done, then retry)."
             )
-            job_store.update_job(db, job_id, {"status": "failed", "error": error})
+            # Structured "result" (not just the flattened `error` string
+            # above) so the frontend can render a persistent, dismissible
+            # detail row instead of a toast - user's explicit ask (Aug
+            # 2026) - listing EVERY short sub-assembly with its own
+            # required vs available qty, same as the existing "waiting on
+            # Store" detail row does for short RM components.
+            job_store.update_job(db, job_id, {"status": "failed", "error": error, "result": {
+                "reason": "sfg_shortage",
+                "site_id": payload.site_id,
+                "short_components": [
+                    {"product_id": c["product_id"], "description": c.get("description"), "unit_of_measure": c.get("unit_of_measure"),
+                     "required_qty": c["required_qty"], "available_qty": c["available_qty"]}
+                    for c in short_sfg
+                ],
+            }})
             return
 
         job_store.update_job(db, job_id, {"status": "creating_proposal"})
