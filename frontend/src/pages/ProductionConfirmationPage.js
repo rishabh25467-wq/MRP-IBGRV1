@@ -15,6 +15,8 @@ import {
   CircleNotch,
   Circle,
   X,
+  CaretRight,
+  CaretDown,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -753,62 +755,66 @@ const CreateOrderTab = ({ actorName }) => {
 
   const openBomStockPanel = () => {
     setShowBomPanel(true);
+    setBomStockSearch("");
+    setBomStockShortageOnly(false);
+    setExpandedBomComponents(new Set());
     if (!bomStockStatus) fetchBomStock(false);
   };
 
   // Flattened, ready-to-render rows (one per component-location, or one
   // placeholder row for a component with no stock anywhere) - shared by
-  // both the modal's <table> and the Excel/CSV export below so they never
-  // drift apart. "Not Assigned" is SAP's default/USABLE stock status, so
-  // per the user's explicit ask it's hidden rather than shown as noise -
-  // only a real exception status (Inspection, Blocked, etc.) is surfaced.
-  const bomStockRows = useMemo(() => {
+  // Filterable/searchable/sortable, grouped-by-component list (Aug 2026,
+  // user's explicit ask) - shared by both the modal's <table> and the
+  // Excel/CSV export below so exporting always matches what's on screen.
+  // "Not Assigned" is SAP's default/USABLE stock status, so per the
+  // user's explicit ask it's hidden rather than shown as noise - only a
+  // real exception status (Inspection, Blocked, etc.) is surfaced.
+  const [bomStockSearch, setBomStockSearch] = useState("");
+  const [bomStockShortageOnly, setBomStockShortageOnly] = useState(false);
+  const [expandedBomComponents, setExpandedBomComponents] = useState(new Set());
+
+  const toggleBomComponentExpand = (productId) => {
+    setExpandedBomComponents((prev) => {
+      const next = new Set(prev);
+      if (next.has(productId)) next.delete(productId); else next.add(productId);
+      return next;
+    });
+  };
+
+  const bomStockComponents = useMemo(() => {
     if (!bomStockStatus?.checked) return [];
-    const rows = [];
-    bomStockStatus.components.forEach((c) => {
+    const q = bomStockSearch.trim().toLowerCase();
+    let list = bomStockStatus.components.map((c) => {
       const requiredQty = Math.round(c.bom_qty_per_unit * (Number(quantity) || 0) * 1e4) / 1e4;
       const shortfall = Math.max(0, Math.round((requiredQty - c.total_usable_qty) * 1e4) / 1e4);
-      const sufficient = requiredQty <= 0 || shortfall <= 0;
-      const base = {
-        product_id: c.product_id, description: c.description, unit_of_measure: c.unit_of_measure,
-        total_usable_qty: c.total_usable_qty, requiredQty, shortfall, sufficient,
-      };
-      if (c.locations.length === 0) {
-        rows.push({ ...base, showComponentInfo: true, site: null, warehouse: null, displayStatus: "—", qty: null });
-      } else {
-        c.locations.forEach((loc, li) => {
-          const isDefaultStatus = (loc.stock_status || "").trim().toLowerCase() === "not assigned";
-          rows.push({
-            ...base,
-            showComponentInfo: li === 0,
-            site: loc.site, warehouse: loc.warehouse,
-            displayStatus: isDefaultStatus ? "—" : (loc.stock_status || "—"),
-            qty: loc.qty,
-          });
-        });
-      }
+      return { ...c, requiredQty, shortfall, sufficient: requiredQty <= 0 || shortfall <= 0 };
     });
-    return rows;
-  }, [bomStockStatus, quantity]);
+    if (q) list = list.filter((c) => c.product_id.toLowerCase().includes(q) || (c.description || "").toLowerCase().includes(q));
+    if (bomStockShortageOnly) list = list.filter((c) => !c.sufficient);
+    return [...list].sort((a, b) => {
+      if (a.sufficient !== b.sufficient) return a.sufficient ? 1 : -1; // shortages first
+      return a.product_id.localeCompare(b.product_id);
+    });
+  }, [bomStockStatus, quantity, bomStockSearch, bomStockShortageOnly]);
 
   const downloadBomStockExcel = () => {
-    if (!bomStockStatus?.checked) return;
+    if (bomStockComponents.length === 0) return;
     const headers = ["Component", "Description", "Available", "Required", "Shortfall", "Unit", "Site", "Warehouse", "Stock Status", "Location Qty"];
     const csvLines = [headers.join(",")];
-    bomStockStatus.components.forEach((c) => {
-      const requiredQty = Math.round(c.bom_qty_per_unit * (Number(quantity) || 0) * 1e4) / 1e4;
-      const shortfall = Math.max(0, Math.round((requiredQty - c.total_usable_qty) * 1e4) / 1e4);
+    bomStockComponents.forEach((c) => {
       const locs = c.locations.length > 0 ? c.locations : [{ site: "", warehouse: "", stock_status: "", qty: "" }];
       locs.forEach((loc) => {
         const isDefaultStatus = (loc.stock_status || "").trim().toLowerCase() === "not assigned";
         const cells = [
-          c.product_id, c.description || "", c.total_usable_qty, requiredQty, shortfall, c.unit_of_measure || "",
+          c.product_id, c.description || "", c.total_usable_qty, c.requiredQty, c.shortfall, c.unit_of_measure || "",
           loc.site || "", loc.warehouse || "", isDefaultStatus ? "" : (loc.stock_status || ""), loc.qty ?? "",
         ];
         csvLines.push(cells.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","));
       });
     });
-    const blob = new Blob([csvLines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    // Leading BOM so Excel (which doesn't assume UTF-8 for plain CSV) reads
+    // special characters like " and – correctly instead of showing mojibake
+    const blob = new Blob(["\uFEFF" + csvLines.join("\n")], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -1345,7 +1351,7 @@ const CreateOrderTab = ({ actorName }) => {
                 type="button"
                 size="sm"
                 variant="outline"
-                disabled={!bomStockStatus?.checked || bomStockRows.length === 0}
+                disabled={bomStockComponents.length === 0}
                 onClick={downloadBomStockExcel}
                 data-testid="bom-stock-status-download-button"
               >
@@ -1359,39 +1365,93 @@ const CreateOrderTab = ({ actorName }) => {
           )}
 
           {bomStockStatus?.checked && (
-            <div className="flex-1 overflow-auto border border-[#EAECF0] rounded-sm">
-              <table className="w-full text-xs border-collapse" data-testid="bom-stock-status-table">
-                <thead className="sticky top-0">
-                  <tr>
-                    {["Component", "Description", "Available", "Required", "Shortfall", "Site", "Warehouse", "Stock Status", "Location Qty"].map((h) => (
-                      <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {bomStockRows.map((row, i) => (
-                    <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`bom-stock-row-${i}`}>
-                      <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium">{row.showComponentInfo ? row.product_id : ""}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.showComponentInfo ? row.description || "—" : ""}</td>
-                      <td className={`border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums ${row.showComponentInfo ? (row.sufficient ? "text-[#027A48]" : "text-[#B42318] font-bold") : ""}`}>
-                        {row.showComponentInfo ? `${formatQty(row.total_usable_qty)} ${formatUnit(row.unit_of_measure)}` : ""}
-                      </td>
-                      <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{row.showComponentInfo ? `${formatQty(row.requiredQty)} ${formatUnit(row.unit_of_measure)}` : ""}</td>
-                      <td className={`border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums ${row.showComponentInfo && !row.sufficient ? "text-[#B42318] font-bold" : ""}`}>
-                        {row.showComponentInfo ? (row.sufficient ? "—" : `${formatQty(row.shortfall)} ${formatUnit(row.unit_of_measure)}`) : ""}
-                      </td>
-                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.site || "—"}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.warehouse || "—"}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.displayStatus}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{row.qty != null ? `${formatQty(row.qty)} ${formatUnit(row.unit_of_measure)}` : "—"}</td>
+            <>
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="relative flex-1 min-w-[200px]">
+                  <MagnifyingGlass size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
+                  <Input
+                    value={bomStockSearch}
+                    onChange={(e) => setBomStockSearch(e.target.value)}
+                    placeholder="Search by component ID or description..."
+                    className="h-8 pl-7 text-xs"
+                    data-testid="bom-stock-search-input"
+                  />
+                </div>
+                <label className="flex items-center gap-1.5 text-xs font-medium text-[#344054] cursor-pointer whitespace-nowrap">
+                  <input
+                    type="checkbox"
+                    checked={bomStockShortageOnly}
+                    onChange={(e) => setBomStockShortageOnly(e.target.checked)}
+                    data-testid="bom-stock-shortage-only-toggle"
+                  />
+                  Shortages only
+                </label>
+              </div>
+
+              <div className="flex-1 overflow-auto border border-[#EAECF0] rounded-sm">
+                <table className="w-full text-xs border-collapse" data-testid="bom-stock-status-table">
+                  <thead className="sticky top-0">
+                    <tr>
+                      {["Component", "Description", "Available", "Required", "Shortfall", "Site", "Warehouse", "Stock Status", "Location Qty"].map((h) => (
+                        <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
+                      ))}
                     </tr>
-                  ))}
-                  {bomStockRows.length === 0 && (
-                    <tr><td colSpan={9} className="text-center py-6 text-[#98A2B3] border border-[#D0D5DD]">No active components in this BOM.</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {bomStockComponents.map((c) => {
+                      const expanded = expandedBomComponents.has(c.product_id);
+                      const hasLocations = c.locations.length > 0;
+                      return (
+                        <Fragment key={c.product_id}>
+                          <tr className={c.sufficient ? "bg-white" : "bg-[#FEF3F2]"} data-testid={`bom-stock-component-row-${c.product_id}`}>
+                            <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium">
+                              <button
+                                type="button"
+                                className="flex items-center gap-1 disabled:cursor-default"
+                                disabled={!hasLocations}
+                                onClick={() => toggleBomComponentExpand(c.product_id)}
+                                data-testid={`bom-stock-expand-${c.product_id}`}
+                              >
+                                {hasLocations ? (expanded ? <CaretDown size={11} className="shrink-0" /> : <CaretRight size={11} className="shrink-0" />) : <span className="inline-block w-[11px]" />}
+                                {c.product_id}
+                              </button>
+                            </td>
+                            <td className="border border-[#D0D5DD] px-2 py-1.5">{c.description || "—"}</td>
+                            <td className={`border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums ${c.sufficient ? "text-[#027A48]" : "text-[#B42318] font-bold"}`}>
+                              {formatQty(c.total_usable_qty)} {formatUnit(c.unit_of_measure)}
+                            </td>
+                            <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(c.requiredQty)} {formatUnit(c.unit_of_measure)}</td>
+                            <td className={`border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums ${!c.sufficient ? "text-[#B42318] font-bold" : ""}`}>
+                              {c.sufficient ? "—" : `${formatQty(c.shortfall)} ${formatUnit(c.unit_of_measure)}`}
+                            </td>
+                            <td colSpan={4} className="border border-[#D0D5DD] px-2 py-1.5 text-[#667085]">
+                              {hasLocations ? `${c.locations.length} location${c.locations.length > 1 ? "s" : ""} - click to ${expanded ? "collapse" : "expand"}` : "No stock found anywhere"}
+                            </td>
+                          </tr>
+                          {expanded && c.locations.map((loc, li) => {
+                            const isDefaultStatus = (loc.stock_status || "").trim().toLowerCase() === "not assigned";
+                            return (
+                              <tr key={li} className="bg-[#F9FAFB]" data-testid={`bom-stock-location-row-${c.product_id}-${li}`}>
+                                <td className="border border-[#D0D5DD] px-2 py-1.5" colSpan={5}></td>
+                                <td className="border border-[#D0D5DD] px-2 py-1.5">{loc.site || "—"}</td>
+                                <td className="border border-[#D0D5DD] px-2 py-1.5">{loc.warehouse || "—"}</td>
+                                <td className="border border-[#D0D5DD] px-2 py-1.5">{isDefaultStatus ? "—" : (loc.stock_status || "—")}</td>
+                                <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(loc.qty)} {formatUnit(c.unit_of_measure)}</td>
+                              </tr>
+                            );
+                          })}
+                        </Fragment>
+                      );
+                    })}
+                    {bomStockComponents.length === 0 && (
+                      <tr><td colSpan={9} className="text-center py-6 text-[#98A2B3] border border-[#D0D5DD]">
+                        {bomStockSearch.trim() || bomStockShortageOnly ? "No components match your search/filter." : "No active components in this BOM."}
+                      </td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
 
           {bomStockStatus && !bomStockStatus.checked && (
