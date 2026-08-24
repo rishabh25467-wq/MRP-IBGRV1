@@ -72,14 +72,23 @@ def _warehouse_id_from_logistics_area_id(logistics_area_id: str) -> str:
     return (logistics_area_id or "").rsplit("/", 1)[-1].strip()
 
 
-def get_product_stock_locations(db, product_id: str) -> dict:
-    """Every USABLE, in-stock location this product currently sits in,
-    across every site/warehouse - backs both the "Check Inventory" step and
-    the "Select Source Warehouse" dropdown. Purely cache-based
+def get_product_stock_locations(db, product_id: str, include_non_usable: bool = False) -> dict:
+    """Every in-stock location this product currently sits in, across
+    every site/warehouse - backs both the "Check Inventory" step and the
+    "Select Source Warehouse" dropdown. Purely cache-based
     (inventory_cache, refreshed every couple hours - the same source
     InventoryPage.js already reads), no live SAP call - this is a fast,
     frequent lookup as the user searches/picks items, not a one-off
-    pre-write sufficiency gate like check_component_availability."""
+    pre-write sufficiency gate like check_component_availability.
+
+    By default (`include_non_usable=False`, every existing caller -
+    suggestion/validation/creation) only USABLE stock is returned, same
+    as before. `include_non_usable=True` (Aug 27 2026, user's explicit
+    ask - "show Inspection/Restricted stock in the dropdown as read-only
+    info") additionally includes non-usable rows (Inspection/Blocked/
+    Restricted), each tagged `is_usable: False` - the frontend renders
+    these as visible-but-disabled options, never selectable as an actual
+    transfer source."""
     product_id = (product_id or "").strip()
     doc = db[INVENTORY_CACHE_COLLECTION].find_one(
         {"_id": "latest", "items.product_id": product_id}, {"items.$": 1},
@@ -92,7 +101,10 @@ def get_product_stock_locations(db, product_id: str) -> dict:
     locations = []
     for loc in item.get("locations", []):
         qty = loc.get("qty") or 0
-        if qty <= 0 or not is_usable_stock_status(loc.get("stock_status"), loc.get("restricted", False)):
+        if qty <= 0:
+            continue
+        usable = is_usable_stock_status(loc.get("stock_status"), loc.get("restricted", False))
+        if not usable and not include_non_usable:
             continue
         warehouse_id = _warehouse_id_from_logistics_area_id(loc.get("logistics_area_id"))
         if not warehouse_id:
@@ -102,14 +114,17 @@ def get_product_stock_locations(db, product_id: str) -> dict:
             "warehouse_id": warehouse_id,
             "warehouse_name": loc.get("logistics_area"),
             "qty": qty,
+            "is_usable": usable,
+            "stock_status": loc.get("stock_status") or None,
         })
-    locations.sort(key=lambda l: -l["qty"])
+    locations.sort(key=lambda l: (0 if l["is_usable"] else 1, -l["qty"]))
     return {
         "product_id": product_id,
         "description": item.get("description"),
         "unit_of_measure": item.get("uom"),
         "locations": locations,
     }
+
 
 
 def list_known_warehouses_for_site(db, site_id: str) -> list:

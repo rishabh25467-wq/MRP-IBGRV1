@@ -257,16 +257,18 @@ export default function StockTransferPage() {
     setShowSuggestions(false);
     if (items.some((i) => i.product_id === product_id)) {
       toast.error(`${product_id} is already in the line item list.`);
-      return;
+      return null;
     }
     try {
-      const { data } = await axios.get(`${API}/stock-transfer/inventory`, { params: { product_id } });
+      const { data } = await axios.get(`${API}/stock-transfer/inventory`, { params: { product_id, include_non_usable: true } });
       const line = emptyLine({ ...data, description: data.description || description });
       if (initialQty != null) line.requested_qty = String(initialQty);
       setItems((prev) => [...prev, line]);
       fetchSuggestion(line.key, product_id);
+      return line;
     } catch {
       toast.error(`Could not check inventory for ${product_id}.`);
+      return null;
     }
   };
 
@@ -294,6 +296,7 @@ export default function StockTransferPage() {
     setItems((prev) => prev.map((i) => {
       if (i.key !== key) return i;
       const loc = i.locations.find((l) => l.warehouse_id === warehouseId);
+      if (loc && loc.is_usable === false) return i; // Inspection/Restricted rows are shown but never selectable
       return {
         ...i,
         source_warehouse_id: warehouseId,
@@ -483,11 +486,29 @@ export default function StockTransferPage() {
 
   const applyNlPreview = async () => {
     if (!nlPreview) return;
+    let addedLine = null;
     if (nlPreview.product_id) {
-      await addItem(nlPreview.product_id, null, nlPreview.quantity);
+      addedLine = await addItem(nlPreview.product_id, null, nlPreview.quantity);
     }
     if (nlPreview.ship_to_site_id) setShipToSiteId(nlPreview.ship_to_site_id);
     if (nlPreview.requested_delivery_date) setRequestedDeliveryDate(nlPreview.requested_delivery_date);
+    // Auto-apply the AI's top-suggested Source Warehouse too (Aug 27
+    // 2026, user's explicit ask) - without a resolved Source Warehouse,
+    // Ship-from Site stays blank, which keeps Ship-to Site/Location
+    // disabled - so the 2 lines above would have nowhere to take effect.
+    // Only ever picks a USABLE location, same rule as the manual
+    // "Suggested: ..." hint.
+    if (addedLine) {
+      try {
+        const { data } = await axios.get(`${API}/stock-transfer/suggest-source`, {
+          params: { product_id: addedLine.product_id, ship_to_site_id: nlPreview.ship_to_site_id || undefined },
+        });
+        if (data?.suggested) {
+          chooseWarehouse(addedLine.key, data.suggested.warehouse_id);
+          toast.message(`Auto-picked Source Warehouse: ${data.suggested.site_id} / ${data.suggested.warehouse_name || data.suggested.warehouse_id}.`);
+        }
+      } catch { /* purely advisory - the form is still fully usable without it */ }
+    }
     setNlPreview(null);
     setNlText("");
     toast.message("Applied to the form below - review before creating.");
@@ -602,7 +623,7 @@ export default function StockTransferPage() {
                       <Select value={i.source_warehouse_id} onValueChange={(v) => chooseWarehouse(i.key, v)}>
                         <SelectTrigger className="h-8 text-xs" data-testid={`stock-transfer-warehouse-select-${i.product_id}`}>
                           <SelectValue placeholder={
-                            i.locations.length === 0
+                            i.locations.filter((l) => l.is_usable).length === 0
                               ? "No usable stock found"
                               : (shipFromSiteId && !i.locations.some((l) => l.site_id === shipFromSiteId) ? `No stock at ${shipFromSiteId}` : "Choose warehouse")
                           } />
@@ -611,8 +632,15 @@ export default function StockTransferPage() {
                           {i.locations
                             .filter((l) => !shipFromSiteId || l.site_id === shipFromSiteId || l.warehouse_id === i.source_warehouse_id)
                             .map((l) => (
-                              <SelectItem key={l.warehouse_id} value={l.warehouse_id}>
+                              <SelectItem
+                                key={l.warehouse_id}
+                                value={l.warehouse_id}
+                                disabled={l.is_usable === false}
+                                className={l.is_usable === false ? "text-[#98A2B3]" : undefined}
+                                data-testid={l.is_usable === false ? `stock-transfer-warehouse-nonusable-${i.product_id}-${l.warehouse_id}` : undefined}
+                              >
                                 {l.site_id} - {l.warehouse_name || l.warehouse_id} ({formatQty(l.qty)})
+                                {l.is_usable === false ? ` - ${l.stock_status || "Restricted"}, not available` : ""}
                               </SelectItem>
                             ))}
                         </SelectContent>
@@ -648,7 +676,7 @@ export default function StockTransferPage() {
                       {i.error && <p className="text-[11px] text-[#B42318] font-bold mt-1" data-testid={`stock-transfer-qty-error-${i.product_id}`}>{i.error}</p>}
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
-                      {i.locations.length === 0 ? (
+                      {i.locations.filter((l) => l.is_usable).length === 0 ? (
                         <span className="inline-flex items-center gap-1 text-[#B42318] font-bold"><WarningCircle size={12} /> No Stock</span>
                       ) : (
                         <span className="inline-flex items-center gap-1 text-[#027A48] font-bold"><CheckCircle size={12} /> Available</span>

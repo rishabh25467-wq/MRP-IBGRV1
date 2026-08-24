@@ -4296,8 +4296,8 @@ def _sto_to_response(doc: dict) -> dict:
 
 
 @api_router.get("/stock-transfer/inventory")
-async def get_stock_transfer_inventory(product_id: str):
-    return await asyncio.to_thread(stock_transfer_service.get_product_stock_locations, db, product_id)
+async def get_stock_transfer_inventory(product_id: str, include_non_usable: bool = False):
+    return await asyncio.to_thread(stock_transfer_service.get_product_stock_locations, db, product_id, include_non_usable)
 
 
 @api_router.get("/stock-transfer/ship-to-sites")
