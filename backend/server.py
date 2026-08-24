@@ -62,6 +62,7 @@ import mrp_plan_store
 import autosave_store
 import job_store
 import supplier_service
+import stock_transfer_service
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -4234,6 +4235,84 @@ async def trigger_full_sync():
         return {"triggered": False, "already_running": True}
     asyncio.create_task(_run_full_sync("manual"))
     return {"triggered": True, "already_running": False}
+
+
+# ---------------------------------------------------------------------------
+# Inter-Plant Stock Transfer Order (Aug 2026) - see stock_transfer_service.py
+# module docstring: SAP's real write API ("ManageCustomerRequirementIn") is
+# not yet exposed on this tenant, so /orders below only validates + persists
+# locally as status "pending_sap" - no live SAP call happens here yet.
+# ---------------------------------------------------------------------------
+class StockTransferItemCreate(BaseModel):
+    product_id: str
+    source_warehouse_id: str
+    requested_qty: float
+
+
+class StockTransferOrderCreate(BaseModel):
+    ship_to_site_id: str
+    ship_to_location_id: str
+    requested_delivery_date: str
+    items: List[StockTransferItemCreate]
+
+
+class StockTransferNLParseRequest(BaseModel):
+    text: str
+
+
+def _sto_to_response(doc: dict) -> dict:
+    d = dict(doc)
+    d["sto_id"] = d.pop("_id")
+    if isinstance(d.get("created_at"), datetime):
+        d["created_at"] = d["created_at"].isoformat()
+    return d
+
+
+@api_router.get("/stock-transfer/inventory")
+async def get_stock_transfer_inventory(product_id: str):
+    return await asyncio.to_thread(stock_transfer_service.get_product_stock_locations, db, product_id)
+
+
+@api_router.get("/stock-transfer/ship-to-sites")
+async def get_stock_transfer_ship_to_sites(ship_from_site_id: str):
+    sites = await asyncio.to_thread(stock_transfer_service.ship_to_sites_for_ship_from_site, db, ship_from_site_id)
+    return {"sites": sites}
+
+
+@api_router.get("/stock-transfer/locations")
+async def get_stock_transfer_locations(site_id: str):
+    warehouses = await asyncio.to_thread(stock_transfer_service.list_known_warehouses_for_site, db, site_id)
+    return {"warehouses": warehouses}
+
+
+@api_router.get("/stock-transfer/suggest-source")
+async def get_stock_transfer_suggested_source(product_id: str, ship_to_site_id: Optional[str] = None):
+    return await asyncio.to_thread(stock_transfer_service.suggest_source_warehouse, db, product_id, ship_to_site_id)
+
+
+@api_router.post("/stock-transfer/orders")
+async def post_stock_transfer_order(payload: StockTransferOrderCreate, request: Request):
+    actor = (request.state.user.get("name") or request.state.user.get("email") or "Unknown").strip()
+    try:
+        doc = await asyncio.to_thread(stock_transfer_service.create_stock_transfer_order, db, payload.dict(), actor)
+    except stock_transfer_service.StockTransferValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _sto_to_response(doc)
+
+
+@api_router.get("/stock-transfer/orders")
+async def get_stock_transfer_orders():
+    docs = await asyncio.to_thread(stock_transfer_service.list_stock_transfer_orders, db)
+    return [_sto_to_response(d) for d in docs]
+
+
+@api_router.post("/stock-transfer/parse-nl")
+async def post_stock_transfer_parse_nl(payload: StockTransferNLParseRequest):
+    known_sites = await asyncio.to_thread(list_known_sites, db)
+    try:
+        return await stock_transfer_service.parse_natural_language_transfer_request(payload.text, known_sites)
+    except stock_transfer_service.StockTransferValidationError as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 app.include_router(api_router)

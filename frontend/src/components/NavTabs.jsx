@@ -36,6 +36,7 @@ const TABS = [
 
 const INVENTORY_SUBTABS = [
   { to: "/inventory", label: "Stock Overview", testId: "nav-inventory-stock-overview", page: "inventory" },
+  { to: "/inventory/inter-plant-transfer", label: "Inter Plant Stock Transfer", testId: "nav-inventory-stock-transfer", page: "inventory" },
   // Aug 2026, user's explicit ask: links out to the existing Store
   // Approval screen (public/unauthenticated route, unchanged) - just a
   // shortcut into it from the main nav, no backend permission change.
@@ -63,7 +64,7 @@ export const NavTabs = () => {
   const visibleAdminSubtabs = ADMIN_SUBTABS.filter((t) => hasPageAccess(t.page));
   const adminActive = ADMIN_SUBTABS.some((t) => t.to === pathname);
   const purchasingStrategyActive = PURCHASING_STRATEGY_SUBTABS.some((t) => t.to === pathname);
-  const inventoryActive = pathname === "/inventory" || pathname.startsWith("/storeapproval");
+  const inventoryActive = pathname === "/inventory" || pathname === "/inventory/inter-plant-transfer" || pathname.startsWith("/storeapproval");
   return (
     <>
       {/* Desktop / large tablet nav - unchanged pill tabs */}
