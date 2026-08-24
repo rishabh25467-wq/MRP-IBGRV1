@@ -1,3 +1,12 @@
+## Session update (2026-08-27, continued 16) - Same lowercase bug fixed for Part Code too
+
+- Same class of bug as the site-code fix above, but for `product_id`: a lowercase part code (via AI Quick Entry OR direct API) failed to match the inventory cache (Mongo exact-match is case-sensitive) - silently added an empty/broken line (no description, no locations, no HSN) rather than erroring.
+- Fixed at the single shared source: `get_product_stock_locations()` and `create_stock_transfer_order()` now both normalize `product_id` to uppercase before any lookup - covers AI Quick Entry, manual form entry, and direct API calls in one place.
+- **Tested**: live call `get_product_stock_locations(db, "scr755wm", True)` -> correctly resolved to `SCR755WM` with full description + 8 stock locations. Self-tested (small backend fix).
+
+---
+
+
 ## Session update (2026-08-27, continued 15) - AI Quick Entry lowercase site bug fixed
 
 - Bug: typing a lowercase site (e.g. "p3" instead of "P3") in AI Quick Entry free text silently failed to populate Ship-to Site - the LLM just echoed back whatever case the user typed, which then didn't match the uppercase dropdown option value.

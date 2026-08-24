@@ -89,7 +89,7 @@ def get_product_stock_locations(db, product_id: str, include_non_usable: bool = 
     Restricted), each tagged `is_usable: False` - the frontend renders
     these as visible-but-disabled options, never selectable as an actual
     transfer source."""
-    product_id = (product_id or "").strip()
+    product_id = (product_id or "").strip().upper()
     hsn_code = sap_hsn_client.get_hsn_codes([product_id]).get(product_id) if sap_hsn_client else None
     doc = db[INVENTORY_CACHE_COLLECTION].find_one(
         {"_id": "latest", "items.product_id": product_id}, {"items.$": 1},
@@ -271,9 +271,9 @@ def create_stock_transfer_order(db, payload: dict, created_by: str, sap_hsn_clie
 
     resolved_items = []
     ship_from_site_id = None
-    hsn_codes = sap_hsn_client.get_hsn_codes([(raw.get("product_id") or "").strip() for raw in items]) if sap_hsn_client else {}
+    hsn_codes = sap_hsn_client.get_hsn_codes([(raw.get("product_id") or "").strip().upper() for raw in items]) if sap_hsn_client else {}
     for idx, raw in enumerate(items, start=1):
-        product_id = (raw.get("product_id") or "").strip()
+        product_id = (raw.get("product_id") or "").strip().upper()
         source_warehouse_id = (raw.get("source_warehouse_id") or "").strip()
         requested_qty = raw.get("requested_qty")
         if not product_id:
