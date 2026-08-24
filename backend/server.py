@@ -2792,13 +2792,24 @@ async def list_store_requests(request: Request):
 
 
 @api_router.get("/store-requests/journal")
-async def get_store_requests_journal(request: Request):
+async def get_store_requests_journal(request: Request, requester: Optional[str] = None):
     """Every store_requests doc regardless of status (pending, awaiting
     requester, resolved, cancelled) - the store team's full history/
     audit log, filtered/sorted/searched client-side since the volume is
     low. Declared BEFORE /store-requests/{request_id} so FastAPI matches
-    this static path first instead of treating "journal" as a request_id."""
+    this static path first instead of treating "journal" as a request_id.
+    Bug fix (Aug 2026): this same endpoint also backs MyStockRequestsTab
+    (a REQUESTER tracking requests THEY created, e.g. a production
+    planner - a completely different persona from a "store user" issuing
+    stock). Site Binding's fail-closed default was wrongly blanking out
+    that requester's own submissions too. When `requester` is passed, skip
+    the site restriction entirely and filter server-side by requester
+    name instead - "show me my own requests" was never meant to be
+    gated by which sites a store person is bound to."""
     rows = await asyncio.to_thread(store_approval_service.list_all_requests, db)
+    if requester:
+        name = requester.strip().lower()
+        return {"requests": [r for r in rows if (r.get("requester") or "").strip().lower() == name]}
     return {"requests": _filter_by_site_access(rows, request.state.user)}
 
 

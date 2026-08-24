@@ -1,3 +1,9 @@
+## Session update (2026-08-24, part 6) - REGRESSION FIX: Store Binding broke "My Stock Requests" for requesters
+- Reported bug (production, Sonu Sharma): "My Stock Requests" tab on Production Confirmation showed 0 rows for a user who definitely had submitted requests.
+- Root cause: that tab and the Store Approval team's Journal view both call the same `GET /store-requests/journal` endpoint. Part 5's Store Binding fail-closed default (unbound "user" role sees zero rows) was correct for STORE approvers but wrongly also blanked out this tab, which is for REQUESTERS (e.g. production planners) tracking requests THEY created - a completely different persona that has nothing to do with site-bound store issuance.
+- Fix: `/store-requests/journal` now accepts an optional `?requester=<name>` param. When present (as `MyStockRequestsTab.jsx` now always sends), it bypasses the site restriction entirely and filters server-side by requester name instead - "show me my own submissions" was never meant to be gated by store site binding.
+- Verified end-to-end: seeded a "user" role with no bound_sites + a request they created -> confirmed empty without the fix, populated with it, then screenshot-confirmed the actual tab renders the row correctly.
+
 ## Session update (2026-08-24, part 5) - Store Binding feature: restrict store users to their assigned site(s)
 - User's explicit ask: admin/super_admin can bind a "user"-role account to 1+ SAP sites, restricting them to ONLY those sites in Store Approval (both dropdown AND underlying data/actions, real backend enforcement not just UI filtering). admin/super_admin always see all sites. Unbound users fail-closed (see zero sites/requests) until explicitly bound.
 - New "Store Assignment" tab inside existing Access Management page (`AccessManagementPage.jsx`, wrapped in shadcn `Tabs`) - lists only role="user" accounts with per-site checkboxes + "Save Site Binding".

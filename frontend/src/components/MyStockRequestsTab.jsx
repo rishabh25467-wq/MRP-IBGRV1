@@ -58,14 +58,14 @@ export const MyStockRequestsTab = ({ actorName }) => {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await axios.get(`${API}/store-requests/journal`);
+      const { data } = await axios.get(`${API}/store-requests/journal`, { params: { requester: actorName } });
       setAll(data.requests);
     } catch {
       toast.error("Failed to load your stock requests");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [actorName]);
 
   useEffect(() => {
     load();
@@ -74,6 +74,10 @@ export const MyStockRequestsTab = ({ actorName }) => {
   }, [load]);
 
   const mine = useMemo(() => {
+    // Bug fix (Aug 2026): backend now already scopes this to `actorName`
+    // via ?requester=, bypassing the store site-binding restriction that
+    // was wrongly blanking this tab out for requesters with no bound
+    // sites. Keep this client-side filter too as a harmless double-check.
     const name = actorName.trim().toLowerCase();
     if (!name) return [];
     return all.filter((r) => (r.requester || "").trim().toLowerCase() === name);
