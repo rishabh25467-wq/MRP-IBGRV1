@@ -389,7 +389,13 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sto_id: str) -> str:
     match) and, if found and still open, posts the Goods Issue on it.
     Returns "waiting" (SAP hasn't produced it yet - caller should poll
     again later), "posted" (done), or raises SAPOutboundDeliveryError on
-    a real SAP-side failure. Mutates the STO doc's `gi_status` fields."""
+    a real SAP-side failure. Mutates the STO doc's `gi_status` fields.
+
+    GST fields (Aug 2026) are pushed onto the ODR HEADER right here,
+    BEFORE post_goods_issue() - confirmed live the ODR becomes read-only
+    the moment GI is posted, so this is the last possible moment. Best
+    effort: a GST push failure is recorded (`gst_push_status`/
+    `gst_push_error`) but never blocks/fails the Goods Issue itself."""
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:
         raise StockTransferValidationError(f"Stock Transfer Order {sto_id} not found.")
@@ -399,6 +405,20 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sto_id: str) -> str:
     delivery_item = sap_outbound_delivery_client.find_delivery_request_item(doc["sap_order_uuid"])
     if not delivery_item:
         return "waiting"
+
+    if doc.get("gst_push_status") != "posted" and delivery_item.get("parent_object_id"):
+        try:
+            sap_outbound_delivery_client.push_gst_fields(delivery_item["parent_object_id"], {
+                "transportation_mode": doc.get("transportation_mode"),
+                "vehicle_no": doc.get("vehicle_no"),
+                "place_of_supply": doc.get("place_of_supply"),
+                "gr_no": doc.get("gr_no"),
+                "date_of_supply": doc.get("date_of_supply"),
+            })
+            db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gst_push_status": "posted", "gst_push_error": None}})
+        except SAPOutboundDeliveryError as e:
+            db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gst_push_status": "failed", "gst_push_error": str(e)}})
+
     # OrderFulfilmentProcessingStatusCode: 1=Not Started, 2=In Process,
     # 3=Finished - only post Goods Issue on one that isn't already done
     # (e.g. a retry after a transient error on our own earlier attempt).

@@ -31,14 +31,42 @@ this app uses), which is why this needs its own separate credentials.
 
 Writes (PGIInBackground) need an x-csrf-token fetched via a prior GET
 with header `X-CSRF-Token: Fetch`, reused with that same session's
-cookies on the POST - standard SAP OData CSRF pattern."""
+cookies on the POST - standard SAP OData CSRF pattern.
+
+GST / E-way bill fields (Aug 2026 session) - real write path FOUND (not a
+guess): this SAME `odataoutboundemergent` service's `$metadata` already
+carries the exact 5 custom PDI fields shown on SAP's "Stock Transfer
+Delivery" screen, on the `OutboundDeliveryRequestCollection` (the ODR
+HEADER, not the item) - `TransportationMode_KUT` (String, picklist-backed
+but free-text-writable, confirmed live values "By Road"/"By Rail"/
+"By Air"/"By Self" - NOT "By Sea", frontend dropdown aligned to match),
+`VehicleNo_KUT`, `PlaceOfSupply_KUT`, `GRNo1_KUT` (note the "1" - this
+tenant's own field name, not a typo), `DateOfSupply_KUT` (Edm.DateTime,
+OData v2 JSON `/Date(ms)/` wire format) - all `sap:creatable="true"
+sap:updatable="true"`. Confirmed live: writable ONLY while the ODR is
+still open (`OrderFulfilmentProcessingStatusCode` != "3"/Finished) - a
+real MERGE attempt on an already-GI'd ODR came back
+"Changing data not possible; data is read-only". So this MUST be pushed
+BEFORE post_goods_issue() converts/closes the request, not after - wired
+into stock_transfer_service.try_post_goods_issue() in that exact order."""
+import json
 import requests
+from datetime import date, datetime, timezone
 from requests.auth import HTTPBasicAuth
 
 from sap_rate_limiter import sap_semaphore
 
 REFERENCE_ENTITY_SET = "OutboundDeliveryRequestItemBusinessTransactionDocumentReferenceSalesOrderCollect"
 STOCK_TRANSFER_ORDER_TYPE_CODE = "814"  # confirmed live via this tenant's own code list
+
+# our field -> confirmed real SAP technical field name on OutboundDeliveryRequestCollection
+GST_FIELD_MAP = {
+    "transportation_mode": "TransportationMode_KUT",
+    "vehicle_no": "VehicleNo_KUT",
+    "place_of_supply": "PlaceOfSupply_KUT",
+    "gr_no": "GRNo1_KUT",
+}
+GST_DATE_FIELD_MAP = {"date_of_supply": "DateOfSupply_KUT"}
 
 
 class SAPOutboundDeliveryError(Exception):
@@ -76,15 +104,56 @@ class SAPOutboundDeliveryClient:
                 continue
             return {
                 "object_id": item.get("ObjectID"),
+                "parent_object_id": item.get("ParentObjectID"),
                 "order_fulfilment_status": item.get("OrderFulfilmentProcessingStatusCode"),
                 "product_id": item.get("RayItemcode_KUT"),
                 "description": item.get("RAYITEMDESCRIPTION_KUT"),
             }
         return None
 
-    def _fetch_csrf_token(self, session: requests.Session) -> str:
+    def push_gst_fields(self, outbound_delivery_request_object_id: str, gst_fields: dict) -> dict:
+        """MERGE the 5 confirmed GST/e-way-bill custom fields onto the ODR
+        HEADER (see module docstring) - MUST be called before
+        post_goods_issue() on the same order, while the ODR is still open.
+        `gst_fields` uses OUR keys (transportation_mode/vehicle_no/
+        place_of_supply/gr_no/date_of_supply) - unknown/blank keys are
+        skipped."""
+        body = {}
+        for our_key, sap_field in GST_FIELD_MAP.items():
+            value = gst_fields.get(our_key)
+            if value:
+                body[sap_field] = value
+        for our_key, sap_field in GST_DATE_FIELD_MAP.items():
+            value = gst_fields.get(our_key)
+            if value:
+                d = date.fromisoformat(value)
+                epoch_ms = int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp() * 1000)
+                body[sap_field] = f"/Date({epoch_ms})/"
+        if not body:
+            return {"pushed": False, "reason": "no GST fields on this order"}
+
+        session = requests.Session()
+        try:
+            with sap_semaphore:
+                token = self._fetch_csrf_token(session, entity_set="OutboundDeliveryItemCollection")
+                resp = session.post(
+                    f"{self.endpoint}/OutboundDeliveryRequestCollection('{outbound_delivery_request_object_id}')",
+                    params={"sap-vhost": self.vhost},
+                    auth=self.auth,
+                    headers={"Accept": "application/json", "Content-Type": "application/json",
+                             "X-CSRF-Token": token, "X-HTTP-Method": "MERGE"},
+                    data=json.dumps(body),
+                    timeout=30,
+                )
+        except requests.exceptions.RequestException as e:
+            raise SAPOutboundDeliveryError(f"Could not reach SAP: {e}")
+        if resp.status_code >= 400:
+            raise SAPOutboundDeliveryError(f"HTTP {resp.status_code}: {resp.text[:500]}")
+        return {"pushed": True}
+
+    def _fetch_csrf_token(self, session: requests.Session, entity_set: str = "OutboundDeliveryRequestCollection") -> str:
         resp = session.get(
-            f"{self.endpoint}/OutboundDeliveryRequestCollection",
+            f"{self.endpoint}/{entity_set}",
             params={"$top": "1", "sap-vhost": self.vhost},
             auth=self.auth,
             headers={"X-CSRF-Token": "Fetch", "Accept": "application/json"},

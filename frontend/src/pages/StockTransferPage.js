@@ -617,7 +617,7 @@ export default function StockTransferPage() {
             <Select value={transportationMode} onValueChange={setTransportationMode}>
               <SelectTrigger data-testid="stock-transfer-transportation-mode-select"><SelectValue /></SelectTrigger>
               <SelectContent>
-                {["By Road", "By Rail", "By Air", "By Sea"].map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                {["By Road", "By Rail", "By Air", "By Self"].map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -662,7 +662,7 @@ export default function StockTransferPage() {
             <table className="w-full text-[12px] border-collapse min-w-[900px]" data-testid="stock-transfer-recent-table">
               <thead>
                 <tr>
-                  {["STO ID", "Created", "By", "Ship-from", "Ship-to", "Location", "Items", "Delivery Date", "SAP Order ID", "Status", "Goods Issue"].map((h) => (
+                  {["STO ID", "Created", "By", "Ship-from", "Ship-to", "Location", "Items", "Delivery Date", "SAP Order ID", "Status", "Goods Issue", "GST Push"].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-[11px] font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -682,6 +682,11 @@ export default function StockTransferPage() {
                     ? { label: "GI Pending (20min+)", className: "bg-[#FEF0C7] text-[#93370D]" }
                     : o.gi_status === "awaiting_delivery"
                     ? { label: "Awaiting Delivery", className: "bg-[#FEF0C7] text-[#93370D]" }
+                    : null;
+                  const gstBadge = o.gst_push_status === "posted"
+                    ? { label: "GST Pushed", className: "bg-[#ECFDF3] text-[#027A48]" }
+                    : o.gst_push_status === "failed"
+                    ? { label: "GST Push Failed", className: "bg-[#FEF3F2] text-[#B42318]" }
                     : null;
                   return (
                     <tr
@@ -704,6 +709,9 @@ export default function StockTransferPage() {
                       </td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">
                         {giBadge ? <span className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold ${giBadge.className}`}>{giBadge.label}</span> : <span className="text-[#98A2B3]">—</span>}
+                      </td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5">
+                        {gstBadge ? <span className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold ${gstBadge.className}`}>{gstBadge.label}</span> : <span className="text-[#98A2B3]">—</span>}
                       </td>
                     </tr>
                   );
@@ -865,6 +873,25 @@ export default function StockTransferPage() {
                     {selectedOrder.outbound_delivery_object_id && (selectedOrder.gi_status === "posted" || selectedOrder.gi_status === "failed") && (
                       <p className="mt-0.5 text-xs opacity-80">Outbound Delivery Request: {selectedOrder.outbound_delivery_object_id}</p>
                     )}
+                  </div>
+                </div>
+              )}
+
+              {selectedOrder.gst_push_status && (
+                <div
+                  className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
+                    selectedOrder.gst_push_status === "posted" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
+                    : "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
+                  }`}
+                  data-testid="stock-transfer-detail-gst-status"
+                >
+                  {selectedOrder.gst_push_status === "posted" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : <WarningCircle size={16} className="mt-0.5 shrink-0" />}
+                  <div>
+                    <p className="font-bold">
+                      {selectedOrder.gst_push_status === "posted" ? "GST / Transport fields pushed to SAP."
+                        : "GST / Transport fields push failed:"}
+                    </p>
+                    {selectedOrder.gst_push_status === "failed" && <p className="mt-0.5">{cleanSapMessage(selectedOrder.gst_push_error) || "See logs."}</p>}
                   </div>
                 </div>
               )}

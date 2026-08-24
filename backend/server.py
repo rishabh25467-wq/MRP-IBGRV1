@@ -4272,9 +4272,9 @@ class StockTransferOrderCreate(BaseModel):
     ship_to_location_id: str
     requested_delivery_date: str
     # GST / E-way bill compliance fields (Aug 2026, user's explicit ask) -
-    # mandatory, but NOT yet pushed to SAP - see stock_transfer_service.py
-    # module docstring (pending Basis exposing a write path for these
-    # custom fields on the Stock Transfer Delivery document).
+    # mandatory; pushed live to SAP's OutboundDeliveryRequest custom
+    # `_KUT` fields right before Goods Issue - see
+    # stock_transfer_service.py module docstring + sap_outbound_delivery_client.py.
     transportation_mode: str
     vehicle_no: str
     place_of_supply: str
