@@ -58,6 +58,12 @@ function amountInWords(amount) {
   return words + " Only";
 }
 
+function formatDateDMY(isoDate) {
+  if (!isoDate) return null;
+  const [y, m, d] = isoDate.split("-");
+  return d && m && y ? `${d}-${m}-${y}` : isoDate;
+}
+
 export default function DeliveryNotePage() {
   const { stoId } = useParams();
   const [data, setData] = useState(null);
@@ -98,7 +104,7 @@ export default function DeliveryNotePage() {
         <div className="grid grid-cols-2 gap-6 mt-4">
           <div>
             <p><span className="font-bold">Serial Number:</span> {data.erp_sale_no || "—"}{data.erp_sale_noc ? ` / ${data.erp_sale_noc}` : ""}</p>
-            <p><span className="font-bold">Date of Issue:</span> {data.date_of_supply || "—"}</p>
+            <p><span className="font-bold">Date of Issue:</span> {formatDateDMY(data.date_of_supply) || "—"}</p>
           </div>
           <div className="border border-[#D0D5DD] rounded-sm p-2">
             <p className="font-bold uppercase text-xs mb-1 text-[#475467]">Transport</p>
