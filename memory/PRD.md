@@ -1,3 +1,8 @@
+## Session update (2026-08-24 continued 3) - BOM Stock export now real .xlsx, not CSV
+- User: "report needed in XLSX not CSV". Swapped `downloadBomStockExcel()` from hand-built CSV+BOM to the already-installed `xlsx` (SheetJS) package - `XLSX.utils.aoa_to_sheet` + `XLSX.writeFile(..., "bom-stock-<product>-x<qty>.xlsx")`. No new dependency needed (`xlsx@0.18.5` was already in package.json).
+- Verified via screenshot_tool: downloaded file has correct `.xlsx` filename/magic bytes, and `openpyxl` confirms it opens as a valid workbook with numeric cells typed correctly (not text) and special characters (`”`) intact - no CSV/mojibake concerns at all with the binary xlsx format.
+
+
 ## Session update (2026-08-24 continued 2) - CSV mojibake fix + Search/Filter/Collapse in BOM Stock modal
 - Fixed mojibake in the "Download Excel" CSV (curly quotes/dashes in component descriptions like `32"-86"` showed as `â€"`) - Excel doesn't assume UTF-8 for plain CSV; added a leading UTF-8 BOM (`\uFEFF`) to the Blob. Verified with a real product (`100010103-A`) containing `”` in its component descriptions - CSV now decodes correctly.
 - Added to the BOM Stock modal (user's explicit ask): a search box (filters by component ID/description), a "Shortages only" checkbox toggle, default sort with shortage components pinned to the top, and per-component collapsible location rows (collapsed by default, chevron click to expand/collapse - shows "N locations - click to expand/collapse" when collapsed). The Excel export now reflects whatever the search/shortage filter currently shows, not the full unfiltered list.

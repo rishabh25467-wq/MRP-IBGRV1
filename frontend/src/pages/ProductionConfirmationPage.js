@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
+import * as XLSX from "xlsx";
 import "@/App.css";
 import axios from "axios";
 import {
@@ -799,30 +800,22 @@ const CreateOrderTab = ({ actorName }) => {
 
   const downloadBomStockExcel = () => {
     if (bomStockComponents.length === 0) return;
-    const headers = ["Component", "Description", "Available", "Required", "Shortfall", "Unit", "Site", "Warehouse", "Stock Status", "Location Qty"];
-    const csvLines = [headers.join(",")];
+    const rows = [["Component", "Description", "Available", "Required", "Shortfall", "Unit", "Site", "Warehouse", "Stock Status", "Location Qty"]];
     bomStockComponents.forEach((c) => {
       const locs = c.locations.length > 0 ? c.locations : [{ site: "", warehouse: "", stock_status: "", qty: "" }];
       locs.forEach((loc) => {
         const isDefaultStatus = (loc.stock_status || "").trim().toLowerCase() === "not assigned";
-        const cells = [
+        rows.push([
           c.product_id, c.description || "", c.total_usable_qty, c.requiredQty, c.shortfall, c.unit_of_measure || "",
           loc.site || "", loc.warehouse || "", isDefaultStatus ? "" : (loc.stock_status || ""), loc.qty ?? "",
-        ];
-        csvLines.push(cells.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","));
+        ]);
       });
     });
-    // Leading BOM so Excel (which doesn't assume UTF-8 for plain CSV) reads
-    // special characters like " and – correctly instead of showing mojibake
-    const blob = new Blob(["\uFEFF" + csvLines.join("\n")], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `bom-stock-${materialId.trim() || "component"}-x${quantity || 0}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    sheet["!cols"] = [{ wch: 16 }, { wch: 28 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 6 }, { wch: 24 }, { wch: 24 }, { wch: 14 }, { wch: 12 }];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "BOM Stock");
+    XLSX.writeFile(workbook, `bom-stock-${materialId.trim() || "component"}-x${quantity || 0}.xlsx`);
   };
 
   const [lastCheckedId, setLastCheckedId] = useState(null);
