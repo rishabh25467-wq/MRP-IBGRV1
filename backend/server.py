@@ -480,11 +480,22 @@ async def admin_update_user_access(user_id: str, body: UpdateUserAccessRequest, 
 
 @api_router.get("/bom/connection-status", response_model=ConnectionStatus)
 async def connection_status():
-    try:
-        await asyncio.to_thread(sap_soap_client.check_connection)
-        return ConnectionStatus(connected=True, message="Connected to SAP Business ByDesign")
-    except SAPSoapError as e:
-        return ConnectionStatus(connected=False, message=str(e))
+    # Aug 2026 bug fix: this polls a live SAP SOAP call every 60s from every
+    # open browser tab, with no retry - SAP's own connect stage is known to
+    # stall intermittently every few minutes (see sap_soap_client._query
+    # comment), so a single failed attempt was flashing "SAP Disconnected"
+    # for whoever's poll happened to land in that window, even though SAP
+    # recovered a second later. Retry once, briefly, before reporting down.
+    last_error = None
+    for attempt in range(2):
+        try:
+            await asyncio.to_thread(sap_soap_client.check_connection)
+            return ConnectionStatus(connected=True, message="Connected to SAP Business ByDesign")
+        except SAPSoapError as e:
+            last_error = e
+            if attempt == 0:
+                await asyncio.sleep(1.5)
+    return ConnectionStatus(connected=False, message=str(last_error))
 
 
 @api_router.get("/bom/search", response_model=BomSearchResponse)
