@@ -645,6 +645,13 @@ const CreateOrderTab = ({ actorName }) => {
   const [materialUuid, setMaterialUuid] = useState(null);
   const [productSuggestions, setProductSuggestions] = useState([]);
   const [showProductSuggestions, setShowProductSuggestions] = useState(false);
+  // "Refresh Live SFG Stock" (Aug 2026, user's explicit ask): once a short
+  // sub-assembly's own production order is confirmed, pull its updated
+  // SFG warehouse stock right away instead of waiting for the scheduled
+  // inventory_cache refresh, then retry order creation.
+  const [refreshingSfgStock, setRefreshingSfgStock] = useState(false);
+  const [refreshSfgElapsed, setRefreshSfgElapsed] = useState(0);
+  const [refreshSfgStatus, setRefreshSfgStatus] = useState(null);
   // Every in-flight create-and-release job this browser session knows
   // about, tracked in the "Active Orders" table below - NOT tied to the
   // form, so submitting one order never blocks starting another while the
@@ -879,6 +886,44 @@ const CreateOrderTab = ({ actorName }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (!refreshingSfgStock) {
+      setRefreshSfgElapsed(0);
+      return;
+    }
+    const interval = setInterval(() => setRefreshSfgElapsed((s) => s + 1), 1000);
+    return () => clearInterval(interval);
+  }, [refreshingSfgStock]);
+
+  const refreshLiveSfgStock = async () => {
+    if (!siteId.trim()) {
+      toast.error("Enter a Site first");
+      return;
+    }
+    setRefreshingSfgStock(true);
+    setRefreshSfgStatus("Pulling live SFG stock from SAP...");
+    try {
+      const { data } = await axios.post(`${API}/production-confirmation/refresh-live-sfg-stock`, null, { params: { site_id: siteId.trim() } });
+      let job = null;
+      for (let i = 0; i < 30; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const res = await axios.get(`${API}/production-confirmation/refresh-live-sfg-stock/${data.job_id}`);
+        job = res.data;
+        if (job.status === "done" || job.status === "failed") break;
+      }
+      if (job?.status === "done") {
+        toast.success(`Live SFG stock refreshed for ${siteId.trim()} - retry creating the order now`);
+      } else {
+        toast.error(job?.error || "Failed to refresh live SFG stock");
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to refresh live SFG stock");
+    } finally {
+      setRefreshingSfgStock(false);
+      setRefreshSfgStatus(null);
+    }
+  };
+
   const createProposal = async () => {
     if (sosOptions.length > 1 && !selectedSosOption) {
       toast.error("This material has multiple valid Production Models - pick one from the Source of Supply list before creating the order");
@@ -1084,6 +1129,21 @@ const CreateOrderTab = ({ actorName }) => {
                 data-testid="create-proposal-site-input"
               />
               {siteAutoFilled && <p className="text-[11px] text-[#667085] mt-0.5">Locked - set by the chosen Production Model above</p>}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={refreshingSfgStock || !siteId.trim()}
+                onClick={refreshLiveSfgStock}
+                className="mt-1.5 h-7 text-[11px]"
+                data-testid="refresh-live-sfg-stock-button"
+              >
+                <ArrowClockwise size={12} className={`mr-1 ${refreshingSfgStock ? "animate-spin" : ""}`} />
+                {refreshingSfgStock ? `Refreshing (${refreshSfgElapsed}s)...` : "Refresh Live SFG Stock"}
+              </Button>
+              {refreshingSfgStock && refreshSfgStatus && (
+                <p className="text-[11px] text-[#667085] mt-0.5" data-testid="refresh-live-sfg-stock-status">{refreshSfgStatus}</p>
+              )}
             </div>
             <div>
               <Label className="text-xs font-bold text-[#344054]">UoM</Label>

@@ -2488,6 +2488,28 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
         )
         short = [c for c in availability["components"] if not c["sufficient"]] if availability["checked"] else []
 
+        # Aug 2026 bug fix (user's explicit ask): a short Sub-Assembly (SFG)
+        # component is NOT something the physical Store can issue - it only
+        # exists once its own production order is confirmed. Block the
+        # whole order creation here, BEFORE any SAP write happens (no
+        # Proposal created at all), with a clear on-screen error instead of
+        # silently opening a Store Approval request the store can never
+        # actually fulfill.
+        short_sfg = [c for c in short if c.get("is_sub_assembly")]
+        short_rm = [c for c in short if not c.get("is_sub_assembly")]
+        if short_sfg:
+            def _fmt(c):
+                have = "unknown" if c["available_qty"] is None else f"{c['available_qty']:g}"
+                return f"{c['product_id']} (need {c['required_qty']:g}, have {have} in the {payload.site_id}-SFG warehouse)"
+            error = (
+                "Cannot create this order - the following sub-assembly component(s) don't have enough stock yet: "
+                + ", ".join(_fmt(c) for c in short_sfg)
+                + ". These are produced in-house, not stocked by the Store - create/confirm a production order for "
+                "them first (use \"Refresh Live SFG Stock\" below once that's done, then retry)."
+            )
+            job_store.update_job(db, job_id, {"status": "failed", "error": error})
+            return
+
         job_store.update_job(db, job_id, {"status": "creating_proposal"})
         # Same check, once more right before the one-way SAP write below -
         # this is the LAST point a Stop can still avoid creating a real,
@@ -2505,9 +2527,9 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
             {"production_proposal_id": proposal_id}, job_id,
         )
 
-        if short:
+        if short_rm:
             store_request = await asyncio.to_thread(
-                store_approval_service.create_request, db, job_id, payload.dict(), proposal_id, short, payload.actor,
+                store_approval_service.create_request, db, job_id, payload.dict(), proposal_id, short_rm, payload.actor,
             )
             job_store.update_job(db, job_id, {
                 "status": "waiting_store_approval",
@@ -2730,6 +2752,40 @@ async def cancel_create_and_release_job(job_id: str):
         raise HTTPException(status_code=400, detail="This order run has already finished - nothing to stop")
     job_store.update_job(db, job_id, {"cancel_requested": True})
     return {"ok": True}
+
+
+@api_router.post("/production-confirmation/refresh-live-sfg-stock")
+async def refresh_live_sfg_stock(site_id: str):
+    """"Refresh Live SFG Stock" (Aug 2026, user's explicit ask alongside
+    the Sub-Assembly shortage block above): once the planner confirms a
+    production order for the short sub-assembly, they need to see its
+    now-updated SFG warehouse stock immediately before retrying order
+    creation, not wait for the scheduled inventory_cache refresh. Same
+    job-based pattern as the Store screen's "Refresh Live Stock Now"
+    (refresh_live_stock_for_store above), just scoped to this site's SFG
+    warehouse instead of RM+QC."""
+    job_id = str(uuid.uuid4())
+    job_store.create_job(db, job_id, {"status": "running", "error": None})
+    warehouse_ids = [f"{site_id}/{site_id}-SFG"]
+
+    async def run():
+        try:
+            result = await asyncio.to_thread(refresh_stock_quantities_for_warehouses, db, sap_inventory_client, warehouse_ids)
+            job_store.update_job(db, job_id, {"status": "done", "error": None, "result": {"rows_found": result.get("rows_found")}})
+        except Exception as e:
+            logger.error(f"SFG live stock refresh job {job_id} (warehouses {warehouse_ids}) failed: {e}")
+            job_store.update_job(db, job_id, {"status": "failed", "error": str(e)})
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+@api_router.get("/production-confirmation/refresh-live-sfg-stock/{job_id}")
+async def get_refresh_live_sfg_stock_status(job_id: str):
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return {"status": job["status"], "error": job.get("error"), "result": job.get("result")}
 
 
 async def _resume_order_creation_job(job_id: str):

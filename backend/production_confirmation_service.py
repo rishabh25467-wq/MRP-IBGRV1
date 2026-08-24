@@ -356,7 +356,7 @@ def site_locations_for_product(stock_by_product: dict, product_id: str, site_id:
     ]
 
 
-def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, confirmed_quantity: float, site_id: str) -> dict:
+def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, confirmed_quantity: float, site_id: str, sub_assembly_ids: frozenset = frozenset()) -> dict:
     if not bom_doc or not bom_doc.get("groups"):
         return {"checked": False, "reason": "No cached BOM found locally for this product - cannot check component availability.", "components": []}
     components = []
@@ -400,6 +400,14 @@ def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, con
                 # a fully-confirmed row) is never "short", regardless of
                 # whether we happen to have on-hand data for it.
                 "sufficient": required_qty <= 0 or (available_qty is not None and available_qty >= required_qty),
+                # Aug 2026 bug fix: a short component that is itself a
+                # manufactured Sub-Assembly (has its own cached BOM) is NOT
+                # something the physical Store can "issue" - its stock only
+                # exists once ITS OWN production order is confirmed. The
+                # order-creation flow uses this flag to block with a clear
+                # error instead of wrongly opening a Store Approval request
+                # for it (see _run_create_and_release_job in server.py).
+                "is_sub_assembly": item["product_id"] in sub_assembly_ids,
             })
     return {"checked": True, "reason": None, "components": components}
 
@@ -477,7 +485,14 @@ def check_component_availability(
             stock_by_product = None  # fall through to cache below
     if stock_by_product is None:
         stock_by_product = load_stock_by_product(db)
-    return _check_availability_against_stock(bom_doc, stock_by_product, confirmed_quantity, site_id)
+    # Aug 2026 bug fix: which of THIS BOM's own components are themselves
+    # manufactured Sub-Assemblies (have their own cached BOM) rather than
+    # a pure RM/bought-out leaf part - see is_sub_assembly above.
+    component_ids = [item["product_id"] for group in (bom_doc or {}).get("groups", []) for item in group["items"]]
+    sub_assembly_ids = frozenset(
+        d["_id"] for d in db["bom_node_cache"].find({"_id": {"$in": component_ids}, "groups": {"$ne": []}}, {"_id": 1})
+    ) if component_ids else frozenset()
+    return _check_availability_against_stock(bom_doc, stock_by_product, confirmed_quantity, site_id, sub_assembly_ids)
 
 
 def check_component_availability_batch(db, rows: list) -> list:
