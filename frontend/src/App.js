@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import BomExplorerPage from "@/pages/BomExplorerPage";
 import PurchasingPlanPage from "@/pages/PurchasingPlanPage";
 import ProductionPlanPage from "@/pages/ProductionPlanPage";
@@ -29,13 +29,47 @@ function AuthGate({ children }) {
   return children;
 }
 
+// Aug 2026 bug fix: "/" was hard-gated to bom_explorer, so a user granted
+// ONLY a different page (e.g. just "inventory") landed on their bookmarked
+// home URL and hit a hard "Access Denied" even though they legitimately
+// have access to part of the app - isPendingAccess above doesn't catch
+// this since it only fires when allowed_pages is completely empty. Send
+// them straight to the first page they actually have instead.
+const FIRST_ACCESSIBLE_PAGE_ROUTES = [
+  ["purchasing_plan", "/purchasing-plan"],
+  ["production_plan", "/production-plan"],
+  ["production_confirmation", "/production-confirmation"],
+  ["inventory", "/inventory"],
+  ["supplier_master", "/purchasing-strategy/supplier-master"],
+  ["quota_allocation", "/purchasing-strategy/quota-allocation"],
+  ["admin", "/admin"],
+  ["admin_sap_write", "/admin/sap-write"],
+  ["admin_create_material", "/admin/create-material"],
+  ["store_approval", "/storeapproval"],
+];
+
+function HomeRoute() {
+  const { hasPageAccess } = useAuth();
+  if (hasPageAccess("bom_explorer")) return <BomExplorerPage />;
+  const firstAccessible = FIRST_ACCESSIBLE_PAGE_ROUTES.find(([page]) => hasPageAccess(page));
+  if (firstAccessible) return <Navigate to={firstAccessible[1]} replace />;
+  return (
+    <div className="min-h-screen bg-[#F9FAFB] flex items-center justify-center p-4" data-testid="no-accessible-pages">
+      <div className="text-center">
+        <h1 className="font-heading text-lg font-bold text-[#101828]">No Pages Granted Yet</h1>
+        <p className="text-sm text-[#667085] mt-1">Ask your IT admin to grant you access to a page.</p>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
         <AuthGate>
           <Routes>
-            <Route path="/" element={<ProtectedRoute page="bom_explorer"><BomExplorerPage /></ProtectedRoute>} />
+            <Route path="/" element={<HomeRoute />} />
             <Route path="/purchasing-plan" element={<ProtectedRoute page="purchasing_plan"><PurchasingPlanPage /></ProtectedRoute>} />
             <Route path="/production-plan" element={<ProtectedRoute page="production_plan"><ProductionPlanPage /></ProtectedRoute>} />
             <Route path="/production-confirmation" element={<ProtectedRoute page="production_confirmation"><ProductionConfirmationPage /></ProtectedRoute>} />

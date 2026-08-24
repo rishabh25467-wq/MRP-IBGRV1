@@ -1,3 +1,9 @@
+## Session update (2026-08-24, part 1) - ROOT CAUSE FOUND: "/" hard-gated to bom_explorer, any other single-page user hit Access Denied
+- Reported bug (screenshot from production, mrp.radishtechnologies.com): user granted only "Inventory" page access got "Access Denied" on the home URL. Root cause: `App.js`'s "/" route was hardcoded to `<ProtectedRoute page="bom_explorer">` regardless of what pages the user actually has - `isPendingAccess` only catches the fully-empty-allowed_pages case, not "has some pages, just not bom_explorer".
+- Fix: new `HomeRoute` component at "/" - shows BOM Explorer if the user has that page, else auto-redirects (`<Navigate replace>`) to the first page they DO have access to (checked in PAGE_CATALOG order), else shows a friendly "No Pages Granted Yet" message instead of "Access Denied".
+- Verified in preview with a synthetic "inventory-only" session - landing on "/" now correctly lands on `/inventory` instead of Access Denied.
+- This was a PRODUCTION bug report - fix is in preview code only, needs redeploy to take effect on mrp.radishtechnologies.com.
+
 ## Session update (2026-08-23, part 6) - Post Confirmation button no longer clickable mid stock-check
 - User's explicit ask: don't let "Post Confirmation" be clicked while the live component-stock check is still running (was previously only disabled during `saving`, so a user could post against a stale/previous-quantity stock panel).
 - `ProductionConfirmationPage.js` ConfirmDialog: submit button now also disabled while `checkingAvailability` is true, showing "Checking stock..." label. Verified via screenshot - button stays disabled ~4s (real live SAP stock lookup) until the panel populates, then re-enables.
