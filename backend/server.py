@@ -4385,7 +4385,7 @@ async def post_stock_transfer_order(payload: StockTransferOrderCreate, request: 
 
 async def _run_submit_sto_to_sap_job(job_id: str, sto_id: str):
     try:
-        result = await asyncio.to_thread(stock_transfer_service.submit_order_to_sap, db, sap_sto_client, sto_id, job_id)
+        result = await asyncio.to_thread(stock_transfer_service.submit_order_to_sap, db, sap_sto_client, sto_id, job_id, sap_valuation_client)
         job_store.update_job(db, job_id, {"status": "done", "result": result, "error": None})
         # Goods Issue automation (Aug 27 2026, user's explicit ask - "we
         # need full") - fully independent, no job_id exposed to the

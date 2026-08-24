@@ -351,18 +351,36 @@ def create_stock_transfer_order(db, payload: dict, created_by: str, sap_hsn_clie
     return sto_doc
 
 
-def _build_gst_note_text(doc: dict) -> str:
+def _build_gst_note_text(doc: dict, item_price_hsn: list = None) -> str:
     """One SAP-side, human-readable Note (see sap_sto_client.py's
     GST_NOTE_TYPE_CODE docstring) carrying all 5 GST/e-way-bill fields -
     the real, working alternative to writing the Outbound Delivery's own
-    custom fields (confirmed live impossible via any API, Aug 2026)."""
+    custom fields (confirmed live impossible via any API, Aug 2026).
+
+    Also carries each item's live SAP HSN Code + Rate (Aug 27 2026,
+    user's explicit ask - "price needs to go with hsn on the note",
+    since neither reaches the actual Delivery Challan screen either -
+    same SAP-side lockout - this Note is the only place in SAP itself
+    where a human can see them, right on the Customer Requirement)."""
     parts = []
     for label, key in [("Mode", "transportation_mode"), ("Vehicle No", "vehicle_no"),
                         ("Place of Supply", "place_of_supply"), ("GR No", "gr_no"), ("Date of Supply", "date_of_supply")]:
         value = doc.get(key)
         if value:
             parts.append(f"{label}: {value}")
-    return "GST/Transport Info - " + "; ".join(parts) if parts else ""
+    text = "GST/Transport Info - " + "; ".join(parts) if parts else ""
+    if item_price_hsn:
+        item_lines = []
+        for entry in item_price_hsn:
+            bits = [entry["product_id"]]
+            if entry.get("hsn_code"):
+                bits.append(f"HSN {entry['hsn_code']}")
+            if entry.get("rate") is not None:
+                bits.append(f"Rate {entry['rate']:.2f}")
+            item_lines.append(" ".join(bits))
+        if item_lines:
+            text += (" | " if text else "") + "Items: " + "; ".join(item_lines)
+    return text[:1000]
 
 
 NOTIFICATIONS_COLLECTION = "admin_notifications"
@@ -398,7 +416,32 @@ def resolve_admin_notification(db, notification_id: str) -> None:
     db[NOTIFICATIONS_COLLECTION].update_one({"_id": notification_id}, {"$set": {"resolved": True, "resolved_at": datetime.now(timezone.utc)}})
 
 
-def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None) -> dict:
+def _price_hsn_for_note(db, doc: dict, sap_valuation_client) -> list:
+    """Live SAP Moving Average price per item, paired with the `hsn_code`
+    already stored on each item at creation time (Aug 27 2026, for
+    `_build_gst_note_text`'s "Items:" section)."""
+    if not sap_valuation_client:
+        return []
+    product_ids = [it["product_id"] for it in doc["items"]]
+    product_uuid_by_id = {
+        c["_id"]: c.get("product_uuid")
+        for c in db["component_master"].find({"_id": {"$in": product_ids}}, {"product_uuid": 1})
+    }
+    product_uuids = [u for u in product_uuid_by_id.values() if u]
+    costs = sap_valuation_client.get_standard_costs(product_uuids) if product_uuids else {}
+    entries = []
+    for it in doc["items"]:
+        product_uuid = product_uuid_by_id.get(it["product_id"])
+        cost = costs.get(product_uuid.upper()) if product_uuid else None
+        entries.append({
+            "product_id": it["product_id"],
+            "hsn_code": it.get("hsn_code"),
+            "rate": cost["amount"] if cost else None,
+        })
+    return entries
+
+
+def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None, sap_valuation_client=None) -> dict:
     """Runs SAP's Check operation first (always-on safety net, not a
     togglable dry-run - user's explicit ask, Aug 2026), then - only if that
     comes back clean - the real Maintain write. Mutates the STO's Mongo doc
@@ -428,7 +471,7 @@ def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None) -> 
         for it in doc["items"]
     ]
 
-    note_text = _build_gst_note_text(doc)
+    note_text = _build_gst_note_text(doc, _price_hsn_for_note(db, doc, sap_valuation_client))
     try:
         if job_id:
             job_store.update_job(db, job_id, {"step": "checking"})

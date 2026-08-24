@@ -1,3 +1,14 @@
+## Session update (2026-08-27, continued 13) - Price + HSN added to the SAP-side GST Note; validated Delivery Challan does NOT get these fields
+
+- **Validated live** (user's ask): Vehicle No/GR No/Place of Supply/Date of Supply/Price/HSN do NOT land on the actual SAP Delivery Challan screen (`OutboundDeliveryCollection`) for our automated orders - checked 3 real just-created deliveries (P2D1-5385, P2D1-5386, P3D1-2409): `VehicleNo_KUT`, `GRNo1_KUT`, `PlaceOfSupply_KUT`, `DateOfSupply_KUT` all blank, confirming the known SAP scheduler-lockout limitation from an earlier session still holds. Only the Note on the Customer Requirement carries this info.
+- **Added Price + HSN to that same Note** (user's explicit ask - "price needs to go with hsn on the note"): new `_price_hsn_for_note()` in `stock_transfer_service.py` does a live SAP Moving Average cost lookup (reuses `sap_valuation_client`) paired with each item's already-fetched `hsn_code`, formatted as `"Items: SCR755WM HSN 73181500 Rate 2.81"` appended to the existing GST/Transport note text (verified live, real order STO-000037: full note = "GST/Transport Info - Mode: By Road; Vehicle No: UP81AA0099; ... | Items: SCR755WM HSN 73181500 Rate 2.81", 166 chars, well under SAP's 1000-char note limit).
+- `submit_order_to_sap()` now takes `sap_valuation_client` param; `server.py`'s `_run_submit_sto_to_sap_job` passes the existing global client through.
+- **Tested**: direct python call against real STO-000037 confirmed correct note text and cost lookup. Self-tested (small, well-verified backend change).
+- Note: this Note-based workaround is confirmed the ONLY place in SAP itself these 7 fields (5 GST + price + HSN) are visible - landing them on the actual Delivery Challan screen fields would need a Basis-side Key User Extension/BAdI in ABSL (Cloud Applications Studio), outside what OData/SOAP automation can do.
+
+---
+
+
 ## Session update (2026-08-27, continued 12) - Cross-site GI root cause RE-DIAGNOSED and FIXED; misleading suggestion text fixed; Refresh Site Stock button added
 
 - **Cross-site GI bug (was mis-diagnosed as "missing Logistics Model" in an earlier session) - now genuinely FIXED, zero code changes needed:**
