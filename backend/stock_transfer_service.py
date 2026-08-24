@@ -174,6 +174,10 @@ class StockTransferValidationError(Exception):
     pass
 
 
+class StockTransferOrderNotFoundError(Exception):
+    pass
+
+
 def _next_sto_id(db) -> str:
     """STO-000001, STO-000002, ... - simple incrementing counter, same
     spirit as this app's other locally-generated IDs (e.g. store_requests'
@@ -337,6 +341,39 @@ def _build_gst_note_text(doc: dict) -> str:
     return "GST/Transport Info - " + "; ".join(parts) if parts else ""
 
 
+NOTIFICATIONS_COLLECTION = "admin_notifications"
+_MISSING_PLANNING_RE = re.compile(r"No valid planning data exists for product (\S+) in site (\S+)")
+
+
+def _create_missing_planning_notification_if_matched(db, sto_id: str, error_message: str) -> None:
+    """Admin notification (Aug 2026, user's explicit ask): SAP's own STO
+    check failure "No valid planning data exists for product X in site Y"
+    means that product was never set up (Planning/Availability
+    Confirmation/Logistics/Valuation) at the destination site - a one-time
+    SAP master-data gap an admin can fix from this app's "Action Needed"
+    panel (see activate_material_site() in server.py). Upserts on
+    (product_id, site_id) so a repeatedly-failing order doesn't spam
+    duplicate notifications."""
+    m = _MISSING_PLANNING_RE.search(error_message)
+    if not m:
+        return
+    product_id, site_id = m.group(1), m.group(2)
+    db[NOTIFICATIONS_COLLECTION].update_one(
+        {"type": "missing_planning_data", "product_id": product_id, "site_id": site_id, "resolved": False},
+        {"$set": {"message": error_message, "sto_id": sto_id},
+         "$setOnInsert": {"_id": str(uuid.uuid4()), "created_at": datetime.now(timezone.utc)}},
+        upsert=True,
+    )
+
+
+def list_open_admin_notifications(db) -> list:
+    return list(db[NOTIFICATIONS_COLLECTION].find({"resolved": False}, {"_id": 1, "type": 1, "product_id": 1, "site_id": 1, "message": 1, "sto_id": 1, "created_at": 1}).sort("created_at", -1))
+
+
+def resolve_admin_notification(db, notification_id: str) -> None:
+    db[NOTIFICATIONS_COLLECTION].update_one({"_id": notification_id}, {"$set": {"resolved": True, "resolved_at": datetime.now(timezone.utc)}})
+
+
 def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None) -> dict:
     """Runs SAP's Check operation first (always-on safety net, not a
     togglable dry-run - user's explicit ask, Aug 2026), then - only if that
@@ -385,6 +422,7 @@ def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None) -> 
         result = sap_sto_client.maintain(doc["ship_from_site_id"], doc["ship_to_site_id"], doc["ship_to_site_id"], items, note_text)
     except SAPSTOError as e:
         db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"status": "sap_failed", "error_message": str(e)}})
+        _create_missing_planning_notification_if_matched(db, sto_id, str(e))
         raise
 
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
@@ -398,14 +436,35 @@ def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None) -> 
     return {"sap_order_id": result["id"], "sap_order_uuid": result["uuid"]}
 
 
-def try_post_goods_issue(db, sap_outbound_delivery_client, sto_id: str) -> str:
+def _live_source_stock_qty(sap_inventory_client, ship_from_site_id: str, source_warehouse_id: str, product_id: str) -> float:
+    """Sums CURRENT, usable stock for one product at one exact warehouse
+    (Aug 27 2026, user's explicit ask - a Goods Issue retry/auto-recheck
+    should look at real, fresh SAP stock, not a stale local number)."""
+    full_warehouse_id = f"{ship_from_site_id}/{source_warehouse_id}"
+    rows = sap_inventory_client.get_inventory_detail(warehouse_ids=[full_warehouse_id])
+    return sum(
+        row.get("qty") or 0 for row in rows
+        if row.get("product_id") == product_id and is_usable_stock_status(row.get("stock_status"), row.get("restricted", False))
+    )
+
+
+def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client, sto_id: str) -> str:
     """One poll attempt: looks for the Outbound Delivery Request Item SAP
     has produced from this STO's Customer Requirement (see
     sap_outbound_delivery_client.py docstring for the safe UUID-based
-    match) and, if found and still open, posts the Goods Issue on it.
-    Returns "waiting" (SAP hasn't produced it yet - caller should poll
-    again later), "posted" (done), or raises SAPOutboundDeliveryError on
-    a real SAP-side failure. Mutates the STO doc's `gi_status` fields.
+    match) and, if found and still open, live-checks the source
+    warehouse's REAL current stock before attempting the Goods Issue
+    (Aug 27 2026 addition - user's explicit ask, following a real GI
+    failure "Inventory in logistics area not available": posting blind
+    and letting SAP reject it wastes a SAP-side attempt and gives a raw
+    error; checking first lets us give a clear "waiting on stock" status
+    and keep auto-retrying every poll tick without ever hitting SAP's own
+    error log for something that's genuinely just "not here yet").
+    Returns "waiting" (SAP hasn't produced the delivery yet, OR stock is
+    still insufficient - caller should poll again later), "posted"
+    (done), or raises SAPOutboundDeliveryError on a real SAP-side
+    rejection of the Goods Issue itself. Mutates the STO doc's
+    `gi_status` fields.
 
     GST fields are recorded on the Customer Requirement's own Note at
     creation time instead (see `_build_gst_note_text`/
@@ -427,33 +486,85 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sto_id: str) -> str:
     # (e.g. a retry after a transient error on our own earlier attempt).
     if delivery_item.get("order_fulfilment_status") == "3":
         db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
-            "gi_status": "posted", "gi_error": None,
+            "gi_status": "posted", "gi_error": None, "gi_job_running": False,
             "outbound_delivery_object_id": delivery_item["object_id"],
         }})
         return "posted"
+
+    # Single-item STOs only (this app's own current scope for GI
+    # automation) - use the first (only) resolved line's source warehouse.
+    item = (doc.get("items") or [{}])[0]
+    available_qty = _live_source_stock_qty(sap_inventory_client, doc["ship_from_site_id"], item.get("source_warehouse_id"), item.get("product_id"))
+    if available_qty < (item.get("requested_qty") or 0):
+        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
+            "gi_status": "insufficient_stock",
+            "gi_error": f"Insufficient live stock in {item.get('source_warehouse_id')} for {item.get('product_id')} - "
+                        f"needed {item.get('requested_qty'):g}, currently available {available_qty:g}. "
+                        "Automatically re-checking every 20s.",
+            "outbound_delivery_object_id": delivery_item["object_id"],
+        }})
+        return "waiting"
 
     try:
         sap_outbound_delivery_client.post_goods_issue(delivery_item["object_id"])
     except SAPOutboundDeliveryError as e:
         db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
-            "gi_status": "failed", "gi_error": str(e),
+            "gi_status": "failed", "gi_error": str(e), "gi_job_running": False,
             "outbound_delivery_object_id": delivery_item["object_id"],
         }})
         raise
 
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
-        "gi_status": "posted", "gi_error": None,
+        "gi_status": "posted", "gi_error": None, "gi_job_running": False,
         "outbound_delivery_object_id": delivery_item["object_id"],
     }})
     return "posted"
 
 
-def mark_goods_issue_timed_out(db, sto_id: str, note: str) -> None:
-    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_status": "not_found_timeout", "gi_error": note}})
+def mark_gi_job_started(db, sto_id: str) -> None:
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_job_running": True}})
+
+
+def mark_goods_issue_timed_out(db, sto_id: str, note: str, stock_note: str = None) -> None:
+    """`stock_note` (Aug 27 2026) - use a stock-specific message when the
+    20-min window expires while gi_status was "insufficient_stock" (the
+    delivery WAS found, stock was just short) instead of the generic
+    "SAP hasn't produced the Outbound Delivery Request" message, which
+    would be factually wrong in that case."""
+    doc = db[STO_COLLECTION].find_one({"_id": sto_id}, {"gi_status": 1})
+    final_note = stock_note if (doc or {}).get("gi_status") == "insufficient_stock" and stock_note else note
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_status": "not_found_timeout", "gi_error": final_note, "gi_job_running": False}})
+
+
+def reset_goods_issue_for_retry(db, sto_id: str) -> dict:
+    """Manual "Retry Goods Issue" (Aug 27 2026, user's explicit ask) - for
+    an order stuck on "failed" (a real SAP rejection) or
+    "not_found_timeout" (the 20-min auto-poll gave up). Flips the status
+    back to "awaiting_delivery" immediately (UI feedback) and hands off
+    to the SAME try_post_goods_issue polling loop, which now always
+    live-checks stock first - see module docstring above."""
+    doc = db[STO_COLLECTION].find_one({"_id": sto_id})
+    if not doc:
+        raise StockTransferOrderNotFoundError(f"Stock Transfer Order {sto_id} not found.")
+    if doc.get("status") != "created_in_sap":
+        raise StockTransferValidationError("Goods Issue can only be retried for an order already created in SAP.")
+    if doc.get("gi_status") not in ("failed", "not_found_timeout"):
+        raise StockTransferValidationError("Goods Issue is not currently in a failed/timed-out state for this order.")
+    if doc.get("gi_job_running"):
+        raise StockTransferValidationError("A Goods Issue check is already running for this order - please wait for it to finish.")
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_status": "awaiting_delivery", "gi_error": None}})
+    return doc
 
 
 def list_stock_transfer_orders(db, limit: int = 100) -> list:
     return list(db[STO_COLLECTION].find({}).sort("created_at", -1).limit(limit))
+
+
+def get_stock_transfer_order(db, sto_id: str) -> dict:
+    doc = db[STO_COLLECTION].find_one({"_id": sto_id})
+    if not doc:
+        raise StockTransferOrderNotFoundError(f"Stock Transfer Order {sto_id} not found.")
+    return doc
 
 
 # "Let's build to test only" AI feature (Aug 2026, user's explicit ask) -

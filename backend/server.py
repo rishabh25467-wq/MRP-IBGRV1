@@ -23,7 +23,7 @@ from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_material_client import SAPMaterialClient, SAPMaterialError, SAPMaterialAuthError
 from sap_material_create_client import SAPMaterialCreateClient, SAPMaterialCreateError
 from sap_production_lot_client import SAPProductionLotClient, SAPProductionLotError, SAPProductionLotAuthError
-from sap_wip_clearing_client import SAPWipClearingClient, SAPWipClearingError
+from sap_wip_clearing_client import SAPWipClearingClient, SAPWipClearingError, company_and_set_of_books_for_site
 from sap_production_proposal_client import SAPProductionProposalClient, SAPProductionProposalError
 from sap_sto_client import SAPSTOClient
 from sap_outbound_delivery_client import SAPOutboundDeliveryClient, SAPOutboundDeliveryError
@@ -4357,10 +4357,11 @@ async def _run_submit_sto_to_sap_job(job_id: str, sto_id: str):
 
 
 async def _run_goods_issue_job(sto_id: str):
+    await asyncio.to_thread(stock_transfer_service.mark_gi_job_started, db, sto_id)
     elapsed_start = time.monotonic()
     while time.monotonic() - elapsed_start <= GOODS_ISSUE_MAX_WAIT_SECONDS:
         try:
-            outcome = await asyncio.to_thread(stock_transfer_service.try_post_goods_issue, db, sap_outbound_delivery_client, sto_id)
+            outcome = await asyncio.to_thread(stock_transfer_service.try_post_goods_issue, db, sap_outbound_delivery_client, sap_inventory_client, sto_id)
             if outcome == "posted":
                 return
         except SAPOutboundDeliveryError as e:
@@ -4376,6 +4377,8 @@ async def _run_goods_issue_job(sto_id: str):
         stock_transfer_service.mark_goods_issue_timed_out, db, sto_id,
         "SAP hasn't produced the Outbound Delivery Request for this order after 20 minutes of automatic checks. "
         "The Stock Transfer Order itself is still valid in SAP - this only affects automatic Goods Issue posting.",
+        "Stock at the source warehouse is still insufficient after 20 minutes of automatic checks. "
+        "The Stock Transfer Order itself is still valid in SAP - retry Goods Issue once stock is replenished.",
     )
 
 
@@ -4391,6 +4394,76 @@ async def get_stock_transfer_sap_status(job_id: str):
 async def get_stock_transfer_orders():
     docs = await asyncio.to_thread(stock_transfer_service.list_stock_transfer_orders, db)
     return [_sto_to_response(d) for d in docs]
+
+
+@api_router.get("/stock-transfer/orders/{sto_id}")
+async def get_stock_transfer_order(sto_id: str):
+    """Single-order lookup (Aug 27 2026) - backs the confirm dialog's
+    live Goods Issue progress step, polled right after order creation,
+    independent of the job-store status used for the fast Check/Create
+    steps above."""
+    try:
+        doc = await asyncio.to_thread(stock_transfer_service.get_stock_transfer_order, db, sto_id)
+    except stock_transfer_service.StockTransferOrderNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return _sto_to_response(doc)
+
+
+@api_router.post("/stock-transfer/orders/{sto_id}/retry")
+async def post_stock_transfer_order_retry(sto_id: str):
+    """Manual retry (Aug 2026, user's explicit ask) for an order that
+    failed at SAP's Check step - e.g. after an admin activates a missing
+    Planning/Logistics site via /admin/material-sites/activate. Re-runs
+    the exact same Check-then-Maintain flow as a fresh order creation."""
+    sap_job_id = str(uuid.uuid4())
+    job_store.create_job(db, sap_job_id, {"status": "running", "step": "checking", "sto_id": sto_id})
+    asyncio.create_task(_run_submit_sto_to_sap_job(sap_job_id, sto_id))
+    return {"sap_job_id": sap_job_id}
+
+
+@api_router.post("/stock-transfer/orders/{sto_id}/retry-goods-issue")
+async def post_stock_transfer_order_retry_goods_issue(sto_id: str):
+    """Manual "Retry Goods Issue" (Aug 27 2026, user's explicit ask,
+    following a real GI failure "Inventory in logistics area not
+    available") - for an order whose Goods Issue is "failed" or
+    "not_found_timeout". Restarts the same 20-min auto-poll loop, which
+    now always live-checks the source warehouse's real stock before
+    attempting the Goods Issue again (see try_post_goods_issue)."""
+    try:
+        await asyncio.to_thread(stock_transfer_service.reset_goods_issue_for_retry, db, sto_id)
+    except stock_transfer_service.StockTransferOrderNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except stock_transfer_service.StockTransferValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    asyncio.create_task(_run_goods_issue_job(sto_id))
+    return {"status": "restarted"}
+
+
+
+@api_router.get("/admin/notifications")
+async def get_admin_notifications(request: Request):
+    user = await asyncio.to_thread(auth_service.get_current_user, request, db)
+    if not user or user.get("role") not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return {"notifications": await asyncio.to_thread(stock_transfer_service.list_open_admin_notifications, db)}
+
+
+class ActivateMaterialSiteRequest(BaseModel):
+    product_id: str
+    site_id: str
+    notification_id: str = None
+
+
+@api_router.post("/admin/material-sites/activate")
+async def post_activate_material_site(payload: ActivateMaterialSiteRequest, request: Request):
+    user = await asyncio.to_thread(auth_service.get_current_user, request, db)
+    if not user or user.get("role") not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    company_id, _ = company_and_set_of_books_for_site(payload.site_id)
+    result = await asyncio.to_thread(sap_material_create_client.activate_site, payload.product_id, payload.site_id, company_id)
+    if payload.notification_id and result.get("planning_logistics") == "ok":
+        await asyncio.to_thread(stock_transfer_service.resolve_admin_notification, db, payload.notification_id)
+    return result
 
 
 @api_router.post("/stock-transfer/parse-nl")

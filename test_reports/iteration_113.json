@@ -1,0 +1,57 @@
+{
+  "summary": "Tested the new admin 'Action Needed' notification + POST /api/admin/material-sites/activate + POST /api/stock-transfer/orders/{sto_id}/retry feature end-to-end (backend pytest + live Playwright UI as synthetic role=user and role=admin Entra sessions), plus a full regression pass on the Inter-Plant Stock Transfer create form and the GST Push column. Backend: 11/13 tests pass; 2 real defects found (activate is not idempotent-safe, retry accepts unknown sto_id with 200). Frontend: panel role-gating, confirm step, cancel, inline result, detail-modal retry, create-STO form, AI quick entry, Transportation Mode options and Recent Orders columns all verified working. One live SAP write was performed with the approved safe pair P27175/P1 only.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/admin/material-sites/activate", "issue": "Not idempotent-safe: for a site/product that is already set up, SAP returns the Log message 'Similar entry already exists' (Planning) and 'Combination of company RI ... and permanent establishment P1 ... already exists' (Valuation). sap_material_create_client._post() raises SAPMaterialCreateError on ANY <Log> message, so planning_logistics comes back as an error string instead of 'ok'. Consequences: (a) the admin sees red 'failure' text for what is actually a success/no-op, (b) the notification is NOT auto-resolved, (c) the 'Retry {sto_id}' button never appears, so the whole recovery flow dead-ends. This also blocks the realistic partial case (Planning already exists but Logistics/Availability missing). Fix: treat 'already exists'/'Similar entry already exists' Log messages as success (or use an upsert actionCode), and/or only treat severity=error Log items as failures.", "priority": "HIGH"},
+      {"endpoint": "POST /api/stock-transfer/orders/{sto_id}/retry", "issue": "No existence/status validation. STO-999999 (non-existent) returns HTTP 200 with a sap_job_id; the background job later fails with 'Stock Transfer Order STO-999999 not found.' (no crash, logged cleanly). More dangerous: the endpoint will happily re-run Check+Maintain for an order whose status is already 'created_in_sap', which would create a DUPLICATE Stock Transfer Order in live SAP and overwrite sap_order_id/sap_order_uuid on the Mongo doc. Add a 404 for unknown sto_id and a 409/400 unless status == 'sap_failed'.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "GET /api/stock-transfer/orders", "issue": "STO-000023 has no gst_note_pushed field at all (pre-dates the feature), so the GST Push cell renders '—'. Not a code bug (badge logic is correct) but contradicts the request statement that STO-000023 should show 'GST Recorded'."},
+      {"endpoint": "GET /api/bom/connection-status", "issue": "403 for a role=user account that only has the 'inventory' page granted; SapConnectionStatus then renders a red 'SAP Disconnected' badge on the Stock Transfer page, which is misleading (SAP is fine). 403 should render a neutral/hidden state (2 console 403 errors observed for role=user)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "StockTransferPage - Action Needed panel", "issue": "The inline activation result AND the 'Retry {sto_id}' button are rendered INSIDE notifications.map(), while handleActivate() calls loadNotifications() on success (which removes the now-resolved notification). On a successful activation the result text and the Retry button will therefore vanish immediately with the notification, contradicting requirements 4/5/6. Keep the resolved notification (or its activateResults entry) rendered until the admin dismisses it / clicks Retry.", "selector": "[data-testid=\"admin-activate-result-<id>\"], [data-testid=\"admin-notification-retry-<sto_id>\"]", "priority": "HIGH"},
+      {"component": "StockTransferPage - detail modal retry", "issue": "After clicking 'Retry this order' the modal keeps showing the OLD SAP error and gives no outcome feedback; handleRetryOrder only refreshes the table after a fixed 4s setTimeout and never re-reads selectedOrder, and the retry job typically takes longer than 4s. User has to close/reopen the modal and guess.", "selector": "[data-testid=\"stock-transfer-detail-retry-button\"]", "priority": "MEDIUM"},
+      {"component": "AuthContext.hasPageAccess", "issue": "hasPageAccess() only special-cases role === 'super_admin', not the new 'admin' tier. It currently works only because the backend's /auth/me returns all PAGE_KEYS for admins; if that ever changes, admins lose the whole nav. Add 'admin' to the check for consistency with isAdmin/backend.", "selector": "n/a", "priority": "LOW"}
+    ],
+    "integration_issues": [
+      {"flow": "Admin activate -> auto-resolve -> retry", "issue": "Could not be completed end-to-end because the only safe test pair (P27175/P1) returns SAP's 'Similar entry already exists', which the backend maps to a failure -> notification stays unresolved and no Retry button is rendered. Auto-resolve itself was verified at service level (resolve_admin_notification hides the row from GET /api/admin/notifications).", "affected_selectors": ["[data-testid=\"admin-activate-confirm-<id>\"]", "[data-testid=\"admin-activate-result-<id>\"]", "[data-testid=\"admin-notification-retry-<sto_id>\"]"]}
+    ],
+    "design_issues": [
+      {"screen": "Inter-Plant Stock Transfer", "issues": ["Action Needed panel is placed BELOW the primary 'Review & Create Stock Transfer Order' button and above the Recent Orders table - an admin action item is easy to miss there; consider top-of-page placement.", "Inline activate result uses raw SAP wording ('Similar entry already exists') in bold red with no human-friendly framing.", "role=user sees a red 'SAP Disconnected' pill in the header (see backend minor issue) - false alarm."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_admin_notifications_activate_retry.py",
+    "/app/backend/tests/_seed_notif_ui.py",
+    "/app/test_reports/pytest/notif_activate_retry.xml",
+    "/app/test_reports/pytest/notif_activate_retry_auth.xml"
+  ],
+  "action_items": [
+    "Treat SAP 'already exists' Log messages in sap_material_create_client.activate_site() as success so re-activation is idempotent and the notification auto-resolves / Retry button appears.",
+    "Add validation to POST /api/stock-transfer/orders/{sto_id}/retry: 404 for unknown sto_id, and reject retry unless the order is sap_failed (prevents duplicate live SAP STO creation).",
+    "Keep the inline activation result + 'Retry {sto_id}' button on screen after the notification auto-resolves (move activateResults rendering out of notifications.map or keep a local 'recently resolved' list).",
+    "Give the detail-modal retry real feedback (poll /api/stock-transfer/orders/sap-status/{job_id} and refresh selectedOrder) instead of a blind 4s timeout.",
+    "Handle 403 from /api/bom/connection-status in SapConnectionStatus (neutral state, not 'SAP Disconnected')."
+  ],
+  "critical_code_review_comments": [
+    "server.py POST /stock-transfer/orders/{sto_id}/retry: fire-and-forget job with zero pre-validation - no existence check, no status guard, no admin/role guard; duplicate live SAP writes are possible from a single crafted call.",
+    "sap_material_create_client._post(): `if '<Log>' in xml and 'Item' in xml -> raise` treats informational/warning Log items as hard errors; needs severity-aware parsing.",
+    "StockTransferPage.js is 1045 lines - the Action Needed panel, create form, confirm dialog and detail modal should be split into separate components.",
+    "handleRetryOrder uses a magic 4000ms setTimeout instead of polling the job status endpoint that already exists.",
+    "list_open_admin_notifications returns Mongo `_id` as the public identifier (works, but inconsistent with the rest of the API which maps _id -> a named id field)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_admin_notifications_activate_retry.py (new)",
+    "/app/backend/tests/_seed_notif_ui.py (new, seed/cleanup helper)"
+  ],
+  "success_rate": {"backend": "85% (11/13 assertions-level tests pass; 2 real defects)", "frontend": "90% (all UI flows render/behave correctly; activate->resolve->retry chain blocked by the backend idempotency defect)"},
+  "seed_data_creation": "Temporary synthetic Entra sessions (role=user with inventory page, role=admin, role=super_admin) and one synthetic admin_notifications doc (TESTNOTIF-p27175-p1, product P27175 / site P1 / sto STO-000021). ALL removed at end of testing (verified 0 leftover TESTtid users, admin_notifications contains only the original resolved 011004-182/P9 doc). One live SAP activate_site write was executed on the approved safe pair P27175/P1 only (SAP replied 'already exists' for both calls = no-op). One live retry of STO-000021 was fired from the detail modal; it failed again in SAP with a sourcing-master-data error (no new SAP document created).",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "No end-user login; used synthetic MongoDB auth_users/auth_sessions docs with cookie vms_session (pattern from /app/memory/test_credentials.md). Re-create via /app/backend/tests/_seed_notif_ui.py.",
+  "context_for_next_testing_agent": "Run `python /app/backend/tests/_seed_notif_ui.py` to recreate the role=user/role=admin sessions + a safe unresolved notification (P27175/P1), then `--cleanup` afterwards. Cookie must be sent as a raw `Cookie: vms_session=<token>` header in requests (requests.Session().cookies.set with a domain did NOT work). IMPORTANT: writing any file under /app/backend triggers a uvicorn --reload; the backend then returns 502 through the ingress for ~60-75s, which caused several false test failures - never edit files there while a test run is in flight. Only 2 backend tests should be failing after the fixes: TestActivateMaterialSite::test_admin_activate_safe_product_site (idempotency) and TestRetryOrder::test_retry_nonexistent_sto_fails_gracefully (404). Verified working and needing no retest: role gating (401/403/200) on both admin endpoints, notification upsert/dedupe/resolve, Recent Orders 12 columns, GST Push badge ('GST Recorded' on STO-000024, '—' on STO-000023), Transportation Mode options (By Road/By Rail/By Air/By Self, no 'By Sea'), item search, suggested warehouse chip, ship-to site/location cascades, confirm dialog, AI quick entry parse (gpt-5.4-mini).",
+  "rca_of_the_issue": "activate_site() sends Planning/AvailabilityConfirmation/Logistics sub-nodes with actionCode='01' (create). When the site already exists SAP answers HTTP 200 with a <Log> item 'Similar entry already exists'; _post() raises on any Log item, so the endpoint returns planning_logistics='Similar entry already exists'. server.py only resolves the notification when planning_logistics == 'ok', and StockTransferPage only renders the Retry button on that same condition, so the entire recovery chain (resolve -> disappear -> retry) is short-circuited for any already-partially-configured product/site. The retry endpoint issue is a plain missing-validation bug: job is created before the STO document is ever looked up (the lookup happens inside submit_order_to_sap on a worker thread)."
+}

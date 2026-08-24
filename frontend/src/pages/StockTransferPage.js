@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import "@/App.css";
 import axios from "axios";
-import {
-  Shield,
+import { Shield,
   MagnifyingGlass,
   Sparkle,
   Trash,
@@ -11,7 +10,9 @@ import {
   CheckCircle,
   CircleNotch,
   Robot,
+  Wrench,
 } from "@phosphor-icons/react";
+import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -41,14 +42,18 @@ const parseGiError = (raw) => {
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
 // Real (not simulated) steps this app's live SAP write actually goes
-// through today - drives the progress bar in the confirm dialog. Goods
-// Issue / Outbound Delivery are NOT here yet (needs 2 more SAP services
-// Basis hasn't exposed - see stock_transfer_service.py) - add steps here
-// once that's wired in, same job-polling mechanism will just work.
+// through today - drives the progress bar in the confirm dialog. The
+// last step (Goods Issue) is genuinely async - SAP's own scheduling
+// decides when the Customer Requirement becomes an Outbound Delivery
+// Request, and our own retry loop live-checks real stock before every
+// attempt (Aug 27 2026) - the dialog keeps polling it after "Create in
+// SAP" finishes so the user can watch it happen, but can also close the
+// dialog any time; the background job keeps running regardless.
 const STO_STEPS = [
   { key: "validate", label: "Validate order" },
   { key: "check", label: "SAP availability & data check" },
   { key: "create", label: "Create in SAP" },
+  { key: "post_goods_issue", label: "Post Goods Issue (SAP delivery)" },
 ];
 
 // One selected line item. Every field the SAP ByDesign reference screen
@@ -82,11 +87,8 @@ export default function StockTransferPage() {
   const [shipToLocationOptions, setShipToLocationOptions] = useState([]);
   const [requestedDeliveryDate, setRequestedDeliveryDate] = useState("");
   // GST / E-way bill compliance fields (Aug 2026, user's explicit ask) -
-  // mandatory before an order can be submitted. NOT yet pushed to SAP -
-  // Basis needs to expose a write path for these custom fields on the
-  // Stock Transfer Delivery document first (see stock_transfer_service.py
-  // module docstring) - captured + enforced here regardless, ready to
-  // push the moment that's available.
+  // mandatory; pushed live to SAP as a Note on the Customer Requirement
+  // (see stock_transfer_service.py's _build_gst_note_text).
   const [transportationMode, setTransportationMode] = useState("By Road");
   const [vehicleNo, setVehicleNo] = useState("");
   const [placeOfSupply, setPlaceOfSupply] = useState("");
@@ -102,6 +104,73 @@ export default function StockTransferPage() {
   const [recentOrders, setRecentOrders] = useState([]);
   const [loadingRecent, setLoadingRecent] = useState(true);
   const [selectedOrder, setSelectedOrder] = useState(null);
+
+  const { user } = useAuth();
+  const isAdmin = user?.role === "super_admin" || user?.role === "admin";
+
+  // "Action Needed" admin panel (Aug 2026, user's explicit ask): when an
+  // STO fails because a product was never set up (Planning/Availability/
+  // Logistics/Valuation) at the destination site, super_admin/admin users
+  // see it here with a one-click "Activate" - no toast, inline result
+  // message only per user's ask, since there's no safe dry-run on SAP's
+  // side for this write.
+  const [notifications, setNotifications] = useState([]);
+  const [activatingId, setActivatingId] = useState(null);
+  const [activateResults, setActivateResults] = useState({}); // { [notificationId]: {planning_logistics, valuation} }
+  const [confirmActivateFor, setConfirmActivateFor] = useState(null);
+  const [retryingStoId, setRetryingStoId] = useState(null);
+
+  const loadNotifications = async () => {
+    try {
+      const { data } = await axios.get(`${API}/admin/notifications`);
+      setNotifications(data.notifications || []);
+    } catch {
+      setNotifications([]);
+    }
+  };
+
+  useEffect(() => { if (isAdmin) loadNotifications(); }, [isAdmin]);
+
+  const handleActivate = async (notification) => {
+    setActivatingId(notification._id);
+    try {
+      const { data } = await axios.post(`${API}/admin/material-sites/activate`, {
+        product_id: notification.product_id,
+        site_id: notification.site_id,
+        notification_id: notification._id,
+      });
+      setActivateResults((prev) => ({ ...prev, [notification._id]: data }));
+      if (data.planning_logistics === "ok") loadNotifications();
+    } catch (e) {
+      setActivateResults((prev) => ({ ...prev, [notification._id]: { planning_logistics: e.response?.data?.detail || "Request failed" } }));
+    } finally {
+      setActivatingId(null);
+      setConfirmActivateFor(null);
+    }
+  };
+
+  const handleRetryOrder = async (stoId) => {
+    setRetryingStoId(stoId);
+    try {
+      await axios.post(`${API}/stock-transfer/orders/${stoId}/retry`);
+      setTimeout(() => { loadRecentOrders(); setRetryingStoId(null); }, 4000);
+    } catch {
+      setRetryingStoId(null);
+    }
+  };
+
+  const [retryingGiStoId, setRetryingGiStoId] = useState(null);
+  const handleRetryGoodsIssue = async (stoId) => {
+    setRetryingGiStoId(stoId);
+    try {
+      await axios.post(`${API}/stock-transfer/orders/${stoId}/retry-goods-issue`);
+      toast.message("Retrying Goods Issue - will keep checking live stock automatically for up to 20 minutes.");
+      setTimeout(() => { loadRecentOrders(); setRetryingGiStoId(null); }, 3000);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not retry Goods Issue.");
+      setRetryingGiStoId(null);
+    }
+  };
 
   // 2x-safety confirmation before the real, irreversible live SAP write
   // (user's explicit ask, Aug 2026): clicking "Create" first opens a
@@ -287,7 +356,7 @@ export default function StockTransferPage() {
 
   const applyJobStepStatuses = (job) => {
     setStepStatuses((prev) => {
-      if (job.status === "done") return { ...prev, check: "done", create: "done" };
+      if (job.status === "done") return { ...prev, check: "done", create: "done", post_goods_issue: prev.post_goods_issue || "active" };
       if (job.status === "failed") {
         if (job.step === "creating") return { ...prev, check: "done", create: "failed" };
         return { ...prev, check: "failed", create: "pending" };
@@ -295,6 +364,31 @@ export default function StockTransferPage() {
       if (job.step === "creating") return { ...prev, check: "done", create: "active" };
       return { ...prev, check: "active", create: "pending" };
     });
+  };
+
+  // Goods Issue progress (Aug 27 2026) - polled by sto_id (not the job_id
+  // above, which only covers the fast Validate/Check/Create steps) once
+  // the order is created in SAP. Keeps updating the 4th step + a live
+  // status line until posted/failed/timed-out, but never blocks the
+  // dialog from being closed - the actual retry loop runs server-side
+  // regardless of whether this tab is open.
+  const [giLiveStatus, setGiLiveStatus] = useState(null); // {status, error} | null
+  const giPollStopRef = useRef(false);
+  const pollGiStatus = (stoId) => {
+    giPollStopRef.current = false;
+    const tick = async () => {
+      if (giPollStopRef.current) return;
+      try {
+        const { data } = await axios.get(`${API}/stock-transfer/orders/${stoId}`);
+        setGiLiveStatus({ status: data.gi_status, error: data.gi_error });
+        const done = data.gi_status === "posted";
+        const failed = data.gi_status === "failed" || data.gi_status === "not_found_timeout";
+        setStepStatuses((prev) => ({ ...prev, post_goods_issue: done ? "done" : failed ? "failed" : "active" }));
+        if (done || failed) { loadRecentOrders(); return; }
+      } catch { /* keep polling - a transient blip here shouldn't stop the loop */ }
+      if (!giPollStopRef.current) setTimeout(tick, 4000);
+    };
+    tick();
   };
 
   const pollSapJob = (jobId) => {
@@ -305,12 +399,13 @@ export default function StockTransferPage() {
         applyJobStepStatuses(data);
         if (data.status === "done") {
           setSapSubmitPhase("done");
-          setSapSubmitMessage(`Created in SAP as ${formatSapId(data.result?.sap_order_id) || "—"}.`);
+          setSapSubmitMessage(`Created in SAP as ${formatSapId(data.result?.sap_order_id) || "—"}. Now posting Goods Issue...`);
           toast.success(`Stock Transfer Order created in SAP (${formatSapId(data.result?.sap_order_id) || "—"}).`);
           setItems([]);
           setShipToSiteId(""); setShipToLocationId(""); setRequestedDeliveryDate(""); setFormError(null);
           setVehicleNo(""); setPlaceOfSupply(""); setGrNo(""); setDateOfSupply(""); setTransportationMode("By Road");
           loadRecentOrders();
+          if (data.sto_id) pollGiStatus(data.sto_id);
           return;
         }
         if (data.status === "failed") {
@@ -338,7 +433,8 @@ export default function StockTransferPage() {
     setSubmitting(true);
     setSapSubmitPhase("submitting");
     setSapSubmitMessage(null);
-    setStepStatuses({ validate: "active", check: "pending", create: "pending" });
+    setStepStatuses({ validate: "active", check: "pending", create: "pending", post_goods_issue: "pending" });
+    setGiLiveStatus(null);
     try {
       const payload = {
         ship_to_site_id: shipToSiteId,
@@ -356,7 +452,7 @@ export default function StockTransferPage() {
         })),
       };
       const { data } = await axios.post(`${API}/stock-transfer/orders`, payload);
-      setStepStatuses({ validate: "done", check: "active", create: "pending" });
+      setStepStatuses({ validate: "done", check: "active", create: "pending", post_goods_issue: "pending" });
       toast.message(`Stock Transfer Order ${data.sto_id} saved - submitting live to SAP...`);
       loadRecentOrders();
       if (data.sap_job_id) pollSapJob(data.sap_job_id);
@@ -365,7 +461,7 @@ export default function StockTransferPage() {
       setFormError(msg);
       toast.error(msg);
       setSapSubmitPhase(null);
-      setStepStatuses({ validate: "failed", check: "pending", create: "pending" });
+      setStepStatuses({ validate: "failed", check: "pending", create: "pending", post_goods_issue: "pending" });
     } finally {
       setSubmitting(false);
     }
@@ -649,6 +745,58 @@ export default function StockTransferPage() {
           Review &amp; Create Stock Transfer Order <ArrowRight size={14} className="ml-1.5" />
         </Button>
 
+        {isAdmin && notifications.length > 0 && (
+          <div className="bg-[#FFFAEB] border border-[#FEC84B] rounded-sm overflow-hidden" data-testid="admin-action-needed-panel">
+            <div className="px-3 py-2 border-b border-[#FEC84B] bg-[#FEF0C7] flex items-center gap-2">
+              <Wrench size={14} className="text-[#93370D]" />
+              <h3 className="font-heading text-xs font-bold text-[#93370D] uppercase tracking-wide">Action Needed ({notifications.length})</h3>
+            </div>
+            <div className="divide-y divide-[#FEC84B]">
+              {notifications.map((n) => {
+                const result = activateResults[n._id];
+                return (
+                  <div key={n._id} className="p-3 text-xs space-y-2" data-testid={`admin-notification-${n._id}`}>
+                    <p className="text-[#93370D]">
+                      Product <span className="font-bold">{n.product_id}</span> has no Planning/Valuation data set up at site <span className="font-bold">{n.site_id}</span> - Stock Transfer Order <span className="font-bold">{n.sto_id}</span> can't proceed until this is activated.
+                    </p>
+                    {!result && confirmActivateFor !== n._id && (
+                      <Button size="sm" variant="outline" onClick={() => setConfirmActivateFor(n._id)} data-testid={`admin-activate-button-${n._id}`}>
+                        Activate {n.site_id} for {n.product_id}
+                      </Button>
+                    )}
+                    {!result && confirmActivateFor === n._id && (
+                      <div className="flex items-center gap-2 bg-white border border-[#FEC84B] rounded-sm p-2">
+                        <span className="text-[#93370D]">This writes directly to live SAP master data - are you sure?</span>
+                        <Button size="sm" onClick={() => handleActivate(n)} disabled={activatingId === n._id} data-testid={`admin-activate-confirm-${n._id}`}>
+                          {activatingId === n._id ? <CircleNotch size={14} className="animate-spin" /> : "Yes, activate"}
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setConfirmActivateFor(null)} data-testid={`admin-activate-cancel-${n._id}`}>Cancel</Button>
+                      </div>
+                    )}
+                    {result && (
+                      <div className="space-y-1" data-testid={`admin-activate-result-${n._id}`}>
+                        <p className={result.planning_logistics === "ok" ? "text-[#027A48] font-bold" : "text-[#B42318] font-bold"}>
+                          Planning / Availability / Logistics: {result.planning_logistics === "ok" ? "Activated successfully." : cleanSapMessage(result.planning_logistics)}
+                        </p>
+                        {result.valuation && (
+                          <p className={result.valuation === "ok" ? "text-[#027A48]" : "text-[#B42318]"}>
+                            Valuation: {result.valuation === "ok" ? "Activated successfully." : cleanSapMessage(result.valuation)}
+                          </p>
+                        )}
+                        {result.planning_logistics === "ok" && (
+                          <Button size="sm" variant="outline" onClick={() => handleRetryOrder(n.sto_id)} disabled={retryingStoId === n.sto_id} data-testid={`admin-notification-retry-${n.sto_id}`}>
+                            {retryingStoId === n.sto_id ? <CircleNotch size={14} className="animate-spin" /> : `Retry ${n.sto_id}`}
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Recent orders */}
         <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-x-auto" data-testid="stock-transfer-recent-card">
           <div className="px-3 py-2 border-b border-[#D0D5DD] bg-[#F9FAFB]">
@@ -680,6 +828,8 @@ export default function StockTransferPage() {
                     ? { label: "GI Failed", className: "bg-[#FEF3F2] text-[#B42318]" }
                     : o.gi_status === "not_found_timeout"
                     ? { label: "GI Pending (20min+)", className: "bg-[#FEF0C7] text-[#93370D]" }
+                    : o.gi_status === "insufficient_stock"
+                    ? { label: "Insufficient Stock", className: "bg-[#FEF0C7] text-[#93370D]" }
                     : o.gi_status === "awaiting_delivery"
                     ? { label: "Awaiting Delivery", className: "bg-[#FEF0C7] text-[#93370D]" }
                     : null;
@@ -724,7 +874,7 @@ export default function StockTransferPage() {
           write (user's explicit ask, Aug 2026) - clicking "Review &
           Create" above only opens this summary; nothing is submitted to
           SAP until "Confirm & Submit to SAP" is explicitly clicked here. */}
-      <Dialog open={showConfirmDialog} onOpenChange={(open) => { if (!submitting) { setShowConfirmDialog(open); if (!open) { setSapSubmitPhase(null); setSapSubmitMessage(null); setStepStatuses({}); } } }}>
+      <Dialog open={showConfirmDialog} onOpenChange={(open) => { if (!submitting) { setShowConfirmDialog(open); if (!open) { giPollStopRef.current = true; setSapSubmitPhase(null); setSapSubmitMessage(null); setStepStatuses({}); setGiLiveStatus(null); } } }}>
         <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto" data-testid="stock-transfer-confirm-dialog">
           <DialogHeader>
             <DialogTitle>Confirm Stock Transfer Order</DialogTitle>
@@ -761,7 +911,27 @@ export default function StockTransferPage() {
                   <p>{sapSubmitMessage}</p>
                 </div>
               )}
+              {sapSubmitPhase === "done" && giLiveStatus && (
+                <div
+                  className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
+                    giLiveStatus.status === "posted" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
+                    : giLiveStatus.status === "failed" || giLiveStatus.status === "not_found_timeout" ? "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
+                    : "bg-[#FEF0C7] border border-[#FEDF89] text-[#93370D]"
+                  }`}
+                  data-testid="stock-transfer-dialog-gi-status"
+                >
+                  {giLiveStatus.status === "posted" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : <CircleNotch size={16} className={`mt-0.5 shrink-0 ${giLiveStatus.status !== "posted" ? "animate-spin" : ""}`} />}
+                  <p>
+                    {giLiveStatus.status === "posted" ? "Goods Issue posted - delivery released."
+                      : giLiveStatus.status === "insufficient_stock" ? parseGiError(giLiveStatus.error) || "Insufficient stock at source warehouse - auto-checking every 20s."
+                      : giLiveStatus.status === "failed" ? (parseGiError(giLiveStatus.error) || "Goods Issue failed - see the order's detail view to retry.")
+                      : giLiveStatus.status === "not_found_timeout" ? "Still waiting after 20 minutes - you can retry from the order's detail view any time."
+                      : "Waiting for SAP to schedule the delivery... you can safely close this dialog, this keeps running in the background."}
+                  </p>
+                </div>
+              )}
             </div>
+
           ) : (
             <>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
@@ -807,7 +977,7 @@ export default function StockTransferPage() {
 
           {sapSubmitPhase && sapSubmitPhase !== "submitting" && (
             <div className="flex justify-end pt-1">
-              <Button type="button" onClick={() => { setShowConfirmDialog(false); setSapSubmitPhase(null); setSapSubmitMessage(null); setStepStatuses({}); }} data-testid="stock-transfer-confirm-close-button">Close</Button>
+              <Button type="button" onClick={() => { giPollStopRef.current = true; setShowConfirmDialog(false); setSapSubmitPhase(null); setSapSubmitMessage(null); setStepStatuses({}); setGiLiveStatus(null); }} data-testid="stock-transfer-confirm-close-button">Close</Button>
             </div>
           )}
         </DialogContent>
@@ -831,9 +1001,18 @@ export default function StockTransferPage() {
               {selectedOrder.error_message ? (
                 <div className="bg-[#FEF3F2] border border-[#FDA29B] rounded-sm p-3 text-sm text-[#912018] flex items-start gap-2" data-testid="stock-transfer-detail-error">
                   <WarningCircle size={16} className="mt-0.5 shrink-0" />
-                  <div>
+                  <div className="flex-1">
                     <p className="font-bold">SAP rejected this order:</p>
                     <p className="mt-0.5">{cleanSapMessage(selectedOrder.error_message)}</p>
+                    <Button
+                      size="sm" variant="outline" className="mt-2"
+                      onClick={() => handleRetryOrder(selectedOrder.sto_id)}
+                      disabled={retryingStoId === selectedOrder.sto_id}
+                      data-testid="stock-transfer-detail-retry-button"
+                    >
+                      {retryingStoId === selectedOrder.sto_id ? <CircleNotch size={14} className="animate-spin mr-1" /> : null}
+                      Retry this order
+                    </Button>
                   </div>
                 </div>
               ) : selectedOrder.status === "created_in_sap" ? (
@@ -854,22 +1033,34 @@ export default function StockTransferPage() {
                 <div
                   className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
                     selectedOrder.gi_status === "posted" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
-                    : selectedOrder.gi_status === "failed" ? "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
+                    : selectedOrder.gi_status === "failed" || selectedOrder.gi_status === "not_found_timeout" ? "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
                     : "bg-[#FEF0C7] border border-[#FEDF89] text-[#93370D]"
                   }`}
                   data-testid="stock-transfer-detail-gi-status"
                 >
-                  {selectedOrder.gi_status === "posted" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : selectedOrder.gi_status === "failed" ? <WarningCircle size={16} className="mt-0.5 shrink-0" /> : null}
-                  <div>
+                  {selectedOrder.gi_status === "posted" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : <WarningCircle size={16} className="mt-0.5 shrink-0" />}
+                  <div className="flex-1">
                     <p className="font-bold">
                       {selectedOrder.gi_status === "posted" ? "Goods Issue posted - delivery released."
                         : selectedOrder.gi_status === "failed" ? "Goods Issue failed:"
                         : selectedOrder.gi_status === "not_found_timeout" ? "Goods Issue still pending after 20 min - the order itself is unaffected."
+                        : selectedOrder.gi_status === "insufficient_stock" ? "Goods Issue: insufficient live stock at the source warehouse."
                         : "Goods Issue: waiting for SAP to schedule the delivery..."}
                     </p>
-                    {selectedOrder.gi_status === "failed" && <p className="mt-0.5">{parseGiError(selectedOrder.gi_error) || "See logs."}</p>}
+                    {(selectedOrder.gi_status === "failed" || selectedOrder.gi_status === "insufficient_stock") && <p className="mt-0.5">{parseGiError(selectedOrder.gi_error) || "See logs."}</p>}
                     {selectedOrder.outbound_delivery_object_id && (selectedOrder.gi_status === "posted" || selectedOrder.gi_status === "failed") && (
                       <p className="mt-0.5 text-xs opacity-80">Outbound Delivery Request: {selectedOrder.outbound_delivery_object_id}</p>
+                    )}
+                    {(selectedOrder.gi_status === "failed" || selectedOrder.gi_status === "not_found_timeout") && (
+                      <Button
+                        size="sm" variant="outline" className="mt-2"
+                        onClick={() => handleRetryGoodsIssue(selectedOrder.sto_id)}
+                        disabled={retryingGiStoId === selectedOrder.sto_id}
+                        data-testid="stock-transfer-detail-retry-gi-button"
+                      >
+                        {retryingGiStoId === selectedOrder.sto_id ? <CircleNotch size={14} className="animate-spin mr-1" /> : null}
+                        Retry Goods Issue
+                      </Button>
                     )}
                   </div>
                 </div>
@@ -908,8 +1099,8 @@ export default function StockTransferPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {(selectedOrder.items || []).map((it) => (
-                      <tr key={it.line_no} data-testid={`stock-transfer-detail-item-${it.product_id}`}>
+                    {(selectedOrder.items || []).map((it, idx) => (
+                      <tr key={it.line_no ?? idx} data-testid={`stock-transfer-detail-item-${it.product_id}`}>
                         <td className="border border-[#D0D5DD] px-2 py-1.5">{it.line_no}</td>
                         <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium">{it.product_id}</td>
                         <td className="border border-[#D0D5DD] px-2 py-1.5">{it.description || "—"}</td>

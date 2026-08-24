@@ -32,6 +32,11 @@ def _extract_fault(xml: str) -> str:
     if m:
         return m.group(1).strip()
     m = re.search(r"<(?:\w+:)?Description>(.*?)</(?:\w+:)?Description>", xml, re.S)
+    if m:
+        return m.group(1).strip()
+    # Some operations on this service log validation errors under <Note>
+    # instead of <Description> (confirmed live, Aug 2026, activate_site()).
+    m = re.search(r"<(?:\w+:)?Note>(.*?)</(?:\w+:)?Note>", xml, re.S)
     return m.group(1).strip() if m else None
 
 
@@ -96,3 +101,63 @@ class SAPMaterialCreateClient:
     </Material>
 </n0:MaterialBundleMaintainRequest_sync_V1>"""
         self._post(body)
+
+    def activate_site(self, material_id: str, site_id: str, company_id: str) -> dict:
+        """Admin "Activate this site for this product" action (Aug 2026,
+        user's explicit ask) - fixes the live "No valid planning data
+        exists for product X in site Y" Stock Transfer failure by adding
+        the missing site to an EXISTING material.
+
+        Two SEPARATE SOAP calls, not one bundle - confirmed live this
+        service commits a bundle atomically (all-or-nothing), and
+        Valuation has its own extra prerequisite (an Account Determination
+        Group per company, Finance/Basis-owned) that Planning/Availability/
+        Logistics don't need. Splitting them means a missing Account
+        Determination Group only blocks Valuation, not the 3 fields that
+        actually unblock the Stock Transfer check. Returns
+        {"planning_logistics": "ok"|<error str>, "valuation": "ok"|<error str>}."""
+        result = {}
+        planning_body = f"""<n0:MaterialBundleMaintainRequest_sync_V1>
+    <BasicMessageHeader><ID>{uuid.uuid4().hex.upper()}</ID></BasicMessageHeader>
+    <Material actionCode="02">
+        <InternalID>{material_id}</InternalID>
+        <Planning>
+            <SupplyPlanning actionCode="01">
+                <SupplyPlanningAreaID>{site_id}</SupplyPlanningAreaID>
+                <LifeCycleStatusCode>2</LifeCycleStatusCode>
+                <ProcurementTypeCode>2</ProcurementTypeCode>
+            </SupplyPlanning>
+        </Planning>
+        <AvailabilityConfirmation actionCode="01">
+            <PlanningAreaID>{site_id}</PlanningAreaID>
+            <LifeCycleStatusCode>2</LifeCycleStatusCode>
+        </AvailabilityConfirmation>
+        <Logistics actionCode="01">
+            <SiteID>{site_id}</SiteID>
+            <LifeCycleStatusCode>2</LifeCycleStatusCode>
+        </Logistics>
+    </Material>
+</n0:MaterialBundleMaintainRequest_sync_V1>"""
+        try:
+            self._post(planning_body)
+            result["planning_logistics"] = "ok"
+        except SAPMaterialCreateError as e:
+            result["planning_logistics"] = str(e)
+
+        valuation_body = f"""<n0:MaterialBundleMaintainRequest_sync_V1>
+    <BasicMessageHeader><ID>{uuid.uuid4().hex.upper()}</ID></BasicMessageHeader>
+    <Material actionCode="02">
+        <InternalID>{material_id}</InternalID>
+        <Valuation actionCode="01">
+            <LifeCycleStatusCode>2</LifeCycleStatusCode>
+            <CompanyID>{company_id}</CompanyID>
+            <BusinessResidenceID>{site_id}</BusinessResidenceID>
+        </Valuation>
+    </Material>
+</n0:MaterialBundleMaintainRequest_sync_V1>"""
+        try:
+            self._post(valuation_body)
+            result["valuation"] = "ok"
+        except SAPMaterialCreateError as e:
+            result["valuation"] = str(e)
+        return result

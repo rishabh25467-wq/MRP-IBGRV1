@@ -1,0 +1,41 @@
+{
+  "summary": "Focused test of the new Goods Issue retry + live-stock-check work on /inventory/inter-plant-transfer. Backend: created /app/backend/tests/test_goods_issue_retry.py (17 tests, 17 passed) covering the new GET /api/stock-transfer/orders/{sto_id}, POST /api/stock-transfer/orders/{sto_id}/retry-goods-issue (auth + state-machine matrix), one REAL live retry against SAP order 30116 (STO-000020), plus deterministic service-level tests for _live_source_stock_qty and try_post_goods_issue's insufficient_stock / sufficient / no-delivery-yet branches with stub SAP clients. Frontend (Playwright, synthetic Entra sessions): retry button visibility rules, in-flight spinner/disable, immediate flip to awaiting_delivery, real SAP re-attempt surfacing the genuine 'Inventory in logistics area not available' error, amber 'Insufficient Stock' badge + detail branch, and a full NEW live STO creation (STO-000025 -> real SAP order 30145) verifying the 4-step progress bar with data-step-state and the live GI status box (Waiting -> GI posted in ~35s) with no auto-close. All targeted features work; no new defects found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/stock-transfer/orders/{sto_id}/retry-goods-issue", "issue": "Returns 400 (not 404) for an unknown sto_id - detail text is correct ('not found') but the status code is misleading. Same class of issue as the /retry endpoint flagged in iteration_113."},
+      {"endpoint": "POST /api/stock-transfer/orders/{sto_id}/retry-goods-issue", "issue": "No guard against overlapping _run_goods_issue_job loops: a second retry accepted after the first one has re-set gi_status to failed (or an API caller bypassing the UI) starts an additional 20-min polling task for the same order; only the UI's disabled button prevents this."},
+      {"endpoint": "background GI job", "issue": "When gi_status is 'insufficient_stock' and the 20-min window expires, mark_goods_issue_timed_out() overwrites it with 'not_found_timeout' and the message 'SAP hasn't produced the Outbound Delivery Request...' - which is factually wrong for the insufficient-stock case (the delivery WAS found, stock was short). Consider a stock-specific timeout message."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Inter-Plant Stock Transfer header (role=user session)", "issues": ["'SAP Disconnected' red badge shown because /api/bom/connection-status returns 403 for non-admin roles - pre-existing issue already reported in iteration_113, still unfixed"]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_goods_issue_retry.py", "/app/test_reports/pytest/gi_retry.xml"],
+  "action_items": [
+    "Optional: return 404 instead of 400 for unknown sto_id on retry-goods-issue.",
+    "Optional: skip/reject a retry-goods-issue if a GI polling loop is already running for that order (idempotency guard).",
+    "Optional: use a stock-specific message when the 20-min window expires while gi_status='insufficient_stock'.",
+    "Still open from iteration_113: /api/bom/connection-status 403 for role=user makes the header show 'SAP Disconnected'."
+  ],
+  "critical_code_review_comments": [
+    "try_post_goods_issue() correctly short-circuits before sap_outbound_delivery_client.post_goods_issue() when live stock is short - verified by stub-client test that asserts post_goods_issue was never called.",
+    "_live_source_stock_qty() builds the '<site>/<warehouse>' id correctly and filters out non-usable/restricted stock and other products - verified by unit test.",
+    "reset_goods_issue_for_retry() state guards (status must be created_in_sap, gi_status must be failed/not_found_timeout) are enforced and surfaced as 400s.",
+    "Route ordering is safe: /orders/sap-status/{job_id} is declared before /orders/{sto_id} and still resolves to its own handler.",
+    "StockTransferPage.js is ~1130 lines - past the 700-line guideline; the confirm dialog, detail modal, admin notification panel and Recent Orders table are all good split candidates.",
+    "Detail items table uses key={it.line_no}; falls back to undefined for docs without line_no (React duplicate-key warning). Prefer key={it.line_no ?? idx}."
+  ],
+  "updated_files": ["/app/backend/tests/test_goods_issue_retry.py"],
+  "success_rate": {"backend": "100% (17/17)", "frontend": "100% of targeted flows"},
+  "seed_data_creation": "Synthetic Entra sessions via tests/_setup_sto_session.py and tests/_seed_notif_ui.py (both cleaned up). Temporary mongo doc TEST-STO-INSUF (gi_status=insufficient_stock) to render the amber badge/detail branch - deleted. LIVE SAP writes: 1 new STO (STO-000025 -> SAP 30145, P27175 1 EA P8->P1, GI posted) and 2 real Goods Issue retry attempts on STO-000020 (both rejected by SAP with the same real logistics-area error, gi_status back to 'failed' as expected).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "No end-user login (Entra SSO only). Recreate a session with `python /app/backend/tests/_setup_sto_session.py` (prints token) and set cookie vms_session=<token>; cleanup with --cleanup.",
+  "context_for_next_testing_agent": "Run backend GI tests with: cd /app/backend && python -m pytest tests/test_goods_issue_retry.py -q (pytest.ini already adds xdist args; do NOT pass -p no:xdist). STO-000020 is the permanent real 'gi_status=failed' fixture (SAP-side RTV warehouse config broken - never expect it to post); STO-000024/STO-000025 are 'posted' fixtures; STO-000021 is the 'sap_failed' fixture used for creation-level retry. IMPORTANT (still true): writing any file under /app/backend triggers a uvicorn reload and ~90s of 502s through the ingress - write test files first, wait, then run. The admin 'Action Needed' panel's Retry {sto_id} button only appears AFTER a successful Activate (live SAP master-data write) - its absence pre-activation is expected, not a regression; I did not click Activate to avoid the known non-idempotent SAP write.",
+  "rca_of_the_issue": "No new defect. The user-reported GI failure for P27175 is genuinely SAP-side ('Determination of source inventory failed / Inventory in logistics area not available' on the P1-RTV source warehouse). The new retry path behaves exactly as designed: reset to awaiting_delivery -> live inventory read at '<site>/<warehouse>' (17,950 available vs 1 requested) -> re-post to SAP -> SAP rejects again -> gi_status back to 'failed' with the real message and the Retry button re-offered."
+}
