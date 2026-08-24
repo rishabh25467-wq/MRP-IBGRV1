@@ -674,10 +674,16 @@ async def parse_natural_language_transfer_request(text: str, known_sites: list) 
             ).with_model(provider, model)
             response_text = await chat.send_message(UserMessage(text=text))
             parsed = _extract_json(response_text)
+            raw_site = (parsed.get("ship_to_site_id") or "").strip().upper()
+            # Case-insensitive match against known_sites (user's explicit
+            # bug report - "p3" instead of "P3" silently failed to load,
+            # since the LLM just echoes back whatever case the user typed
+            # and the dropdown options are always uppercase).
+            matched_site = next((s for s in known_sites if s.upper() == raw_site), raw_site or None)
             return {
                 "product_id": parsed.get("product_id"),
                 "quantity": parsed.get("quantity"),
-                "ship_to_site_id": parsed.get("ship_to_site_id"),
+                "ship_to_site_id": matched_site,
                 "requested_delivery_date": parsed.get("requested_delivery_date"),
                 "model_used": f"{provider}/{model}",
             }

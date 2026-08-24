@@ -1,3 +1,12 @@
+## Session update (2026-08-27, continued 15) - AI Quick Entry lowercase site bug fixed
+
+- Bug: typing a lowercase site (e.g. "p3" instead of "P3") in AI Quick Entry free text silently failed to populate Ship-to Site - the LLM just echoed back whatever case the user typed, which then didn't match the uppercase dropdown option value.
+- Fix: `parse_natural_language_transfer_request()` now case-insensitively matches the LLM's returned `ship_to_site_id` against the real `known_sites` list and returns the correctly-cased value.
+- **Tested**: live call with input "transfer 500 of SCR755WM to p3 by tomorrow" -> correctly returned `ship_to_site_id: "P3"`. Self-tested (small backend fix).
+
+---
+
+
 ## Session update (2026-08-27, continued 14) - Delivery Note polish: DM Sans font, INR currency, Retry ERP Sync button
 
 - **Delivery Note (`DeliveryNotePage.js`)**: switched font from generic serif to DM Sans (user's ask - Bogle isn't licensable/available on any CDN, DM Sans chosen as closest free alternative); added ₹/INR currency labels on Rate/Amount/Total columns and "Indian Rupees" wording in the amount-in-words line.
