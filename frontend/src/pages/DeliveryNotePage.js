@@ -53,7 +53,7 @@ function amountInWords(amount) {
   if (lakh) parts.push(threeDigitWords(lakh) + " Lakh");
   if (thousand) parts.push(threeDigitWords(thousand) + " Thousand");
   if (hundred) parts.push(threeDigitWords(hundred));
-  let words = (parts.join(" ") || "Zero") + " Rupees";
+  let words = (parts.join(" ") || "Zero") + " Indian Rupees";
   if (paise) words += " and " + twoDigitWords(paise) + " Paise";
   return words + " Only";
 }
@@ -80,7 +80,7 @@ export default function DeliveryNotePage() {
         </Button>
       </div>
 
-      <div className="max-w-[820px] mx-auto bg-white border border-[#D0D5DD] shadow-sm p-8 font-serif text-[13px] text-[#101828] print:border-0 print:shadow-none print:p-0" data-testid="delivery-note-document">
+      <div className="max-w-[820px] mx-auto bg-white border border-[#D0D5DD] shadow-sm p-8 text-[13px] text-[#101828] print:border-0 print:shadow-none print:p-0" style={{ fontFamily: "'DM Sans', sans-serif" }} data-testid="delivery-note-document">
         <div className="flex justify-between items-start border-b-2 border-[#101828] pb-3">
           <div>
             <h1 className="text-xl font-bold tracking-wide">{COMPANY.name}</h1>
@@ -137,13 +137,13 @@ export default function DeliveryNotePage() {
                 <td className="border border-[#D0D5DD] p-1.5" data-testid={`delivery-note-hsn-${it.product_id}`}>{it.hsn_code || "—"}</td>
                 <td className="border border-[#D0D5DD] p-1.5 text-right">{it.qty}</td>
                 <td className="border border-[#D0D5DD] p-1.5">{it.unit}</td>
-                <td className="border border-[#D0D5DD] p-1.5 text-right" data-testid={`delivery-note-rate-${it.product_id}`}>{it.rate.toFixed(2)}</td>
-                <td className="border border-[#D0D5DD] p-1.5 text-right font-medium">{it.amount.toFixed(2)}</td>
+                <td className="border border-[#D0D5DD] p-1.5 text-right" data-testid={`delivery-note-rate-${it.product_id}`}>₹{it.rate.toFixed(2)}</td>
+                <td className="border border-[#D0D5DD] p-1.5 text-right font-medium">₹{it.amount.toFixed(2)}</td>
               </tr>
             ))}
             <tr>
-              <td colSpan={7} className="border border-[#D0D5DD] p-1.5 text-right font-bold">Total</td>
-              <td className="border border-[#D0D5DD] p-1.5 text-right font-bold" data-testid="delivery-note-total">{data.total_amount.toFixed(2)}</td>
+              <td colSpan={7} className="border border-[#D0D5DD] p-1.5 text-right font-bold">Total (INR)</td>
+              <td className="border border-[#D0D5DD] p-1.5 text-right font-bold" data-testid="delivery-note-total">₹{data.total_amount.toFixed(2)}</td>
             </tr>
           </tbody>
         </table>

@@ -769,6 +769,21 @@ def mark_erp_portal_failed(db, sto_id: str, error: str) -> None:
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"erp_portal_status": "failed", "erp_portal_error": error}})
 
 
+def reset_erp_portal_sync_for_retry(db, sto_id: str) -> None:
+    """Manual "Retry ERP Sync" (Aug 27 2026, user's explicit ask - "no
+    legal document can be created" while this is stuck failed). Only
+    allowed while genuinely "failed" - guards against ever calling
+    sync_to_erp_portal twice for the same order, which would create a
+    DUPLICATE Delivery Challan (new Sale_No) in the legacy portal for
+    the same physical stock movement."""
+    doc = db[STO_COLLECTION].find_one({"_id": sto_id})
+    if not doc:
+        raise StockTransferOrderNotFoundError(f"Stock Transfer Order {sto_id} not found.")
+    if doc.get("erp_portal_status") != "failed":
+        raise StockTransferValidationError("ERP Portal sync is not currently in a failed state for this order.")
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"erp_portal_status": "retrying", "erp_portal_error": None}})
+
+
 def get_delivery_note_data(db, sap_valuation_client, sap_hsn_client, sto_id: str) -> dict:
     """Data for the in-app "Delivery Challan" print view (Aug 27 2026,
     user's explicit ask, referencing SAP's own printed template as the

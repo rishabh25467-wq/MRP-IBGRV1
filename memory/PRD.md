@@ -1,3 +1,14 @@
+## Session update (2026-08-27, continued 14) - Delivery Note polish: DM Sans font, INR currency, Retry ERP Sync button
+
+- **Delivery Note (`DeliveryNotePage.js`)**: switched font from generic serif to DM Sans (user's ask - Bogle isn't licensable/available on any CDN, DM Sans chosen as closest free alternative); added ₹/INR currency labels on Rate/Amount/Total columns and "Indian Rupees" wording in the amount-in-words line.
+- **"Retry ERP Sync" button** (user's explicit ask - "no legal document can be created" while ERP sync is stuck failed, since the Delivery Note's Serial Number comes from the ERP portal's own Sale_No): new `reset_erp_portal_sync_for_retry()` in `stock_transfer_service.py` + `POST /stock-transfer/orders/{sto_id}/retry-erp-sync` in `server.py`, reusing `erp_portal_client`'s existing primary->fallback host failover. Guarded against double-posting: rejects retry unless `erp_portal_status == "failed"` (verified live - correctly blocks retry on an already-"synced" order to prevent a duplicate Delivery Challan/Sale_No in the legacy portal). Button + "Retrying..." badge added to both the order detail modal and Recent Orders table.
+- **GR No. field**: now strips non-digit input as-typed + blocks form submission with a clear error if non-numeric (user's ask - "gr number is numeric only").
+- Also fixed the small bug where an already-flagged `erp_portal_status: "retrying"` status now displays correctly on both the Recent Orders table badge and the detail modal.
+- **Tested**: direct python test confirmed retry guard rejects a synced order and correctly resets a failed one to "retrying"; both frontend/backend compiled cleanly. Self-tested (small/medium UI+backend changes).
+
+---
+
+
 ## Session update (2026-08-27, continued 13) - Price + HSN added to the SAP-side GST Note; validated Delivery Challan does NOT get these fields
 
 - **Validated live** (user's ask): Vehicle No/GR No/Place of Supply/Date of Supply/Price/HSN do NOT land on the actual SAP Delivery Challan screen (`OutboundDeliveryCollection`) for our automated orders - checked 3 real just-created deliveries (P2D1-5385, P2D1-5386, P3D1-2409): `VehicleNo_KUT`, `GRNo1_KUT`, `PlaceOfSupply_KUT`, `DateOfSupply_KUT` all blank, confirming the known SAP scheduler-lockout limitation from an earlier session still holds. Only the Note on the Customer Requirement carries this info.

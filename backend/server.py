@@ -4503,6 +4503,26 @@ async def post_stock_transfer_order_retry_goods_issue(sto_id: str):
     return {"status": "restarted"}
 
 
+@api_router.post("/stock-transfer/orders/{sto_id}/retry-erp-sync")
+async def post_stock_transfer_order_retry_erp_sync(sto_id: str):
+    """Manual "Retry ERP Sync" (Aug 27 2026, user's explicit ask - a
+    failed sync here means no legal Delivery Challan can ever be
+    printed, since the Serial Number comes from the ERP portal's own
+    Sale_No). erp_portal_client already tries the primary MS SQL host
+    first, then the fallback host, on any connection failure - this just
+    re-triggers that same sync_to_erp_portal call after a guarded status
+    reset (see reset_erp_portal_sync_for_retry - blocks a duplicate
+    Delivery Challan if this order already synced successfully)."""
+    try:
+        await asyncio.to_thread(stock_transfer_service.reset_erp_portal_sync_for_retry, db, sto_id)
+    except stock_transfer_service.StockTransferOrderNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except stock_transfer_service.StockTransferValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    asyncio.create_task(_run_erp_portal_sync_job(sto_id))
+    return {"status": "restarted"}
+
+
 
 @api_router.get("/admin/notifications")
 async def get_admin_notifications(request: Request):

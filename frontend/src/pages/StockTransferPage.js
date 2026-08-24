@@ -186,6 +186,19 @@ export default function StockTransferPage() {
     }
   };
 
+  const [retryingErpStoId, setRetryingErpStoId] = useState(null);
+  const handleRetryErpSync = async (stoId) => {
+    setRetryingErpStoId(stoId);
+    try {
+      await axios.post(`${API}/stock-transfer/orders/${stoId}/retry-erp-sync`);
+      toast.message("Retrying ERP Portal sync (tries primary server, then fallback automatically).");
+      setTimeout(() => { loadRecentOrders(); setRetryingErpStoId(null); }, 3000);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not retry ERP Portal sync.");
+      setRetryingErpStoId(null);
+    }
+  };
+
   // 2x-safety confirmation before the real, irreversible live SAP write
   // (user's explicit ask, Aug 2026): clicking "Create" first opens a
   // summary dialog - nothing is submitted until the user explicitly
@@ -945,6 +958,8 @@ export default function StockTransferPage() {
                     ? { label: "Synced", className: "bg-[#ECFDF3] text-[#027A48]" }
                     : o.erp_portal_status === "failed"
                     ? { label: "Sync Failed", className: "bg-[#FEF3F2] text-[#B42318]" }
+                    : o.erp_portal_status === "retrying"
+                    ? { label: "Retrying...", className: "bg-[#FEF0C7] text-[#93370D]" }
                     : o.status === "created_in_sap"
                     ? { label: "Pending", className: "bg-[#FEF0C7] text-[#93370D]" }
                     : null;
@@ -1187,6 +1202,20 @@ export default function StockTransferPage() {
                         : "ERP Portal: syncing..."}
                     </p>
                     {selectedOrder.erp_portal_status === "failed" && <p className="mt-0.5">{selectedOrder.erp_portal_error || "See logs."}</p>}
+                    {selectedOrder.erp_portal_status === "failed" && (
+                      <>
+                        <p className="mt-1 text-xs opacity-80">No legal Delivery Challan can be printed until this syncs - Serial Number comes from the ERP portal.</p>
+                        <Button
+                          size="sm" variant="outline" className="mt-2"
+                          onClick={() => handleRetryErpSync(selectedOrder.sto_id)}
+                          disabled={retryingErpStoId === selectedOrder.sto_id}
+                          data-testid="stock-transfer-retry-erp-sync-btn"
+                        >
+                          {retryingErpStoId === selectedOrder.sto_id ? <CircleNotch size={14} className="animate-spin mr-1.5" /> : null}
+                          Retry ERP Sync
+                        </Button>
+                      </>
+                    )}
                     {selectedOrder.erp_portal_status === "synced" && (
                       <p className="mt-0.5 text-xs opacity-80">Portal Sale No: {selectedOrder.erp_sale_no} / {selectedOrder.erp_sale_noc}</p>
                     )}
