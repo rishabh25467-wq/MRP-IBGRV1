@@ -1,4 +1,4 @@
-"""SAP Business ByDesign Material Valuation Data (standard cost) client.
+"""SAP Business ByDesign Material Valuation Data (Moving Average price) client.
 
 Reads live standard-cost data via a custom OData service exposed on the
 "MaterialValuationData" business object. The linkage chain is:
@@ -15,6 +15,12 @@ Reads live standard-cost data via a custom OData service exposed on the
 
 Queries are batched (OR'd together in a single $filter) in chunks to avoid
 one HTTP round-trip per product, since a BOM can have 100+ components.
+
+Each price row also carries a PriceTypeCode: "1" = Inventory Cost (this
+tenant's Moving Average, recalculated every period) vs "2" = Estimated Cost
+(Standard Cost). This client always resolves to the Moving Average price
+(see MOVING_AVERAGE_PRICE_TYPE_CODE on SAPValuationClient) - Standard Cost
+rows are never considered, per explicit user decision (Aug 2026).
 """
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -138,8 +144,24 @@ class SAPValuationClient:
                     mapping[level_uuid].append(row)
         return mapping
 
+    # SAP's PriceTypeCode on MaterialValuationDataValuationPriceCollection:
+    # "1" = Inventory Cost (this tenant's Moving Average price, recalculated
+    # every period - many historical rows per level) vs "2" = Estimated Cost
+    # (Standard Cost - typically a single current/future-dated row). Verified
+    # live (Aug 2026) against a real material: a type-"2" row can have a
+    # LATER start date than every type-"1" row (e.g. a future standard-cost
+    # revision already loaded into SAP ahead of its effective date), which
+    # made the old "just pick whichever currently-valid row has the latest
+    # start date" logic silently return the Standard Cost instead of the
+    # Moving Average. User's explicit ask (Aug 2026): always use the Moving
+    # Average ("1"), never Standard Cost ("2"), for every cost shown in this
+    # app (BOM screen, Inventory, Purchasing Plan all route through here).
+    MOVING_AVERAGE_PRICE_TYPE_CODE = "1"
+
     def get_standard_costs(self, product_uuids):
-        """Returns {product_uuid: {"amount": float, "currency": str} | None}."""
+        """Returns {product_uuid: {"amount": float, "currency": str} | None}
+        - despite the method name (kept for callers), this returns the
+        Moving Average price (PriceTypeCode "1"), not Standard Cost."""
         product_uuids = list({uuid.upper() for uuid in product_uuids if uuid})
         if not product_uuids:
             return {}
@@ -157,15 +179,16 @@ class SAPValuationClient:
             # revisions of the same price and must not be compared against
             # each other by date. Empirically some plants carry a genuine
             # $0 valuation level (e.g. never stocked/costed there) alongside
-            # other plants with the material's real standard cost - picking
-            # purely by latest start date across levels can land on that $0
-            # level and silently zero out a material that has a real price
-            # elsewhere. Prefer any currently-valid NON-ZERO price; only
-            # fall back to a zero price if that's genuinely the only option.
+            # other plants with the material's real moving-average price.
+            # Prefer any currently-valid NON-ZERO Moving Average price; only
+            # fall back to a zero Moving Average price if that's genuinely
+            # the only option. Standard Cost ("2") rows are never considered.
             best_price, best_start = None, None
             best_nonzero_price, best_nonzero_start = None, None
             for level_uuid in level_map.get(product_uuid, []):
                 for price_row in price_map.get(level_uuid, []):
+                    if str(price_row.get("PriceTypeCode")) != self.MOVING_AVERAGE_PRICE_TYPE_CODE:
+                        continue
                     start = _parse_odata_date(price_row.get("StartDate"))
                     end = _parse_odata_date(price_row.get("EndDate"))
                     is_current = (start is None or start <= now) and (end is None or now <= end)
