@@ -172,6 +172,13 @@ class TestOrderCreation:
             "ship_to_site_id": "P2",
             "ship_to_location_id": "P2-RM",
             "requested_delivery_date": TOMORROW,
+            # GST/e-way fields became mandatory (Pydantic-required) in a later
+            # iteration - test payload updated accordingly (iteration 115).
+            "transportation_mode": "By Road",
+            "vehicle_no": "TESTQA1150",
+            "place_of_supply": "TESTQA Place",
+            "gr_no": "TESTQA-GR-115",
+            "date_of_supply": TOMORROW,
             "items": [{"product_id": P9_PRODUCT, "source_warehouse_id": "P9-SFG", "requested_qty": 5}],
         }
         p.update(over)

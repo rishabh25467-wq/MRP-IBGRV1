@@ -1,3 +1,19 @@
+## Session update (2026-08-24, continued 10) - HSN Code: SOLVED, live, zero remaining Basis blocker
+
+- Prior blocker: `HSNCodeIndia` (Material BO) and `INHSNCode` (CustomerInvoice/APCI_CUSTOMER_INVOICE BO) are both PSM-blocked from custom OData services on this tenant - confirmed dead ends via extensive user-guided SAP UI exploration this session (custom BO service picker genuinely has no HSN field on either BO).
+- **Found the real working path**: Business Analytics -> Design Reports -> new report on the "Material Master Data" data source DOES expose HSN Code as a normal reportable characteristic (`CGLO_IN_HSN_CODE`, alongside `CMATR_INT_ID` for the Material ID) - same analytics-report-as-OData mechanism this app already uses for on-hand inventory (`sap_inventory_client.py` / `SAP_INVENTORY_ODATA_URL`). User built the report ("MATERIAL MASTER HSN") in the SAP UI and generated its OData query URL via the report's own "Generate Data Query" button.
+- **Verified live** (Aug 27 2026): filtering this report by `CMATR_INT_ID eq '<product_id>'` (unlike sap_inventory_client's `$select`-only quirk) correctly resolves the real business Material ID and returns that material's live HSN code, e.g. `P27175 -> "7318"`.
+- **Implemented**:
+  - New `sap_hsn_client.py` (`SAPHSNClient.get_hsn_codes(product_ids)` -> `{product_id: hsn_code}`, batched OR'd `$filter` same pattern as `sap_valuation_client.py`).
+  - `.env`: `SAP_HSN_ODATA_URL` added (report `RPZ0947E2F59B1F629245246D`), reuses existing `SAP_ODATA_USERNAME`/`SAP_ODATA_PASSWORD`.
+  - `stock_transfer_service.sync_to_erp_portal()` now takes a `sap_hsn_client` param and fills each line's `hsn_no` from a live lookup instead of hardcoded `None`.
+  - `server.py`: instantiates `sap_hsn_client`, passes it through `_run_erp_portal_sync_job`.
+- **Tested**: live python script hitting the real SAP report + a real existing STO (STO-000035, product P27175) - HSN resolved correctly (`7318`); full `sync_to_erp_portal()` re-run against that same STO correctly reached the MS SQL stored proc (rejected only as an expected duplicate - that exact STO was already synced in a prior session, confirming the DB/stored-proc path itself is unaffected and correct). Self-tested (small, well-verified backend-only change) - no testing_agent run needed.
+- **P0 issue closed** - no Basis/PDI dependency remains for HSN Code.
+
+---
+
+
 ## Session update (2026-08-24, continued 9) - Goods Issue retry + live-stock-check + progress bar visibility, and RTV root-cause VALIDATED (not a hard limitation)
 
 - Real user-reported GI failure: "Determination of source inventory failed for material P27175 - Inventory in logistics area not available" (order STO-000020, real SAP order 30116).

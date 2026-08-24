@@ -42,6 +42,7 @@ from sap_gsa_client import SAPGSAClient, SAPGSAError
 from price_explorer_client import PriceExplorerClient, PriceExplorerError
 import quota_arrangement_service
 from sap_valuation_client import SAPValuationClient, SAPValuationError
+from sap_hsn_client import SAPHSNClient
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
 from inventory_service import get_cached_inventory, refresh_inventory_cache, refresh_stock_quantities_for_warehouses, deep_backfill_uuids, list_known_sites
@@ -242,6 +243,12 @@ sap_valuation_client = SAPValuationClient(
 
 sap_inventory_client = SAPInventoryClient(
     report_url=os.environ['SAP_INVENTORY_ODATA_URL'],
+    username=os.environ['SAP_ODATA_USERNAME'],
+    password=os.environ['SAP_ODATA_PASSWORD'],
+)
+
+sap_hsn_client = SAPHSNClient(
+    report_url=os.environ['SAP_HSN_ODATA_URL'],
     username=os.environ['SAP_ODATA_USERNAME'],
     password=os.environ['SAP_ODATA_PASSWORD'],
 )
@@ -4373,7 +4380,7 @@ async def _run_erp_portal_sync_job(sto_id: str):
     outcome. Best-effort, same pattern as gst_note_pushed - never blocks
     or fails the SAP write itself."""
     try:
-        await asyncio.to_thread(stock_transfer_service.sync_to_erp_portal, db, erp_portal_client, sap_valuation_client, sto_id)
+        await asyncio.to_thread(stock_transfer_service.sync_to_erp_portal, db, erp_portal_client, sap_valuation_client, sap_hsn_client, sto_id)
     except Exception as e:
         logger.error(f"Stock Transfer Order {sto_id}: ERP Portal sync failed: {e}")
         await asyncio.to_thread(stock_transfer_service.mark_erp_portal_failed, db, sto_id, str(e))

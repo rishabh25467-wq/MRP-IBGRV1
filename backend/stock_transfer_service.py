@@ -636,7 +636,7 @@ async def parse_natural_language_transfer_request(text: str, known_sites: list) 
     raise StockTransferValidationError(f"Could not understand that request right now ({last_error}) - please fill the form manually.")
 
 
-def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str) -> None:
+def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sap_hsn_client, sto_id: str) -> None:
     """Writes this Stock Transfer Order into the legacy Radish ERP portal
     (Aug 27 2026, user's explicit ask) via its own stored procedures - see
     erp_portal_client.py. Fires right after the order is created in SAP
@@ -651,9 +651,11 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str)
         reuses the exact same site codes as SAP.
       Rate/Amt/Amount/TaxableAmt = SAP's live Moving Average price x
         quantity (never Standard Cost - see sap_valuation_client.py).
-      HSN_no left blank for now - user's explicit "come back to HSN
-        later" (not reachable via any SAP API this tenant currently
-        exposes - would need a new custom OData service from Basis).
+      HSN_no = live SAP HSN Code, pulled via a custom Business Analytics
+        report on "Material Master Data" (see sap_hsn_client.py - this was
+        the only field on the whole tenant not PSM-blocked, added Aug 27
+        2026). Left blank (never invented) if that material has no HSN
+        code maintained in SAP yet.
       Trans/Emp_no/ElecRefNo/Padd_Code1/Padd_Code2/Term1-3 all left
         blank - user's explicit instruction (not captured/needed today).
     """
@@ -668,6 +670,7 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str)
     }
     product_uuids = [u for u in product_uuid_by_id.values() if u]
     costs = sap_valuation_client.get_standard_costs(product_uuids) if product_uuids else {}
+    hsn_codes = sap_hsn_client.get_hsn_codes(product_ids)
 
     sale_date = datetime.strptime(doc["date_of_supply"], "%Y-%m-%d")
     line_items = []
@@ -681,7 +684,7 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str)
         total_amount += amt
         line_items.append({
             "product_id": item["product_id"], "description": item.get("description"),
-            "hsn_no": None, "qty": qty, "unit": item.get("unit_of_measure") or "EA",
+            "hsn_no": hsn_codes.get(item["product_id"]), "qty": qty, "unit": item.get("unit_of_measure") or "EA",
             "rate": rate, "amt": amt, "dis_amt": 0, "taxable_amt": amt, "remark": None,
         })
 

@@ -1,0 +1,47 @@
+{
+  "summary": "Tested the NEW legacy-ERP-portal (Radish/MS SQL) Delivery Challan sync layered on the live SAP Stock Transfer Order flow. Backend: new pytest file (15 tests, all pass) covering live MS SQL connectivity + primary/fallback failover + stored-proc existence (read-only, no inserts), full field-mapping verification of stock_transfer_service.sync_to_erp_portal via a fake portal client (CompCode RI for P1/P8, RT for P2/P9/P3, Pcode = ship-to site, Rate/Amt/Amount/TaxableAmt = SAP Moving Average x qty, HSN + Trans/Emp_no/ElecRefNo/Padd_Code1-2/Term1-3 blank, tdis_amt 0), mark_erp_portal_failed, not-found handling, and the API surface (erp_portal_status/erp_portal_error/erp_sale_no/erp_sale_noc exposed on list + detail, no _id leak, auth gated). Frontend: created one real live order end-to-end via the UI (STO-000035, P8 -> P1, product P27175, Vehicle TESTQA1150 / GR TESTQA-GR-115) - 5-step progress bar renders in exact order validate/check/create/erp_sync/post_goods_issue, dialog ERP box went 'Syncing to ERP Portal...' -> green 'Synced to ERP Portal (Delivery Challan created).' in ~25s, backend confirmed erp_portal_status=synced, erp_sale_no=38078, erp_sale_noc=1, GI posted independently, GST Recorded. After reload the Recent Orders 'ERP Portal' column shows Synced (green) / Pending (amber) and the detail modal shows 'Portal Sale No: 38078 / 1' above the Goods Issue box. Regressions checked: retry-GI button on GI-failed order, GST badge, greyed-out non-usable warehouse options, AI Quick Entry parse+apply auto-picking source warehouse - all working.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "internal: stock_transfer_service.sync_to_erp_portal", "issue": "When the SAP valuation lookup returns nothing (observed live: sap_valuation_client logged repeated ConnectTimeout to the SAP tenant at 18:46-18:49), rate silently falls back to 0.0 and the challan is still inserted and marked erp_portal_status='synced' - a live portal row with Rate/Amt/Amount/TaxableAmt = 0 and no error surfaced anywhere. Insert-only client means it cannot be corrected."},
+      {"endpoint": "internal: _run_erp_portal_sync_job", "issue": "No idempotency guard - sync_to_erp_portal does not skip docs already erp_portal_status='synced', so any future retry/re-run path would insert a duplicate Delivery Challan (no delete capability by design)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "StockTransferPage - detail modal / Recent Orders ERP column", "issue": "Orders created BEFORE this feature (erp_portal_status null, e.g. STO-000030) show 'ERP Portal: syncing...' forever in the detail modal and an amber 'Pending' badge in the table - misleading, they will never sync. Needs a distinct 'Not synced / N/A' state for null status on already-final orders.", "selector": "[data-testid=stock-transfer-detail-erp-status]", "priority": "MEDIUM"},
+      {"component": "StockTransferPage (console)", "issue": "Repeated React error 'Encountered two children with the same key' on this page (duplicate keys in the source-warehouse / ship-to-location option lists - e.g. two 'P1 - RETURN TO VENDOR GODOWN-P1' rows). Can cause duplicated/omitted options.", "selector": "[data-testid=stock-transfer-warehouse-select-P27175]", "priority": "LOW"}
+    ],
+    "integration_issues": [
+      {"flow": "Order creation -> Recent Orders / detail modal ERP status", "issue": "Right after creation the confirm dialog correctly shows 'Synced to ERP Portal', but the Recent Orders row still shows 'Pending' and the detail modal shows 'ERP Portal: syncing...'. loadRecentOrders() is only called on SAP-done and on GI terminal state, and closing the dialog sets giPollStopRef=true which kills the poll - so the table/detail stay stale until a manual page reload (verified: after reload both show Synced correctly). Fix: call loadRecentOrders() when erp_portal_status transitions to synced/failed, and/or re-fetch GET /orders/{id} when the detail modal opens instead of reusing the stale list row.", "affected_selectors": ["[data-testid=stock-transfer-recent-erp-status-STO-000035]", "[data-testid=stock-transfer-detail-erp-status]"]}
+    ],
+    "design_issues": [
+      {"screen": "Confirm dialog / detail modal", "issues": ["No manual 'Retry ERP Portal sync' control for erp_portal_status='failed' orders, unlike Goods Issue which has a retry button - a failed challan is currently unrecoverable from the UI."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_erp_portal_sync.py", "/app/test_reports/pytest/iteration_115_erp_portal.xml", "/app/backend/tests/test_stock_transfer.py"],
+  "action_items": [
+    "Refresh Recent Orders / detail modal when ERP sync completes (currently stale 'Pending'/'syncing...' until manual reload)",
+    "Distinguish null erp_portal_status on pre-feature/final orders from an in-flight sync ('Not synced' instead of 'syncing...')",
+    "Do not mark erp_portal_status='synced' when the SAP Moving Average price could not be fetched (writes Rate/Amt=0 into the live portal silently) - fail or flag it instead",
+    "Add an idempotency guard (skip if already synced) before calling create_delivery_challan",
+    "Consider a manual 'Retry ERP Portal sync' button for failed syncs",
+    "Fix duplicate React keys in the warehouse/location option lists"
+  ],
+  "critical_code_review_comments": [
+    "stock_transfer_service.sync_to_erp_portal: `rate = cost['amount'] if cost else 0.0` silently produces a zero-value Delivery Challan on SAP valuation failure/timeout; the sync is then reported as fully successful. Given the portal client is insert-only, prefer raising so the doc is marked failed and can be retried.",
+    "erp_portal_client.create_delivery_challan: conn.close() without an explicit rollback in the except path - pytds rolls back on close for a non-committed tx, but an explicit conn.rollback() would make the transactional intent unambiguous.",
+    "No de-dup/idempotency key on the portal side: a second invocation of _run_erp_portal_sync_job for the same sto_id creates a second challan."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_erp_portal_sync.py (new)",
+    "/app/backend/tests/test_stock_transfer.py (test-only fix: _payload now includes the now-mandatory GST fields transportation_mode/vehicle_no/place_of_supply/gr_no/date_of_supply - 14 tests were failing with 422 instead of exercising validation)"
+  ],
+  "success_rate": {"backend": "100% (15/15 new ERP tests; test_stock_transfer.py 25/29 after payload fix - remaining 4 were transient 502/SAP-timeout blips, re-verified manually)", "frontend": "90% (all new ERP UI elements render and integrate; one staleness bug + one null-status labelling bug)"},
+  "seed_data_creation": "Reused synthetic Entra session (tests/_setup_sto_session.py): auth_users _id='testtid:testoid-sto-solo' (role temporarily raised to super_admin, allowed_pages ['inventory','admin']), auth_sessions _id='TEST_sto_session_token_solo' (1 day expiry), cookie vms_session. Live data created: STO-000035 (SAP 30150, portal Sale_No 38078/1, Vehicle TESTQA1150, GR TESTQA-GR-115) plus STO-000033/STO-000034 created live in SAP by test_stock_transfer.py's live-create tests (their Mongo docs are deleted by the fixture teardown, which made their ERP sync log 'STO not found' - no portal rows written for those two). Temp Mongo docs TESTQA-ERP-* were cleaned up.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "No user login (Entra SSO only). Session cookie vms_session=TEST_sto_session_token_solo (regenerate with `python tests/_setup_sto_session.py` from /app/backend).",
+  "context_for_next_testing_agent": "New file /app/backend/tests/test_erp_portal_sync.py verifies ERP portal mapping WITHOUT writing to the live portal (uses a FakeERPClient) plus read-only live MS SQL connectivity/failover - safe to re-run. WARNING: /app/backend/tests/test_stock_transfer.py::TestOrderCreation::test_create_success_and_persist and ::test_sto_id_increments now (after the payload fix) create REAL live SAP orders and would create real portal rows; its teardown deletes the Mongo doc immediately which aborts the background ERP/GI jobs. Consider gating those two behind a marker. Live E2E UI reference order: STO-000035 (P8->P1, synced, Sale_No 38078/1). Admin 'Action Needed' panel could not be exercised - there are currently no missing-planning-data notifications outstanding.",
+  "rca_of_the_issue": "Stale ERP status in Recent Orders/detail modal: pollGiStatus() updates only local erpLiveStatus + stepStatuses; loadRecentOrders() runs on SAP-done and on GI terminal state only, and the dialog Close button sets giPollStopRef.current=true which ends the poll, so no refetch happens after ERP sync completes. The detail modal renders the stale list row object (setSelectedOrder(o)) with no per-order refetch. Backend data was verified correct via GET /api/stock-transfer/orders/STO-000035 (erp_portal_status='synced', erp_sale_no=38078, erp_sale_noc=1) and correct after a manual page reload - purely a frontend refresh gap."
+}
