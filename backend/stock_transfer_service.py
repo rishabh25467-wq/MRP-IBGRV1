@@ -4,18 +4,37 @@ backend (Aug 2026).
 Real SAP write happens via a specific web service, "ManageCustomerRequirementIn"
 (Customer Requirement Processing process component) - confirmed via SAP's own
 public docs, header fields ShipFromSiteID/ShipToSiteID/ShipToLocationID with
-line items under ExternalRquestItem. The user's SAP Basis team has NOT yet
-activated/exposed this web service on this tenant (confirmed directly by the
-user, Aug 2026) - so this module only builds and validates STOs and persists
-them locally with status "pending_sap". Wiring the actual SAP write is future
-work once Basis exposes the endpoint (see how every other write in this app
-is configured via SAP_SOAP_*/SAP_ODATA_* in backend/.env + server.py).
+line items under ExternalRquestItem. The live write (see submit_order_to_sap
+below + sap_sto_client.py) is wired in as of Aug 27 2026 - every order still
+gets created here LOCALLY FIRST (status "pending_sap"), then a background
+job immediately submits it live to SAP (Check first as a safety net, then
+the real Maintain write - user's explicit "go live immediately" ask, no
+separate dry-run mode), flipping status to "created_in_sap"/"sap_failed".
 
 Reuses the SAME Site -> Company mapping already used for WIP Clearing
 (sap_wip_clearing_client.SITE_TO_COMPANY) for the "Ship-to Site must be in
 the same Company as Ship-from Site" rule - the user explicitly confirmed
 (Aug 2026) that mapping is correct for this feature too, over the spec's own
-illustrative (and not accurate for this tenant) example."""
+illustrative (and not accurate for this tenant) example.
+
+Full Goods Issue automation (Aug 27 2026, user's explicit ask - "we need
+full", fully backend, user should never have to see/do anything extra):
+once SAP converts this order's Customer Requirement into an Outbound
+Delivery Request (SAP's own internal scheduling - not something this app
+triggers, polled for by find_ready_outbound_delivery_item() below), the
+Goods Issue is posted via a custom OData service (`odataoutboundemergent`,
+sap_outbound_delivery_client.py) that ALREADY EXISTS on this tenant (built
+for a sister app's different use case, reused here) - see that module's
+docstring for how the Customer-Requirement -> Outbound-Delivery-Request
+link is safely made (UUID match, zero collision risk) and how the single
+PGIInBackground call posts + releases the Goods Issue in one shot. Runs as
+its own independent background loop (see server.py's _run_goods_issue_job)
+kicked off right after submit_order_to_sap() succeeds - NOT part of the
+user-facing progress dialog (that one only covers Validate/Check/Create,
+which finish in seconds; this can take much longer since it's waiting on
+SAP's own scheduling), purely reflected via the STO doc's own
+`gi_status`/`gi_error`/`outbound_delivery_object_id` fields, same as any
+other field the detail modal already reads."""
 import json
 import logging
 import re
@@ -27,6 +46,9 @@ from pymongo import ReturnDocument
 from sap_wip_clearing_client import company_and_set_of_books_for_site
 from production_confirmation_service import is_usable_stock_status
 from inventory_service import list_known_sites
+from sap_sto_client import SAPSTOError
+from sap_outbound_delivery_client import SAPOutboundDeliveryError
+import job_store
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +215,30 @@ def create_stock_transfer_order(db, payload: dict, created_by: str) -> dict:
     if delivery_date < datetime.now(timezone.utc).date():
         raise StockTransferValidationError("Requested Delivery Date cannot be earlier than today.")
 
+    # GST / E-way bill compliance fields (Aug 2026, user's explicit ask) -
+    # mandatory, but NOT yet pushed to SAP - see module docstring (pending
+    # Basis exposing a write path for these custom fields on the Stock
+    # Transfer Delivery document). Captured + enforced regardless.
+    transportation_mode = (payload.get("transportation_mode") or "").strip()
+    vehicle_no = (payload.get("vehicle_no") or "").strip()
+    place_of_supply = (payload.get("place_of_supply") or "").strip()
+    gr_no = (payload.get("gr_no") or "").strip()
+    date_of_supply = (payload.get("date_of_supply") or "").strip()
+    if not transportation_mode:
+        raise StockTransferValidationError("Transportation Mode is required.")
+    if not vehicle_no:
+        raise StockTransferValidationError("Vehicle No. is required.")
+    if not place_of_supply:
+        raise StockTransferValidationError("Place Of Supply is required.")
+    if not gr_no:
+        raise StockTransferValidationError("G.R No. is required.")
+    if not date_of_supply:
+        raise StockTransferValidationError("Date Of Supply is required.")
+    try:
+        date.fromisoformat(date_of_supply)
+    except ValueError:
+        raise StockTransferValidationError("Date Of Supply is not a valid date.")
+
     ship_to_warehouses = {w["warehouse_id"]: w["warehouse_name"] for w in list_known_warehouses_for_site(db, ship_to_site_id)}
     if ship_to_location_id not in ship_to_warehouses:
         raise StockTransferValidationError(f"'{ship_to_location_id}' is not a known warehouse at Ship-to Site {ship_to_site_id}.")
@@ -252,11 +298,11 @@ def create_stock_transfer_order(db, payload: dict, created_by: str) -> dict:
     sto_doc = {
         "_id": _next_sto_id(db),
         "status": "pending_sap",
-        # Populated once the real SAP write is wired in and SAP rejects an
-        # order (e.g. a site/warehouse master-data mismatch on SAP's side)
-        # - always None today since there is no live write yet (see module
-        # docstring). Shown verbatim, human-readable, in the order's detail
-        # modal - never a raw stack trace/exception repr.
+        # Populated by submit_order_to_sap() if the live SAP write rejects
+        # this order (e.g. a site/warehouse master-data mismatch on SAP's
+        # side, caught by the Check call or the real Maintain write).
+        # Shown verbatim, human-readable, in the order's detail modal -
+        # never a raw stack trace/exception repr.
         "error_message": None,
         "created_by": created_by,
         "created_at": now,
@@ -266,10 +312,121 @@ def create_stock_transfer_order(db, payload: dict, created_by: str) -> dict:
         "ship_to_location_name": ship_to_warehouses.get(ship_to_location_id),
         "delivery_priority": "Immediate",
         "requested_delivery_date": requested_delivery_date,
+        "transportation_mode": transportation_mode,
+        "vehicle_no": vehicle_no,
+        "place_of_supply": place_of_supply,
+        "gr_no": gr_no,
+        "date_of_supply": date_of_supply,
         "items": resolved_items,
     }
     db[STO_COLLECTION].insert_one(sto_doc)
     return sto_doc
+
+
+def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None) -> dict:
+    """Runs SAP's Check operation first (always-on safety net, not a
+    togglable dry-run - user's explicit ask, Aug 2026), then - only if that
+    comes back clean - the real Maintain write. Mutates the STO's Mongo doc
+    in place with the outcome (status + error_message + the real SAP
+    ID/UUID on success), same shape the detail modal already reads.
+
+    If `job_id` is given, updates the job doc's `step` field at each stage
+    ("checking" -> "creating") so the frontend's progress-bar dialog can
+    show real, not simulated, progress. Goods Issue / Outbound Delivery are
+    NOT part of this pipeline yet - see module docstring "Full Goods Issue
+    automation" note; once Basis exposes those 2 services this function is
+    the place to add "posting_goods_issue"/"confirming_warehouse_task"
+    steps, same pattern."""
+    doc = db[STO_COLLECTION].find_one({"_id": sto_id})
+    if not doc:
+        raise StockTransferValidationError(f"Stock Transfer Order {sto_id} not found.")
+
+    requested_local_datetime = f"{doc['requested_delivery_date']}T12:00:00.0000000Z"
+    items = [
+        {
+            "product_id": it["product_id"],
+            "requested_qty": it["requested_qty"],
+            "unit_code": it.get("unit_of_measure") or "EA",
+            "description": it.get("description"),
+            "requested_local_datetime": requested_local_datetime,
+        }
+        for it in doc["items"]
+    ]
+
+    try:
+        if job_id:
+            job_store.update_job(db, job_id, {"step": "checking"})
+        # SAP's own ShipToLocationID field (confirmed live, Aug 2026) is a
+        # distinct "Location" master-data ID, NOT a warehouse/logistics-area
+        # code - SAP's own docs' examples always set it equal to the Site
+        # ID, and a real warehouse code (e.g. "P2-RM", this app's own
+        # `ship_to_location_id` used for local display/tracking) was
+        # rejected live with "does not match account ... (Site)". Always
+        # send the Ship-to SITE ID here, regardless of which specific
+        # warehouse the user picked in this app's own UI.
+        sap_sto_client.check(doc["ship_from_site_id"], doc["ship_to_site_id"], doc["ship_to_site_id"], items)
+        if job_id:
+            job_store.update_job(db, job_id, {"step": "creating"})
+        result = sap_sto_client.maintain(doc["ship_from_site_id"], doc["ship_to_site_id"], doc["ship_to_site_id"], items)
+    except SAPSTOError as e:
+        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"status": "sap_failed", "error_message": str(e)}})
+        raise
+
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
+        "status": "created_in_sap",
+        "error_message": None,
+        "sap_order_id": result["id"],
+        "sap_order_uuid": result["uuid"],
+        "gi_status": "awaiting_delivery",
+    }})
+    return {"sap_order_id": result["id"], "sap_order_uuid": result["uuid"]}
+
+
+def try_post_goods_issue(db, sap_outbound_delivery_client, sto_id: str) -> str:
+    """One poll attempt: looks for the Outbound Delivery Request Item SAP
+    has produced from this STO's Customer Requirement (see
+    sap_outbound_delivery_client.py docstring for the safe UUID-based
+    match) and, if found and still open, posts the Goods Issue on it.
+    Returns "waiting" (SAP hasn't produced it yet - caller should poll
+    again later), "posted" (done), or raises SAPOutboundDeliveryError on
+    a real SAP-side failure. Mutates the STO doc's `gi_status` fields."""
+    doc = db[STO_COLLECTION].find_one({"_id": sto_id})
+    if not doc:
+        raise StockTransferValidationError(f"Stock Transfer Order {sto_id} not found.")
+    if doc.get("gi_status") == "posted":
+        return "posted"
+
+    delivery_item = sap_outbound_delivery_client.find_delivery_request_item(doc["sap_order_uuid"])
+    if not delivery_item:
+        return "waiting"
+    # OrderFulfilmentProcessingStatusCode: 1=Not Started, 2=In Process,
+    # 3=Finished - only post Goods Issue on one that isn't already done
+    # (e.g. a retry after a transient error on our own earlier attempt).
+    if delivery_item.get("order_fulfilment_status") == "3":
+        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
+            "gi_status": "posted", "gi_error": None,
+            "outbound_delivery_object_id": delivery_item["object_id"],
+        }})
+        return "posted"
+
+    try:
+        sap_outbound_delivery_client.post_goods_issue(delivery_item["object_id"])
+    except SAPOutboundDeliveryError as e:
+        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
+            "gi_status": "failed", "gi_error": str(e),
+            "outbound_delivery_object_id": delivery_item["object_id"],
+        }})
+        raise
+
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
+        "gi_status": "posted", "gi_error": None,
+        "outbound_delivery_object_id": delivery_item["object_id"],
+    }})
+    return "posted"
+
+
+def mark_goods_issue_timed_out(db, sto_id: str, note: str) -> None:
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_status": "not_found_timeout", "gi_error": note}})
 
 
 def list_stock_transfer_orders(db, limit: int = 100) -> list:

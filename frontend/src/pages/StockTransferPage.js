@@ -9,6 +9,7 @@ import {
   ArrowRight,
   WarningCircle,
   CheckCircle,
+  CircleNotch,
   Robot,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
@@ -24,7 +25,31 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
 const formatQty = (v) => (v == null ? "—" : Number(v).toLocaleString("en-IN", { maximumFractionDigits: 3 }));
+const formatSapId = (id) => (id ? id.replace(/^0+(?=\d)/, "") : id);
+const cleanSapMessage = (msg) => (msg ? msg.replace(/\s{2,}/g, " ").trim() : msg);
+const parseGiError = (raw) => {
+  if (!raw) return null;
+  const jsonMatch = raw.match(/\{.*\}/s);
+  if (jsonMatch) {
+    try {
+      const value = JSON.parse(jsonMatch[0])?.error?.message?.value;
+      if (value) return value.split("::").filter(Boolean).join(" — ");
+    } catch { /* fall through to raw cleanup below */ }
+  }
+  return cleanSapMessage(raw);
+};
 const todayISO = () => new Date().toISOString().slice(0, 10);
+
+// Real (not simulated) steps this app's live SAP write actually goes
+// through today - drives the progress bar in the confirm dialog. Goods
+// Issue / Outbound Delivery are NOT here yet (needs 2 more SAP services
+// Basis hasn't exposed - see stock_transfer_service.py) - add steps here
+// once that's wired in, same job-polling mechanism will just work.
+const STO_STEPS = [
+  { key: "validate", label: "Validate order" },
+  { key: "check", label: "SAP availability & data check" },
+  { key: "create", label: "Create in SAP" },
+];
 
 // One selected line item. Every field the SAP ByDesign reference screen
 // shows per-line (Source Warehouse, Available Qty, Ship-from Site,
@@ -56,6 +81,17 @@ export default function StockTransferPage() {
   const [shipToLocationId, setShipToLocationId] = useState("");
   const [shipToLocationOptions, setShipToLocationOptions] = useState([]);
   const [requestedDeliveryDate, setRequestedDeliveryDate] = useState("");
+  // GST / E-way bill compliance fields (Aug 2026, user's explicit ask) -
+  // mandatory before an order can be submitted. NOT yet pushed to SAP -
+  // Basis needs to expose a write path for these custom fields on the
+  // Stock Transfer Delivery document first (see stock_transfer_service.py
+  // module docstring) - captured + enforced here regardless, ready to
+  // push the moment that's available.
+  const [transportationMode, setTransportationMode] = useState("By Road");
+  const [vehicleNo, setVehicleNo] = useState("");
+  const [placeOfSupply, setPlaceOfSupply] = useState("");
+  const [grNo, setGrNo] = useState("");
+  const [dateOfSupply, setDateOfSupply] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState(null);
 
@@ -66,6 +102,17 @@ export default function StockTransferPage() {
   const [recentOrders, setRecentOrders] = useState([]);
   const [loadingRecent, setLoadingRecent] = useState(true);
   const [selectedOrder, setSelectedOrder] = useState(null);
+
+  // 2x-safety confirmation before the real, irreversible live SAP write
+  // (user's explicit ask, Aug 2026): clicking "Create" first opens a
+  // summary dialog - nothing is submitted until the user explicitly
+  // confirms a SECOND time inside that dialog. The dialog then shows a
+  // real (not simulated) step-by-step progress bar driven by the
+  // background job's own `step` field.
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const [sapSubmitPhase, setSapSubmitPhase] = useState(null); // null | "submitting" | "done" | "failed"
+  const [sapSubmitMessage, setSapSubmitMessage] = useState(null);
+  const [stepStatuses, setStepStatuses] = useState({}); // { [stepKey]: "pending" | "active" | "done" | "failed" }
 
   const shipFromSiteId = items.find((i) => i.ship_from_site_id)?.ship_from_site_id || "";
 
@@ -223,19 +270,85 @@ export default function StockTransferPage() {
     if (!shipToLocationId) return "Ship-to Location is required.";
     if (!requestedDeliveryDate) return "Requested Delivery Date is required.";
     if (requestedDeliveryDate < todayISO()) return "Requested Delivery Date cannot be earlier than today.";
+    if (!transportationMode) return "Transportation Mode is required.";
+    if (!vehicleNo.trim()) return "Vehicle No. is required.";
+    if (!placeOfSupply.trim()) return "Place Of Supply is required.";
+    if (!grNo.trim()) return "G.R No. is required.";
+    if (!dateOfSupply) return "Date Of Supply is required.";
     return null;
   };
 
-  const createOrder = async () => {
+  const openConfirmDialog = () => {
     const validationError = runValidation();
     setFormError(validationError);
     if (validationError) { toast.error(validationError); return; }
+    setShowConfirmDialog(true);
+  };
+
+  const applyJobStepStatuses = (job) => {
+    setStepStatuses((prev) => {
+      if (job.status === "done") return { ...prev, check: "done", create: "done" };
+      if (job.status === "failed") {
+        if (job.step === "creating") return { ...prev, check: "done", create: "failed" };
+        return { ...prev, check: "failed", create: "pending" };
+      }
+      if (job.step === "creating") return { ...prev, check: "done", create: "active" };
+      return { ...prev, check: "active", create: "pending" };
+    });
+  };
+
+  const pollSapJob = (jobId) => {
+    const start = Date.now();
+    const tick = async () => {
+      try {
+        const { data } = await axios.get(`${API}/stock-transfer/orders/sap-status/${jobId}`);
+        applyJobStepStatuses(data);
+        if (data.status === "done") {
+          setSapSubmitPhase("done");
+          setSapSubmitMessage(`Created in SAP as ${formatSapId(data.result?.sap_order_id) || "—"}.`);
+          toast.success(`Stock Transfer Order created in SAP (${formatSapId(data.result?.sap_order_id) || "—"}).`);
+          setItems([]);
+          setShipToSiteId(""); setShipToLocationId(""); setRequestedDeliveryDate(""); setFormError(null);
+          setVehicleNo(""); setPlaceOfSupply(""); setGrNo(""); setDateOfSupply(""); setTransportationMode("By Road");
+          loadRecentOrders();
+          return;
+        }
+        if (data.status === "failed") {
+          setSapSubmitPhase("failed");
+          setSapSubmitMessage(cleanSapMessage(data.error) || "SAP rejected this order.");
+          toast.error(cleanSapMessage(data.error) || "SAP rejected this Stock Transfer Order.");
+          loadRecentOrders();
+          return;
+        }
+        if (Date.now() - start > 3 * 60 * 1000) {
+          setSapSubmitPhase("failed");
+          setSapSubmitMessage("Still waiting on SAP after 3 minutes - check the order's row/detail view shortly.");
+          loadRecentOrders();
+          return;
+        }
+        setTimeout(tick, 3000);
+      } catch {
+        setTimeout(tick, 3000);
+      }
+    };
+    tick();
+  };
+
+  const confirmAndSubmit = async () => {
     setSubmitting(true);
+    setSapSubmitPhase("submitting");
+    setSapSubmitMessage(null);
+    setStepStatuses({ validate: "active", check: "pending", create: "pending" });
     try {
       const payload = {
         ship_to_site_id: shipToSiteId,
         ship_to_location_id: shipToLocationId,
         requested_delivery_date: requestedDeliveryDate,
+        transportation_mode: transportationMode,
+        vehicle_no: vehicleNo.trim(),
+        place_of_supply: placeOfSupply.trim(),
+        gr_no: grNo.trim(),
+        date_of_supply: dateOfSupply,
         items: items.map((i) => ({
           product_id: i.product_id,
           source_warehouse_id: i.source_warehouse_id,
@@ -243,14 +356,16 @@ export default function StockTransferPage() {
         })),
       };
       const { data } = await axios.post(`${API}/stock-transfer/orders`, payload);
-      toast.success(`Stock Transfer Order ${data.sto_id} created (pending SAP write).`);
-      setItems([]);
-      setShipToSiteId(""); setShipToLocationId(""); setRequestedDeliveryDate(""); setFormError(null);
+      setStepStatuses({ validate: "done", check: "active", create: "pending" });
+      toast.message(`Stock Transfer Order ${data.sto_id} saved - submitting live to SAP...`);
       loadRecentOrders();
+      if (data.sap_job_id) pollSapJob(data.sap_job_id);
     } catch (e) {
       const msg = e?.response?.data?.detail || "Could not create the Stock Transfer Order.";
       setFormError(msg);
       toast.error(msg);
+      setSapSubmitPhase(null);
+      setStepStatuses({ validate: "failed", check: "pending", create: "pending" });
     } finally {
       setSubmitting(false);
     }
@@ -303,7 +418,7 @@ export default function StockTransferPage() {
       <main className="flex-1 overflow-auto max-w-[1400px] w-full mx-auto px-6 py-6 space-y-4">
         <div>
           <h1 className="font-heading text-xl font-bold text-[#1D2939]">Inter-Plant Stock Transfer</h1>
-          <p className="text-sm text-[#667085] mt-0.5">Create a Stock Transfer Order to move inventory between sites. Not yet writing live to SAP (pending Basis activation) - orders are saved here as "Pending SAP".</p>
+          <p className="text-sm text-[#667085] mt-0.5">Create a Stock Transfer Order to move inventory between sites - submitted live to SAP immediately after you confirm.</p>
         </div>
 
         {/* AI natural-language entry (test feature) */}
@@ -493,14 +608,45 @@ export default function StockTransferPage() {
           </div>
         </div>
 
+        {/* GST / E-way bill compliance fields (Aug 2026, user's explicit
+            ask) - mandatory before the order can move forward, even
+            though pushing these into SAP itself is pending Basis. */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 md:grid-cols-5 gap-3">
+          <div>
+            <Label className="text-xs font-bold text-[#344054]">Transportation Mode*</Label>
+            <Select value={transportationMode} onValueChange={setTransportationMode}>
+              <SelectTrigger data-testid="stock-transfer-transportation-mode-select"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {["By Road", "By Rail", "By Air", "By Sea"].map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-xs font-bold text-[#344054]">Vehicle No.*</Label>
+            <Input value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value.toUpperCase())} placeholder="e.g. UP85ET2398" data-testid="stock-transfer-vehicle-no-input" />
+          </div>
+          <div>
+            <Label className="text-xs font-bold text-[#344054]">Place Of Supply*</Label>
+            <Input value={placeOfSupply} onChange={(e) => setPlaceOfSupply(e.target.value)} placeholder="e.g. Uttar Pradesh" data-testid="stock-transfer-place-of-supply-input" />
+          </div>
+          <div>
+            <Label className="text-xs font-bold text-[#344054]">G.R No.*</Label>
+            <Input value={grNo} onChange={(e) => setGrNo(e.target.value)} placeholder="e.g. 6839" data-testid="stock-transfer-gr-no-input" />
+          </div>
+          <div>
+            <Label className="text-xs font-bold text-[#344054]">Date Of Supply*</Label>
+            <Input type="date" value={dateOfSupply} onChange={(e) => setDateOfSupply(e.target.value)} data-testid="stock-transfer-date-of-supply-input" />
+          </div>
+        </div>
+
         {formError && (
           <div className="bg-[#FEF3F2] border border-[#FDA29B] rounded-sm p-3 text-sm text-[#912018] flex items-center gap-2" data-testid="stock-transfer-form-error">
             <WarningCircle size={16} /> {formError}
           </div>
         )}
 
-        <Button onClick={createOrder} disabled={submitting} className="w-full sm:w-auto" data-testid="stock-transfer-create-button">
-          {submitting ? "Creating..." : "Create Stock Transfer Order"} <ArrowRight size={14} className="ml-1.5" />
+        <Button onClick={openConfirmDialog} disabled={submitting} className="w-full sm:w-auto" data-testid="stock-transfer-create-button">
+          Review &amp; Create Stock Transfer Order <ArrowRight size={14} className="ml-1.5" />
         </Button>
 
         {/* Recent orders */}
@@ -516,7 +662,7 @@ export default function StockTransferPage() {
             <table className="w-full text-[12px] border-collapse min-w-[900px]" data-testid="stock-transfer-recent-table">
               <thead>
                 <tr>
-                  {["STO ID", "Created", "By", "Ship-from", "Ship-to", "Location", "Items", "Delivery Date", "Status"].map((h) => (
+                  {["STO ID", "Created", "By", "Ship-from", "Ship-to", "Location", "Items", "Delivery Date", "SAP Order ID", "Status", "Goods Issue"].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-[11px] font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -528,6 +674,15 @@ export default function StockTransferPage() {
                     : o.status === "created_in_sap"
                     ? { label: "Created in SAP", className: "bg-[#ECFDF3] text-[#027A48]" }
                     : { label: "Pending SAP", className: "bg-[#FEF0C7] text-[#93370D]" };
+                  const giBadge = o.gi_status === "posted"
+                    ? { label: "GI Posted", className: "bg-[#ECFDF3] text-[#027A48]" }
+                    : o.gi_status === "failed"
+                    ? { label: "GI Failed", className: "bg-[#FEF3F2] text-[#B42318]" }
+                    : o.gi_status === "not_found_timeout"
+                    ? { label: "GI Pending (20min+)", className: "bg-[#FEF0C7] text-[#93370D]" }
+                    : o.gi_status === "awaiting_delivery"
+                    ? { label: "Awaiting Delivery", className: "bg-[#FEF0C7] text-[#93370D]" }
+                    : null;
                   return (
                     <tr
                       key={o.sto_id}
@@ -543,8 +698,12 @@ export default function StockTransferPage() {
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{o.ship_to_location_name || o.ship_to_location_id}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{o.items?.length || 0}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{o.requested_delivery_date}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono" data-testid={`stock-transfer-recent-sap-id-${o.sto_id}`}>{formatSapId(o.sap_order_id) || "—"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">
                         <span className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold ${badge.className}`}>{badge.label}</span>
+                      </td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5">
+                        {giBadge ? <span className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold ${giBadge.className}`}>{giBadge.label}</span> : <span className="text-[#98A2B3]">—</span>}
                       </td>
                     </tr>
                   );
@@ -555,8 +714,101 @@ export default function StockTransferPage() {
         </div>
       </main>
 
+      {/* 2x-safety confirmation before the real, irreversible live SAP
+          write (user's explicit ask, Aug 2026) - clicking "Review &
+          Create" above only opens this summary; nothing is submitted to
+          SAP until "Confirm & Submit to SAP" is explicitly clicked here. */}
+      <Dialog open={showConfirmDialog} onOpenChange={(open) => { if (!submitting) { setShowConfirmDialog(open); if (!open) { setSapSubmitPhase(null); setSapSubmitMessage(null); setStepStatuses({}); } } }}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto" data-testid="stock-transfer-confirm-dialog">
+          <DialogHeader>
+            <DialogTitle>Confirm Stock Transfer Order</DialogTitle>
+            <DialogDescription>
+              This will be written LIVE to SAP immediately - it cannot be undone from this app. Please review carefully.
+            </DialogDescription>
+          </DialogHeader>
+
+          {sapSubmitPhase ? (
+            <div className="space-y-3" data-testid="stock-transfer-sap-submit-status">
+              <ol className="space-y-2.5">
+                {STO_STEPS.map((step) => {
+                  const state = step.key === "validate" ? (stepStatuses.validate || "pending") : (stepStatuses[step.key] || "pending");
+                  return (
+                    <li key={step.key} className="flex items-center gap-2.5 text-sm" data-testid={`stock-transfer-step-${step.key}`} data-step-state={state}>
+                      {state === "done" && <CheckCircle size={18} weight="fill" className="text-[#12B76A] shrink-0" />}
+                      {state === "active" && <CircleNotch size={18} className="text-[#7A5AF8] shrink-0 animate-spin" />}
+                      {state === "failed" && <WarningCircle size={18} weight="fill" className="text-[#F04438] shrink-0" />}
+                      {state === "pending" && <span className="w-[18px] h-[18px] rounded-full border-2 border-[#D0D5DD] shrink-0" />}
+                      <span className={state === "pending" ? "text-[#98A2B3]" : state === "failed" ? "text-[#912018] font-medium" : "text-[#344054] font-medium"}>{step.label}</span>
+                    </li>
+                  );
+                })}
+              </ol>
+              {sapSubmitPhase !== "submitting" && (
+                <div
+                  className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
+                    sapSubmitPhase === "done" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
+                    : "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
+                  }`}
+                  data-testid="stock-transfer-sap-submit-result"
+                >
+                  {sapSubmitPhase === "done" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : <WarningCircle size={16} className="mt-0.5 shrink-0" />}
+                  <p>{sapSubmitMessage}</p>
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
+                <div><Label className="text-xs font-bold text-[#344054]">Ship-from Site</Label><p data-testid="stock-transfer-confirm-ship-from">{shipFromSiteId || "—"}</p></div>
+                <div><Label className="text-xs font-bold text-[#344054]">Ship-to Site</Label><p data-testid="stock-transfer-confirm-ship-to">{shipToSiteId}</p></div>
+                <div><Label className="text-xs font-bold text-[#344054]">Ship-to Location</Label><p>{shipToLocationOptions.find((w) => w.warehouse_id === shipToLocationId)?.warehouse_name || shipToLocationId}</p></div>
+                <div><Label className="text-xs font-bold text-[#344054]">Delivery Priority</Label><p>Immediate</p></div>
+                <div><Label className="text-xs font-bold text-[#344054]">Requested Delivery Date</Label><p>{requestedDeliveryDate}</p></div>
+                <div><Label className="text-xs font-bold text-[#344054]">Transportation Mode</Label><p>{transportationMode}</p></div>
+                <div><Label className="text-xs font-bold text-[#344054]">Vehicle No.</Label><p>{vehicleNo}</p></div>
+                <div><Label className="text-xs font-bold text-[#344054]">Place Of Supply</Label><p>{placeOfSupply}</p></div>
+                <div><Label className="text-xs font-bold text-[#344054]">G.R No.</Label><p>{grNo}</p></div>
+                <div><Label className="text-xs font-bold text-[#344054]">Date Of Supply</Label><p>{dateOfSupply}</p></div>
+              </div>
+              <div className="border border-[#EAECF0] rounded-sm overflow-auto">
+                <table className="w-full text-xs border-collapse" data-testid="stock-transfer-confirm-items-table">
+                  <thead>
+                    <tr>
+                      {["Product", "Source Warehouse", "Requested Qty"].map((h) => (
+                        <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-[11px] font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((i) => (
+                      <tr key={i.key}>
+                        <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium">{i.product_id}</td>
+                        <td className="border border-[#D0D5DD] px-2 py-1.5">{i.source_warehouse_id}</td>
+                        <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(Number(i.requested_qty))} {i.unit_of_measure}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex justify-end gap-2 pt-1">
+                <Button type="button" variant="outline" onClick={() => setShowConfirmDialog(false)} data-testid="stock-transfer-confirm-cancel-button">Cancel, go back</Button>
+                <Button type="button" onClick={confirmAndSubmit} disabled={submitting} data-testid="stock-transfer-confirm-submit-button">
+                  {submitting ? "Submitting..." : "Confirm & Submit to SAP"}
+                </Button>
+              </div>
+            </>
+          )}
+
+          {sapSubmitPhase && sapSubmitPhase !== "submitting" && (
+            <div className="flex justify-end pt-1">
+              <Button type="button" onClick={() => { setShowConfirmDialog(false); setSapSubmitPhase(null); setSapSubmitMessage(null); setStepStatuses({}); }} data-testid="stock-transfer-confirm-close-button">Close</Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
       {/* Detail modal (Aug 2026, user's explicit ask) - clicking any row
-          above opens the full breakdown; any future SAP-write failure's
+          above opens the full breakdown; any SAP-write failure's
           error_message is surfaced here verbatim, human-readable, never a
           raw stack trace. */}
       <Dialog open={!!selectedOrder} onOpenChange={(open) => !open && setSelectedOrder(null)}>
@@ -574,13 +826,46 @@ export default function StockTransferPage() {
                 <div className="bg-[#FEF3F2] border border-[#FDA29B] rounded-sm p-3 text-sm text-[#912018] flex items-start gap-2" data-testid="stock-transfer-detail-error">
                   <WarningCircle size={16} className="mt-0.5 shrink-0" />
                   <div>
-                    <p className="font-bold">There is an issue with this order:</p>
-                    <p className="mt-0.5">{selectedOrder.error_message}</p>
+                    <p className="font-bold">SAP rejected this order:</p>
+                    <p className="mt-0.5">{cleanSapMessage(selectedOrder.error_message)}</p>
+                  </div>
+                </div>
+              ) : selectedOrder.status === "created_in_sap" ? (
+                <div className="bg-[#ECFDF3] border border-[#ABEFC6] rounded-sm p-3 text-sm text-[#027A48] flex items-start gap-2" data-testid="stock-transfer-detail-success">
+                  <CheckCircle size={16} className="mt-0.5 shrink-0" />
+                  <div>
+                    <p className="font-bold">Created in SAP.</p>
+                    <p className="mt-0.5">SAP Order ID: {formatSapId(selectedOrder.sap_order_id) || "—"}{selectedOrder.sap_order_uuid ? ` (UUID: ${selectedOrder.sap_order_uuid})` : ""}</p>
                   </div>
                 </div>
               ) : (
                 <div className="bg-[#FEF0C7] border border-[#FEDF89] rounded-sm p-3 text-sm text-[#93370D]" data-testid="stock-transfer-detail-no-error">
-                  No issues found. This order is saved locally as "Pending SAP" - it has not been written to SAP yet (pending Basis exposing the write service).
+                  Submitting to SAP now - refresh in a few seconds if this doesn't update.
+                </div>
+              )}
+
+              {selectedOrder.status === "created_in_sap" && (
+                <div
+                  className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
+                    selectedOrder.gi_status === "posted" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
+                    : selectedOrder.gi_status === "failed" ? "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
+                    : "bg-[#FEF0C7] border border-[#FEDF89] text-[#93370D]"
+                  }`}
+                  data-testid="stock-transfer-detail-gi-status"
+                >
+                  {selectedOrder.gi_status === "posted" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : selectedOrder.gi_status === "failed" ? <WarningCircle size={16} className="mt-0.5 shrink-0" /> : null}
+                  <div>
+                    <p className="font-bold">
+                      {selectedOrder.gi_status === "posted" ? "Goods Issue posted - delivery released."
+                        : selectedOrder.gi_status === "failed" ? "Goods Issue failed:"
+                        : selectedOrder.gi_status === "not_found_timeout" ? "Goods Issue still pending after 20 min - the order itself is unaffected."
+                        : "Goods Issue: waiting for SAP to schedule the delivery..."}
+                    </p>
+                    {selectedOrder.gi_status === "failed" && <p className="mt-0.5">{parseGiError(selectedOrder.gi_error) || "See logs."}</p>}
+                    {selectedOrder.outbound_delivery_object_id && (selectedOrder.gi_status === "posted" || selectedOrder.gi_status === "failed") && (
+                      <p className="mt-0.5 text-xs opacity-80">Outbound Delivery Request: {selectedOrder.outbound_delivery_object_id}</p>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -590,13 +875,18 @@ export default function StockTransferPage() {
                 <div><Label className="text-xs font-bold text-[#344054]">Ship-to Location</Label><p data-testid="stock-transfer-detail-ship-to-location">{selectedOrder.ship_to_location_name || selectedOrder.ship_to_location_id}</p></div>
                 <div><Label className="text-xs font-bold text-[#344054]">Delivery Priority</Label><p>{selectedOrder.delivery_priority}</p></div>
                 <div><Label className="text-xs font-bold text-[#344054]">Requested Delivery Date</Label><p>{selectedOrder.requested_delivery_date}</p></div>
+                <div><Label className="text-xs font-bold text-[#344054]">Transportation Mode</Label><p>{selectedOrder.transportation_mode || "—"}</p></div>
+                <div><Label className="text-xs font-bold text-[#344054]">Vehicle No.</Label><p>{selectedOrder.vehicle_no || "—"}</p></div>
+                <div><Label className="text-xs font-bold text-[#344054]">Place Of Supply</Label><p>{selectedOrder.place_of_supply || "—"}</p></div>
+                <div><Label className="text-xs font-bold text-[#344054]">G.R No.</Label><p>{selectedOrder.gr_no || "—"}</p></div>
+                <div><Label className="text-xs font-bold text-[#344054]">Date Of Supply</Label><p>{selectedOrder.date_of_supply || "—"}</p></div>
               </div>
 
               <div className="border border-[#EAECF0] rounded-sm overflow-auto">
                 <table className="w-full text-xs border-collapse" data-testid="stock-transfer-detail-items-table">
                   <thead>
                     <tr>
-                      {["Line", "Product", "Description", "Source Warehouse", "Available Qty", "Requested Qty", "Status"].map((h) => (
+                      {["Line", "Product", "Description", "Source Warehouse", "Available Qty", "Requested Qty", "Stock Status"].map((h) => (
                         <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-[11px] font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
                       ))}
                     </tr>

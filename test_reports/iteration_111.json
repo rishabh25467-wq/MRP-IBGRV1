@@ -1,0 +1,35 @@
+{
+  "summary": "Frontend-only testing of the new live-SAP STO write feature on /inventory/inter-plant-transfer (auth via vms_session cookie, super_admin). Verified: (1) 2x-safety confirm dialog opens on 'Review & Create' with correct summary (ship-from P8 -> ship-to P1, location, date, 1-row items table) and NOTHING submitted at that point (progress bar not rendered); (2) 'Cancel, go back' closes the dialog with all form values intact (item row, qty=1, ship-from P8, ship-to P1, RAW MATERIAL GODOWN-P1, date 2026-08-25); (3) SUCCESS live path P27175 P8->P1: progress bar rendered with real step transitions validate(active)->validate(done)/check(active)->check(done)/create(active)->all done in ~8s, green banner 'Created in SAP as 00000000000000000000000000000030009', new row STO-000013 at top of Recent table with green 'Created in SAP' badge, detail modal shows green success banner with the real SAP Order ID + UUID; (4) FAILURE live path 014726-001 P4->P2: validate=done, check=FAILED (red), create stayed pending, red banner with verbatim SAP message 'The product 014726-001 in item 10 cannot be delivered from site . Check the sourcing-relevant master data.', row STO-000014 shows red 'Issue Found' badge, detail modal shows the same error verbatim in stock-transfer-detail-error and no success banner; (5) client-side validation blocks the dialog: no items -> 'Select at least one item.', past date -> 'Requested Delivery Date cannot be earlier than today.' - both shown in stock-transfer-form-error + toast, dialog did NOT open; (6) regression: product search/add, per-item warehouse picker (auto-fills ship-from), 'AI suggests source warehouse' hint, cascading ship-to site/location dropdowns, and AI Quick Entry parse->preview->Apply all render and work (LLM parsed 'transfer 2 of P27175 to P1 by tomorrow' correctly). No console errors. 2 real SAP writes were performed (1 real order 30009 created, 1 intentionally rejected).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Confirm dialog success banner + detail modal", "issue": "SAP Order ID is rendered raw with 35 leading zeros ('00000000000000000000000000000030009') instead of the human-readable '30009'. Same padded value shown in the success toast and in the detail modal's SAP Order ID line. Recommend stripping leading zeros for display.", "selector": "stock-transfer-sap-submit-result / stock-transfer-detail-success", "priority": "MEDIUM"},
+      {"component": "Detail modal (failed order)", "issue": "For the SAP-rejected order STO-000014 the line item Status column still reads 'Available' (stock-check status), which reads confusingly next to the red 'SAP rejected this order' banner.", "selector": "stock-transfer-detail-items-table", "priority": "LOW"}
+    ],
+    "integration_issues": [
+      {"flow": "STO submit -> SAP failure", "issue": "The form is cleared (items, ship-to, location, date reset) immediately after the local save, i.e. before the SAP check result is known. When SAP rejects the order the user has lost all inputs and must re-enter the whole order to retry. Consider retaining the form until the job reports success.", "affected_selectors": ["stock-transfer-line-items-table", "stock-transfer-sap-submit-result"]}
+    ],
+    "design_issues": [
+      {"screen": "Inter-Plant Stock Transfer", "issues": ["Ship-to Site validation ('same as Ship-from') is unreachable via the UI because the backend already excludes the ship-from site from the ship-to dropdown (P8 source -> only P1 offered) - the guard exists in runValidation() but cannot be triggered by a user; no defect, noted for coverage completeness.", "The SAP error text renders with an empty site token and a double space ('delivered from site . Check...') - verbatim from SAP, but could be normalised before display."]}
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_111.json"],
+  "action_items": [
+    "Trim leading zeros from the SAP Order ID before displaying it in the success banner, toast and detail modal",
+    "Consider not resetting the form until the SAP job reports success, so a SAP rejection can be retried without re-entry",
+    "Optionally suppress/relabel the line-item 'Available' status in the detail modal when the order was rejected by SAP"
+  ],
+  "critical_code_review_comments": [
+    "StockTransferPage.js is ~800 lines - consider splitting the confirm/progress dialog and detail modal into their own components.",
+    "pollSapJob() swallows all axios errors and retries forever until the 3-minute wall clock; a persistent 404/500 on the status endpoint would show only the generic timeout message - consider surfacing repeated poll failures.",
+    "The 3-minute timeout branch sets phase 'failed' with a neutral 'still waiting' message rendered in the red error style, which could be mistaken for a real SAP rejection."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (frontend-only request)", "frontend": "100% of requested flows passed (6/6), 3 cosmetic/UX issues found"},
+  "seed_data_creation": "Two real STOs created via the UI: STO-000013 (P27175, P8->P1, SUCCESS, real SAP order 30009) and STO-000014 (014726-001, P4->P2, intentional SAP rejection).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "vms_session cookie QAitTmO1RueOT8VCxztusg_qvJXswzxnxs846FR5Txg on sap-data-sync.preview.emergentagent.com (super_admin, valid to 2026-08-26)",
+  "context_for_next_testing_agent": "Warehouse dropdown option labels are 'P8 - RAW MATERIAL GODOWN-P8 (500)' format - do NOT match on 'P8-RM' (that short code only appears in the confirm dialog's items table). Ship-to dropdown excludes the ship-from site, so the same-site validation cannot be triggered from the UI. Live SAP combos with known outcome: P27175 P8->P1 = success (~8s), 014726-001 P4->P2 = SAP sourcing-master-data rejection at the 'check' step. Do not experiment with other product/site pairs - writes are irreversible against production SAP.",
+  "rca_of_the_issue": "No functional defects. The padded SAP Order ID comes straight from SAP's ObjectID/ID field (35-char zero-padded) and is passed through to the UI without normalisation; the lost-form-state-on-failure issue is caused by confirmAndSubmit() clearing items/ship-to/date immediately after the POST succeeds locally, before the async SAP job resolves."
+}

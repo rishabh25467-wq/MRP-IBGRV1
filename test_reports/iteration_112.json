@@ -1,0 +1,31 @@
+{
+  "summary": "Frontend-only E2E test of the Inter-Plant STO page focused on the 2 new features: (1) 5 mandatory GST/E-way-bill fields (validation, confirm-dialog summary, persistence + detail-modal display), (2) background Goods Issue automation gi_status rendering. Also re-ran the live SAP success path (P27175 P8->P1 -> real SAP Order ID 30114, STO-000018) and the live SAP failure path (014726-001 P4->P2 -> real SAP sourcing-master-data rejection, STO-000019), plus regression checks (item search/add, AI Quick Entry, AI source-warehouse hint, Cancel keeps form state, past-date validation). Everything requested passed; only 1 minor cosmetic issue found (raw SAP JSON shown for gi_status=failed inside the green success banner).",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "StockTransferPage detail modal - Goods Issue line", "issue": "When gi_status='failed' the raw SAP payload is dumped verbatim ('SAP rejected this - HTTP 500: {\"error\":{\"code\":\"ERROR\",\"message\":{\"lang\":\"en\",\"value\":\"Error during request release::...\"}}}') and it is rendered INSIDE the green 'Created in SAP' success banner. Contradicts the file's own comment ('human-readable, never a raw stack trace') and the green colour wrongly signals success for a failed Goods Issue. Reproduced on STO-000017 (gi_status=failed). Suggest parsing error.message.value / stripping the HTTP-status+JSON wrapper and rendering the GI line in amber/red when failed.", "selector": "[data-testid=\"stock-transfer-detail-gi-status\"]", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Inter-Plant Stock Transfer form", "issues": ["Requested Delivery Date and Date Of Supply use the native browser <input type=date> picker rather than the shadcn calendar - consistent with the rest of this app, flagged for awareness only", "Date Of Supply has no min/max constraint (a 1990 date is accepted) - only presence is validated"]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "OPTIONAL (cosmetic): humanise gi_status='failed' text (parse SAP's error.message.value, drop the 'HTTP 500: {json}' wrapper) and render the GI line in a red/amber style instead of inside the green success banner."
+  ],
+  "critical_code_review_comments": [
+    "runValidation() correctly enforces all 5 new GST fields in the exact order Transportation Mode -> Vehicle No. -> Place Of Supply -> G.R No. -> Date Of Supply; confirmAndSubmit() sends all 5 trimmed in the payload - verified live end-to-end (values persisted and echoed back by GET /api/stock-transfer/orders).",
+    "Success reset in pollSapJob() clears all 5 new fields plus transportationMode back to 'By Road' - verified. Failure path intentionally keeps them (good for retry).",
+    "GET /api/stock-transfer/orders response contains no MongoDB _id - verified.",
+    "The 5 GST field values in the confirm dialog summary have no individual data-testid (only asserted via dialog text). Low priority: add data-testids if these need finer assertions later."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "not tested (frontend-only request; supporting APIs exercised indirectly, all 200)", "frontend": "100% of requested scenarios passed (1 minor cosmetic issue)" },
+  "seed_data_creation": "Live production SAP writes performed exactly as instructed: STO-000018 (P27175, P8-RM -> P1 / RAW MATERIAL GODOWN-P1, qty 1) -> SAP Order ID 30114, UUID fa163e47-9469-1fe1-a7f7-8154aabce72c, gi_status later became 'posted'. STO-000019 (014726-001, P4-RM -> P2 / FINISH GOODS GODOWN-P2, qty 1) -> expected SAP rejection. No other SAP writes attempted.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "vms_session cookie QAitTmO1RueOT8VCxztusg_qvJXswzxnxs846FR5Txg (super_admin, Rishabh Maheshwari) - worked as documented.",
+  "context_for_next_testing_agent": "Detailed results: (A) With the 5 GST fields empty, 'Review & Create' showed data-testid=stock-transfer-form-error 'Vehicle No. is required.' and the confirm dialog did NOT open; filling them one-by-one produced 'Place Of Supply is required.' -> 'G.R No. is required.' -> 'Date Of Supply is required.' - dialog stayed closed each time. (B) With all 5 filled the confirm dialog opened and showed By Road / UP85ET2398 / Uttar Pradesh / 6839 / 2026-08-24. (C) Live submit: steps validate=done, check=done, create=done, green banner 'Created in SAP as 30114.'; row STO-000018 shows green 'Created in SAP'; detail modal shows all 5 GST values and gi status - at first 'Goods Issue: waiting for SAP to schedule the delivery...', re-checked ~1 min later it read 'Goods Issue: posted - delivery released' (background GI automation confirmed working end-to-end from the UI). (D) Failure path: check step = failed, create = pending, red banner with SAP's real text 'The product 014726-001 in item 10 cannot be delivered from site . Check the sourcing-relevant master data.', row badge red 'Issue Found', detail modal shows the same error + the 5 GST values, and no gi-status element (correct, order never reached SAP). (E) Regressions OK: product search/add, AI source-warehouse hint ('Suggested: P1 / SEMI FINISH GODOWN-P1'), AI Quick Entry parse ('transfer 5 of P27175 to P1 by tomorrow' -> Product P27175, Qty 5, Ship-to P1, Delivery 2026-08-25 via openai/gpt-5.4-mini), Cancel keeps all form values incl. the 5 GST fields, past delivery date blocked. No console errors observed. DO NOT experiment with other product/site combos - live production SAP.",
+  "rca_of_the_issue": "gi_status='failed' branch in StockTransferPage.js (~line 818) passes the backend's raw gi_error string (which is the verbatim OData HTTP body) through cleanSapMessage(), which only collapses whitespace - so the JSON envelope survives; and the whole GI line lives inside the green stock-transfer-detail-success container, so a failed Goods Issue is presented on a success-coloured background."
+}

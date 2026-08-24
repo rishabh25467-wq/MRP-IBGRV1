@@ -25,6 +25,8 @@ from sap_material_create_client import SAPMaterialCreateClient, SAPMaterialCreat
 from sap_production_lot_client import SAPProductionLotClient, SAPProductionLotError, SAPProductionLotAuthError
 from sap_wip_clearing_client import SAPWipClearingClient, SAPWipClearingError
 from sap_production_proposal_client import SAPProductionProposalClient, SAPProductionProposalError
+from sap_sto_client import SAPSTOClient
+from sap_outbound_delivery_client import SAPOutboundDeliveryClient, SAPOutboundDeliveryError
 from sap_production_model_client import SAPProductionModelClient, SAPProductionModelError, SAPProductionModelBomClient
 from sap_goods_movement_client import SAPGoodsMovementClient, SAPGoodsMovementError
 from sap_production_order_release_client import SAPProductionOrderReleaseClient, SAPProductionOrderReleaseError
@@ -163,6 +165,19 @@ sap_production_proposal_client = SAPProductionProposalClient(
     endpoint=os.environ['SAP_SOAP_PRODUCTION_PROPOSAL_ENDPOINT'],
     username=os.environ['SAP_SOAP_USERNAME'],
     password=os.environ['SAP_SOAP_PASSWORD'],
+)
+
+sap_sto_client = SAPSTOClient(
+    endpoint=os.environ['SAP_SOAP_STO_ENDPOINT'],
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
+)
+
+sap_outbound_delivery_client = SAPOutboundDeliveryClient(
+    endpoint=os.environ['BYD_ODATA_BASE'],
+    username=os.environ['SAP_USERNAME'],
+    password=os.environ['SAP_PASSWORD'],
+    vhost=os.environ['BYD_ODATA_VHOST'],
 )
 
 sap_production_order_release_client = SAPProductionOrderReleaseClient(
@@ -2332,6 +2347,9 @@ CREATE_RELEASE_POLL_INTERVAL_SECONDS = 4  # tightened from 10s so a newly-create
 CREATE_RELEASE_RETRIGGER_EVERY_SECONDS = 90  # re-fire the Release action periodically in case the first call needs a nudge
 SAP_SETTLE_DELAY_SECONDS = 3  # tightened from 8s - still gives SAP a beat to commit before the next read, without wasting time
 
+GOODS_ISSUE_MAX_WAIT_SECONDS = 20 * 60  # SAP's own scheduling converts Customer Requirement -> Outbound Delivery Request; timing not in our control
+GOODS_ISSUE_POLL_INTERVAL_SECONDS = 20  # a much slower batch process than Order/Lot creation - no need to hammer it every few seconds
+
 # Phrases SAP uses when a Proposal is rejected for a genuine data/input
 # problem (wrong Unit of Measure, bad quantity literal, unknown material,
 # etc) rather than a transient network/session hiccup - retrying the exact
@@ -4239,9 +4257,9 @@ async def trigger_full_sync():
 
 # ---------------------------------------------------------------------------
 # Inter-Plant Stock Transfer Order (Aug 2026) - see stock_transfer_service.py
-# module docstring: SAP's real write API ("ManageCustomerRequirementIn") is
-# not yet exposed on this tenant, so /orders below only validates + persists
-# locally as status "pending_sap" - no live SAP call happens here yet.
+# module docstring. /orders validates + persists locally first, then fires
+# a background job that writes it live to SAP ("ManageCustomerRequirementIn",
+# Check-then-Maintain) - wired in Aug 27 2026.
 # ---------------------------------------------------------------------------
 class StockTransferItemCreate(BaseModel):
     product_id: str
@@ -4253,6 +4271,15 @@ class StockTransferOrderCreate(BaseModel):
     ship_to_site_id: str
     ship_to_location_id: str
     requested_delivery_date: str
+    # GST / E-way bill compliance fields (Aug 2026, user's explicit ask) -
+    # mandatory, but NOT yet pushed to SAP - see stock_transfer_service.py
+    # module docstring (pending Basis exposing a write path for these
+    # custom fields on the Stock Transfer Delivery document).
+    transportation_mode: str
+    vehicle_no: str
+    place_of_supply: str
+    gr_no: str
+    date_of_supply: str
     items: List[StockTransferItemCreate]
 
 
@@ -4297,7 +4324,67 @@ async def post_stock_transfer_order(payload: StockTransferOrderCreate, request: 
         doc = await asyncio.to_thread(stock_transfer_service.create_stock_transfer_order, db, payload.dict(), actor)
     except stock_transfer_service.StockTransferValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return _sto_to_response(doc)
+    # Live SAP write (Aug 27 2026) - Check first (always-on safety net,
+    # not a togglable dry-run - user's explicit ask), then the real
+    # Maintain write, as a background job so this endpoint still responds
+    # instantly regardless of SAP's latency (same pattern as every other
+    # SAP write in this app).
+    sap_job_id = str(uuid.uuid4())
+    job_store.create_job(db, sap_job_id, {"status": "running", "step": "checking", "sto_id": doc["_id"]})
+    asyncio.create_task(_run_submit_sto_to_sap_job(sap_job_id, doc["_id"]))
+    response = _sto_to_response(doc)
+    response["sap_job_id"] = sap_job_id
+    return response
+
+
+async def _run_submit_sto_to_sap_job(job_id: str, sto_id: str):
+    try:
+        result = await asyncio.to_thread(stock_transfer_service.submit_order_to_sap, db, sap_sto_client, sto_id, job_id)
+        job_store.update_job(db, job_id, {"status": "done", "result": result, "error": None})
+        # Goods Issue automation (Aug 27 2026, user's explicit ask - "we
+        # need full") - fully independent, no job_id exposed to the
+        # frontend's confirm-dialog progress bar at all (that dialog only
+        # covers the fast Validate/Check/Create steps above and closes
+        # right after). This can take much longer (SAP's own scheduling
+        # decides when the Customer Requirement becomes an Outbound
+        # Delivery Request) - progress is only visible via the STO doc's
+        # own gi_status field, same as any other field the Recent Orders
+        # table/detail modal already read.
+        asyncio.create_task(_run_goods_issue_job(sto_id))
+    except Exception as e:
+        logger.error(f"Stock Transfer Order {sto_id}: live SAP submit job {job_id} failed: {e}")
+        job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
+
+
+async def _run_goods_issue_job(sto_id: str):
+    elapsed_start = time.monotonic()
+    while time.monotonic() - elapsed_start <= GOODS_ISSUE_MAX_WAIT_SECONDS:
+        try:
+            outcome = await asyncio.to_thread(stock_transfer_service.try_post_goods_issue, db, sap_outbound_delivery_client, sto_id)
+            if outcome == "posted":
+                return
+        except SAPOutboundDeliveryError as e:
+            # A real SAP-side rejection of the Goods Issue itself (as
+            # opposed to "not created yet") - stop polling, this needs a
+            # human to look at it (see gi_status/gi_error on the STO doc).
+            logger.error(f"Stock Transfer Order {sto_id}: Goods Issue post failed: {e}")
+            return
+        except Exception as e:
+            logger.warning(f"Stock Transfer Order {sto_id}: Goods Issue poll attempt hit a transient error, will retry: {e}")
+        await asyncio.sleep(GOODS_ISSUE_POLL_INTERVAL_SECONDS)
+    await asyncio.to_thread(
+        stock_transfer_service.mark_goods_issue_timed_out, db, sto_id,
+        "SAP hasn't produced the Outbound Delivery Request for this order after 20 minutes of automatic checks. "
+        "The Stock Transfer Order itself is still valid in SAP - this only affects automatic Goods Issue posting.",
+    )
+
+
+@api_router.get("/stock-transfer/orders/sap-status/{job_id}")
+async def get_stock_transfer_sap_status(job_id: str):
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return job
 
 
 @api_router.get("/stock-transfer/orders")
