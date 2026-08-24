@@ -734,7 +734,7 @@ export default function StoreApprovalPage() {
                       <td className="border border-[#D0D5DD] px-2 py-1.5 whitespace-nowrap">
                         {ageParts(row.requested_at, row.when)?.label || "\u2014"}
                       </td>
-                      <td className="border border-[#D0D5DD] px-2 py-1.5 whitespace-nowrap">{row.when ? new Date(row.when).toLocaleString("en-IN") : "\u2014"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.when ? new Date(row.when).toLocaleString("en-IN") : "\u2014"}</td>
                     </tr>
                   ))}
                   {movementRows.length === 0 && (

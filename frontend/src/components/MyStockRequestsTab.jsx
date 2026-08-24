@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/components/ui/sonner";
+import { useAuth } from "@/contexts/AuthContext";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -47,25 +48,35 @@ const SortTh = ({ label, field, sortField, sortDir, onSort }) => (
 );
 
 export const MyStockRequestsTab = ({ actorName }) => {
+  const { user } = useAuth();
+  // Aug 2026, user's explicit ask: admin/super_admin should see EVERYONE's
+  // stock requests here (not just their own, since they're not really
+  // "requesters" in this tab's normal sense) with a Site filter to narrow
+  // it down - a plain "user" keeps the original "only what I created" view.
+  const isAdmin = user?.role === "admin" || user?.role === "super_admin";
   const [all, setAll] = useState([]);
   const [loading, setLoading] = useState(true);
   const [groupBy, setGroupBy] = useState("request");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [siteFilter, setSiteFilter] = useState("all");
+  const [knownSites, setKnownSites] = useState([]);
   const [sortField, setSortField] = useState("created_at");
   const [sortDir, setSortDir] = useState("desc");
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await axios.get(`${API}/store-requests/journal`, { params: { requester: actorName } });
+      const { data } = await axios.get(`${API}/store-requests/journal`, {
+        params: isAdmin ? {} : { requester: actorName },
+      });
       setAll(data.requests);
     } catch {
       toast.error("Failed to load your stock requests");
     } finally {
       setLoading(false);
     }
-  }, [actorName]);
+  }, [actorName, isAdmin]);
 
   useEffect(() => {
     load();
@@ -73,15 +84,24 @@ export const MyStockRequestsTab = ({ actorName }) => {
     return () => clearInterval(interval);
   }, [load]);
 
+  useEffect(() => {
+    if (!isAdmin) return;
+    axios.get(`${API}/store-requests/known-sites`).then(({ data }) => setKnownSites(data.sites || [])).catch(() => {});
+  }, [isAdmin]);
+
   const mine = useMemo(() => {
+    if (isAdmin) {
+      return siteFilter === "all" ? all : all.filter((r) => r.site_id === siteFilter);
+    }
     // Bug fix (Aug 2026): backend now already scopes this to `actorName`
     // via ?requester=, bypassing the store site-binding restriction that
     // was wrongly blanking this tab out for requesters with no bound
     // sites. Keep this client-side filter too as a harmless double-check.
     const name = actorName.trim().toLowerCase();
+
     if (!name) return [];
     return all.filter((r) => (r.requester || "").trim().toLowerCase() === name);
-  }, [all, actorName]);
+  }, [all, actorName, isAdmin, siteFilter]);
 
   const handleSort = (field) => {
     if (sortField === field) {
@@ -185,6 +205,20 @@ export const MyStockRequestsTab = ({ actorName }) => {
             </Select>
           </div>
         )}
+        {isAdmin && (
+          <div>
+            <Label className="text-xs font-bold text-[#344054]">Site</Label>
+            <Select value={siteFilter} onValueChange={setSiteFilter}>
+              <SelectTrigger className="w-32 bg-white" data-testid="myreq-site-filter-trigger"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all" data-testid="myreq-site-filter-all">All Sites</SelectItem>
+                {knownSites.map((s) => (
+                  <SelectItem key={s} value={s} data-testid={`myreq-site-filter-${s}`}>{s}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
         <Button variant="outline" onClick={load} data-testid="myreq-refresh-button">
           <ArrowClockwise size={14} className="mr-1.5" /> Refresh
         </Button>
@@ -195,7 +229,9 @@ export const MyStockRequestsTab = ({ actorName }) => {
         {loading ? (
           <p className="p-4 text-sm text-[#667085]">Loading...</p>
         ) : filtered.length === 0 ? (
-          <p className="p-4 text-sm text-[#667085]" data-testid="myreq-empty-state">No stock requests found for "{actorName}".</p>
+          <p className="p-4 text-sm text-[#667085]" data-testid="myreq-empty-state">
+            {isAdmin ? "No stock requests found." : `No stock requests found for "${actorName}".`}
+          </p>
         ) : groupBy === "request" ? (
           <table className="w-full text-xs border-collapse">
             <thead><tr>
