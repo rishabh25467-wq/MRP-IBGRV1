@@ -1,3 +1,13 @@
+## Session update (2026-08-24, continued 11) - HSN Code shown live on the Stock Transfer form
+
+- User's ask: show the live SAP HSN Code on the form itself as it populates (not just backend ERP sync).
+- **Backend**: `stock_transfer_service.get_product_stock_locations()` and `create_stock_transfer_order()` now take an optional `sap_hsn_client` and return/persist `hsn_code` per item (live SAP lookup, batched at order-creation time). `server.py`'s `/stock-transfer/inventory` GET and `/stock-transfer/orders` POST now pass the global `sap_hsn_client`.
+- **Frontend (`StockTransferPage.js`)**: line item table shows "HSN: 7318" (teal) or "HSN: Not maintained in SAP" (grey) under each product as soon as it's added to the form. Order detail modal + Recent Orders items table gained an "HSN Code" column.
+- **Tested**: direct python call to `get_product_stock_locations(db, "P27175", True, hsn_client)` confirmed `hsn_code: "7318"` returned (matches live SAP), backward-compat call without the client confirmed `hsn_code: None`. Frontend webpack compiled cleanly, no JSX errors. Self-tested (small UI+wiring change) - no testing_agent run.
+
+---
+
+
 ## Session update (2026-08-24, continued 10) - HSN Code: SOLVED, live, zero remaining Basis blocker
 
 - Prior blocker: `HSNCodeIndia` (Material BO) and `INHSNCode` (CustomerInvoice/APCI_CUSTOMER_INVOICE BO) are both PSM-blocked from custom OData services on this tenant - confirmed dead ends via extensive user-guided SAP UI exploration this session (custom BO service picker genuinely has no HSN field on either BO).

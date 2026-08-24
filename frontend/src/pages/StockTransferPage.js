@@ -65,6 +65,7 @@ const emptyLine = (product) => ({
   product_id: product.product_id,
   description: product.description,
   unit_of_measure: product.unit_of_measure,
+  hsn_code: product.hsn_code,
   locations: product.locations || [],
   source_warehouse_id: "",
   ship_from_site_id: "",
@@ -626,6 +627,11 @@ export default function StockTransferPage() {
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
                       <div className="font-medium text-[#344054]">{i.product_id}</div>
                       <div className="text-[#667085]">{i.description || "—"}</div>
+                      <div className="text-[10px] mt-0.5" data-testid={`stock-transfer-hsn-${i.product_id}`}>
+                        {i.hsn_code
+                          ? <span className="text-[#0E7C86] font-medium">HSN: {i.hsn_code}</span>
+                          : <span className="text-[#98A2B3]">HSN: Not maintained in SAP</span>}
+                      </div>
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 min-w-[220px]">
                       <Select value={i.source_warehouse_id} onValueChange={(v) => chooseWarehouse(i.key, v)}>
@@ -1180,7 +1186,7 @@ export default function StockTransferPage() {
                 <table className="w-full text-xs border-collapse" data-testid="stock-transfer-detail-items-table">
                   <thead>
                     <tr>
-                      {["Line", "Product", "Description", "Source Warehouse", "Available Qty", "Requested Qty", "Stock Status"].map((h) => (
+                      {["Line", "Product", "Description", "HSN Code", "Source Warehouse", "Available Qty", "Requested Qty", "Stock Status"].map((h) => (
                         <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-[11px] font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
@@ -1191,6 +1197,7 @@ export default function StockTransferPage() {
                         <td className="border border-[#D0D5DD] px-2 py-1.5">{it.line_no}</td>
                         <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium">{it.product_id}</td>
                         <td className="border border-[#D0D5DD] px-2 py-1.5">{it.description || "—"}</td>
+                        <td className="border border-[#D0D5DD] px-2 py-1.5" data-testid={`stock-transfer-detail-hsn-${it.product_id}`}>{it.hsn_code || "—"}</td>
                         <td className="border border-[#D0D5DD] px-2 py-1.5">{it.source_warehouse_name || it.source_warehouse_id}</td>
                         <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(it.available_qty)} {it.unit_of_measure}</td>
                         <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(it.requested_qty)} {it.unit_of_measure}</td>

@@ -72,7 +72,7 @@ def _warehouse_id_from_logistics_area_id(logistics_area_id: str) -> str:
     return (logistics_area_id or "").rsplit("/", 1)[-1].strip()
 
 
-def get_product_stock_locations(db, product_id: str, include_non_usable: bool = False) -> dict:
+def get_product_stock_locations(db, product_id: str, include_non_usable: bool = False, sap_hsn_client=None) -> dict:
     """Every in-stock location this product currently sits in, across
     every site/warehouse - backs both the "Check Inventory" step and the
     "Select Source Warehouse" dropdown. Purely cache-based
@@ -90,13 +90,14 @@ def get_product_stock_locations(db, product_id: str, include_non_usable: bool = 
     these as visible-but-disabled options, never selectable as an actual
     transfer source."""
     product_id = (product_id or "").strip()
+    hsn_code = sap_hsn_client.get_hsn_codes([product_id]).get(product_id) if sap_hsn_client else None
     doc = db[INVENTORY_CACHE_COLLECTION].find_one(
         {"_id": "latest", "items.product_id": product_id}, {"items.$": 1},
     )
     items = (doc or {}).get("items") or []
     item = items[0] if items else {}
     if item.get("product_id") != product_id:
-        return {"product_id": product_id, "description": None, "unit_of_measure": None, "locations": []}
+        return {"product_id": product_id, "description": None, "unit_of_measure": None, "hsn_code": hsn_code, "locations": []}
 
     locations = []
     for loc in item.get("locations", []):
@@ -122,6 +123,7 @@ def get_product_stock_locations(db, product_id: str, include_non_usable: bool = 
         "product_id": product_id,
         "description": item.get("description"),
         "unit_of_measure": item.get("uom"),
+        "hsn_code": hsn_code,
         "locations": locations,
     }
 
@@ -203,7 +205,7 @@ def _next_sto_id(db) -> str:
     return f"STO-{counter['seq']:06d}"
 
 
-def create_stock_transfer_order(db, payload: dict, created_by: str) -> dict:
+def create_stock_transfer_order(db, payload: dict, created_by: str, sap_hsn_client=None) -> dict:
     """Full server-side re-validation (defense in depth - the frontend
     already enforces every one of these rules) against the CURRENT cache,
     since stock/site data can move between when the user opened the screen
@@ -213,7 +215,12 @@ def create_stock_transfer_order(db, payload: dict, created_by: str) -> dict:
     A single STO may contain items from DIFFERENT warehouses, but they must
     all resolve to the SAME Ship-from Site - the real SAP CustomerRequirement
     object has exactly one ShipFromSiteID per header (see module docstring),
-    so a genuinely cross-site multi-item request must become two STOs."""
+    so a genuinely cross-site multi-item request must become two STOs.
+
+    Each resolved line also carries its live SAP `hsn_code` (Aug 27 2026,
+    user's explicit ask - shown on the form as it populates, same source
+    used for the ERP portal sync) - a single batched lookup for every item
+    on this order, never invented if SAP has no HSN code for that material."""
     items = payload.get("items") or []
     if not items:
         raise StockTransferValidationError("At least one item is required.")
@@ -264,6 +271,7 @@ def create_stock_transfer_order(db, payload: dict, created_by: str) -> dict:
 
     resolved_items = []
     ship_from_site_id = None
+    hsn_codes = sap_hsn_client.get_hsn_codes([(raw.get("product_id") or "").strip() for raw in items]) if sap_hsn_client else {}
     for idx, raw in enumerate(items, start=1):
         product_id = (raw.get("product_id") or "").strip()
         source_warehouse_id = (raw.get("source_warehouse_id") or "").strip()
@@ -298,6 +306,7 @@ def create_stock_transfer_order(db, payload: dict, created_by: str) -> dict:
             "product_id": product_id,
             "description": stock.get("description"),
             "unit_of_measure": stock.get("unit_of_measure"),
+            "hsn_code": hsn_codes.get(product_id),
             "source_warehouse_id": source_warehouse_id,
             "source_warehouse_name": location.get("warehouse_name"),
             "ship_from_site_id": item_ship_from_site,

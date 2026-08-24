@@ -4314,7 +4314,7 @@ def _sto_to_response(doc: dict) -> dict:
 
 @api_router.get("/stock-transfer/inventory")
 async def get_stock_transfer_inventory(product_id: str, include_non_usable: bool = False):
-    return await asyncio.to_thread(stock_transfer_service.get_product_stock_locations, db, product_id, include_non_usable)
+    return await asyncio.to_thread(stock_transfer_service.get_product_stock_locations, db, product_id, include_non_usable, sap_hsn_client)
 
 
 @api_router.get("/stock-transfer/ship-to-sites")
@@ -4338,7 +4338,7 @@ async def get_stock_transfer_suggested_source(product_id: str, ship_to_site_id: 
 async def post_stock_transfer_order(payload: StockTransferOrderCreate, request: Request):
     actor = (request.state.user.get("name") or request.state.user.get("email") or "Unknown").strip()
     try:
-        doc = await asyncio.to_thread(stock_transfer_service.create_stock_transfer_order, db, payload.dict(), actor)
+        doc = await asyncio.to_thread(stock_transfer_service.create_stock_transfer_order, db, payload.dict(), actor, sap_hsn_client)
     except stock_transfer_service.StockTransferValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     # Live SAP write (Aug 27 2026) - Check first (always-on safety net,
