@@ -441,6 +441,45 @@ class UpdateUserAccessRequest(BaseModel):
     allowed_pages: List[str] = []
 
 
+class UpdateUserStoreSitesRequest(BaseModel):
+    bound_sites: List[str] = []
+
+
+@api_router.get("/admin/known-sites")
+async def admin_known_sites(request: Request):
+    """Feeds the Store Assignment tab's per-site checkboxes - same full
+    SAP site list as /store-requests/known-sites, just gated by admin
+    role instead of the store_approval page permission."""
+    user = await asyncio.to_thread(auth_service.get_current_user, request, db)
+    if not user or user.get("role") not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return {"sites": await asyncio.to_thread(list_known_sites, db)}
+
+
+@api_router.put("/admin/users/{user_id}/store-sites")
+async def admin_update_user_store_sites(user_id: str, body: UpdateUserStoreSitesRequest, request: Request):
+    """Store Binding (Aug 2026, user's explicit ask): restricts a "store
+    user"'s Store Approval queue/dropdown/actions to only the site(s)
+    bound here - enforced in the store-requests endpoints below via
+    _has_site_access/_filter_by_site_access. admin/super_admin always see
+    every site regardless of this field (checked there, not here)."""
+    requester = await asyncio.to_thread(auth_service.get_current_user, request, db)
+    if not requester or requester.get("role") not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    valid_sites = set(await asyncio.to_thread(list_known_sites, db))
+    unknown = [s for s in body.bound_sites if s not in valid_sites]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown site code(s): {', '.join(unknown)}")
+    result = await asyncio.to_thread(
+        db[auth_service.USERS_COLLECTION].update_one,
+        {"_id": user_id},
+        {"$set": {"bound_sites": body.bound_sites}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"ok": True}
+
+
 @api_router.put("/admin/users/{user_id}/access")
 async def admin_update_user_access(user_id: str, body: UpdateUserAccessRequest, request: Request):
     requester = await asyncio.to_thread(auth_service.get_current_user, request, db)
@@ -2718,37 +2757,64 @@ class PlannerStoreDecisionRequest(BaseModel):
     actor: str
 
 
+# Store Binding (Aug 2026, user's explicit ask): a "store user" (plain
+# "user" role) can be bound to 1+ sites on the Access Management ->
+# Store Assignment tab, restricting them to only those sites here.
+# admin/super_admin are never restricted - they're not "store users".
+def _has_site_access(user: dict, site_id: str) -> bool:
+    if user.get("role") in ("super_admin", "admin"):
+        return True
+    return site_id in set(user.get("bound_sites", []))
+
+
+def _filter_by_site_access(rows: list, user: dict) -> list:
+    if user.get("role") in ("super_admin", "admin"):
+        return rows
+    bound = set(user.get("bound_sites", []))
+    return [r for r in rows if r.get("site_id") in bound]
+
+
+def _visible_sites_for_user(user: dict, all_sites: list) -> list:
+    if user.get("role") in ("super_admin", "admin"):
+        return list(all_sites)
+    bound = set(user.get("bound_sites", []))
+    return [s for s in all_sites if s in bound]
+
+
 @api_router.get("/store-requests")
-async def list_store_requests():
+async def list_store_requests(request: Request):
     """Aug 2026: now requires Entra ID login + the "store_approval" page
     permission (was previously unauthenticated by design) - user's
     explicit ask, now that the actor's name comes from their signed-in
     session instead of a free-text box."""
-    return {"requests": await asyncio.to_thread(store_approval_service.list_requests, db)}
+    rows = await asyncio.to_thread(store_approval_service.list_requests, db)
+    return {"requests": _filter_by_site_access(rows, request.state.user)}
 
 
 @api_router.get("/store-requests/journal")
-async def get_store_requests_journal():
+async def get_store_requests_journal(request: Request):
     """Every store_requests doc regardless of status (pending, awaiting
     requester, resolved, cancelled) - the store team's full history/
     audit log, filtered/sorted/searched client-side since the volume is
     low. Declared BEFORE /store-requests/{request_id} so FastAPI matches
     this static path first instead of treating "journal" as a request_id."""
-    return {"requests": await asyncio.to_thread(store_approval_service.list_all_requests, db)}
+    rows = await asyncio.to_thread(store_approval_service.list_all_requests, db)
+    return {"requests": _filter_by_site_access(rows, request.state.user)}
 
 
 @api_router.get("/store-requests/balance-pending")
-async def get_store_requests_balance_pending():
+async def get_store_requests_balance_pending(request: Request):
     """Rule 2 (Aug 2026): requests where the store already issued a
     partial quantity and the linked order proceeded, but a balance is
     still outstanding - reopen one of these once more stock physically
     arrives in the RM warehouse. Declared BEFORE /store-requests/{request_id}
     for the same routing reason as /journal above."""
-    return {"requests": await asyncio.to_thread(store_approval_service.list_balance_pending, db)}
+    rows = await asyncio.to_thread(store_approval_service.list_balance_pending, db)
+    return {"requests": _filter_by_site_access(rows, request.state.user)}
 
 
 @api_router.get("/store-requests/known-sites")
-async def get_store_requests_known_sites():
+async def get_store_requests_known_sites(request: Request):
     """User's bug report (Aug 2026): the Plant/Site filter only listed
     sites that happened to have a currently-PENDING request, so a real
     site like P9 was invisible whenever it had no open request at that
@@ -2757,12 +2823,14 @@ async def get_store_requests_known_sites():
     filter) - every site SAP actually has stock data for, not just
     whichever ones happen to be in the queue right now. Declared BEFORE
     /store-requests/{request_id} for the same routing reason as
-    /journal above."""
-    return {"sites": await asyncio.to_thread(list_known_sites, db)}
+    /journal above. Restricted (Aug 2026, Store Binding) to whatever
+    sites this user is bound to, unless admin/super_admin."""
+    sites = await asyncio.to_thread(list_known_sites, db)
+    return {"sites": _visible_sites_for_user(request.state.user, sites)}
 
 
 @api_router.post("/store-requests/refresh-live-stock")
-async def refresh_live_stock_for_store(site_id: str):
+async def refresh_live_stock_for_store(site_id: str, request: Request):
     """"Refresh Live Stock Now" v5 (Aug 2026) - store person's on-demand
     button for the exact "I just posted a Goods Receipt, is it visible
     yet" gap. Deliberately its OWN endpoint (not /api/inventory, which
@@ -2776,6 +2844,8 @@ async def refresh_live_stock_for_store(site_id: str):
     both at once, even faster than either alone).
     Declared BEFORE /store-requests/{request_id} so this literal path
     isn't swallowed by that dynamic route."""
+    if not _has_site_access(request.state.user, site_id):
+        raise HTTPException(status_code=403, detail="You are not bound to this site")
     job_id = str(uuid.uuid4())
     job_store.create_job(db, job_id, {"status": "running", "error": None})
     warehouse_ids = [f"{site_id}/{site_id}-RM", f"{site_id}/{site_id}-QC"]
@@ -2801,15 +2871,17 @@ async def get_refresh_live_stock_status(job_id: str):
 
 
 @api_router.get("/store-requests/{request_id}")
-async def get_store_request_public(request_id: str):
+async def get_store_request_public(request_id: str, request: Request):
     doc = await asyncio.to_thread(store_approval_service.get_request, db, request_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Store request not found")
+    if not _has_site_access(request.state.user, doc.get("site_id")):
+        raise HTTPException(status_code=403, detail="You are not bound to this site")
     return doc
 
 
 @api_router.post("/store-requests/{request_id}/issue")
-async def issue_store_request(request_id: str, payload: StoreIssueRequest):
+async def issue_store_request(request_id: str, payload: StoreIssueRequest, request: Request):
     """Returns immediately with a job_id - the actual SAP Goods Movement
     calls (up to 3 retries x 5s per component x N components) now run in
     the background (Aug 2026, fixed a real Cloudflare/ingress timeout on
@@ -2817,6 +2889,9 @@ async def issue_store_request(request_id: str, payload: StoreIssueRequest):
     create-and-release-order. Poll GET /store-requests/issue-status/{job_id}."""
     if not payload.actor.strip():
         raise HTTPException(status_code=400, detail="actor (store user's name) is required")
+    existing_doc = await asyncio.to_thread(store_approval_service.get_request, db, request_id)
+    if existing_doc and not _has_site_access(request.state.user, existing_doc.get("site_id")):
+        raise HTTPException(status_code=403, detail="You are not bound to this site")
     try:
         updated = await asyncio.to_thread(
             store_approval_service.start_issue, db, request_id, payload.issued, payload.decision, payload.actor.strip(),

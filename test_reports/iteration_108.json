@@ -1,0 +1,48 @@
+{
+  "summary": "Full pass on the new Store Binding feature (backend enforcement + UI). Backend: created /app/backend/tests/test_store_site_binding.py - 25/25 pass against the preview URL. Verified GET /api/admin/known-sites (super_admin + admin 200 with the full 8-site list P1,P2,P2W,P3,P4,P7,P8,P9; role='user' 403; unauthenticated 401), PUT /api/admin/users/{id}/store-sites (super_admin and admin can bind, GET-verified persistence via /api/admin/users, 404 on unknown user, 403 for role='user', binding takes effect on the very next request with no re-login), fail-closed defaults (unbound 'user' gets [] from /store-requests, /journal, /balance-pending and /store-requests/known-sites), scoped visibility (user bound to P1 sees only site_id=P1 rows in all three list endpoints and only ['P1'] from known-sites), per-site actions (refresh-live-stock?site_id=P2 -> 403 'You are not bound to this site', site_id=P1 -> 200 + job_id; unbound user 403 even for P1; admin 200 for any site), GET /store-requests/{id} 403 cross-site / 200 own-site, POST /store-requests/{id}/issue 403 cross-site and 403 for unbound user (403 fires before any SAP goods movement), and /api/auth/me exposing bound_sites. Regression: existing tests/test_roles_and_store_approval_auth.py now 32 passed / 2 skipped (1 stale assertion updated - see updated_files). Frontend (Playwright, synthetic Entra sessions seeded in Mongo and deleted afterwards): Access Management shows both tabs; Store Assignment lists ONLY role='user' rows (admin/super_admin rows absent), all 8 site checkboxes per row, 'No sites bound' badge, 'Save Site Binding' button appears only on change, success toast 'Store site binding updated', badge updates to '2 sites bound' and persists across reload; User Access tab regression (load users, toggle page checkbox, Save Changes -> 'Access updated', revert) still works. Store Approval: bound user sees blue pill 'Restricted to: P1', dropdown = All Sites + P1 only, table = 2 P1 requests only; unbound user sees 'No site bound yet - ask an admin to assign one on Access Management', empty dropdown (All Sites only) and the empty state with 0 requests; super_admin sees NO banner, all 8 sites in the dropdown and 6 requests across P1/P2/P3. Detail page for an own-site request opens fine and shows the renamed 'Proceed to Issue' button.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PUT /api/admin/users/{user_id}/store-sites", "issue": "bound_sites is free-text - a non-existent/typo'd site code (e.g. 'ZZZ_NOT_A_SITE') is persisted with HTTP 200 and no validation against the known-site list. Harmless functionally (fail-closed: it matches nothing) but the admin gets zero feedback. Covered by test_unknown_site_code_accepted_no_validation."},
+      {"endpoint": "GET /api/store-requests/refresh-live-stock/{job_id}, GET /api/store-requests/issue-status/{job_id}", "issue": "Job-status polling endpoints are not site-checked, so a user bound to P1 who guesses/obtains another site's job UUID could read its status. Very low risk (random UUIDs) - noting for completeness."},
+      {"endpoint": "GET /api/store-requests (unauthenticated)", "issue": "Pre-existing intermittent flakiness (also logged in iteration_107) reproduced twice: a request that normally returns 401 in ~0.1s occasionally stalls >60s / returns a Cloudflare 502. Both occurrences coincided with a uvicorn WatchFiles reload (triggered by writing test files under /app/backend) and/or heavy background SAP work (sap_valuation_client ConnectTimeoutError storms in backend.err.log). Not caused by this change; all suites pass cleanly when the backend is idle."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Bound user deep-links to a request from a site they are NOT bound to (/storeapproval/request/P3-000001)", "issue": "Backend correctly returns 403, but the UI silently falls back to the queue with no toast/message - the user gets no explanation, and several repeated 403 console errors are logged. Suggest showing a 'You do not have access to this request' message.", "affected_selectors": ["store-request-detail"]}
+    ],
+    "design_issues": [
+      {"screen": "Store Approval - Plant/Site filter (role='user')", "issues": ["A user bound to exactly one site still defaults to 'All Sites' with a single redundant option; auto-selecting the only bound site would be cleaner (cosmetic only - data is already correctly filtered)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_store_site_binding.py",
+    "/app/backend/tests/_seed_store_binding.py",
+    "/app/test_reports/pytest/store_binding.xml",
+    "/app/test_reports/pytest/roles_auth_regress.xml"
+  ],
+  "action_items": [
+    "MIGRATION IMPACT (inform the user): the two REAL role='user' accounts in the DB (ankit.sharma@rampgroup.co.in, rajat.goyal@rampgroup.co.in) currently have NO bound_sites, so as of this deploy they will see ZERO sites and ZERO requests on Store Approval until a super_admin binds them on the new Store Assignment tab. This matches the requested fail-closed spec but needs an explicit heads-up/one-time binding.",
+    "OPTIONAL: validate bound_sites values against list_known_sites() in PUT /admin/users/{id}/store-sites and return 400 on unknown codes.",
+    "OPTIONAL: show a user-facing 'not authorised for this request' message when a store-request detail deep link returns 403 instead of silently returning to the queue."
+  ],
+  "critical_code_review_comments": [
+    "_has_site_access/_filter_by_site_access/_visible_sites_for_user all key off request.state.user, which is only populated by the auth middleware - any future store-requests endpoint added outside the middleware's PAGE_ROUTE_RULES coverage would bypass the binding silently. Consider a small dependency/helper that raises if request.state.user is unset.",
+    "frontend/src/pages/StoreApprovalPage.js is now 1151 lines and AccessManagementPage.jsx 363 lines with two large tabs inline - StoreApprovalPage is well above the 700-line guideline and should be split (queue/journal/balance/movements/detail).",
+    "GET /api/admin/users still returns whole Mongo user docs (now including bound_sites, tid, oid) - project only the fields the Access Management UI needs."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_store_site_binding.py (new, 25 cases)",
+    "/app/backend/tests/_seed_store_binding.py (new, synthetic session seeder with --cleanup)",
+    "/app/backend/tests/test_roles_and_store_approval_auth.py (test-only fix: test_refresh_live_stock_job_starts now uses the admin persona - an UNBOUND role='user' is correctly 403 under the new fail-closed rule)"
+  ],
+  "success_rate": {"backend": "100% (25/25 new + 32 passed/2 skipped regression)", "frontend": "100% of tested flows"},
+  "seed_data_creation": "5 synthetic auth_users/auth_sessions (super_admin, admin, user-unbound, user-bound-P1, bind target) - ALL deleted after the run (verified 0 TESTtid users / 0 TEST_ sessions remain). No real user's role/pages/bound_sites was modified; no SAP goods movement was posted (only 403-expected /issue calls and read-only refresh-live-stock jobs).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "No end-user passwords (Entra SSO only). Use `python /app/backend/tests/_seed_store_binding.py` to mint vms_session cookies for super_admin/admin/user roles, then run it with --cleanup.",
+  "context_for_next_testing_agent": "Run new suite with `python -m pytest tests/test_store_site_binding.py -n 0` from /app/backend (pytest.ini forces -n 2; use -n 0). IMPORTANT: writing/editing any file under /app/backend triggers a uvicorn WatchFiles reload which causes transient 502/read-timeouts - never edit backend files while a suite is running, and wait ~10s after edits. Known real sites: P1,P2,P2W,P3,P4,P7,P8,P9. Live pending requests: P1-000004, P1-000001 (P1), P3-000001 (P3), 3x P2. Store request _id IS the request id.",
+  "rca_of_the_issue": "No functional defect found in the Store Binding change set. The only test failure that was not environmental was a stale assertion in the older regression suite (an unbound store user refreshing live stock now correctly 403s), which was updated in the test, not in application code."
+}

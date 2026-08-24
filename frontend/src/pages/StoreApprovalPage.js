@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import "@/App.css";
-import { Package, ArrowLeft, ArrowClockwise, WarningCircle, CaretUp, CaretDown, MagnifyingGlass, DownloadSimple, Shield } from "@phosphor-icons/react";
+import { Package, ArrowLeft, ArrowClockwise, WarningCircle, CaretUp, CaretDown, MagnifyingGlass, DownloadSimple, Shield, MapPin } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -485,9 +485,13 @@ export default function StoreApprovalPage() {
           defaults[c.product_id] = "";
         });
         setIssuedQty(defaults);
-      } catch {
+      } catch (err) {
         if (cancelled) return;
-        toast.error("Could not load that request - it may not exist anymore");
+        if (err.response?.status === 403) {
+          toast.error("You're not bound to this request's site - ask an admin to grant access on Access Management");
+        } else {
+          toast.error("Could not load that request - it may not exist anymore");
+        }
         navigate(listPath(viewMode), { replace: true });
       }
     })();
@@ -648,6 +652,17 @@ export default function StoreApprovalPage() {
                 </SelectContent>
               </Select>
             </div>
+            {user?.role === "user" && (
+              <div
+                className="flex items-center gap-1.5 h-8 px-2.5 self-end text-xs font-medium text-[#175CD3] bg-[#EFF8FF] border border-[#B2DDFF] rounded-sm"
+                data-testid="store-site-binding-notice"
+              >
+                <MapPin size={12} weight="bold" />
+                {siteOptions.length > 0
+                  ? `Restricted to: ${siteOptions.join(", ")}`
+                  : "No site bound yet - ask an admin to assign one on Access Management"}
+              </div>
+            )}
             <Button variant="outline" onClick={() => (viewMode === "queue" ? loadRequests() : viewMode === "balance" ? loadBalancePending() : loadJournal())} data-testid="store-refresh-button">
               <ArrowClockwise size={14} className="mr-1.5" /> Refresh
             </Button>
@@ -1095,7 +1110,7 @@ export default function StoreApprovalPage() {
                   <p className="text-[11px] text-[#B54708]">One or more components are still short of the required quantity. Choose how to proceed:</p>
                   <div className="flex flex-wrap gap-2">
                     <Button disabled={submitting || hasOverIssueError} onClick={() => submitIssue("proceed")} data-testid="store-submit-proceed-button">
-                      Proceed with Partial Stock
+                      Proceed to Issue
                     </Button>
                     <Button variant="outline" disabled={submitting || hasOverIssueError} onClick={() => submitIssue("send_to_planner")} data-testid="store-submit-send-to-planner-button">
                       Send to Requester for Approval

@@ -189,11 +189,12 @@ def handle_callback(request: Request, db):
     existing = db[USERS_COLLECTION].find_one({"_id": user_id})
     role = "super_admin" if is_super_admin else (existing.get("role", "user") if existing else "user")
     allowed_pages = existing.get("allowed_pages", []) if existing else []
+    bound_sites = existing.get("bound_sites", []) if existing else []
     db[USERS_COLLECTION].update_one(
         {"_id": user_id},
         {
             "$set": {"tid": tid, "oid": oid, "email": email, "name": name, "role": role,
-                      "allowed_pages": allowed_pages, "last_login_at": now},
+                      "allowed_pages": allowed_pages, "bound_sites": bound_sites, "last_login_at": now},
             "$setOnInsert": {"created_at": now},
         },
         upsert=True,
@@ -241,6 +242,7 @@ def user_public_view(user: dict) -> dict:
         "name": user.get("name"),
         "role": role,
         "allowed_pages": sorted(PAGE_KEYS) if role in ("super_admin", "admin") else user.get("allowed_pages", []),
+        "bound_sites": user.get("bound_sites", []),
     }
 
 

@@ -288,7 +288,11 @@ class TestStoreApprovalRegression:
         assert isinstance(comps, list)
 
     def test_refresh_live_stock_job_starts(self, personas):
-        c = sess(personas["store_user"])
+        # Store Binding (Aug 2026): an UNBOUND role='user' is now correctly
+        # fail-closed (403) on every site, so this regression case uses the
+        # admin persona (never site-restricted). Site-binding specifics are
+        # covered in tests/test_store_site_binding.py.
+        c = sess(personas["admin"])
         r = c.post(f"{BASE_URL}/api/store-requests/refresh-live-stock",
                    params={"site_id": "P1"}, timeout=120)
         assert r.status_code in (200, 202), r.text[:300]

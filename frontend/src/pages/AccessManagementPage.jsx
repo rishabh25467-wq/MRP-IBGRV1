@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
-import { Shield, ShieldCheck } from "@phosphor-icons/react";
+import { Shield, ShieldCheck, MapPin } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
@@ -34,16 +35,31 @@ export default function AccessManagementPage() {
   const [drafts, setDrafts] = useState({});
   const [savingId, setSavingId] = useState(null);
 
+  // Store Binding (Aug 2026, user's explicit ask): restricts a "store
+  // user" to only the site(s) bound here on the Store Assignment tab -
+  // admin/super_admin are never restricted, so this only matters for
+  // plain "user" role rows.
+  const [knownSites, setKnownSites] = useState([]);
+  const [siteDrafts, setSiteDrafts] = useState({});
+  const [siteSavingId, setSiteSavingId] = useState(null);
+
   const load = async () => {
     setLoading(true);
     try {
-      const { data } = await axios.get(`${API}/admin/users`);
+      const [{ data }, { data: sitesData }] = await Promise.all([
+        axios.get(`${API}/admin/users`),
+        axios.get(`${API}/admin/known-sites`),
+      ]);
       setUsers(data.users || []);
+      setKnownSites(sitesData.sites || []);
       const nextDrafts = {};
+      const nextSiteDrafts = {};
       (data.users || []).forEach((u) => {
         nextDrafts[u._id] = { role: u.role || "user", allowed_pages: u.allowed_pages || [] };
+        nextSiteDrafts[u._id] = u.bound_sites || [];
       });
       setDrafts(nextDrafts);
+      setSiteDrafts(nextSiteDrafts);
     } catch (e) {
       toast.error("Failed to load users");
     } finally {
@@ -95,6 +111,33 @@ export default function AccessManagementPage() {
     }
   };
 
+  const toggleSite = (userId, site) => {
+    setSiteDrafts((prev) => {
+      const current = prev[userId] || [];
+      const has = current.includes(site);
+      return { ...prev, [userId]: has ? current.filter((s) => s !== site) : [...current, site] };
+    });
+  };
+
+  const isSiteDirty = (u) => {
+    const original = new Set(u.bound_sites || []);
+    const draft = new Set(siteDrafts[u._id] || []);
+    return original.size !== draft.size || [...original].some((s) => !draft.has(s));
+  };
+
+  const saveSites = async (userId) => {
+    setSiteSavingId(userId);
+    try {
+      await axios.put(`${API}/admin/users/${userId}/store-sites`, { bound_sites: siteDrafts[userId] || [] });
+      toast.success("Store site binding updated");
+      await load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to update site binding");
+    } finally {
+      setSiteSavingId(null);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#F9FAFB] flex flex-col" data-testid="access-management-page">
       <Toaster position="top-right" />
@@ -120,111 +163,199 @@ export default function AccessManagementPage() {
           <ShieldCheck size={20} weight="fill" className="text-[#0E7C86]" />
           <h1 className="font-heading text-lg font-bold text-[#101828]">IT Access Management</h1>
         </div>
-        <p className="text-sm text-[#667085] mb-5">
-          Grant or revoke page-level access for anyone who has signed in with Microsoft. New sign-ins appear here
-          automatically with no access until you grant it.
-        </p>
 
-        {loading ? (
-          <div className="text-sm text-[#667085]" data-testid="access-management-loading">Loading users...</div>
-        ) : users.length === 0 ? (
-          <div className="text-sm text-[#667085]" data-testid="access-management-empty">No one has signed in yet.</div>
-        ) : (
-          <div className="bg-white border border-[#E4E7EC] rounded-xl overflow-hidden">
-            {users.map((u) => {
-              const draft = drafts[u._id] || { role: "user", allowed_pages: [] };
-              const hasAllPages = draft.role === "admin" || draft.role === "super_admin";
-              const isSelf = currentUser && u.email === currentUser.email;
-              const viewerIsSuperAdmin = currentUser?.role === "super_admin";
-              return (
-                <div
-                  key={u._id}
-                  className="border-b border-[#E4E7EC] last:border-b-0 p-4"
-                  data-testid={`access-management-row-${u._id}`}
-                >
-                  <div className="flex items-center justify-between gap-4 flex-wrap">
-                    <div>
-                      <div className="text-sm font-bold text-[#101828]">
-                        {u.name || u.email}
-                        {isSelf && <span className="ml-2 text-xs text-[#98A2B3] font-normal">(you)</span>}
+        <Tabs defaultValue="access" className="space-y-4">
+          <TabsList data-testid="access-management-tabs">
+            <TabsTrigger value="access" data-testid="tab-user-access">User Access</TabsTrigger>
+            <TabsTrigger value="store-assignment" data-testid="tab-store-assignment">Store Assignment</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="access" className="space-y-4">
+            <p className="text-sm text-[#667085]">
+              Grant or revoke page-level access for anyone who has signed in with Microsoft. New sign-ins appear here
+              automatically with no access until you grant it.
+            </p>
+
+            {loading ? (
+              <div className="text-sm text-[#667085]" data-testid="access-management-loading">Loading users...</div>
+            ) : users.length === 0 ? (
+              <div className="text-sm text-[#667085]" data-testid="access-management-empty">No one has signed in yet.</div>
+            ) : (
+              <div className="bg-white border border-[#E4E7EC] rounded-xl overflow-hidden">
+                {users.map((u) => {
+                  const draft = drafts[u._id] || { role: "user", allowed_pages: [] };
+                  const hasAllPages = draft.role === "admin" || draft.role === "super_admin";
+                  const isSelf = currentUser && u.email === currentUser.email;
+                  const viewerIsSuperAdmin = currentUser?.role === "super_admin";
+                  return (
+                    <div
+                      key={u._id}
+                      className="border-b border-[#E4E7EC] last:border-b-0 p-4"
+                      data-testid={`access-management-row-${u._id}`}
+                    >
+                      <div className="flex items-center justify-between gap-4 flex-wrap">
+                        <div>
+                          <div className="text-sm font-bold text-[#101828]">
+                            {u.name || u.email}
+                            {isSelf && <span className="ml-2 text-xs text-[#98A2B3] font-normal">(you)</span>}
+                          </div>
+                          <div className="text-xs text-[#667085]">{u.email}</div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <Badge className={ROLE_BADGE[draft.role].className} data-testid={`access-management-role-badge-${u._id}`}>
+                            {ROLE_BADGE[draft.role].label}
+                          </Badge>
+                          {viewerIsSuperAdmin ? (
+                            <Select value={draft.role} onValueChange={(v) => setRole(u._id, v)} disabled={isSelf}>
+                              <SelectTrigger className="h-8 w-[140px] text-xs bg-white" data-testid={`access-management-role-select-${u._id}`}>
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="user">User</SelectItem>
+                                <SelectItem value="admin">Admin</SelectItem>
+                                <SelectItem value="super_admin">Super Admin</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          ) : draft.role === "admin" ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={isSelf}
+                              onClick={() => setRole(u._id, "user")}
+                              className="text-xs border-[#D0D5DD]"
+                              data-testid={`access-management-toggle-role-${u._id}`}
+                            >
+                              Demote to User
+                            </Button>
+                          ) : draft.role === "super_admin" ? (
+                            <span className="text-xs text-[#98A2B3]" data-testid={`access-management-locked-${u._id}`}>
+                              Only a super admin can change this
+                            </span>
+                          ) : null}
+                        </div>
                       </div>
-                      <div className="text-xs text-[#667085]">{u.email}</div>
+
+                      {!hasAllPages ? (
+                        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2">
+                          {PAGE_KEYS.map((pageKey) => (
+                            <label
+                              key={pageKey}
+                              className="flex items-center gap-2 text-sm text-[#344054] cursor-pointer"
+                              data-testid={`access-management-page-checkbox-label-${u._id}-${pageKey}`}
+                            >
+                              <Checkbox
+                                checked={draft.allowed_pages.includes(pageKey)}
+                                onCheckedChange={() => togglePage(u._id, pageKey)}
+                                data-testid={`access-management-page-checkbox-${u._id}-${pageKey}`}
+                              />
+                              {PAGE_LABELS[pageKey]}
+                            </label>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-xs text-[#667085]">
+                          {draft.role === "admin" ? "Admins" : "Super Admins"} automatically have every page.
+                        </div>
+                      )}
+
+                      {isDirty(u) && (
+                        <div className="mt-3">
+                          <Button
+                            size="sm"
+                            disabled={savingId === u._id}
+                            onClick={() => save(u._id)}
+                            className="bg-[#0E7C86] hover:bg-[#0B6B74] text-white text-xs"
+                            data-testid={`access-management-save-${u._id}`}
+                          >
+                            {savingId === u._id ? "Saving..." : "Save Changes"}
+                          </Button>
+                        </div>
+                      )}
                     </div>
-                    <div className="flex items-center gap-3">
-                      <Badge className={ROLE_BADGE[draft.role].className} data-testid={`access-management-role-badge-${u._id}`}>
-                        {ROLE_BADGE[draft.role].label}
-                      </Badge>
-                      {viewerIsSuperAdmin ? (
-                        <Select value={draft.role} onValueChange={(v) => setRole(u._id, v)} disabled={isSelf}>
-                          <SelectTrigger className="h-8 w-[140px] text-xs bg-white" data-testid={`access-management-role-select-${u._id}`}>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="user">User</SelectItem>
-                            <SelectItem value="admin">Admin</SelectItem>
-                            <SelectItem value="super_admin">Super Admin</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      ) : draft.role === "admin" ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={isSelf}
-                          onClick={() => setRole(u._id, "user")}
-                          className="text-xs border-[#D0D5DD]"
-                          data-testid={`access-management-toggle-role-${u._id}`}
-                        >
-                          Demote to User
-                        </Button>
-                      ) : draft.role === "super_admin" ? (
-                        <span className="text-xs text-[#98A2B3]" data-testid={`access-management-locked-${u._id}`}>
-                          Only a super admin can change this
-                        </span>
-                      ) : null}
-                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="store-assignment" className="space-y-4">
+            <p className="text-sm text-[#667085]">
+              Restrict a store user to only the site(s) checked below - their Store Approval queue, request table, and
+              site dropdown will only ever show those sites. Admins and Super Admins always see every site, so they
+              don't appear here.
+            </p>
+
+            {loading ? (
+              <div className="text-sm text-[#667085]" data-testid="store-assignment-loading">Loading users...</div>
+            ) : (
+              <div className="bg-white border border-[#E4E7EC] rounded-xl overflow-hidden">
+                {users.filter((u) => (u.role || "user") === "user").length === 0 ? (
+                  <div className="p-4 text-sm text-[#667085]" data-testid="store-assignment-empty">
+                    No "User" role accounts yet - promote/demote roles on the User Access tab first.
                   </div>
-
-                  {!hasAllPages ? (
-                    <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2">
-                      {PAGE_KEYS.map((pageKey) => (
-                        <label
-                          key={pageKey}
-                          className="flex items-center gap-2 text-sm text-[#344054] cursor-pointer"
-                          data-testid={`access-management-page-checkbox-label-${u._id}-${pageKey}`}
-                        >
-                          <Checkbox
-                            checked={draft.allowed_pages.includes(pageKey)}
-                            onCheckedChange={() => togglePage(u._id, pageKey)}
-                            data-testid={`access-management-page-checkbox-${u._id}-${pageKey}`}
-                          />
-                          {PAGE_LABELS[pageKey]}
-                        </label>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="mt-2 text-xs text-[#667085]">
-                      {draft.role === "admin" ? "Admins" : "Super Admins"} automatically have every page.
-                    </div>
-                  )}
-
-                  {isDirty(u) && (
-                    <div className="mt-3">
-                      <Button
-                        size="sm"
-                        disabled={savingId === u._id}
-                        onClick={() => save(u._id)}
-                        className="bg-[#0E7C86] hover:bg-[#0B6B74] text-white text-xs"
-                        data-testid={`access-management-save-${u._id}`}
+                ) : (
+                  users.filter((u) => (u.role || "user") === "user").map((u) => {
+                    const boundDraft = siteDrafts[u._id] || [];
+                    return (
+                      <div
+                        key={u._id}
+                        className="border-b border-[#E4E7EC] last:border-b-0 p-4"
+                        data-testid={`store-assignment-row-${u._id}`}
                       >
-                        {savingId === u._id ? "Saving..." : "Save Changes"}
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
+                        <div className="flex items-center justify-between gap-4 flex-wrap mb-2">
+                          <div>
+                            <div className="text-sm font-bold text-[#101828]">{u.name || u.email}</div>
+                            <div className="text-xs text-[#667085]">{u.email}</div>
+                          </div>
+                          <Badge
+                            className={boundDraft.length ? "bg-[#ECFDF3] text-[#027A48] border border-[#ABEFC6]" : "bg-[#F2F4F7] text-[#667085]"}
+                            data-testid={`store-assignment-count-badge-${u._id}`}
+                          >
+                            <MapPin size={11} weight="bold" className="mr-1" />
+                            {boundDraft.length ? `${boundDraft.length} site${boundDraft.length === 1 ? "" : "s"} bound` : "No sites bound"}
+                          </Badge>
+                        </div>
+                        {knownSites.length === 0 ? (
+                          <p className="text-xs text-[#98A2B3]">No sites found yet - visit Inventory or Store Approval once to populate the site list.</p>
+                        ) : (
+                          <div className="flex flex-wrap gap-x-5 gap-y-2">
+                            {knownSites.map((site) => (
+                              <label
+                                key={site}
+                                className="flex items-center gap-2 text-sm text-[#344054] cursor-pointer"
+                                data-testid={`store-assignment-site-checkbox-label-${u._id}-${site}`}
+                              >
+                                <Checkbox
+                                  checked={boundDraft.includes(site)}
+                                  onCheckedChange={() => toggleSite(u._id, site)}
+                                  data-testid={`store-assignment-site-checkbox-${u._id}-${site}`}
+                                />
+                                {site}
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                        {isSiteDirty(u) && (
+                          <div className="mt-3">
+                            <Button
+                              size="sm"
+                              disabled={siteSavingId === u._id}
+                              onClick={() => saveSites(u._id)}
+                              className="bg-[#0E7C86] hover:bg-[#0B6B74] text-white text-xs"
+                              data-testid={`store-assignment-save-${u._id}`}
+                            >
+                              {siteSavingId === u._id ? "Saving..." : "Save Site Binding"}
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   );
