@@ -474,23 +474,35 @@ export default function AdminPage() {
         const batch = rows.slice(i, i + CONCURRENCY);
         await Promise.all(
           batch.map(async (row) => {
+            // "Parent Product ID" (the assembly) gets Net Wt./Surface Area;
+            // "Product ID" (the component itself) gets Gross Wt./MSL/Lead
+            // Time - two DIFFERENT targets in the same row (user's explicit
+            // fix, Aug 27 2026 - previously both were wrongly written to
+            // "Product ID" only, ignoring "Parent Product ID" entirely).
+            const parentId = row["Parent Product ID"];
             const productId = row["Product ID"];
-            if (!productId) return;
-            const payload = {};
-            if (row["MSL"] !== undefined && row["MSL"] !== "") payload.msl = Number(row["MSL"]);
+
+            const parentPayload = {};
+            if (row["Net Wt."] !== undefined && row["Net Wt."] !== "") parentPayload.net_weight_kg = Number(row["Net Wt."]);
+            if (row["SA"] !== undefined && row["SA"] !== "") parentPayload.surface_area_sqin = Number(row["SA"]);
+
+            const productPayload = {};
+            if (row["MSL"] !== undefined && row["MSL"] !== "") productPayload.msl = Number(row["MSL"]);
             if (row["Lead Time (Days)"] !== undefined && row["Lead Time (Days)"] !== "") {
-              payload.lead_time_days = Number(row["Lead Time (Days)"]);
+              productPayload.lead_time_days = Number(row["Lead Time (Days)"]);
             }
-            if (row["Net Wt."] !== undefined && row["Net Wt."] !== "") payload.net_weight_kg = Number(row["Net Wt."]);
-            if (row["Gross Wt."] !== undefined && row["Gross Wt."] !== "") payload.gross_weight_kg = Number(row["Gross Wt."]);
-            if (row["SA"] !== undefined && row["SA"] !== "") payload.surface_area_sqin = Number(row["SA"]);
-            if (Object.keys(payload).length === 0) return;
-            try {
-              await axios.patch(`${API}/admin/components/${encodeURIComponent(productId)}`, payload);
-              updated += 1;
-            } catch (err) {
-              notFound.push(productId);
+            if (row["Gross Wt."] !== undefined && row["Gross Wt."] !== "") productPayload.gross_weight_kg = Number(row["Gross Wt."]);
+
+            const tasks = [];
+            if (parentId && Object.keys(parentPayload).length > 0) {
+              tasks.push(axios.patch(`${API}/admin/components/${encodeURIComponent(parentId)}`, parentPayload).catch(() => notFound.push(parentId)));
             }
+            if (productId && Object.keys(productPayload).length > 0) {
+              tasks.push(axios.patch(`${API}/admin/components/${encodeURIComponent(productId)}`, productPayload).catch(() => notFound.push(productId)));
+            }
+            if (tasks.length === 0) return;
+            await Promise.all(tasks);
+            updated += 1;
           })
         );
       }

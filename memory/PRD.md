@@ -1,3 +1,15 @@
+## Session update (2026-08-27, continued 17) - Weight/Surface Area bulk import bug fixed + full data correction + live SAP push
+
+- **Root bug fixed**: the Excel bulk import in `AdminPage.js` only read a single "Product ID" column and wrote Net Wt./Gross Wt./SA all to that one target - ignoring "Parent Product ID" entirely. Per user's explicit spec: Parent Product ID must get Net Wt. + Surface Area, (child) Product ID must get Gross Wt. only. Fixed - now reads both columns and routes each field to its correct target document (2 separate PATCH calls per row where applicable).
+- **Historic contamination found and corrected**: all 236 components that had Net Wt./SA set locally had ALSO already been live-pushed to SAP - meaning real SAP materials likely held wrong values (written under the old buggy "Product ID" - only logic). Per user's explicit instruction ("we consider them all buggy" / "remove historic data"), wiped `net_weight_kg`/`surface_area_sqin`/`sap_physical_pushed_at` from ALL 3391 `component_master` docs.
+- **Re-imported the user's correct source file** ("gross net sa bulk.xlsx", 467 rows) directly via script using the exact same logic as the fixed Admin UI import: Parent Product ID -> net_weight_kg + surface_area_sqin, Product ID -> gross_weight_kg.
+- **Pushed all 466 Parent Product IDs' Net Wt./SA live to SAP** via `bulk_push_physical_to_sap` (same function the "Push All to SAP" button uses) - **100% success, 0 failures**. Live read-back confirmed correct on real SAP records (e.g. 100002693-A: net_weight_kg 0.18, surface_area_sqin 77.42 - exact match to source Excel).
+- Note: accidentally launched several duplicate concurrent push runs due to a transient tool infra issue (background job launches silently succeeded despite tool-side "context deadline exceeded" errors) - killed extras, verified final DB/SAP state is fully consistent (466/466, no corruption, idempotent PATCHes).
+- **Tested**: live SAP read-back on 2 real materials confirmed correct values. This was a live production data correction (not a simulated test) - executed directly per explicit user instruction.
+
+---
+
+
 ## Session update (2026-08-27, continued 16) - Same lowercase bug fixed for Part Code too
 
 - Same class of bug as the site-code fix above, but for `product_id`: a lowercase part code (via AI Quick Entry OR direct API) failed to match the inventory cache (Mongo exact-match is case-sensitive) - silently added an empty/broken line (no description, no locations, no HSN) rather than erroring.
