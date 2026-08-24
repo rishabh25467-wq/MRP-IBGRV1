@@ -1,3 +1,19 @@
+## Session update (2026-08-27, continued 12) - Cross-site GI root cause RE-DIAGNOSED and FIXED; misleading suggestion text fixed; Refresh Site Stock button added
+
+- **Cross-site GI bug (was mis-diagnosed as "missing Logistics Model" in an earlier session) - now genuinely FIXED, zero code changes needed:**
+  - User pushed back hard that this felt like an app bug, not SAP setup. Live-walked them through SAP UI step by step and found the REAL cause: every site (P1/P2/P3/P8/P9...) already has its own `SHI_<site>` Standard Shipping Logistics Model (contradicts the earlier "missing model" diagnosis) - but P1/P2's Material Flow rule (Supply Chain Design Master Data -> site -> "Material Flow" tab) had a restrictive Basic/Advanced Rule limiting Site Logistics to only 1-2 specific Logistics Areas (P1: only FG+RM: P2: only FG) while P8's equivalent rule is completely EMPTY (no restriction at all, works for any warehouse).
+  - User removed the restrictive Source Determination Rule rows for P1 and P2 (matching P8's empty rule) directly in SAP. Re-tested live immediately both times via direct `PGIInBackground` calls against real previously-stuck orders: **STO-000026 (P1) and STO-000029 (P2) both now return HTTP 200 and `order_fulfilment_status: "3"` (Finished)** - confirmed fixed live, DB records updated (`gi_status: "posted"`).
+  - P3 and P9 still pending the same manual fix from the user (same steps, same expected result) - not yet done as of this update.
+  - **No app code changes were needed or made for this fix** - purely a SAP master-data change.
+- **Stock Transfer form UX fixes (`StockTransferPage.js`)**:
+  - Fixed misleading "No stock at {site} for this item" message - it was firing whenever the AI's single "best" (highest-qty) pick differed from the chosen ship-from site, even when that site DID have enough usable stock (just not the single highest company-wide). Now only shows when there is genuinely zero usable stock at the chosen site.
+  - Added "Refresh Site Stock" button + site selector next to the line items table (user's explicit ask - after a live SAP Goods Movement, the cached quantities weren't updating without waiting for the scheduled refresh). New `refresh_stock_quantities_for_site()` in `inventory_service.py` (site-scoped live SAP pull, reuses `_refresh_stock_quantities_scoped`), new job-based `/stock-transfer/refresh-site-stock` POST + GET endpoints in `server.py` (same async job pattern as `refresh-live-sfg-stock`). On completion, frontend re-fetches inventory for every already-added line item.
+- **Tested**: backend service-layer calls verified live (`refresh_stock_quantities_for_site(db, client, "P3")` -> `rows_found: 899`); webpack compiled cleanly. Self-tested (small/medium UI+backend change) - no testing_agent run.
+- **Next**: user still needs to remove the restrictive Material Flow rule for P3 and P9 (same steps as P1/P2) to fully close this issue.
+
+---
+
+
 ## Session update (2026-08-24, continued 11) - HSN Code shown live on the Stock Transfer form
 
 - User's ask: show the live SAP HSN Code on the form itself as it populates (not just backend ERP sync).

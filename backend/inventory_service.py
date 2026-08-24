@@ -367,6 +367,18 @@ def refresh_stock_quantities_for_warehouses(db, sap_inventory_client, warehouse_
     return result
 
 
+def refresh_stock_quantities_for_site(db, sap_inventory_client, site_id: str) -> dict:
+    """"Refresh Site Stock" (Aug 27 2026, Stock Transfer page, user's
+    explicit ask) - a Goods Issue/Movement just completed live in SAP and
+    the user wants to see the new quantities immediately, not wait for
+    the scheduled inventory_cache refresh. Scoped to EVERY warehouse at
+    this one site (unlike the SFG-only/RM+QC-only wrappers above) since
+    the user may have moved stock into any warehouse type."""
+    result = _refresh_stock_quantities_scoped(db, sap_inventory_client, site_id=site_id)
+    result["site_id"] = site_id
+    return result
+
+
 def deep_backfill_uuids(db, sap_soap_client, sap_material_client=None, progress_callback=None) -> dict:
     """User-requested, one-time CONTROLLED live SAP lookup for every
     inventory item that still has no product_uuid after the free,

@@ -107,6 +107,17 @@ export default function StockTransferPage() {
   const [loadingRecent, setLoadingRecent] = useState(true);
   const [selectedOrder, setSelectedOrder] = useState(null);
 
+  // "Refresh Site Stock" (Aug 27 2026, user's explicit ask) - after a live
+  // SAP Goods Movement/Issue, the cached quantities on this form need to
+  // catch up immediately rather than waiting for the scheduled refresh.
+  const [allSites, setAllSites] = useState([]);
+  const [refreshSiteId, setRefreshSiteId] = useState("");
+  const [refreshingSite, setRefreshingSite] = useState(false);
+
+  useEffect(() => {
+    axios.get(`${API}/store-requests/known-sites`).then(({ data }) => setAllSites(data.sites || [])).catch(() => setAllSites([]));
+  }, []);
+
   const { user } = useAuth();
   const isAdmin = user?.role === "super_admin" || user?.role === "admin";
 
@@ -186,6 +197,33 @@ export default function StockTransferPage() {
   const [stepStatuses, setStepStatuses] = useState({}); // { [stepKey]: "pending" | "active" | "done" | "failed" }
 
   const shipFromSiteId = items.find((i) => i.ship_from_site_id)?.ship_from_site_id || "";
+
+  useEffect(() => { if (shipFromSiteId) setRefreshSiteId(shipFromSiteId); }, [shipFromSiteId]);
+
+  const refreshSiteStock = async () => {
+    if (!refreshSiteId) { toast.error("Choose a site to refresh first."); return; }
+    setRefreshingSite(true);
+    try {
+      const { data } = await axios.post(`${API}/stock-transfer/refresh-site-stock`, null, { params: { site_id: refreshSiteId } });
+      let job = null;
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const res = await axios.get(`${API}/stock-transfer/refresh-site-stock/${data.job_id}`);
+        job = res.data;
+        if (job.status !== "running") break;
+      }
+      if (job?.status !== "done") throw new Error(job?.error || "Refresh timed out.");
+      await Promise.all(items.map(async (line) => {
+        const { data: inv } = await axios.get(`${API}/stock-transfer/inventory`, { params: { product_id: line.product_id, include_non_usable: true } });
+        setItems((prev) => prev.map((i) => (i.key === line.key ? { ...i, locations: inv.locations || [], hsn_code: inv.hsn_code } : i)));
+      }));
+      toast.success(`${refreshSiteId} stock refreshed live from SAP.`);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || e.message || "Could not refresh site stock.");
+    } finally {
+      setRefreshingSite(false);
+    }
+  };
 
   const loadRecentOrders = async () => {
     setLoadingRecent(true);
@@ -610,8 +648,30 @@ export default function StockTransferPage() {
         {/* Line item table */}
         {items.length > 0 && (
           <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-x-auto" data-testid="stock-transfer-line-items-card">
-            <div className="px-3 py-2 border-b border-[#D0D5DD] bg-[#F9FAFB]">
+            <div className="px-3 py-2 border-b border-[#D0D5DD] bg-[#F9FAFB] flex items-center justify-between gap-3 flex-wrap">
               <h3 className="font-heading text-xs font-bold text-[#1D2939] uppercase tracking-wide">2-4. Inventory Check / Source Warehouse / Ship-from Site</h3>
+              <div className="flex items-center gap-2">
+                <Select value={refreshSiteId} onValueChange={setRefreshSiteId}>
+                  <SelectTrigger className="h-7 text-xs w-32" data-testid="stock-transfer-refresh-site-select">
+                    <SelectValue placeholder="Site" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {allSites.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={refreshSiteStock}
+                  disabled={refreshingSite || !refreshSiteId}
+                  data-testid="stock-transfer-refresh-site-stock-btn"
+                >
+                  {refreshingSite ? <CircleNotch size={12} className="animate-spin mr-1" /> : null}
+                  Refresh Site Stock
+                </Button>
+              </div>
             </div>
             <table className="w-full text-xs border-collapse min-w-[900px]" data-testid="stock-transfer-line-items-table">
               <thead>
@@ -670,7 +730,8 @@ export default function StockTransferPage() {
                           <Sparkle size={11} /> Suggested: {i.suggestion.suggested.site_id} / {i.suggestion.suggested.warehouse_name || i.suggestion.suggested.warehouse_id}
                         </button>
                       )}
-                      {i.suggestion?.suggested && shipFromSiteId && i.suggestion.suggested.site_id !== shipFromSiteId && (
+                      {i.suggestion?.suggested && shipFromSiteId && i.suggestion.suggested.site_id !== shipFromSiteId
+                        && !i.locations.some((l) => l.site_id === shipFromSiteId && l.is_usable) && (
                         <p className="mt-1 text-[11px] text-[#98A2B3]">No stock at {shipFromSiteId} for this item - it would need a separate order.</p>
                       )}
                       {i.suggestion && !i.suggestion.suggested && (

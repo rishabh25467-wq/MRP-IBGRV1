@@ -45,7 +45,7 @@ from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_hsn_client import SAPHSNClient
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
-from inventory_service import get_cached_inventory, refresh_inventory_cache, refresh_stock_quantities_for_warehouses, deep_backfill_uuids, list_known_sites
+from inventory_service import get_cached_inventory, refresh_inventory_cache, refresh_stock_quantities_for_warehouses, refresh_stock_quantities_for_site, deep_backfill_uuids, list_known_sites
 import l1_l2_report_service
 from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids, categorize_full_inventory, backfill_drawing_urls, refresh_attachments_now, REFRESH_ATTACHMENTS_MAX_IDS
 from oms_client import OMSClient, OMSError
@@ -4315,6 +4315,35 @@ def _sto_to_response(doc: dict) -> dict:
 @api_router.get("/stock-transfer/inventory")
 async def get_stock_transfer_inventory(product_id: str, include_non_usable: bool = False):
     return await asyncio.to_thread(stock_transfer_service.get_product_stock_locations, db, product_id, include_non_usable, sap_hsn_client)
+
+
+@api_router.post("/stock-transfer/refresh-site-stock")
+async def post_refresh_site_stock(site_id: str):
+    """"Refresh Site Stock" (Aug 27 2026, user's explicit ask) - a Goods
+    Movement/Issue just completed live in SAP and the form's cached
+    quantities need to catch up immediately, same job-based pattern as
+    refresh_live_sfg_stock above."""
+    job_id = str(uuid.uuid4())
+    job_store.create_job(db, job_id, {"status": "running", "error": None})
+
+    async def run():
+        try:
+            result = await asyncio.to_thread(refresh_stock_quantities_for_site, db, sap_inventory_client, site_id)
+            job_store.update_job(db, job_id, {"status": "done", "error": None, "result": {"rows_found": result.get("rows_found")}})
+        except Exception as e:
+            logger.error(f"Stock Transfer site stock refresh job {job_id} (site {site_id}) failed: {e}")
+            job_store.update_job(db, job_id, {"status": "failed", "error": str(e)})
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+@api_router.get("/stock-transfer/refresh-site-stock/{job_id}")
+async def get_refresh_site_stock_status(job_id: str):
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return {"status": job["status"], "error": job.get("error"), "result": job.get("result")}
 
 
 @api_router.get("/stock-transfer/ship-to-sites")
