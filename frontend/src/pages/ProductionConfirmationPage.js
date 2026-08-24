@@ -646,11 +646,13 @@ const CreateOrderTab = ({ actorName }) => {
   const [productSuggestions, setProductSuggestions] = useState([]);
   const [showProductSuggestions, setShowProductSuggestions] = useState(false);
   // Holistic (every site/warehouse, not just this order's site) BOM
-  // Component Stock Status panel (Aug 2026, user's explicit ask) - fires
-  // automatically off the cache the moment a Production Model is picked
-  // below; bomStockLive tracks whether the currently-shown data came from
-  // the panel's own "Check Live Stock" button so its loading label reads
-  // right either way.
+  // Component Stock Status panel (Aug 2026, user's explicit ask) - shown
+  // on-demand via the "Check Stock" button next to Create Production
+  // Order (not automatic), splitting this card's space in half with the
+  // form once open. Required/Shortfall are computed client-side from
+  // `bom_qty_per_unit` x whatever Quantity is currently typed, so
+  // adjusting Quantity updates the shortage live with no extra API call.
+  const [showBomPanel, setShowBomPanel] = useState(false);
   const [bomStockStatus, setBomStockStatus] = useState(null);
   const [bomStockLoading, setBomStockLoading] = useState(false);
   // "Refresh Live SFG Stock" (Aug 2026, user's explicit ask): once a short
@@ -726,36 +728,95 @@ const CreateOrderTab = ({ actorName }) => {
     setSelectedSosKey(key);
     const option = sosOptions[Number(key)];
     if (option) { setSiteId(option.site_id); setSiteAutoFilled(true); } // model determines site in SAP, not the other way around
+    setBomStockStatus(null); // different model may mean a different real BOM - stale panel data would be misleading
   };
 
-  // Fires the cache-only (instant, no live SAP call) first look the
-  // moment a Production Model is actually picked - either explicitly
-  // here, or the single-option auto-pick in checkSourceOfSupply below.
-  useEffect(() => {
-    if (!selectedSosOption) {
-      setBomStockStatus(null);
-      return;
-    }
-    setBomStockLoading(true);
-    axios.get(`${API}/production-confirmation/bom-stock-status`, {
-      params: { main_output_product: materialId.trim(), production_model_uuid: selectedSosOption.production_model_uuid },
-    }).then(({ data }) => setBomStockStatus(data)).catch(() => setBomStockStatus(null)).finally(() => setBomStockLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedSosOption]);
-
-  const checkLiveBomStock = async () => {
-    if (!selectedSosOption) return;
+  const fetchBomStock = async (live) => {
+    const product = materialId.trim();
+    if (!product) return;
     setBomStockLoading(true);
     try {
       const { data } = await axios.get(`${API}/production-confirmation/bom-stock-status`, {
-        params: { main_output_product: materialId.trim(), production_model_uuid: selectedSosOption.production_model_uuid, live: true },
+        params: {
+          main_output_product: product,
+          production_model_uuid: selectedSosOption ? selectedSosOption.production_model_uuid : undefined,
+          live: !!live,
+        },
       });
       setBomStockStatus(data);
     } catch {
-      toast.error("Failed to check live BOM component stock - try again in a moment");
+      toast.error(live ? "Failed to check live BOM component stock - try again in a moment" : "Failed to load BOM component stock");
     } finally {
       setBomStockLoading(false);
     }
+  };
+
+  const openBomStockPanel = () => {
+    setShowBomPanel(true);
+    if (!bomStockStatus) fetchBomStock(false);
+  };
+
+  // Flattened, ready-to-render rows (one per component-location, or one
+  // placeholder row for a component with no stock anywhere) - shared by
+  // both the modal's <table> and the Excel/CSV export below so they never
+  // drift apart. "Not Assigned" is SAP's default/USABLE stock status, so
+  // per the user's explicit ask it's hidden rather than shown as noise -
+  // only a real exception status (Inspection, Blocked, etc.) is surfaced.
+  const bomStockRows = useMemo(() => {
+    if (!bomStockStatus?.checked) return [];
+    const rows = [];
+    bomStockStatus.components.forEach((c) => {
+      const requiredQty = Math.round(c.bom_qty_per_unit * (Number(quantity) || 0) * 1e4) / 1e4;
+      const shortfall = Math.max(0, Math.round((requiredQty - c.total_usable_qty) * 1e4) / 1e4);
+      const sufficient = requiredQty <= 0 || shortfall <= 0;
+      const base = {
+        product_id: c.product_id, description: c.description, unit_of_measure: c.unit_of_measure,
+        total_usable_qty: c.total_usable_qty, requiredQty, shortfall, sufficient,
+      };
+      if (c.locations.length === 0) {
+        rows.push({ ...base, showComponentInfo: true, site: null, warehouse: null, displayStatus: "—", qty: null });
+      } else {
+        c.locations.forEach((loc, li) => {
+          const isDefaultStatus = (loc.stock_status || "").trim().toLowerCase() === "not assigned";
+          rows.push({
+            ...base,
+            showComponentInfo: li === 0,
+            site: loc.site, warehouse: loc.warehouse,
+            displayStatus: isDefaultStatus ? "—" : (loc.stock_status || "—"),
+            qty: loc.qty,
+          });
+        });
+      }
+    });
+    return rows;
+  }, [bomStockStatus, quantity]);
+
+  const downloadBomStockExcel = () => {
+    if (!bomStockStatus?.checked) return;
+    const headers = ["Component", "Description", "Available", "Required", "Shortfall", "Unit", "Site", "Warehouse", "Stock Status", "Location Qty"];
+    const csvLines = [headers.join(",")];
+    bomStockStatus.components.forEach((c) => {
+      const requiredQty = Math.round(c.bom_qty_per_unit * (Number(quantity) || 0) * 1e4) / 1e4;
+      const shortfall = Math.max(0, Math.round((requiredQty - c.total_usable_qty) * 1e4) / 1e4);
+      const locs = c.locations.length > 0 ? c.locations : [{ site: "", warehouse: "", stock_status: "", qty: "" }];
+      locs.forEach((loc) => {
+        const isDefaultStatus = (loc.stock_status || "").trim().toLowerCase() === "not assigned";
+        const cells = [
+          c.product_id, c.description || "", c.total_usable_qty, requiredQty, shortfall, c.unit_of_measure || "",
+          loc.site || "", loc.warehouse || "", isDefaultStatus ? "" : (loc.stock_status || ""), loc.qty ?? "",
+        ];
+        csvLines.push(cells.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","));
+      });
+    });
+    const blob = new Blob([csvLines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `bom-stock-${materialId.trim() || "component"}-x${quantity || 0}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const [lastCheckedId, setLastCheckedId] = useState(null);
@@ -1017,6 +1078,7 @@ const CreateOrderTab = ({ actorName }) => {
       setMaterialId(""); setQuantity("1"); setRequestedEndDate(""); setSiteId("");
       setSosOptions([]); setSosChecked(false); setSelectedSosKey(""); setSiteAutoFilled(false);
       setUnitCode("EA"); setUnitCodeAutoFilled(false); setMaterialUuid(null); setLastCheckedId(null);
+      setShowBomPanel(false); setBomStockStatus(null);
     } catch (e) {
       toast.error(e.response?.data?.detail || e.message || "Failed to create Production Order in SAP");
     } finally {
@@ -1102,7 +1164,7 @@ const CreateOrderTab = ({ actorName }) => {
             <Label className="text-xs font-bold text-[#344054]">Product ID</Label>
             <Input
               value={materialId}
-              onChange={(e) => { setMaterialId(e.target.value); setSosChecked(false); setSosOptions([]); setMaterialUuid(null); setLastCheckedId(null); setShowProductSuggestions(true); }}
+              onChange={(e) => { setMaterialId(e.target.value); setSosChecked(false); setSosOptions([]); setMaterialUuid(null); setLastCheckedId(null); setShowProductSuggestions(true); setBomStockStatus(null); }}
               onFocus={() => setShowProductSuggestions(true)}
               onBlur={() => checkSourceOfSupply()}
               placeholder="e.g. MAZ42117272-TA"
@@ -1182,7 +1244,7 @@ const CreateOrderTab = ({ actorName }) => {
                 variant="outline"
                 size="sm"
                 disabled={refreshingSfgStock || !siteId.trim()}
-                onClick={refreshLiveSfgStock}
+                onClick={() => refreshLiveSfgStock()}
                 className="mt-1.5 h-7 text-[11px]"
                 data-testid="refresh-live-sfg-stock-button"
               >
@@ -1224,9 +1286,20 @@ const CreateOrderTab = ({ actorName }) => {
               <Input type="date" value={requestedEndDate} onChange={(e) => setRequestedEndDate(e.target.value)} data-testid="create-proposal-date-input" />
             </div>
           </div>
-          <Button onClick={createProposal} disabled={submitting} className="w-full" data-testid="create-proposal-submit-button">
-            {submitting ? "Submitting..." : "Create Production Order"}
-          </Button>
+          <div className="flex gap-2">
+            <Button onClick={createProposal} disabled={submitting} className="flex-1" data-testid="create-proposal-submit-button">
+              {submitting ? "Submitting..." : "Create Production Order"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!materialId.trim()}
+              onClick={openBomStockPanel}
+              data-testid="toggle-bom-stock-panel-button"
+            >
+              Check Stock
+            </Button>
+          </div>
         </div>
 
         <div className="bg-white border border-[#D0D5DD] rounded-sm p-4 space-y-3" data-testid="release-order-card">
@@ -1241,6 +1314,91 @@ const CreateOrderTab = ({ actorName }) => {
           </Button>
         </div>
       </div>
+
+      <Dialog open={showBomPanel} onOpenChange={(open) => setShowBomPanel(open)}>
+        <DialogContent className="max-w-4xl max-h-[85vh] overflow-hidden flex flex-col" data-testid="bom-stock-status-panel">
+          <DialogHeader>
+            <DialogTitle>BOM Component Stock (x{quantity || 0} {formatUnit(unitCode)})</DialogTitle>
+            <DialogDescription>
+              {materialId.trim()} - every site/warehouse this BOM's components sit in, scaled to the Quantity you entered.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            {bomStockStatus && (
+              <span className="text-xs text-[#667085]" data-testid="bom-stock-status-source">
+                Source: {bomStockStatus.source === "live" ? "Live SAP" : "Cached snapshot"}{bomStockStatus.fetched_at ? ` · as of ${new Date(bomStockStatus.fetched_at).toLocaleString("en-IN")}` : ""}
+              </span>
+            )}
+            <div className="flex gap-2 ml-auto">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={bomStockLoading || !materialId.trim()}
+                onClick={() => fetchBomStock(true)}
+                data-testid="bom-stock-status-refresh-button"
+              >
+                <ArrowClockwise size={12} className={`mr-1.5 ${bomStockLoading ? "animate-spin" : ""}`} />
+                {bomStockLoading ? "Checking..." : "Check Live Stock"}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={!bomStockStatus?.checked || bomStockRows.length === 0}
+                onClick={downloadBomStockExcel}
+                data-testid="bom-stock-status-download-button"
+              >
+                Download Excel
+              </Button>
+            </div>
+          </div>
+
+          {bomStockLoading && !bomStockStatus && (
+            <p className="text-sm text-[#667085]" data-testid="bom-stock-status-loading">Checking BOM component stock...</p>
+          )}
+
+          {bomStockStatus?.checked && (
+            <div className="flex-1 overflow-auto border border-[#EAECF0] rounded-sm">
+              <table className="w-full text-xs border-collapse" data-testid="bom-stock-status-table">
+                <thead className="sticky top-0">
+                  <tr>
+                    {["Component", "Description", "Available", "Required", "Shortfall", "Site", "Warehouse", "Stock Status", "Location Qty"].map((h) => (
+                      <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {bomStockRows.map((row, i) => (
+                    <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`bom-stock-row-${i}`}>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium">{row.showComponentInfo ? row.product_id : ""}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.showComponentInfo ? row.description || "—" : ""}</td>
+                      <td className={`border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums ${row.showComponentInfo ? (row.sufficient ? "text-[#027A48]" : "text-[#B42318] font-bold") : ""}`}>
+                        {row.showComponentInfo ? `${formatQty(row.total_usable_qty)} ${formatUnit(row.unit_of_measure)}` : ""}
+                      </td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{row.showComponentInfo ? `${formatQty(row.requiredQty)} ${formatUnit(row.unit_of_measure)}` : ""}</td>
+                      <td className={`border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums ${row.showComponentInfo && !row.sufficient ? "text-[#B42318] font-bold" : ""}`}>
+                        {row.showComponentInfo ? (row.sufficient ? "—" : `${formatQty(row.shortfall)} ${formatUnit(row.unit_of_measure)}`) : ""}
+                      </td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.site || "—"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.warehouse || "—"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.displayStatus}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{row.qty != null ? `${formatQty(row.qty)} ${formatUnit(row.unit_of_measure)}` : "—"}</td>
+                    </tr>
+                  ))}
+                  {bomStockRows.length === 0 && (
+                    <tr><td colSpan={9} className="text-center py-6 text-[#98A2B3] border border-[#D0D5DD]">No active components in this BOM.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {bomStockStatus && !bomStockStatus.checked && (
+            <p className="text-sm text-[#98A2B3]" data-testid="bom-stock-status-unavailable">{bomStockStatus.reason}</p>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-auto" data-testid="active-orders-card">
         <div className="px-3 py-2 border-b border-[#D0D5DD] bg-[#F9FAFB]">

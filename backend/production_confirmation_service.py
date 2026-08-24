@@ -523,11 +523,17 @@ def get_bom_stock_status(db, main_output_product: str, override_bom_id: str = No
     component_meta = {}
     for group in bom_doc["groups"]:
         for item in group["items"]:
-            if not item.get("active"):
+            if not item.get("active") or item.get("quantity") is None:
                 continue
             component_meta[item["product_id"]] = {
                 "description": item.get("description"),
                 "unit_of_measure": item.get("unit_of_measure"),
+                # Per-unit-of-main-output BOM ratio - the frontend panel
+                # multiplies this by whatever order Quantity the planner has
+                # typed (live, no extra call needed as they adjust it) to
+                # show Required qty and the resulting Shortfall, same ratio
+                # check_component_availability itself uses server-side.
+                "bom_qty_per_unit": item["quantity"],
             }
     if not component_meta:
         return {"checked": True, "reason": None, "components": [], "source": None, "fetched_at": None}
@@ -568,6 +574,7 @@ def get_bom_stock_status(db, main_output_product: str, override_bom_id: str = No
             "product_id": product_id,
             "description": meta["description"],
             "unit_of_measure": meta["unit_of_measure"],
+            "bom_qty_per_unit": meta["bom_qty_per_unit"],
             "total_usable_qty": total_usable_qty,
             "locations": locations,
         })
