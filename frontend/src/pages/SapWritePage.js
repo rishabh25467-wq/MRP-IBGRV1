@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { NavTabs } from "@/components/NavTabs";
+import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -185,7 +186,7 @@ export default function SapWritePage() {
           <div className="flex items-center gap-3 flex-1 justify-start min-w-0">
             <NavTabs />
           </div>
-          <div className="shrink-0 w-8" />
+          <SapConnectionStatus />
         </header>
         <main className="flex-1 flex items-center justify-center">
           <form

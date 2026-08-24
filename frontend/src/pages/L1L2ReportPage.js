@@ -5,6 +5,7 @@ import * as XLSX from "xlsx";
 import { toast } from "sonner";
 import { ArrowsClockwise, DownloadSimple, MagnifyingGlass, Stack } from "@phosphor-icons/react";
 import { NavTabs } from "@/components/NavTabs";
+import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
@@ -151,6 +152,7 @@ export default function L1L2ReportPage() {
         <Stack size={22} weight="bold" className="text-white shrink-0" />
         <span className="text-white font-heading font-bold text-base shrink-0">Materials Hub</span>
         <NavTabs />
+        <SapConnectionStatus />
       </div>
 
       <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-6">

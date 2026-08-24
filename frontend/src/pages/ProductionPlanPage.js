@@ -34,6 +34,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { NavTabs } from "@/components/NavTabs";
+import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -2030,6 +2031,7 @@ export default function ProductionPlanPage() {
         <div className="flex items-center gap-3 flex-1 justify-start min-w-0">
           <NavTabs />
         </div>
+        <SapConnectionStatus />
         <div className="flex items-center gap-1.5 shrink-0">
           <span className="font-sans text-[11px] text-white/70 hidden md:inline">Your name (for selection tracking):</span>
           <input

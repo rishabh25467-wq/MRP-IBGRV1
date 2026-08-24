@@ -26,6 +26,7 @@ import { Toaster, toast } from "@/components/ui/sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { NavTabs } from "@/components/NavTabs";
+import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -372,7 +373,7 @@ export default function InventoryPage() {
         <div className="flex items-center gap-3 flex-1 justify-start min-w-0">
           <NavTabs />
         </div>
-        <div className="shrink-0 w-8" />
+        <SapConnectionStatus />
       </header>
 
       <main className="flex-1 overflow-auto max-w-[1600px] w-full mx-auto px-6 py-6 space-y-4">

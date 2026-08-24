@@ -29,6 +29,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { NavTabs } from "@/components/NavTabs";
+import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 import { MyStockRequestsTab } from "@/components/MyStockRequestsTab";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -1424,6 +1425,7 @@ export default function ProductionConfirmationPage() {
         <div className="flex items-center gap-3 flex-1 justify-start min-w-0">
           <NavTabs />
         </div>
+        <SapConnectionStatus />
       </header>
 
       <main className="flex-1 overflow-auto p-4 space-y-4">

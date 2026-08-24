@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { NavTabs } from "@/components/NavTabs";
+import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 import { useAuth } from "@/contexts/AuthContext";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -533,7 +534,7 @@ export default function StoreApprovalPage() {
           <div className="flex items-center gap-3 flex-1 justify-start min-w-0">
             <NavTabs />
           </div>
-          <div className="shrink-0 w-8" />
+          <SapConnectionStatus />
         </header>
         <main className="max-w-6xl mx-auto p-4 sm:p-6 space-y-4">
           <div className="flex flex-wrap items-end gap-3">

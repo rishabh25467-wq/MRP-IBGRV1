@@ -4,7 +4,6 @@ import axios from "axios";
 import * as XLSX from "xlsx";
 import {
   MagnifyingGlass,
-  Circle,
   CheckCircle,
   XCircle,
   X,
@@ -37,6 +36,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { NavTabs } from "@/components/NavTabs";
+import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -259,7 +259,6 @@ export default function BomExplorerPage() {
   const [result, setResult] = useState(null);
   const [itemInfo, setItemInfo] = useState(null);
   const [lastSynced, setLastSynced] = useState(null);
-  const [connection, setConnection] = useState({ connected: null, message: "Checking connection..." });
   const [expandedKeys, setExpandedKeys] = useState(new Set());
   const [costs, setCosts] = useState({});
   const [loadingCosts, setLoadingCosts] = useState(false);
@@ -281,19 +280,6 @@ export default function BomExplorerPage() {
       prev.field === field ? { field, direction: prev.direction === "asc" ? "desc" : "asc" } : { field, direction: "asc" }
     );
   };
-
-  const checkConnection = useCallback(async () => {
-    try {
-      const response = await axios.get(`${API}/bom/connection-status`);
-      setConnection(response.data);
-    } catch (e) {
-      setConnection({ connected: false, message: "Unable to reach backend" });
-    }
-  }, []);
-
-  useEffect(() => {
-    checkConnection();
-  }, [checkConnection]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -525,27 +511,8 @@ export default function BomExplorerPage() {
           <NavTabs />
         </div>
 
-        <div
-          className="flex items-center gap-1.5 bg-white/10 border border-white/20 px-2.5 py-1 rounded-full shrink-0"
-          data-testid="connection-status-indicator"
-        >
-          {connection.connected === null ? (
-            <Circle size={8} weight="fill" className="text-[#F59E0B] animate-pulse" />
-          ) : connection.connected ? (
-            <Circle size={8} weight="fill" className="text-[#10B981] animate-pulse" />
-          ) : (
-            <Circle size={8} weight="fill" className="text-[#EF4444]" />
-          )}
-          <span className="font-sans text-[11px] text-white whitespace-nowrap hidden md:inline">
-            {connection.connected === null
-              ? "Checking SAP..."
-              : connection.connected
-              ? "SAP PRD Connected"
-              : "SAP Disconnected"}
-          </span>
-        </div>
+        <SapConnectionStatus />
       </header>
-
       {/* Toolbar */}
       <div className="bg-white border-b border-[#D0D5DD] p-2 flex items-center gap-3 shrink-0 flex-wrap">
         <form onSubmit={handleSearch} className="flex items-center gap-2">

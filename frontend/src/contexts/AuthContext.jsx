@@ -29,11 +29,13 @@ export const PAGE_LABELS = {
   bom_explorer: "BOM Management",
   purchasing_plan: "Procurement Planning",
   production_plan: "Production Planning",
+  production_confirmation: "Production Confirmation",
   inventory: "Inventory Management",
   supplier_master: "Supplier Master",
   quota_allocation: "Quota Allocation",
   admin: "Component Master (Admin)",
   admin_sap_write: "SAP Write (Admin)",
+  admin_create_material: "Create Material (Admin)",
   store_approval: "Store Approval",
 };
 
