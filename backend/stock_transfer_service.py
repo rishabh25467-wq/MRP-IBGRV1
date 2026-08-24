@@ -323,6 +323,20 @@ def create_stock_transfer_order(db, payload: dict, created_by: str) -> dict:
     return sto_doc
 
 
+def _build_gst_note_text(doc: dict) -> str:
+    """One SAP-side, human-readable Note (see sap_sto_client.py's
+    GST_NOTE_TYPE_CODE docstring) carrying all 5 GST/e-way-bill fields -
+    the real, working alternative to writing the Outbound Delivery's own
+    custom fields (confirmed live impossible via any API, Aug 2026)."""
+    parts = []
+    for label, key in [("Mode", "transportation_mode"), ("Vehicle No", "vehicle_no"),
+                        ("Place of Supply", "place_of_supply"), ("GR No", "gr_no"), ("Date of Supply", "date_of_supply")]:
+        value = doc.get(key)
+        if value:
+            parts.append(f"{label}: {value}")
+    return "GST/Transport Info - " + "; ".join(parts) if parts else ""
+
+
 def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None) -> dict:
     """Runs SAP's Check operation first (always-on safety net, not a
     togglable dry-run - user's explicit ask, Aug 2026), then - only if that
@@ -353,6 +367,7 @@ def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None) -> 
         for it in doc["items"]
     ]
 
+    note_text = _build_gst_note_text(doc)
     try:
         if job_id:
             job_store.update_job(db, job_id, {"step": "checking"})
@@ -364,10 +379,10 @@ def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None) -> 
         # rejected live with "does not match account ... (Site)". Always
         # send the Ship-to SITE ID here, regardless of which specific
         # warehouse the user picked in this app's own UI.
-        sap_sto_client.check(doc["ship_from_site_id"], doc["ship_to_site_id"], doc["ship_to_site_id"], items)
+        sap_sto_client.check(doc["ship_from_site_id"], doc["ship_to_site_id"], doc["ship_to_site_id"], items, note_text)
         if job_id:
             job_store.update_job(db, job_id, {"step": "creating"})
-        result = sap_sto_client.maintain(doc["ship_from_site_id"], doc["ship_to_site_id"], doc["ship_to_site_id"], items)
+        result = sap_sto_client.maintain(doc["ship_from_site_id"], doc["ship_to_site_id"], doc["ship_to_site_id"], items, note_text)
     except SAPSTOError as e:
         db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"status": "sap_failed", "error_message": str(e)}})
         raise
@@ -378,6 +393,7 @@ def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None) -> 
         "sap_order_id": result["id"],
         "sap_order_uuid": result["uuid"],
         "gi_status": "awaiting_delivery",
+        "gst_note_pushed": bool(note_text),
     }})
     return {"sap_order_id": result["id"], "sap_order_uuid": result["uuid"]}
 
@@ -391,11 +407,11 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sto_id: str) -> str:
     again later), "posted" (done), or raises SAPOutboundDeliveryError on
     a real SAP-side failure. Mutates the STO doc's `gi_status` fields.
 
-    GST fields (Aug 2026) are pushed onto the ODR HEADER right here,
-    BEFORE post_goods_issue() - confirmed live the ODR becomes read-only
-    the moment GI is posted, so this is the last possible moment. Best
-    effort: a GST push failure is recorded (`gst_push_status`/
-    `gst_push_error`) but never blocks/fails the Goods Issue itself."""
+    GST fields are recorded on the Customer Requirement's own Note at
+    creation time instead (see `_build_gst_note_text`/
+    submit_order_to_sap) - confirmed live the Outbound Delivery
+    Request/Delivery reject ANY field write via API the instant SAP's own
+    scheduler picks them up, before this job ever gets a chance."""
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:
         raise StockTransferValidationError(f"Stock Transfer Order {sto_id} not found.")
@@ -405,19 +421,6 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sto_id: str) -> str:
     delivery_item = sap_outbound_delivery_client.find_delivery_request_item(doc["sap_order_uuid"])
     if not delivery_item:
         return "waiting"
-
-    if doc.get("gst_push_status") != "posted" and delivery_item.get("parent_object_id"):
-        try:
-            sap_outbound_delivery_client.push_gst_fields(delivery_item["parent_object_id"], {
-                "transportation_mode": doc.get("transportation_mode"),
-                "vehicle_no": doc.get("vehicle_no"),
-                "place_of_supply": doc.get("place_of_supply"),
-                "gr_no": doc.get("gr_no"),
-                "date_of_supply": doc.get("date_of_supply"),
-            })
-            db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gst_push_status": "posted", "gst_push_error": None}})
-        except SAPOutboundDeliveryError as e:
-            db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gst_push_status": "failed", "gst_push_error": str(e)}})
 
     # OrderFulfilmentProcessingStatusCode: 1=Not Started, 2=In Process,
     # 3=Finished - only post Goods Issue on one that isn't already done

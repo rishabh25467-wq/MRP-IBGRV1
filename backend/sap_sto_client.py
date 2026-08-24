@@ -37,6 +37,20 @@ DELIVERY_PRIORITY_IMMEDIATE = "1"
 # Multiple delivery).
 PARTIAL_DELIVERY_SINGLE_FULL_QTY = "9"
 
+# GST/e-way-bill fields (Aug 2026): confirmed live these 5 custom fields
+# cannot be written to the Outbound Delivery Request/Delivery via any
+# API - SAP hard-locks the whole document the instant its own scheduler
+# picks it up (before we can ever reach it), and no Extension Scenario
+# exists to carry a field from Customer Requirement forward without
+# Cloud Applications Studio (see PRD.md for the full investigation).
+# WORKING alternative found live: this SAME `ManageCustomerRequirementIn`
+# call already supports a standard `TextCollection` note - written here,
+# at CREATE time, with zero race condition. TypeCode "10011" ("Internal
+# comment") is a generic SAP GDT code confirmed live to be valid for this
+# business object (others tried - "1", "2", "10" - were rejected with
+# "Text type X does not exist").
+GST_NOTE_TYPE_CODE = "10011"
+
 
 class SAPSTOError(Exception):
     pass
@@ -96,8 +110,19 @@ def _build_items_xml(items: list) -> str:
 
 
 def _build_envelope(root_tag: str, ship_from_site_id: str, ship_to_site_id: str,
-                     ship_to_location_id: str, items: list) -> str:
+                     ship_to_location_id: str, items: list, note_text: str = None) -> str:
     items_xml = _build_items_xml(items)
+    text_collection_xml = ""
+    if note_text:
+        text_collection_xml = f"""
+        <TextCollection ActionCode="01">
+          <Text ActionCode="01">
+            <TypeCode>{GST_NOTE_TYPE_CODE}</TypeCode>
+            <TextContent>
+              <Text>{escape(note_text[:1000])}</Text>
+            </TextContent>
+          </Text>
+        </TextCollection>"""
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
   <soapenv:Body>
@@ -110,7 +135,7 @@ def _build_envelope(root_tag: str, ship_from_site_id: str, ship_to_site_id: str,
         <ShipToSiteID>{escape(ship_to_site_id)}</ShipToSiteID>
         <ShipToLocationID>{escape(ship_to_location_id)}</ShipToLocationID>
         <CompleteDeliveryRequestedIndicator>false</CompleteDeliveryRequestedIndicator>
-        <DeliveryPriorityCode>{DELIVERY_PRIORITY_IMMEDIATE}</DeliveryPriorityCode>{items_xml}
+        <DeliveryPriorityCode>{DELIVERY_PRIORITY_IMMEDIATE}</DeliveryPriorityCode>{text_collection_xml}{items_xml}
       </CustomerRequirement>
     </n0:{root_tag}>
   </soapenv:Body>
@@ -122,8 +147,8 @@ class SAPSTOClient:
         self.endpoint = endpoint
         self.auth = HTTPBasicAuth(username, password)
 
-    def _call(self, root_tag: str, soap_action: str, ship_from_site_id, ship_to_site_id, ship_to_location_id, items) -> str:
-        envelope = _build_envelope(root_tag, ship_from_site_id, ship_to_site_id, ship_to_location_id, items)
+    def _call(self, root_tag: str, soap_action: str, ship_from_site_id, ship_to_site_id, ship_to_location_id, items, note_text: str = None) -> str:
+        envelope = _build_envelope(root_tag, ship_from_site_id, ship_to_site_id, ship_to_location_id, items, note_text)
         try:
             with sap_semaphore:
                 resp = requests.post(
@@ -145,16 +170,16 @@ class SAPSTOClient:
             raise SAPSTOError(log_error)
         return xml
 
-    def check(self, ship_from_site_id: str, ship_to_site_id: str, ship_to_location_id: str, items: list) -> None:
+    def check(self, ship_from_site_id: str, ship_to_site_id: str, ship_to_location_id: str, items: list, note_text: str = None) -> None:
         """Validates the payload against SAP - no commit, nothing is
         created. Raises SAPSTOError with SAP's own message if invalid."""
         self._call("CustReqBundleCheckMaintainRequest_sync", _CHECK_SOAP_ACTION,
-                    ship_from_site_id, ship_to_site_id, ship_to_location_id, items)
+                    ship_from_site_id, ship_to_site_id, ship_to_location_id, items, note_text)
 
-    def maintain(self, ship_from_site_id: str, ship_to_site_id: str, ship_to_location_id: str, items: list) -> dict:
+    def maintain(self, ship_from_site_id: str, ship_to_site_id: str, ship_to_location_id: str, items: list, note_text: str = None) -> dict:
         """The real, irreversible SAP write. Returns {"id": str, "uuid": str}."""
         xml = self._call("CustReqBundleMaintainRequest_sync", _MAINTAIN_SOAP_ACTION,
-                          ship_from_site_id, ship_to_site_id, ship_to_location_id, items)
+                          ship_from_site_id, ship_to_site_id, ship_to_location_id, items, note_text)
         sap_id = _first_tag(xml, "ID")
         sap_uuid = _first_tag(xml, "UUID")
         if not sap_id:

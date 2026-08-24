@@ -683,10 +683,8 @@ export default function StockTransferPage() {
                     : o.gi_status === "awaiting_delivery"
                     ? { label: "Awaiting Delivery", className: "bg-[#FEF0C7] text-[#93370D]" }
                     : null;
-                  const gstBadge = o.gst_push_status === "posted"
-                    ? { label: "GST Pushed", className: "bg-[#ECFDF3] text-[#027A48]" }
-                    : o.gst_push_status === "failed"
-                    ? { label: "GST Push Failed", className: "bg-[#FEF3F2] text-[#B42318]" }
+                  const gstBadge = o.gst_note_pushed
+                    ? { label: "GST Recorded", className: "bg-[#ECFDF3] text-[#027A48]" }
                     : null;
                   return (
                     <tr
@@ -877,22 +875,13 @@ export default function StockTransferPage() {
                 </div>
               )}
 
-              {selectedOrder.gst_push_status && (
+              {selectedOrder.gst_note_pushed && (
                 <div
-                  className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
-                    selectedOrder.gst_push_status === "posted" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
-                    : "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
-                  }`}
+                  className="rounded-sm p-3 text-sm flex items-start gap-2 bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
                   data-testid="stock-transfer-detail-gst-status"
                 >
-                  {selectedOrder.gst_push_status === "posted" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : <WarningCircle size={16} className="mt-0.5 shrink-0" />}
-                  <div>
-                    <p className="font-bold">
-                      {selectedOrder.gst_push_status === "posted" ? "GST / Transport fields pushed to SAP."
-                        : "GST / Transport fields push failed:"}
-                    </p>
-                    {selectedOrder.gst_push_status === "failed" && <p className="mt-0.5">{cleanSapMessage(selectedOrder.gst_push_error) || "See logs."}</p>}
-                  </div>
+                  <CheckCircle size={16} className="mt-0.5 shrink-0" />
+                  <p className="font-bold">GST / Transport details recorded on the SAP Customer Requirement note.</p>
                 </div>
               )}
 
