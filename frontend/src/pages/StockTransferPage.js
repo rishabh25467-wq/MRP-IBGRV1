@@ -53,6 +53,7 @@ const STO_STEPS = [
   { key: "validate", label: "Validate order" },
   { key: "check", label: "SAP availability & data check" },
   { key: "create", label: "Create in SAP" },
+  { key: "erp_sync", label: "Sync to ERP Portal" },
   { key: "post_goods_issue", label: "Post Goods Issue (SAP delivery)" },
 ];
 
@@ -359,7 +360,7 @@ export default function StockTransferPage() {
 
   const applyJobStepStatuses = (job) => {
     setStepStatuses((prev) => {
-      if (job.status === "done") return { ...prev, check: "done", create: "done", post_goods_issue: prev.post_goods_issue || "active" };
+      if (job.status === "done") return { ...prev, check: "done", create: "done", erp_sync: prev.erp_sync || "active", post_goods_issue: prev.post_goods_issue || "active" };
       if (job.status === "failed") {
         if (job.step === "creating") return { ...prev, check: "done", create: "failed" };
         return { ...prev, check: "failed", create: "pending" };
@@ -376,6 +377,7 @@ export default function StockTransferPage() {
   // dialog from being closed - the actual retry loop runs server-side
   // regardless of whether this tab is open.
   const [giLiveStatus, setGiLiveStatus] = useState(null); // {status, error} | null
+  const [erpLiveStatus, setErpLiveStatus] = useState(null); // {status, error} | null
   const giPollStopRef = useRef(false);
   const pollGiStatus = (stoId) => {
     giPollStopRef.current = false;
@@ -384,6 +386,11 @@ export default function StockTransferPage() {
       try {
         const { data } = await axios.get(`${API}/stock-transfer/orders/${stoId}`);
         setGiLiveStatus({ status: data.gi_status, error: data.gi_error });
+        setErpLiveStatus({ status: data.erp_portal_status, error: data.erp_portal_error });
+        setStepStatuses((prev) => ({
+          ...prev,
+          erp_sync: data.erp_portal_status === "synced" ? "done" : data.erp_portal_status === "failed" ? "failed" : "active",
+        }));
         const done = data.gi_status === "posted";
         const failed = data.gi_status === "failed" || data.gi_status === "not_found_timeout";
         setStepStatuses((prev) => ({ ...prev, post_goods_issue: done ? "done" : failed ? "failed" : "active" }));
@@ -436,8 +443,9 @@ export default function StockTransferPage() {
     setSubmitting(true);
     setSapSubmitPhase("submitting");
     setSapSubmitMessage(null);
-    setStepStatuses({ validate: "active", check: "pending", create: "pending", post_goods_issue: "pending" });
+    setStepStatuses({ validate: "active", check: "pending", create: "pending", erp_sync: "pending", post_goods_issue: "pending" });
     setGiLiveStatus(null);
+    setErpLiveStatus(null);
     try {
       const payload = {
         ship_to_site_id: shipToSiteId,
@@ -455,7 +463,7 @@ export default function StockTransferPage() {
         })),
       };
       const { data } = await axios.post(`${API}/stock-transfer/orders`, payload);
-      setStepStatuses({ validate: "done", check: "active", create: "pending", post_goods_issue: "pending" });
+      setStepStatuses({ validate: "done", check: "active", create: "pending", erp_sync: "pending", post_goods_issue: "pending" });
       toast.message(`Stock Transfer Order ${data.sto_id} saved - submitting live to SAP...`);
       loadRecentOrders();
       if (data.sap_job_id) pollSapJob(data.sap_job_id);
@@ -464,7 +472,7 @@ export default function StockTransferPage() {
       setFormError(msg);
       toast.error(msg);
       setSapSubmitPhase(null);
-      setStepStatuses({ validate: "failed", check: "pending", create: "pending", post_goods_issue: "pending" });
+      setStepStatuses({ validate: "failed", check: "pending", create: "pending", erp_sync: "pending", post_goods_issue: "pending" });
     } finally {
       setSubmitting(false);
     }
@@ -838,7 +846,7 @@ export default function StockTransferPage() {
             <table className="w-full text-[12px] border-collapse min-w-[900px]" data-testid="stock-transfer-recent-table">
               <thead>
                 <tr>
-                  {["STO ID", "Created", "By", "Ship-from", "Ship-to", "Location", "Items", "Delivery Date", "SAP Order ID", "Status", "Goods Issue", "GST Push"].map((h) => (
+                  {["STO ID", "Created", "By", "Ship-from", "Ship-to", "Location", "Items", "Delivery Date", "SAP Order ID", "Status", "Goods Issue", "GST Push", "ERP Portal"].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-[11px] font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -863,6 +871,13 @@ export default function StockTransferPage() {
                     : null;
                   const gstBadge = o.gst_note_pushed
                     ? { label: "GST Recorded", className: "bg-[#ECFDF3] text-[#027A48]" }
+                    : null;
+                  const erpBadge = o.erp_portal_status === "synced"
+                    ? { label: "Synced", className: "bg-[#ECFDF3] text-[#027A48]" }
+                    : o.erp_portal_status === "failed"
+                    ? { label: "Sync Failed", className: "bg-[#FEF3F2] text-[#B42318]" }
+                    : o.status === "created_in_sap"
+                    ? { label: "Pending", className: "bg-[#FEF0C7] text-[#93370D]" }
                     : null;
                   return (
                     <tr
@@ -889,6 +904,9 @@ export default function StockTransferPage() {
                       <td className="border border-[#D0D5DD] px-2 py-1.5">
                         {gstBadge ? <span className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold ${gstBadge.className}`}>{gstBadge.label}</span> : <span className="text-[#98A2B3]">—</span>}
                       </td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5" data-testid={`stock-transfer-recent-erp-status-${o.sto_id}`}>
+                        {erpBadge ? <span className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold ${erpBadge.className}`}>{erpBadge.label}</span> : <span className="text-[#98A2B3]">—</span>}
+                      </td>
                     </tr>
                   );
                 })}
@@ -902,7 +920,7 @@ export default function StockTransferPage() {
           write (user's explicit ask, Aug 2026) - clicking "Review &
           Create" above only opens this summary; nothing is submitted to
           SAP until "Confirm & Submit to SAP" is explicitly clicked here. */}
-      <Dialog open={showConfirmDialog} onOpenChange={(open) => { if (!submitting) { setShowConfirmDialog(open); if (!open) { giPollStopRef.current = true; setSapSubmitPhase(null); setSapSubmitMessage(null); setStepStatuses({}); setGiLiveStatus(null); } } }}>
+      <Dialog open={showConfirmDialog} onOpenChange={(open) => { if (!submitting) { setShowConfirmDialog(open); if (!open) { giPollStopRef.current = true; setSapSubmitPhase(null); setSapSubmitMessage(null); setStepStatuses({}); setGiLiveStatus(null); setErpLiveStatus(null); } } }}>
         <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto" data-testid="stock-transfer-confirm-dialog">
           <DialogHeader>
             <DialogTitle>Confirm Stock Transfer Order</DialogTitle>
@@ -937,6 +955,23 @@ export default function StockTransferPage() {
                 >
                   {sapSubmitPhase === "done" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : <WarningCircle size={16} className="mt-0.5 shrink-0" />}
                   <p>{sapSubmitMessage}</p>
+                </div>
+              )}
+              {sapSubmitPhase === "done" && erpLiveStatus && (
+                <div
+                  className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
+                    erpLiveStatus.status === "synced" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
+                    : erpLiveStatus.status === "failed" ? "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
+                    : "bg-[#FEF0C7] border border-[#FEDF89] text-[#93370D]"
+                  }`}
+                  data-testid="stock-transfer-dialog-erp-status"
+                >
+                  {erpLiveStatus.status === "synced" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : erpLiveStatus.status === "failed" ? <WarningCircle size={16} className="mt-0.5 shrink-0" /> : <CircleNotch size={16} className="mt-0.5 shrink-0 animate-spin" />}
+                  <p>
+                    {erpLiveStatus.status === "synced" ? "Synced to ERP Portal (Delivery Challan created)."
+                      : erpLiveStatus.status === "failed" ? `ERP Portal sync failed: ${erpLiveStatus.error || "see logs"}.`
+                      : "Syncing to ERP Portal..."}
+                  </p>
                 </div>
               )}
               {sapSubmitPhase === "done" && giLiveStatus && (
@@ -1005,7 +1040,7 @@ export default function StockTransferPage() {
 
           {sapSubmitPhase && sapSubmitPhase !== "submitting" && (
             <div className="flex justify-end pt-1">
-              <Button type="button" onClick={() => { giPollStopRef.current = true; setShowConfirmDialog(false); setSapSubmitPhase(null); setSapSubmitMessage(null); setStepStatuses({}); setGiLiveStatus(null); }} data-testid="stock-transfer-confirm-close-button">Close</Button>
+              <Button type="button" onClick={() => { giPollStopRef.current = true; setShowConfirmDialog(false); setSapSubmitPhase(null); setSapSubmitMessage(null); setStepStatuses({}); setGiLiveStatus(null); setErpLiveStatus(null); }} data-testid="stock-transfer-confirm-close-button">Close</Button>
             </div>
           )}
         </DialogContent>
@@ -1054,6 +1089,30 @@ export default function StockTransferPage() {
               ) : (
                 <div className="bg-[#FEF0C7] border border-[#FEDF89] rounded-sm p-3 text-sm text-[#93370D]" data-testid="stock-transfer-detail-no-error">
                   Submitting to SAP now - refresh in a few seconds if this doesn't update.
+                </div>
+              )}
+
+              {selectedOrder.status === "created_in_sap" && (
+                <div
+                  className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
+                    selectedOrder.erp_portal_status === "synced" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
+                    : selectedOrder.erp_portal_status === "failed" ? "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
+                    : "bg-[#FEF0C7] border border-[#FEDF89] text-[#93370D]"
+                  }`}
+                  data-testid="stock-transfer-detail-erp-status"
+                >
+                  {selectedOrder.erp_portal_status === "synced" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : <WarningCircle size={16} className="mt-0.5 shrink-0" />}
+                  <div>
+                    <p className="font-bold">
+                      {selectedOrder.erp_portal_status === "synced" ? "Synced to ERP Portal."
+                        : selectedOrder.erp_portal_status === "failed" ? "ERP Portal sync failed:"
+                        : "ERP Portal: syncing..."}
+                    </p>
+                    {selectedOrder.erp_portal_status === "failed" && <p className="mt-0.5">{selectedOrder.erp_portal_error || "See logs."}</p>}
+                    {selectedOrder.erp_portal_status === "synced" && (
+                      <p className="mt-0.5 text-xs opacity-80">Portal Sale No: {selectedOrder.erp_sale_no} / {selectedOrder.erp_sale_noc}</p>
+                    )}
+                  </div>
                 </div>
               )}
 

@@ -634,3 +634,81 @@ async def parse_natural_language_transfer_request(text: str, known_sites: list) 
             logger.warning(f"Stock Transfer NL parse: {provider}/{model} failed, trying next option: {e}")
             continue
     raise StockTransferValidationError(f"Could not understand that request right now ({last_error}) - please fill the form manually.")
+
+
+def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str) -> None:
+    """Writes this Stock Transfer Order into the legacy Radish ERP portal
+    (Aug 27 2026, user's explicit ask) via its own stored procedures - see
+    erp_portal_client.py. Fires right after the order is created in SAP
+    (same moment as the GST note), independent of Goods Issue - a
+    completely separate, best-effort sync (same pattern as
+    gst_note_pushed), never blocks or fails the SAP write itself.
+
+    Field mapping (user's explicit instructions, Aug 27 2026):
+      CompCode = same Site -> Company mapping already used for WIP
+        Clearing ("RI" for P1/P8, "RT" for every other site).
+      Pcode = Ship-to site's own plant code, unchanged - the portal
+        reuses the exact same site codes as SAP.
+      Rate/Amt/Amount/TaxableAmt = SAP's live Moving Average price x
+        quantity (never Standard Cost - see sap_valuation_client.py).
+      HSN_no left blank for now - user's explicit "come back to HSN
+        later" (not reachable via any SAP API this tenant currently
+        exposes - would need a new custom OData service from Basis).
+      Trans/Emp_no/ElecRefNo/Padd_Code1/Padd_Code2/Term1-3 all left
+        blank - user's explicit instruction (not captured/needed today).
+    """
+    doc = db[STO_COLLECTION].find_one({"_id": sto_id})
+    if not doc:
+        raise StockTransferOrderNotFoundError(f"Stock Transfer Order {sto_id} not found.")
+
+    product_ids = [item["product_id"] for item in doc["items"]]
+    product_uuid_by_id = {
+        c["_id"]: c.get("product_uuid")
+        for c in db["component_master"].find({"_id": {"$in": product_ids}}, {"product_uuid": 1})
+    }
+    product_uuids = [u for u in product_uuid_by_id.values() if u]
+    costs = sap_valuation_client.get_standard_costs(product_uuids) if product_uuids else {}
+
+    sale_date = datetime.strptime(doc["date_of_supply"], "%Y-%m-%d")
+    line_items = []
+    total_amount = 0.0
+    for item in doc["items"]:
+        product_uuid = product_uuid_by_id.get(item["product_id"])
+        cost = costs.get(product_uuid.upper()) if product_uuid else None
+        rate = cost["amount"] if cost else 0.0
+        qty = item["requested_qty"]
+        amt = round(rate * qty, 3)
+        total_amount += amt
+        line_items.append({
+            "product_id": item["product_id"], "description": item.get("description"),
+            "hsn_no": None, "qty": qty, "unit": item.get("unit_of_measure") or "EA",
+            "rate": rate, "amt": amt, "dis_amt": 0, "taxable_amt": amt, "remark": None,
+        })
+
+    comp_code, _ = company_and_set_of_books_for_site(doc["ship_from_site_id"])
+    header = {
+        "comp_code": comp_code,
+        "elec_ref_no": None,
+        "sale_date": sale_date,
+        "pcode": doc["ship_to_site_id"],
+        "padd_code1": None, "padd_code2": None,
+        "trans": None,
+        "veh_no": doc.get("vehicle_no"),
+        "gr_no": doc.get("gr_no"),
+        "gr_date": doc.get("date_of_supply"),
+        "marks": doc.get("place_of_supply"),
+        "amount": round(total_amount, 2),
+        "tdis_amt": 0,
+        "ttaxable_amt": round(total_amount, 2),
+        "term1": None, "term2": None, "term3": None,
+        "emp_no": None,
+    }
+    result = erp_portal_client.create_delivery_challan(header, line_items)
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
+        "erp_portal_status": "synced", "erp_portal_error": None,
+        "erp_sale_no": result["sale_no"], "erp_sale_noc": result["sale_noc"],
+    }})
+
+
+def mark_erp_portal_failed(db, sto_id: str, error: str) -> None:
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"erp_portal_status": "failed", "erp_portal_error": error}})

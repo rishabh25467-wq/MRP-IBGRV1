@@ -27,6 +27,7 @@ from sap_wip_clearing_client import SAPWipClearingClient, SAPWipClearingError, c
 from sap_production_proposal_client import SAPProductionProposalClient, SAPProductionProposalError
 from sap_sto_client import SAPSTOClient
 from sap_outbound_delivery_client import SAPOutboundDeliveryClient, SAPOutboundDeliveryError
+from erp_portal_client import ERPPortalClient
 from sap_production_model_client import SAPProductionModelClient, SAPProductionModelError, SAPProductionModelBomClient
 from sap_goods_movement_client import SAPGoodsMovementClient, SAPGoodsMovementError
 from sap_production_order_release_client import SAPProductionOrderReleaseClient, SAPProductionOrderReleaseError
@@ -171,6 +172,15 @@ sap_sto_client = SAPSTOClient(
     endpoint=os.environ['SAP_SOAP_STO_ENDPOINT'],
     username=os.environ['SAP_SOAP_USERNAME'],
     password=os.environ['SAP_SOAP_PASSWORD'],
+)
+
+erp_portal_client = ERPPortalClient(
+    primary_host=os.environ['ERP_MSSQL_PRIMARY_HOST'],
+    fallback_host=os.environ['ERP_MSSQL_FALLBACK_HOST'],
+    port=int(os.environ['ERP_MSSQL_PORT']),
+    database=os.environ['ERP_MSSQL_DATABASE'],
+    username=os.environ['ERP_MSSQL_USERNAME'],
+    password=os.environ['ERP_MSSQL_PASSWORD'],
 )
 
 sap_outbound_delivery_client = SAPOutboundDeliveryClient(
@@ -4351,9 +4361,22 @@ async def _run_submit_sto_to_sap_job(job_id: str, sto_id: str):
         # own gi_status field, same as any other field the Recent Orders
         # table/detail modal already read.
         asyncio.create_task(_run_goods_issue_job(sto_id))
+        asyncio.create_task(_run_erp_portal_sync_job(sto_id))
     except Exception as e:
         logger.error(f"Stock Transfer Order {sto_id}: live SAP submit job {job_id} failed: {e}")
         job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
+
+
+async def _run_erp_portal_sync_job(sto_id: str):
+    """Legacy ERP portal sync (Aug 27 2026, user's explicit ask) - fires
+    right after SAP order creation succeeds, regardless of Goods Issue
+    outcome. Best-effort, same pattern as gst_note_pushed - never blocks
+    or fails the SAP write itself."""
+    try:
+        await asyncio.to_thread(stock_transfer_service.sync_to_erp_portal, db, erp_portal_client, sap_valuation_client, sto_id)
+    except Exception as e:
+        logger.error(f"Stock Transfer Order {sto_id}: ERP Portal sync failed: {e}")
+        await asyncio.to_thread(stock_transfer_service.mark_erp_portal_failed, db, sto_id, str(e))
 
 
 async def _run_goods_issue_job(sto_id: str):
