@@ -3470,7 +3470,15 @@ async def get_proposal_and_release_history(request: Request):
     # open-lots table above, applied to the Create Production Order tab's
     # Recent Activity list - admin/super_admin still see every site.
     entries = await asyncio.to_thread(production_confirmation_service.get_proposal_and_release_history, db)
-    return {"entries": _filter_by_site_access(entries, request.state.user)}
+    entries = _filter_by_site_access(entries, request.state.user)
+    # Aug 25 2026, user's explicit follow-up ask (same rule as the
+    # open-lots table): a plain "user" account only sees entries THEY
+    # created/released - admin/super_admin still see every entry.
+    user = request.state.user
+    if user.get("role") not in ("super_admin", "admin"):
+        my_name = (user.get("name") or "").strip().lower()
+        entries = [e for e in entries if (e.get("released_by") or e.get("actor") or "").strip().lower() == my_name]
+    return {"entries": entries}
 
 
 class ComponentAvailabilityRequest(BaseModel):

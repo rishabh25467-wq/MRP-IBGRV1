@@ -1,3 +1,13 @@
+## Gap fix (2026-08-25, continued) - "self-created only" now also enforced on Create Production Order's Recent Activity table
+
+- User asked to confirm self-created-only filtering applies to BOTH pages. Found a gap: `proposal-history` (Recent Activity on Create Production Order tab) was only site-scoped, not creator-scoped - a "user" could see everyone else's activity at their bound site.
+- Fixed: `get_proposal_and_release_history` now also filters to `released_by`/`actor` matching the caller's name for role=="user", same pattern as the open-lots table. admin/super_admin unaffected (see all).
+- Verified live: a P1-bound test user (name matching no real actor) now gets 0 entries; a P1-bound "Ankit" test account gets only Ankit's 8 entries.
+- Both Production Confirmation and Create Production Order tables are now consistently self-created-only for non-admin users, site-scoped + creator-scoped, admin/super_admin see everything on both.
+
+---
+
+
 ## Removal (2026-08-25, continued) - Urgent Action Dashboard removed per user request
 
 - User asked to remove the just-added/redesigned Urgent Action tile section entirely.
