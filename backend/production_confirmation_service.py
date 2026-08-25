@@ -179,18 +179,26 @@ def get_latest_confirmation_by_lot(db, production_lot_ids: list) -> dict:
     check_component_availability_batch for the STOCK column. User's
     explicit ask: a persistent per-lot indicator for posting/WIP-clearing/
     by-product outcome, since today those only ever show as a toast that
-    disappears."""
+    disappears.
+
+    Aug 2026 fix: now that a single lot can have multiple independent
+    Reporting Points (e.g. RP10/RP20/END on a multi-op model), grouping
+    by production_lot_id alone made every row of that lot show the SAME
+    "Posted"/"By-product" badge - including RPs that were never actually
+    confirmed. Key is now `{lot}::{reporting_point_id}` so each Reporting
+    Point only shows its own outcome."""
     if not production_lot_ids:
         return {}
     pipeline = [
         {"$match": {"production_lot_id": {"$in": production_lot_ids}}},
         {"$sort": {"at": -1}},
-        {"$group": {"_id": "$production_lot_id", "doc": {"$first": "$$ROOT"}}},
+        {"$group": {"_id": {"lot": "$production_lot_id", "rp": "$reporting_point_id"}, "doc": {"$first": "$$ROOT"}}},
     ]
     result = {}
     for row in db[HISTORY_COLLECTION].aggregate(pipeline):
         d = row["doc"]
-        result[row["_id"]] = {
+        key = f"{row['_id']['lot']}::{row['_id']['rp']}"
+        result[key] = {
             "success": d.get("success"),
             "wip_clearing": d.get("wip_clearing"),
             "byproduct_confirmation": d.get("byproduct_confirmation"),

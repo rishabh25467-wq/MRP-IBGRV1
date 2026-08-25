@@ -1,0 +1,57 @@
+{
+  "summary": "Frontend-only verification of the new admin-only /admin/production-confirmation-test page (copy of Production Confirmation + unlocked 'finished' checkbox + new 'Awaiting Prev Step' column), the two new nav links, and the superAdminOnly route gating. ALL 6 requested items PASS. No SAP mutation was performed (no Confirm submitted; only GET open-lots / GET lot/70538 and one dialog opened+cancelled). Role gating verified with two synthetic sessions (super_admin + user role, both deleted afterwards): desktop dropdown + mobile drawer link appear ONLY for super_admin; the 'user'-role account sees no link and gets the Access Denied screen (data-testid=access-denied-page) on the direct URL. Admin test banner + ADMIN TEST badge render. Column order confirmed: OPEN -> AWAITING PREV STEP -> UOM (index 8). Lot 70538 lookup returns exactly the 3 expected rows and the awaiting values match the spec exactly: RP10 = '—', RP20 = '3 (after RP10)', END = '0 (after RP20)'. Confirm dialog on the RP10 row: 'Mark this task as finished' checkbox is ENABLED (no disabled attr), initial state checked, toggles checked->unchecked->checked correctly; dialog cancelled without submitting. Smoke: stats cards (Reporting Points Shown 3 / Distinct Lots 1 / Confirmed Today 3 / Scrap 7d), Create Production Order tab, Confirmation History dialog, filters all render with 0 console errors and 0 error-class elements. Found 2 real (non-blocking) issues plus 1 pre-existing one - see below.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/production-confirmation/open-lots",
+        "issue": "Row payload has NO routing/operation sequence field (keys: reporting_point_id/uuid, production_task_id, ... no sequence/step number). The new 'Awaiting Prev Step' column relies entirely on SAP's arbitrary array order (adjacent-pair diff), which is demonstrably NOT routing order for the 13 existing multi-Reporting-Point lots in this tenant - see frontend issue below. Adding an explicit operation-sequence field would let the UI sort deterministically."
+      },
+      {
+        "endpoint": "GET /api/bom/connection-status",
+        "issue": "Returns 403 for a 'user'-role account granted only production_confirmation (admin returns 200). The SapConnectionStatus header widget calls it on every page, so a shop-floor user always sees a red 'SAP Disconnected' badge plus 2 console 403 errors on /production-confirmation. Pre-existing, not from this session's change."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Awaiting Prev Step on pre-existing multi-Reporting-Point lots (END + MARK_001)",
+        "issue": "awaitingByRowKey assumes 'rows for the same lot arrive from SAP already in routing order'. That holds for the new PL-0037A_2 lots (RP10, RP20, END) but NOT for the 13 real legacy lots in this tenant where open-lots returns END FIRST and MARK_001 second. Result: the MARK_001 row is treated as coming AFTER the final END point, producing misleading numbers, e.g. lot 33215 shows '15,000 (after END)' and lot 44728 shows '3,600 (after END)' on the MARK_001 row (screenshot /tmp/admin_table.png). Suggest sorting each lot group by an explicit SAP operation/routing sequence (needs the backend field above) instead of array order, or suppressing the column when the group is not confirmed-ordered. Also note the diff can go negative (later step confirmed more than the previous one) and would render as a negative number with no explanation.",
+        "affected_selectors": ["[data-testid^=\"awaiting-prev-step-\"]"]
+      },
+      {
+        "flow": "Manual 'Look Up' of a lot ID while the initial open-lots SAP fetch is still in flight",
+        "issue": "Race condition: lookupManual() sets rows to the 3 lot rows and toasts 'Loaded Production Lot 70538', but the slow loadOpenLots() promise then resolves and overwrites rows with all 113 open lots - the success toast stays on screen while the table shows something else. Reproduced (had to wait for open-lots to settle before the lookup worked). Pre-existing pattern inherited from ProductionConfirmationPage.js; fix by tracking a request sequence/AbortController and ignoring stale responses.",
+        "affected_selectors": ["[data-testid=\"manual-lookup-button\"]", "[data-testid=\"production-lots-table\"]"]
+      }
+    ],
+    "design_issues": [
+      {
+        "screen": "/admin/production-confirmation-test",
+        "issues": ["Cosmetic only: the maroon (#7C2D12) header + amber banner clearly differentiate the test page - no contrast/spacing problems found. 'Requested End Date' on the Create tab still uses the native browser mm/dd/yyyy date input instead of the shadcn Calendar (same pre-existing issue reported in iteration_117)."]
+      }
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Make the 'Awaiting Prev Step' pairing order-safe: legacy multi-RP lots (END returned before MARK_001) currently show the final END point as the 'previous step'. Either expose an SAP operation/routing sequence on open-lots rows and sort each lot group by it, or only render the column when the lot's reporting points are in a known order (e.g. END always last).",
+    "Guard against a negative awaiting value (prev.confirmed < this.confirmed) so the cell doesn't display e.g. '-400 (after RP10)'.",
+    "Fix the stale-response race between loadOpenLots() and lookupManual() (ignore an in-flight open-lots response after a manual lookup).",
+    "Optional / pre-existing: SapConnectionStatus should call an endpoint a production-only 'user' can access (or hide the badge) - currently every shop-floor user sees 'SAP Disconnected' + 403s."
+  ],
+  "critical_code_review_comments": [
+    "ProductionConfirmationTestPage.js is 2290 lines (a full copy of the 2200-line ProductionConfirmationPage.js). Acceptable as a throwaway admin test page, but if it survives, the shared 90% must be extracted (shared ConfirmDialog / lots table / hooks) - two copies of the SAP confirmation flow will drift, and a bug fixed on one page will silently remain on the other.",
+    "awaitingByRowKey (line 2032) is computed from `rows` (unsorted source) while the table renders `visibleRows`; keying by rowKey() makes this correct today, but the adjacent-pair assumption on SAP array order is the real fragility (see integration issue).",
+    "The unlocked checkbox is purely client-side (Checkbox no longer `disabled`); the /confirm endpoint accepts finished=false, so a partial confirmation posted from this page is a real SAP mutation with no admin-only server-side guard. If that's intentional, fine; otherwise consider requiring role admin/super_admin server-side for finished=false."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (per request)", "frontend": "100% of the 6 requested checks passed (2 non-blocking defects found in adjacent behaviour)"},
+  "seed_data_creation": "Two synthetic auth_users + auth_sessions docs (qa118.admin@rampgroup.co.in / super_admin and qa118.user@rampgroup.co.in / user with allowed_pages=['production_confirmation']). BOTH DELETED after testing (verified 0 leftovers), and the temporary /app/backend/tests/_setup_iter118_sessions.py helper was removed. No SAP data was created or mutated - lots 70538/70544/70537 untouched.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "No end-user login (Entra ID SSO). Synthetic-session technique from /app/memory/test_credentials.md used; the pre-existing p1.floor.test session token was not needed/used.",
+  "context_for_next_testing_agent": "SAP_GOODS_MOVEMENT_DRY_RUN=false in this env - never click Confirm/submit. Lot 70538 (PL-0037A_2, site P2) is the only 3-Reporting-Point lot (RP10 conf 3/4, RP20 0/4, END 0/4) and it is NOT returned by /open-lots?status=open - you must use the 'Look Up' box (GET /production-confirmation/lot/70538, ~15s). Wait for the initial open-lots SAP load (~40-60s, 113 rows) to settle BEFORE doing a manual lookup or the response race will overwrite your rows. 13 legacy lots have END+MARK_001 pairs and expose the ordering bug described above.",
+  "rca_of_the_issue": "awaitingByRowKey groups rows by production_lot_id in SAP's returned array order and diffs each row against its immediate predecessor. The open-lots payload contains no routing/operation sequence, so for lots where SAP returns the final 'END' reporting point before an intermediate mark (13 real lots with MARK_001), the predecessor is the LAST operation, and the column reports units 'awaiting' an earlier step after the final one. The new PL-0037A_2 lots happen to come back in true routing order (RP10, RP20, END), which is why the primary test case displays correctly."
+}

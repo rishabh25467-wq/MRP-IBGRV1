@@ -149,6 +149,23 @@ class SAPProductionLotClient:
             task_id = _first_tag(first_task, "ProductionTaskID") if first_task else None
             task_uuid = _first_tag(first_task, "ProducionTaskUUID") if first_task else None
 
+            # Aug 25 2026 fix (real incident, lot 70539): the ReportingPoint's
+            # own ConfirmationFinishedIndicator is FROZEN once set true - SAP
+            # docs confirm it "cannot be unchecked once set", even after a
+            # successful Restart Task action. ProcessingStatusCode on the
+            # TASK itself is the field that actually reflects a restart
+            # (3=truly Finished, 2=back In Process) - this is what the
+            # Confirm button must gate on, not the frozen RP flag.
+            task_status_block = _first_block(first_task, "Status") if first_task else None
+            task_processing_status_code = _first_tag(task_status_block, "ProcessingStatusCode") if task_status_block else None
+
+            # Aug 25 2026, user's explicit ask: show the real operation
+            # name (e.g. "Blanking"/"Bending"/"Forming") instead of a bare
+            # Reporting Point code like "RP10" - each ConfirmationGroup's
+            # Activity block carries this description already.
+            activity_blocks = _all_blocks(group_block, "Activity")
+            operation_description = _first_tag(activity_blocks[0], "ActivityDescription") if activity_blocks else None
+
             # Output Products grid (main output + any by-products already
             # planned on this lot, e.g. IRON-SCR) - each carries its own
             # MaterialOutputUUID, needed to confirm ITS quantity separately
@@ -216,6 +233,8 @@ class SAPProductionLotClient:
                     "production_task_uuid": task_uuid,
                     "reporting_point_id": _first_tag(rp_block, "ReportingPointID"),
                     "reporting_point_uuid": _first_tag(rp_block, "ReportingPointUUID"),
+                    "operation_description": operation_description,
+                    "task_finished": task_processing_status_code == "3",
                     "unit_code": unit_code,
                     "planned_quantity": _to_float(_first_tag(rp_block, "PlannedQuantity")),
                     "total_confirmed_quantity": _to_float(_first_tag(rp_block, "TotalConfirmedQuantity")),
@@ -363,6 +382,48 @@ class SAPProductionLotClient:
       {processor_xml}
       <ExecutionDateTime>{execution_dt}</ExecutionDateTime>
       <ConfirmationCompletedRequiredIndicator>true</ConfirmationCompletedRequiredIndicator>
+     </ProductionTask>
+    </ConfirmationGroup>
+   </ProductionLot>
+  </n0:ProductionLotsBundleMaintainRequest_sync_V1>
+ </soapenv:Body>
+</soapenv:Envelope>"""
+        xml = self._post(self.manage_endpoint, body, MANAGE_SOAP_ACTION)
+        logs = self._parse_confirm_logs(xml)
+        success = not any(l["severity"] == "E" for l in logs)
+        return {"success": success, "logs": logs}
+
+    def restart_task(
+        self, production_lot_id: str, production_lot_uuid: str, confirmation_group_uuid: str,
+        production_task_id: str = None, production_task_uuid: str = None, processor_employee_id: str = None,
+    ) -> dict:
+        """Standalone 'Restart Task' action - the ONLY way to reopen a task
+        that was already marked Finished (SAP explicitly rejects re-sending
+        ReportingPoint's ConfirmationFinishedIndicator=false - "cannot be
+        unchecked once set" per SAP's own docs). Recovery path for the Aug
+        25 2026 incident: a task closed at a partial quantity (e.g. 9 of
+        18) because the confirming request wrongly included
+        ConfirmationFinishedIndicator=true. Per SAP docs, this request must
+        contain ONLY the ProductionTask node."""
+        from datetime import datetime, timezone
+        execution_dt = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
+        processor_xml = f"<ProcessorEmployeeID>{processor_employee_id}</ProcessorEmployeeID>" if processor_employee_id else ""
+        body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+ <soapenv:Body>
+  <n0:ProductionLotsBundleMaintainRequest_sync_V1 xmlns:n0="http://sap.com/xi/SAPGlobal20/Global">
+   <BasicMessageHeader/>
+   <ProductionLot>
+    <ProductionLotID>{production_lot_id}</ProductionLotID>
+    <ProductionLotUUID>{production_lot_uuid}</ProductionLotUUID>
+    <ConfirmationGroup>
+     <ConfirmationGroupUUID>{confirmation_group_uuid}</ConfirmationGroupUUID>
+     <ProductionTask>
+      <ProductionTaskID>{production_task_id or ''}</ProductionTaskID>
+      <ProducionTaskUUID>{production_task_uuid or ''}</ProducionTaskUUID>
+      {processor_xml}
+      <ExecutionDateTime>{execution_dt}</ExecutionDateTime>
+      <RestartOfTaskIndicator>true</RestartOfTaskIndicator>
      </ProductionTask>
     </ConfirmationGroup>
    </ProductionLot>

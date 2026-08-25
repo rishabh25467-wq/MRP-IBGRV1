@@ -2151,7 +2151,10 @@ def _attach_order_creators(rows: list, db) -> list:
 
 
 @api_router.get("/production-confirmation/open-lots")
-async def get_open_production_lots(request: Request, status: str = Query("open", description="'open' (Released+Started), 'all', or comma-separated status codes"), site_id: Optional[str] = None, limit: int = 100):
+# Aug 25 2026 fix: SAP's SelectionByProductionLotStatusCode query has no
+# recency ordering - a 100-row cap was silently excluding brand-new lots
+# (e.g. lot 70539 never appeared) once the tenant had >100 open lots.
+async def get_open_production_lots(request: Request, status: str = Query("open", description="'open' (Released+Started), 'all', or comma-separated status codes"), site_id: Optional[str] = None, limit: int = 500):
     if status == "open":
         status_codes = None
     elif status == "all":
@@ -2509,6 +2512,36 @@ async def retry_fg_movement(payload: RetryFgMovementRequest):
 async def get_production_confirmation_history(production_lot_id: Optional[str] = None):
     entries = await asyncio.to_thread(production_confirmation_service.get_confirmation_history, db, production_lot_id)
     return {"entries": entries}
+
+
+class RestartTaskRequest(BaseModel):
+    production_lot_id: str
+    production_lot_uuid: str
+    confirmation_group_uuid: str
+    production_task_id: Optional[str] = None
+    production_task_uuid: Optional[str] = None
+    actor: str
+
+
+@api_router.post("/production-confirmation/restart-task")
+async def restart_production_task(payload: RestartTaskRequest):
+    """Reopens a task SAP already marked Finished (sets it back to In
+    Process) - recovery path for a task closed too early at a partial
+    quantity, e.g. via the admin test page's now-fixed "finished"
+    checkbox (Aug 25 2026 incident, lot 70539). SAP rejects re-sending
+    ConfirmationFinishedIndicator=false on the ReportingPoint itself -
+    RestartOfTaskIndicator on the ProductionTask is the only supported
+    way to reverse this."""
+    if not payload.actor.strip():
+        raise HTTPException(status_code=400, detail="actor (your name) is required")
+    result = await asyncio.to_thread(
+        sap_production_lot_client.restart_task,
+        payload.production_lot_id, payload.production_lot_uuid, payload.confirmation_group_uuid,
+        payload.production_task_id, payload.production_task_uuid,
+    )
+    if not result.get("success"):
+        raise HTTPException(status_code=502, detail=f"Restart Task failed in SAP: {result.get('logs')}")
+    return result
 
 
 def _site_scope_for(user: dict):

@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { CaretDown, UserCircle, SignOut, ShieldCheck, List } from "@phosphor-icons/react";
+import { CaretDown, UserCircle, SignOut, ShieldCheck, List, Flask } from "@phosphor-icons/react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -174,6 +174,18 @@ export const NavTabs = () => {
                 </Link>
               </DropdownMenuItem>
             )}
+            {/* Aug 2026 - admin-only test page for multi-Reporting-Point
+                production models (e.g. PL-0037A_2's Blanking/Bending/Forming
+                split) - deliberately NOT in PAGE_CATALOG/allowed_pages, so it
+                can never be granted to a regular "user" account. */}
+            {(user.role === "super_admin" || user.role === "admin") && (
+              <DropdownMenuItem asChild>
+                <Link to="/admin/production-confirmation-test" className="w-full cursor-pointer flex items-center gap-2" data-testid="nav-production-confirmation-test">
+                  <Flask size={14} weight="bold" />
+                  Production Confirmation (Test)
+                </Link>
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem onClick={logout} className="cursor-pointer flex items-center gap-2 text-[#B42318]" data-testid="nav-sign-out">
               <SignOut size={14} weight="bold" />
               Sign Out
@@ -322,6 +334,18 @@ export const NavTabs = () => {
                     >
                       <ShieldCheck size={16} weight="bold" />
                       Access Management
+                    </Link>
+                  </SheetClose>
+                )}
+                {(user.role === "super_admin" || user.role === "admin") && (
+                  <SheetClose asChild>
+                    <Link
+                      to="/admin/production-confirmation-test"
+                      className="flex items-center gap-2 min-h-11 px-3 rounded-lg text-[14px] font-bold text-[#344054] hover:bg-slate-100"
+                      data-testid="mobile-nav-production-confirmation-test"
+                    >
+                      <Flask size={16} weight="bold" />
+                      Production Confirmation (Test)
                     </Link>
                   </SheetClose>
                 )}

@@ -18,6 +18,7 @@ import {
   X,
   CaretRight,
   CaretDown,
+  Flask,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -215,11 +216,12 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
       setHasScrap(false);
       setScrapCalc(null);
       setReason("");
-      // Aug 2026 (user's explicit rule): "finished" is now ALWAYS true and
-      // locked - every confirmation closes the lot for good and always
-      // triggers a WIP Clearing Run. No more multi-stage partial
-      // confirmations against the same lot.
-      setFinished(true);
+      // Aug 25 2026 fix (real incident: lot 70539's Blanking/Bending
+      // closed at 9/18 and 4/18 because the checkbox defaulted checked
+      // regardless of quantity) - "finished" is derived from whether the
+      // default qty (full Open Quantity) is entered, and can only ever be
+      // set true by the qty effect below, never a free user toggle.
+      setFinished(row.open_quantity != null);
       setAvailability(null);
       setConfirmError(null);
       pollAbortRef.current = false;
@@ -280,11 +282,14 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
     ? Math.round(scrapCalc.scrap_per_unit_kg * qtyNum * 1e6) / 1e6
     : null;
 
-  // Aug 2026 (user's explicit rule): "finished" is now a mandatory, locked
-  // true on every confirmation regardless of quantity entered - no smart
-  // default toggling anymore.
+  // Aug 25 2026 fix: "finished" can now ONLY be true when the entered
+  // quantity covers the full remaining Open Quantity - never a free user
+  // toggle. This is what stops a partial batch (e.g. 9 of 18) from
+  // silently closing the whole task in SAP.
   const updateConfirmedQty = (value) => {
     setConfirmedQty(value);
+    const n = Number(value);
+    setFinished(value !== "" && !Number.isNaN(n) && row.open_quantity != null && n >= row.open_quantity);
   };
 
   const qtyExceedsOpen = confirmedQty !== "" && !Number.isNaN(qtyNum) && qtyNum > row.open_quantity;
@@ -584,7 +589,11 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
           </div>
           <div className="flex items-center gap-2">
             <Checkbox id="finished-cb" checked={finished} disabled data-testid="confirm-finished-checkbox" />
-            <Label htmlFor="finished-cb" className="text-sm text-[#344054]">Mark this task as finished (mandatory - every confirmation closes this lot)</Label>
+            <Label htmlFor="finished-cb" className="text-sm text-[#344054]">
+              {finished
+                ? "This will mark the task Finished (full Open Quantity confirmed)"
+                : `This will keep the task In Process - enter ${formatQty(row.open_quantity)} to finish it now, or post less and confirm the rest later`}
+            </Label>
           </div>
           <p className="text-[11px] text-[#98A2B3]">Component/input quantities are NOT sent - SAP's backflush auto-consumes BOM inputs from the confirmed output.</p>
         </div>
@@ -1903,7 +1912,7 @@ const ScrapTrendCard = ({ scrapTrend }) => {
   );
 };
 
-export default function ProductionConfirmationPage() {
+export default function ProductionConfirmationTestPage() {
   // Aug 2026, user's explicit ask (same change as Store Approval): the
   // manual "Your name" box is gone - this page already requires Entra ID
   // login, so the acting person's name comes straight from their
@@ -2021,19 +2030,45 @@ export default function ProductionConfirmationPage() {
     return out;
   }, [rows, creatorFilter, sortLatestFirst, actorName]);
 
+  // Aug 2026 - admin test feature: for a lot with multiple Reporting
+  // Points (e.g. RP10 Blanking -> RP20 Bending -> END Forming), shows how
+  // many units have cleared the PREVIOUS step but not yet this one - e.g.
+  // "80 pcs awaiting Bending" when Blanking confirmed 100 and Bending has
+  // only confirmed 20 so far. Rows for the same lot arrive from SAP
+  // already in routing order, so a simple adjacent-pair diff within each
+  // lot's own group is enough - no new material or BOM change needed.
+  const awaitingByRowKey = useMemo(() => {
+    const map = {};
+    const byLot = {};
+    rows.forEach((r) => {
+      (byLot[r.production_lot_id] = byLot[r.production_lot_id] || []).push(r);
+    });
+    Object.values(byLot).forEach((group) => {
+      if (group.length < 2) return;
+      for (let i = 1; i < group.length; i++) {
+        const prev = group[i - 1];
+        const awaiting = (prev.total_confirmed_quantity || 0) - (group[i].total_confirmed_quantity || 0);
+        map[rowKey(group[i])] = { awaiting, prevReportingPointId: prev.operation_description || prev.reporting_point_id };
+      }
+    });
+    return map;
+  }, [rows]);
+
+
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]">
       <Toaster position="top-right" />
 
-      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
+      <header className="h-16 bg-[#7C2D12] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
         <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
           <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
             <Shield size={18} weight="fill" className="text-white" />
           </div>
           <div className="flex flex-col leading-tight">
             <span className="font-heading text-[16px] font-bold text-white tracking-tight">Materials Hub</span>
-            <span className="font-sans text-[12px] text-white/70 hidden sm:inline">Production Confirmation</span>
+            <span className="font-sans text-[12px] text-white/70 hidden sm:inline">Production Confirmation - Multi-Op Admin Test</span>
           </div>
+          <Badge variant="outline" className="bg-white/15 text-white border-white/30 ml-1" data-testid="admin-test-badge">ADMIN TEST</Badge>
         </div>
         <div className="w-px h-7 bg-white/25 shrink-0" />
         <div className="flex items-center gap-3 flex-1 justify-start min-w-0">
@@ -2043,6 +2078,16 @@ export default function ProductionConfirmationPage() {
       </header>
 
       <main className="flex-1 overflow-auto p-4 space-y-4">
+        <Alert className="bg-[#FFFAEB] border-[#FEDF89]" data-testid="admin-test-page-banner">
+          <Flask size={16} className="text-[#B54708]" weight="bold" />
+          <AlertTitle className="text-[#B54708]">Admin Test Page - not visible to regular users</AlertTitle>
+          <AlertDescription className="text-[#B54708] text-sm">
+            Same Production Confirmation flow, plus two differences for testing multi-Reporting-Point models
+            (e.g. PL-0037A_2's Blanking/Bending/Forming split): the "Mark as finished" checkbox is unlocked (so you can
+            post a partial batch and leave a step open for later), and an "Awaiting Prev Step" column shows how many
+            units cleared the previous operation but not this one yet.
+          </AlertDescription>
+        </Alert>
         <Tabs defaultValue="create" className="space-y-4">
           <TabsList data-testid="page-tabs">
             <TabsTrigger value="create" data-testid="tab-create-order">Create Production Order</TabsTrigger>
@@ -2141,7 +2186,7 @@ export default function ProductionConfirmationPage() {
             <table className="w-full text-[13px] border-collapse" data-testid="production-lots-table">
               <thead>
                 <tr>
-                  {["Lot ID", "Output Product", "Site", "Status", "Reporting Point", "Planned", "Confirmed So Far", "Open", "UOM", "Finished", "Created By", "Production Model", "Stock", "Last Confirmation", ""].map((h) => (
+                  {["Lot ID", "Output Product", "Site", "Status", "Reporting Point", "Planned", "Confirmed So Far", "Open", "Awaiting Prev Step", "UOM", "Finished", "Created By", "Production Model", "Stock", "Last Confirmation", ""].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">{h}</th>
                   ))}
                 </tr>
@@ -2150,6 +2195,7 @@ export default function ProductionConfirmationPage() {
                 {visibleRows.map((r, i) => {
                   const stock = stockByRow[rowKey(r)];
                   const lastConf = lastConfirmationByLot[`${r.production_lot_id}::${r.reporting_point_id}`];
+                  const awaiting = awaitingByRowKey[rowKey(r)];
                   return (
                   <tr key={rowKey(r)} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`lot-row-${i}`}>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium text-[#101828]">{r.production_lot_id}</td>
@@ -2167,8 +2213,17 @@ export default function ProductionConfirmationPage() {
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(r.planned_quantity)}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(r.total_confirmed_quantity)}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums font-bold text-[#B54708]">{formatQty(r.open_quantity)}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums" data-testid={`awaiting-prev-step-${i}`}>
+                      {!awaiting ? (
+                        <span className="text-[#98A2B3]">—</span>
+                      ) : (
+                        <span className={awaiting.awaiting > 0 ? "font-bold text-[#B54708]" : "text-[#475467]"}>
+                          {formatQty(awaiting.awaiting)} <span className="text-[10px] text-[#98A2B3]">(after {awaiting.prevReportingPointId})</span>
+                        </span>
+                      )}
+                    </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">{formatUnit(r.unit_code) || "—"}</td>
-                    <td className="border border-[#D0D5DD] px-2 py-1.5">{r.confirmation_finished ? "Yes" : "No"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5">{r.task_finished ? "Yes" : "No"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]" data-testid={`created-by-cell-${i}`}>{r.created_by || "—"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]" data-testid={`production-model-cell-${i}`}>{r.production_model_id || "—"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
@@ -2213,9 +2268,9 @@ export default function ProductionConfirmationPage() {
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
                       <Button
                         size="sm"
-                        disabled={loading || r.confirmation_finished}
+                        disabled={loading || r.task_finished}
                         onClick={() => setConfirmRow(r)}
-                        title={r.confirmation_finished ? "Already marked as finished - re-confirmation disabled to avoid a duplicate SAP posting" : undefined}
+                        title={r.task_finished ? "Task genuinely Finished in SAP - re-confirmation disabled to avoid a duplicate posting" : undefined}
                         data-testid={`confirm-button-${i}`}
                       >
                         Confirm
@@ -2225,13 +2280,13 @@ export default function ProductionConfirmationPage() {
                   );
                 })}
                 {rows.length === 0 && authError && (
-                  <tr><td colSpan={14} className="text-center py-8 text-[#B54708] bg-[#FFFAEB] border border-[#D0D5DD]" data-testid="blocked-state">Blocked by SAP authorization - see banner above.</td></tr>
+                  <tr><td colSpan={15} className="text-center py-8 text-[#B54708] bg-[#FFFAEB] border border-[#D0D5DD]" data-testid="blocked-state">Blocked by SAP authorization - see banner above.</td></tr>
                 )}
                 {rows.length === 0 && !authError && !loadError && (
-                  <tr><td colSpan={14} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="empty-state">No open production lots found.</td></tr>
+                  <tr><td colSpan={15} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="empty-state">No open production lots found.</td></tr>
                 )}
                 {rows.length > 0 && visibleRows.length === 0 && (
-                  <tr><td colSpan={14} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="filtered-empty-state">No rows match "Show mine" - no open lots were created by you.</td></tr>
+                  <tr><td colSpan={15} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="filtered-empty-state">No rows match "Show mine" - no open lots were created by you.</td></tr>
                 )}
               </tbody>
             </table>
