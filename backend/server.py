@@ -2143,7 +2143,7 @@ def _attach_order_creators(rows: list, db) -> list:
 
 
 @api_router.get("/production-confirmation/open-lots")
-async def get_open_production_lots(status: str = Query("open", description="'open' (Released+Started), 'all', or comma-separated status codes"), site_id: Optional[str] = None, limit: int = 100):
+async def get_open_production_lots(request: Request, status: str = Query("open", description="'open' (Released+Started), 'all', or comma-separated status codes"), site_id: Optional[str] = None, limit: int = 100):
     if status == "open":
         status_codes = None
     elif status == "all":
@@ -2156,6 +2156,11 @@ async def get_open_production_lots(status: str = Query("open", description="'ope
         raise HTTPException(status_code=403, detail=str(e))
     except SAPProductionLotError as e:
         raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+    # Aug 25 2026, user's explicit ask: Production Confirmation should only
+    # show a "user"-role account what belongs to them (their bound sites,
+    # same Site Binding mechanism as Store Approval) - admin/super_admin
+    # keep seeing everything, unchanged.
+    rows = _filter_by_site_access(rows, request.state.user)
     return {"rows": await asyncio.to_thread(_attach_order_creators, rows, db)}
 
 
@@ -3403,8 +3408,12 @@ async def release_production_order(payload: ReleaseProductionOrderRequest):
 
 
 @api_router.get("/production-confirmation/proposal-history")
-async def get_proposal_and_release_history():
-    return {"entries": await asyncio.to_thread(production_confirmation_service.get_proposal_and_release_history, db)}
+async def get_proposal_and_release_history(request: Request):
+    # Aug 25 2026, user's explicit ask: same Site Binding scoping as the
+    # open-lots table above, applied to the Create Production Order tab's
+    # Recent Activity list - admin/super_admin still see every site.
+    entries = await asyncio.to_thread(production_confirmation_service.get_proposal_and_release_history, db)
+    return {"entries": _filter_by_site_access(entries, request.state.user)}
 
 
 class ComponentAvailabilityRequest(BaseModel):

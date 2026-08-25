@@ -1,3 +1,14 @@
+## Access control fix (2026-08-25, continued) - Production Confirmation + Create Production table scoped to bound sites
+
+- **User's explicit ask**: Production Confirmation table and Create Production Order table should only show what belongs to that user; admin sees all.
+- Reused the existing Site Binding mechanism (`bound_sites` + `_filter_by_site_access`, already used for Store Approval) rather than inventing a new one - `GET /api/production-confirmation/open-lots` and `GET /api/production-confirmation/proposal-history` (the Create Production tab's Recent Activity list) now filter rows to the caller's `bound_sites` unless role is admin/super_admin.
+- Low risk: checked current users - the only 2 "user"-role accounts don't currently have `production_confirmation` in `allowed_pages`, so nothing changes for existing accounts today; this is future-proofing for when site-scoped production users are added via Access Management.
+- Verified live: admin session saw all sites (213 open-lot rows across 6 sites); a test "user" bound to P1 only saw 79 P1 rows and 8 P1 activity entries.
+- Out of scope (not requested): Confirmation History / Proposal History dialogs, and the Create Order form's Site input itself, were left untouched.
+
+---
+
+
 ## UI fix (2026-08-25, continued) - Scrap entry now gated + reason mandatory
 
 - **User's explicit ask**: "Confirmed Scrap (Rejected Qty)" was a plain always-editable number input with no reason requirement. Changed to: a "This confirmation has Scrap / Rejected units (QC issue, damage, etc.)" checkbox that must be checked before the quantity input even appears; once checked, both "Scrap Quantity *" (must be > 0) and a new mandatory "Scrap Reason *" dropdown (reuses the existing Deviation Reason list - Quality Issue, Material Damage, etc.) must be filled before Confirm will submit. Unchecking resets both fields to blank/0.
