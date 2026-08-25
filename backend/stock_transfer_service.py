@@ -703,8 +703,9 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sap_hsn_clie
     gst_note_pushed), never blocks or fails the SAP write itself.
 
     Field mapping (user's explicit instructions, Aug 27 2026):
-      CompCode = same Site -> Company mapping already used for WIP
-        Clearing ("RI" for P1/P8, "RT" for every other site).
+      CompCode = Ship-from Site ID directly (e.g. "P3") - NOT the
+        Site->Company mapping used elsewhere for WIP Clearing (RI/RT never
+        needs to reach this legacy portal at all, user's explicit fix).
       Pcode = Ship-to site's own plant code, unchanged - the portal
         reuses the exact same site codes as SAP.
       Rate/Amt/Amount/TaxableAmt = SAP's live Moving Average price x
@@ -746,9 +747,8 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sap_hsn_clie
             "rate": rate, "amt": amt, "dis_amt": 0, "taxable_amt": amt, "remark": None,
         })
 
-    comp_code, _ = company_and_set_of_books_for_site(doc["ship_from_site_id"])
     header = {
-        "comp_code": comp_code,
+        "comp_code": doc["ship_from_site_id"],
         "elec_ref_no": None,
         "sale_date": sale_date,
         "pcode": doc["ship_to_site_id"],

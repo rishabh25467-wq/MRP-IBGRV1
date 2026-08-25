@@ -103,7 +103,7 @@ export default function DeliveryNotePage() {
 
         <div className="grid grid-cols-2 gap-6 mt-4">
           <div>
-            <p><span className="font-bold">Serial Number:</span> {data.erp_sale_no || "—"}{data.erp_sale_noc ? ` / ${data.erp_sale_noc}` : ""}</p>
+            <p><span className="font-bold">Serial Number:</span> {data.erp_sale_noc || "—"}</p>
             <p><span className="font-bold">Date of Issue:</span> {formatDateDMY(data.date_of_supply) || "—"}</p>
           </div>
           <div className="border border-[#D0D5DD] rounded-sm p-2">

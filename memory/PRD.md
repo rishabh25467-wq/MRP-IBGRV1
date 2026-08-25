@@ -1,3 +1,13 @@
+## Session update (2026-08-25, continued 19) - ERP portal CompCode fix + Delivery Note Serial Number fix
+
+- Bug: `sync_to_erp_portal()` was writing `CompCode` as the Site->Company mapping (RI/RT) instead of the actual Ship-from Site ID - user's explicit fix ("RI/RT does not need to go to ERP"). Now writes `doc["ship_from_site_id"]` (e.g. "P3") directly.
+- Delivery Note (`DeliveryNotePage.js`) Serial Number now shows only `erp_sale_noc` (was showing `erp_sale_no / erp_sale_noc`).
+- Both fixes only apply to NEW STOs going forward - existing already-synced legacy ERP rows still carry the old RI/RT CompCode (not retroactively corrected, not requested).
+- Self-tested (small backend/frontend fix), both compiled cleanly.
+
+---
+
+
 ## Session update (2026-08-25, continued 18) - Gross Weight wired to SAP + full child-level data correction (PRODUCTION incident - shared MongoDB/SAP with preview)
 
 - User reported on PRODUCTION (mrp.radishtechnologies.com) that Net Wt./SA showed 0 locally for MSPIPE20X30 despite SAP having real values. Confirmed preview and production share the SAME MongoDB + SAP tenant (not separate envs) - this was a direct consequence of the earlier "wipe all historic data" cleanup, which correctly wiped a value that (per user) was never actually a legitimate field for Coil/Sheet/Pipe raw materials in the first place. User will provide a fresh corrected Excel for Parent-level Net Wt/SA going forward.
