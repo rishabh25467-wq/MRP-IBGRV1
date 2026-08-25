@@ -814,8 +814,16 @@ async def _compute_scrap_calc(product_id: str, material_inputs: Optional[List[Ma
     """Shared calc used by both the scrap-calc endpoint (frontend preview)
     and confirm_production's backend enforcement (Aug 27 2026) - kept as a
     single function so the two can never drift apart. See get_scrap_calc
-    below for the full field-by-field explanation."""
-    if material_inputs:
+    below for the full field-by-field explanation.
+
+    Aug 2026 fix: an explicitly-EMPTY list (this exact Reporting Point's
+    real SAP MaterialInput data - e.g. an intermediate operation like
+    Bending with no mass component of its own) must NOT fall through to
+    the cached-BOM guess below - that guess is for the "no data given at
+    all" case (material_inputs=None), and wrongly claimed a by-product
+    was expected on a step that genuinely has none, blocking its
+    confirmation entirely."""
+    if material_inputs is not None:
         inv_doc = db["inventory_cache"].find_one({"_id": "latest"})
         desc_by_product = {it["product_id"]: it.get("description") for it in (inv_doc or {}).get("items", [])}
         mass_items = [
