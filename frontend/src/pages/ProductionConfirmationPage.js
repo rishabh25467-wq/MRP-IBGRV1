@@ -143,7 +143,9 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
       setConfirmError(null);
       pollAbortRef.current = false;
       if (row.main_output_product) {
-        axios.get(`${API}/production-confirmation/scrap-calc/${encodeURIComponent(row.main_output_product)}`)
+        axios.post(`${API}/production-confirmation/scrap-calc/${encodeURIComponent(row.main_output_product)}`, {
+          material_inputs: row.material_inputs || null,
+        })
           .then(({ data }) => setScrapCalc(data))
           .catch(() => setScrapCalc(null));
       }

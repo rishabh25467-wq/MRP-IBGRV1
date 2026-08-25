@@ -773,20 +773,50 @@ def _pick_rm_item(mass_items: list) -> dict:
     return max(pool, key=lambda i: i["quantity"])
 
 
-@api_router.get("/production-confirmation/scrap-calc/{product_id}")
-async def get_scrap_calc(product_id: str):
+class MaterialInputItem(BaseModel):
+    product_id: str
+    unit_code: Optional[str] = None
+    qty_per_unit: Optional[float] = None
+
+
+class ScrapCalcRequest(BaseModel):
+    material_inputs: Optional[List[MaterialInputItem]] = None
+
+
+@api_router.post("/production-confirmation/scrap-calc/{product_id}")
+async def get_scrap_calc(product_id: str, payload: ScrapCalcRequest = ScrapCalcRequest()):
     """Auto-calculates the expected scrap-per-unit for an output product:
-    Gross Weight (the raw-material BOM child's own consumption quantity,
-    already captured during BOM exploration) minus Net Weight (the
-    finished item's own weight, already captured via the Admin page's Net
-    Weight tool). The RM child is picked via _pick_rm_item (excludes Zn,
-    prefers Iron/Brass/Copper family keyword matches). Returns
-    {"available": False, "reason": ...} if either side is missing."""
-    bom_doc = db["bom_node_cache"].find_one({"_id": product_id})
-    mass_items = [
-        item for group in (bom_doc or {}).get("groups", []) for item in group.get("items", [])
-        if item.get("unit_of_measure") == "MASS" and item.get("quantity") is not None
-    ]
+    Gross Weight (the raw-material component's own consumption quantity)
+    minus Net Weight (the finished item's own weight, already captured
+    via the Admin page's Net Weight tool). The RM child is picked via
+    _pick_rm_item (excludes Zn, prefers Iron/Brass/Copper family keyword
+    matches). Returns {"available": False, "reason": ...} if either side
+    is missing.
+
+    Aug 27 2026 fix (same root cause/fix as
+    check_component_availability_from_material_inputs): when the caller
+    already has this specific lot's exact SAP MaterialInput list
+    (`payload.material_inputs`, from SAPProductionLotClient), it's used
+    directly instead of guessing via the cached "highest revision" BOM -
+    real bug: lot 70422's real MaterialInput is FLAT-BK21, but this
+    endpoint kept guessing SH4.5HR (from a DIFFERENT Production Model,
+    BK-0021_2) because it only ever looked at `bom_node_cache` keyed by
+    product_id alone. Falls back to the old cached-BOM guess only when
+    no material_inputs are given (e.g. very old cached rows)."""
+    if payload.material_inputs:
+        inv_doc = db["inventory_cache"].find_one({"_id": "latest"})
+        desc_by_product = {it["product_id"]: it.get("description") for it in (inv_doc or {}).get("items", [])}
+        mass_items = [
+            {"product_id": mi.product_id, "description": desc_by_product.get(mi.product_id), "quantity": mi.qty_per_unit}
+            for mi in payload.material_inputs
+            if mi.qty_per_unit is not None and (mi.unit_code or "").upper() == "KGM"
+        ]
+    else:
+        bom_doc = db["bom_node_cache"].find_one({"_id": product_id})
+        mass_items = [
+            item for group in (bom_doc or {}).get("groups", []) for item in group.get("items", [])
+            if item.get("unit_of_measure") == "MASS" and item.get("quantity") is not None
+        ]
     rm_item = _pick_rm_item(mass_items)
     if not rm_item:
         return {"available": False, "reason": "No raw-material (mass-based) BOM component found for this item"}
@@ -3120,12 +3150,6 @@ async def release_production_order(payload: ReleaseProductionOrderRequest):
 @api_router.get("/production-confirmation/proposal-history")
 async def get_proposal_and_release_history():
     return {"entries": await asyncio.to_thread(production_confirmation_service.get_proposal_and_release_history, db)}
-
-
-class MaterialInputItem(BaseModel):
-    product_id: str
-    unit_code: Optional[str] = None
-    qty_per_unit: Optional[float] = None
 
 
 class ComponentAvailabilityRequest(BaseModel):

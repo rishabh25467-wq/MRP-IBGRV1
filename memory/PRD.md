@@ -1,3 +1,14 @@
+## Session update (2026-08-25, continued 22) - Follow-up bug: scrap-calc/by-product panel had the SAME "wrong Production Model" guessing bug
+
+- User caught this live: created a NEW order (lot 70422) explicitly picking BK-0021_1 (correct model, confirmed real MaterialInput = FLAT-BK21 per continued-20's fix), but the Confirm dialog's by-product/scrap-calc panel still showed "AUTO-CALCULATED FROM SH4.5HR" - the WRONG model (that's BK-0021_2's input, a different Production Model for a different site).
+- **Root cause**: this panel is powered by a SEPARATE endpoint, `/production-confirmation/scrap-calc/{product_id}`, which I had NOT touched in continued-20 - it independently guessed the RM component from the same cached "highest revision" `bom_node_cache` doc (keyed by product_id alone), same root bug, different code path.
+- **Fixed**: `get_scrap_calc` (server.py) changed GET->POST, now accepts the same optional `material_inputs` list (from the lot's own SAP data, already available on `row.material_inputs`) - when given, filters for KGM (mass) components directly from it instead of guessing via `bom_node_cache`, with description best-effort from `inventory_cache`. Falls back to the old cached-BOM guess only when no material_inputs are given. `MaterialInputItem` model moved earlier in server.py so both this and the earlier component-availability endpoints share one definition.
+- Frontend (`ProductionConfirmationPage.js`): the Confirm dialog's scrap-calc fetch now POSTs `row.material_inputs` alongside the product ID.
+- **Tested live** against real lot 70422: curl confirmed old behavior (no material_inputs) still guesses SH4.5HR, new behavior (with material_inputs) correctly resolves FLAT-BK21; screenshot of the real Confirm dialog for lot 70422 now shows "AUTO-CALCULATED FROM FLAT-BK21" with correct Gross/Net Weight and by-product quantity. Self-tested (backend+frontend, well-verified against real SAP data) - no testing_agent run.
+
+---
+
+
 ## Session update (2026-08-25, continued 21) - Production Model ID now shown on Production Confirmation + Proposal/Order History tables
 
 - User's ask: "I need to identify which Production Model I used to create a production order" - the Production Model picked in the Source of Supply picker at order-creation time was never persisted anywhere.
