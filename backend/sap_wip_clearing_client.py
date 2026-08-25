@@ -5,7 +5,7 @@ SAP's "Inventory Valuation - WIP Clearing" work center view.
 
 Company/Set of Books and the fiscal calendar are tenant-specific business
 config (not derivable from the WSDL) - confirmed directly by the user:
-- Sites P1 and P8 post under Company RI / Set of Books RSOB
+- Sites P1, P8, P5, P1W post under Company RI / Set of Books RSOB
 - All other sites post under Company RT / Set of Books RDOB
 - Fiscal year runs April 1 - March 31, labeled by its starting calendar
   year (e.g. August 2026 is FiscalYearID "2026", AccountingPeriodID "005")
@@ -24,6 +24,9 @@ SOAP_ACTION = "http://sap.com/xi/AP/FinancialAccounting/Global/AccountingWIPClea
 SITE_TO_COMPANY = {
     "P1": ("RI", "RSOB"),
     "P8": ("RI", "RSOB"),
+    # Aug 27 2026, user's explicit ask: 2 more Company RI locations.
+    "P5": ("RI", "RSOB"),
+    "P1W": ("RI", "RSOB"),
 }
 DEFAULT_COMPANY = ("RT", "RDOB")
 

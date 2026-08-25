@@ -30,6 +30,24 @@ class ERPPortalError(Exception):
     pass
 
 
+# Official CBIC GST State Codes (Aug 27 2026, fix for Delivery Note print
+# bug) - the ERP's own `comp` table has StateCode/Cstate blank or wrong
+# for some sites (e.g. P3: StateCode NULL, Cstate literally "India" - not
+# a real state name, unusable on a GST document), so this is used as a
+# fallback derived from the GSTIN's own reliable first 2 digits.
+GST_STATE_CODES = {
+    "01": "Jammu & Kashmir", "02": "Himachal Pradesh", "03": "Punjab", "04": "Chandigarh",
+    "05": "Uttarakhand", "06": "Haryana", "07": "Delhi", "08": "Rajasthan", "09": "Uttar Pradesh",
+    "10": "Bihar", "11": "Sikkim", "12": "Arunachal Pradesh", "13": "Nagaland", "14": "Manipur",
+    "15": "Mizoram", "16": "Tripura", "17": "Meghalaya", "18": "Assam", "19": "West Bengal",
+    "20": "Jharkhand", "21": "Odisha", "22": "Chhattisgarh", "23": "Madhya Pradesh", "24": "Gujarat",
+    "26": "Dadra & Nagar Haveli and Daman & Diu", "27": "Maharashtra", "28": "Andhra Pradesh",
+    "29": "Karnataka", "30": "Goa", "31": "Lakshadweep", "32": "Kerala", "33": "Tamil Nadu",
+    "34": "Puducherry", "35": "Andaman & Nicobar Islands", "36": "Telangana", "37": "Andhra Pradesh",
+    "38": "Ladakh", "97": "Other Territory",
+}
+
+
 class ERPPortalClient:
     def __init__(self, primary_host: str, fallback_host: str, port: int, database: str,
                  username: str, password: str, timeout: int = 20):
@@ -54,6 +72,81 @@ class ERPPortalClient:
                                 f"{' - trying fallback host' if i < len(self.hosts) - 1 else ' - no more hosts to try'}: {e}")
                 last_err = e
         raise ERPPortalError(f"ERP Portal unreachable on all configured host(s) ({', '.join(self.hosts)}): {last_err}")
+
+    @staticmethod
+    def _row_to_company_dict(row) -> dict:
+        gstin = (row[8] or "").strip() or None
+        state = (row[6] or "").strip() or None
+        state_code = (row[7] or "").strip() or None
+        # Fallback (Aug 27 2026 fix): the raw `comp` columns are
+        # blank or wrong for some sites (e.g. P3: StateCode NULL,
+        # Cstate literally "India" - not a real state name) - the
+        # GSTIN's own first 2 digits are the official CBIC state
+        # code and far more reliable, so prefer deriving from it
+        # whenever the raw column is missing or bogus.
+        gstin_prefix = gstin[:2] if gstin else None
+        gstin_state = GST_STATE_CODES.get(gstin_prefix) if gstin_prefix else None
+        if not state_code and gstin_prefix:
+            state_code = gstin_prefix
+        if (not state or state.strip().lower() == "india") and gstin_state:
+            state = gstin_state
+        return {
+            "company_name": (row[1] or "").strip(),
+            "address_line1": (row[2] or "").strip(),
+            "address_line2": (row[3] or "").strip(),
+            "city": (row[4] or "").strip(),
+            "pin": (row[5] or "").strip() or None,
+            "state": state,
+            "state_code": state_code,
+            "gstin": gstin,
+            "pan": (row[9] or "").strip() or None,
+            "session": (row[10] or "").strip() or None,
+        }
+
+    def get_company_info(self, codes: list) -> dict:
+        """Reads dbo.comp (Aug 2026, user's explicit ask - real Company
+        Name/Address/GSTIN/PAN/current fiscal-year `session` code per
+        site, for the Delivery Note/Gate Pass print views), keyed by
+        `Ccode` - the SAME code as our own Site ID (e.g. "P2"). A
+        read-only SELECT, not a stored-procedure write, so the user's
+        "never raw INSERT, always use the portal's own procs" rule
+        (which is about WRITES) doesn't apply here.
+
+        Aug 27 2026 (this session): callers should prefer
+        company_cache_service.get_cached_company_info instead of calling
+        this directly on every print - this table "does not change"
+        (user's own words) so it belongs in Mongo, refreshed
+        periodically, not queried live on every page load."""
+        if not codes:
+            return {}
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            placeholders = ",".join("%s" for _ in codes)
+            cur.execute(
+                f"SELECT Ccode, C_name, Cadd1, Cadd2, Ccity, Cpin, Cstate, StateCode, GSTIN, pan_no, session "
+                f"FROM comp WHERE Ccode IN ({placeholders})",
+                tuple(codes),
+            )
+            return {(row[0] or "").strip(): self._row_to_company_dict(row) for row in cur.fetchall()}
+        except Exception as e:
+            raise ERPPortalError(f"ERP Portal read (comp) failed: {e}")
+        finally:
+            conn.close()
+
+    def get_all_company_info(self) -> dict:
+        """Every site/company row in dbo.comp, no WHERE clause - backs
+        company_cache_service.refresh_company_cache's periodic full
+        refresh (Aug 27 2026, user's explicit ask)."""
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT Ccode, C_name, Cadd1, Cadd2, Ccity, Cpin, Cstate, StateCode, GSTIN, pan_no, session FROM comp")
+            return {(row[0] or "").strip(): self._row_to_company_dict(row) for row in cur.fetchall()}
+        except Exception as e:
+            raise ERPPortalError(f"ERP Portal read (comp, full refresh) failed: {e}")
+        finally:
+            conn.close()
 
     def create_delivery_challan(self, header: dict, items: list) -> dict:
         """header keys: comp_code, elec_ref_no, sale_date (datetime),

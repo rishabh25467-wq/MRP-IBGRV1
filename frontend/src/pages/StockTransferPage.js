@@ -97,6 +97,10 @@ export default function StockTransferPage() {
   const [placeOfSupply, setPlaceOfSupply] = useState("");
   const [grNo, setGrNo] = useState("");
   const [dateOfSupply, setDateOfSupply] = useState("");
+  // Freight Forwarder / Transporter name (Aug 27 2026, user's explicit
+  // ask - mandatory) - written to the SAP GST Note AND the legacy ERP
+  // portal's own `Trans` field, printed on the Delivery Note + Gate Pass.
+  const [freightForwarder, setFreightForwarder] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState(null);
 
@@ -402,6 +406,7 @@ export default function StockTransferPage() {
     if (!grNo.trim()) return "G.R No. is required.";
     if (!/^\d+$/.test(grNo.trim())) return "G.R No. must be numeric only.";
     if (!dateOfSupply) return "Date Of Supply is required.";
+    if (!freightForwarder.trim()) return "Freight Forwarder is required.";
     return null;
   };
 
@@ -467,7 +472,7 @@ export default function StockTransferPage() {
           toast.success(`Stock Transfer Order created in SAP (${formatSapId(data.result?.sap_order_id) || "—"}).`);
           setItems([]);
           setShipToSiteId(""); setShipToLocationId(""); setRequestedDeliveryDate(""); setFormError(null);
-          setVehicleNo(""); setPlaceOfSupply(""); setGrNo(""); setDateOfSupply(""); setTransportationMode("By Road");
+          setVehicleNo(""); setPlaceOfSupply(""); setGrNo(""); setDateOfSupply(""); setTransportationMode("By Road"); setFreightForwarder("");
           loadRecentOrders();
           if (data.sto_id) pollGiStatus(data.sto_id);
           return;
@@ -510,6 +515,7 @@ export default function StockTransferPage() {
         place_of_supply: placeOfSupply.trim(),
         gr_no: grNo.trim(),
         date_of_supply: dateOfSupply,
+        freight_forwarder: freightForwarder.trim(),
         items: items.map((i) => ({
           product_id: i.product_id,
           source_warehouse_id: i.source_warehouse_id,
@@ -720,6 +726,12 @@ export default function StockTransferPage() {
                         <SelectContent>
                           {i.locations
                             .filter((l) => !shipFromSiteId || l.site_id === shipFromSiteId || l.warehouse_id === i.source_warehouse_id)
+                            // Aug 27 2026 fix: with include_non_usable=true, the
+                            // SAME warehouse_id can appear twice (a usable row +
+                            // a non-usable Inspection/Restricted row) - dedupe by
+                            // warehouse_id (backend already sorts usable-first)
+                            // to avoid React's duplicate-key warning/option glitch.
+                            .filter((l, idx, arr) => arr.findIndex((x) => x.warehouse_id === l.warehouse_id) === idx)
                             .map((l) => (
                               <SelectItem
                                 key={l.warehouse_id}
@@ -825,7 +837,7 @@ export default function StockTransferPage() {
         {/* GST / E-way bill compliance fields (Aug 2026, user's explicit
             ask) - mandatory before the order can move forward, even
             though pushing these into SAP itself is pending Basis. */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 md:grid-cols-6 gap-3">
           <div>
             <Label className="text-xs font-bold text-[#344054]">Transportation Mode*</Label>
             <Select value={transportationMode} onValueChange={setTransportationMode}>
@@ -851,7 +863,12 @@ export default function StockTransferPage() {
             <Label className="text-xs font-bold text-[#344054]">Date Of Supply*</Label>
             <Input type="date" value={dateOfSupply} onChange={(e) => setDateOfSupply(e.target.value)} data-testid="stock-transfer-date-of-supply-input" />
           </div>
+          <div>
+            <Label className="text-xs font-bold text-[#344054]">Freight Forwarder*</Label>
+            <Input value={freightForwarder} onChange={(e) => setFreightForwarder(e.target.value)} placeholder="e.g. Pooja Transport Company" data-testid="stock-transfer-freight-forwarder-input" />
+          </div>
         </div>
+
 
         {formError && (
           <div className="bg-[#FEF3F2] border border-[#FDA29B] rounded-sm p-3 text-sm text-[#912018] flex items-center gap-2" data-testid="stock-transfer-form-error">
@@ -1092,6 +1109,7 @@ export default function StockTransferPage() {
                 <div><Label className="text-xs font-bold text-[#344054]">Place Of Supply</Label><p>{placeOfSupply}</p></div>
                 <div><Label className="text-xs font-bold text-[#344054]">G.R No.</Label><p>{grNo}</p></div>
                 <div><Label className="text-xs font-bold text-[#344054]">Date Of Supply</Label><p>{dateOfSupply}</p></div>
+                <div><Label className="text-xs font-bold text-[#344054]">Freight Forwarder</Label><p data-testid="stock-transfer-confirm-freight-forwarder">{freightForwarder}</p></div>
               </div>
               <div className="border border-[#EAECF0] rounded-sm overflow-auto">
                 <table className="w-full text-xs border-collapse" data-testid="stock-transfer-confirm-items-table">
@@ -1281,6 +1299,7 @@ export default function StockTransferPage() {
                 <div><Label className="text-xs font-bold text-[#344054]">Place Of Supply</Label><p>{selectedOrder.place_of_supply || "—"}</p></div>
                 <div><Label className="text-xs font-bold text-[#344054]">G.R No.</Label><p>{selectedOrder.gr_no || "—"}</p></div>
                 <div><Label className="text-xs font-bold text-[#344054]">Date Of Supply</Label><p>{selectedOrder.date_of_supply || "—"}</p></div>
+                <div><Label className="text-xs font-bold text-[#344054]">Freight Forwarder</Label><p data-testid="stock-transfer-detail-freight-forwarder">{selectedOrder.freight_forwarder || "—"}</p></div>
               </div>
 
               <div className="border border-[#EAECF0] rounded-sm overflow-auto">

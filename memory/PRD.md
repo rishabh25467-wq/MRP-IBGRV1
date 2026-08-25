@@ -9,6 +9,30 @@
 ---
 
 
+## Session update (2026-08-25/27, continued 24) - Performance fix: HSN Code + ERP company/address + Rate all now cached in Mongo (no more live SAP/MSSQL calls on Add Item or every Delivery Note/Gate Pass print)
+
+- User reported: item-add on the Stock Transfer form felt slow, and asked whether stock refresh was live-per-click (it wasn't - already cache-based) or the Delivery Note/Gate Pass print was slow (it was - confirmed live in backend logs: SAP itself was timing out, and every print made 3 live external calls with zero caching).
+- **HSN Code** (`hsn_cache_service.py`, NEW): persistent, no-expiry Mongo cache (`hsn_code_cache`) - once looked up for a product, cached FOREVER (HSN never changes once maintained in SAP). Wired into `get_product_stock_locations` (Add Item) and `create_stock_transfer_order`. Verified live: first lookup for an uncached product took ~8s (live SAP), second lookup for the SAME product took 0.16s (cache hit).
+- **ERP company/address** (`company_cache_service.py`, NEW): Mongo cache (`erp_company_cache`) of the ERP's `comp` table, refreshed by a new background loop (startup + every 12h, `server.py`), with a live one-off fallback if a site is ever missing. `get_delivery_note_data` now reads this instead of querying MS SQL live on every print.
+- **Rate/Amount** (user's explicit ask: "should be stored in mongo per record since u write to erp anyway"): `sync_to_erp_portal` now persists the computed `rate`/`amount` (SAP Moving Average price, never Standard Cost) back onto the STO's own Mongo `items` at sync time (the ONE place it's still fetched live) - `get_delivery_note_data` now reads these stored values instead of re-querying SAP Valuation on every print. **Orders synced before this fix show rate/amount as 0.00 on their Delivery Note until re-synced** (HSN was already being stored since an earlier session, so that field is unaffected for old orders).
+- **Net effect**: `get_delivery_note_data` no longer takes `sap_valuation_client`/`sap_hsn_client` params at all - it's now a pure Mongo read (+ a possible one-off live fallback only if the company cache is ever missing a site). Verified live: STO-000041's delivery-note call went from being blocked/timing out (thread-pool congestion from live SAP calls) to 0.319s.
+- **Other RI/RT fix**: `SITE_TO_COMPANY` (sap_wip_clearing_client.py) gained 2 more Company RI sites per user's explicit statement - P5 and P1W (previously only P1/P8) - used both for WIP Clearing eligibility and as a same-company-name fallback on the Delivery Note letterhead when a site has no row in the `comp` table at all.
+- Self-tested via curl (timed before/after) + direct Mongo inspection - no testing_agent run for this specific perf fix (backend-only, low-risk, well-verified).
+
+## Session update (2026-08-25, continued 23) - Bug fixes from testing_agent report (iteration_116) on the Freight Forwarder/Delivery Note/Gate Pass feature
+
+- `/stock-transfer/{sto_id}/delivery-note` now returns a clean 404 (was a raw 500) for an unknown STO ID.
+- P3's State/State Code showed "India"/"—" (raw `comp` table data gap) - `erp_portal_client.py` now derives both reliably from the GSTIN's own first 2 digits (official CBIC state code table added) whenever the raw column is missing or says the literal junk value "India".
+- Delivery Note was printing the site's city/PIN TWICE (once embedded in the ERP's own free-text address lines, once again as a separate line) - the separate line is now dropped since every site's `Cadd1`/`Cadd2` already contains it.
+- Fixed a React duplicate-key warning on the per-item source-warehouse dropdown (StockTransferPage.js) - caused by `include_non_usable` now returning 2 rows for the same warehouse_id (usable + non-usable stock at the same location); deduped by warehouse_id (usable rows sort first already, so they're kept).
+
+## Session update (2026-08-25, continued 22) - Feature: Freight Forwarder field + redesigned Delivery Note + new Gate Pass print page
+
+- User's asks (with explicit choices confirmed via ask_human): (1) mandatory "Freight Forwarder" field on STO creation, written to the SAP GST Note + ERP portal's `Trans` field; (2) Delivery Note now shows real per-site Company Name/Address/GSTIN/PAN (from the ERP's own `comp` table, keyed by site code) instead of one hardcoded company block - letterhead correctly swaps "RADISH TECHNOLOGIES" vs "RAY INTERNATIONAL" depending on the Ship-from site; (3) Serial Number format = "{ShipFromSiteId}-{Sale_Noc}-{session}" (session = ERP's own fiscal-year code, e.g. "2627"); (4) new standalone printable Gate Pass page (Serial No/Date/Gate Pass Type/Customer=Ship-TO company/Vehicle No/Transport No=Freight Forwarder or "Self", plus a CODE128 barcode of "Sale_Noc:Comp_code:Sale_no:C" via the new `jsbarcode` package).
+- Backend: `erp_portal_client.get_company_info()` (new), `StockTransferOrderCreate.freight_forwarder` (new required field), `_build_gst_note_text`/`sync_to_erp_portal`/`get_delivery_note_data` all updated (see continued-24 above for the later caching follow-up to this same code).
+- Frontend: `StockTransferPage.js` (new mandatory field + validation + confirm/detail display), `DeliveryNotePage.js` (fully rewritten), `GatePassPage.js` (new), `Barcode128.jsx` (new), new route `/inventory/inter-plant-transfer/:stoId/gate-pass`.
+- Tested via `testing_agent` (iteration_116, mostly PASS - see continued-23 above for the bugs found+fixed) plus extensive live curl/screenshot verification by main agent against real STO-000041.
+
 ## Session update (2026-08-25, continued 21) - Production Model ID now shown on Production Confirmation + Proposal/Order History tables
 
 - User's ask: "I need to identify which Production Model I used to create a production order" - the Production Model picked in the Source of Supply picker at order-creation time was never persisted anywhere.

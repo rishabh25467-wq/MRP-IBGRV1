@@ -67,6 +67,7 @@ import autosave_store
 import job_store
 import supplier_service
 import stock_transfer_service
+import company_cache_service
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -4356,6 +4357,10 @@ class StockTransferOrderCreate(BaseModel):
     place_of_supply: str
     gr_no: str
     date_of_supply: str
+    # Freight Forwarder / Transporter name (Aug 27 2026, user's explicit
+    # ask - mandatory) - written to the SAP GST Note + ERP portal's
+    # `Trans` field, printed on the Delivery Note/Gate Pass.
+    freight_forwarder: str
     items: List[StockTransferItemCreate]
 
 
@@ -4378,7 +4383,10 @@ async def get_stock_transfer_inventory(product_id: str, include_non_usable: bool
 
 @api_router.get("/stock-transfer/{sto_id}/delivery-note")
 async def get_stock_transfer_delivery_note(sto_id: str):
-    return await asyncio.to_thread(stock_transfer_service.get_delivery_note_data, db, sap_valuation_client, sap_hsn_client, sto_id)
+    try:
+        return await asyncio.to_thread(stock_transfer_service.get_delivery_note_data, db, erp_portal_client, sto_id)
+    except stock_transfer_service.StockTransferOrderNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @api_router.post("/stock-transfer/refresh-site-stock")
@@ -4473,7 +4481,7 @@ async def _run_erp_portal_sync_job(sto_id: str):
     outcome. Best-effort, same pattern as gst_note_pushed - never blocks
     or fails the SAP write itself."""
     try:
-        await asyncio.to_thread(stock_transfer_service.sync_to_erp_portal, db, erp_portal_client, sap_valuation_client, sap_hsn_client, sto_id)
+        await asyncio.to_thread(stock_transfer_service.sync_to_erp_portal, db, erp_portal_client, sap_valuation_client, sto_id)
     except Exception as e:
         logger.error(f"Stock Transfer Order {sto_id}: ERP Portal sync failed: {e}")
         await asyncio.to_thread(stock_transfer_service.mark_erp_portal_failed, db, sto_id, str(e))
@@ -4680,6 +4688,29 @@ async def start_inventory_cache_refresh_loop():
             except Exception as e:
                 logger.error(f"Inventory cache background refresh failed: {e}")
             await asyncio.sleep(INVENTORY_CACHE_REFRESH_INTERVAL_SECONDS)
+
+    asyncio.create_task(loop())
+
+
+# Aug 27 2026, user's explicit ask ("company erp address table also
+# store in mongo since it does not change") - Delivery Note/Gate Pass
+# previously queried the ERP's `comp` table live on every single print;
+# this refreshes ALL sites' Company Name/Address/GSTIN/PAN once at
+# startup and every 12h after, so print pages read from Mongo instead.
+COMPANY_CACHE_REFRESH_INTERVAL_SECONDS = 12 * 60 * 60
+
+
+@app.on_event("startup")
+async def start_company_cache_refresh_loop():
+    async def loop():
+        await asyncio.sleep(15)
+        while True:
+            try:
+                companies = await asyncio.to_thread(company_cache_service.refresh_company_cache, db, erp_portal_client)
+                logger.info(f"ERP company/address cache background refresh complete: {len(companies)} site(s).")
+            except Exception as e:
+                logger.error(f"ERP company/address cache background refresh failed: {e}")
+            await asyncio.sleep(COMPANY_CACHE_REFRESH_INTERVAL_SECONDS)
 
     asyncio.create_task(loop())
 

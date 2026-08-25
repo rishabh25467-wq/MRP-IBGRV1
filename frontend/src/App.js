@@ -7,6 +7,7 @@ import AdminPage from "@/pages/AdminPage";
 import InventoryPage from "@/pages/InventoryPage";
 import StockTransferPage from "@/pages/StockTransferPage";
 import DeliveryNotePage from "@/pages/DeliveryNotePage";
+import GatePassPage from "@/pages/GatePassPage";
 import SupplierMasterPage from "@/pages/SupplierMasterPage";
 import QuotaAllocationPage from "@/pages/QuotaAllocationPage";
 import SapWritePage from "@/pages/SapWritePage";
@@ -78,6 +79,7 @@ function App() {
             <Route path="/inventory" element={<ProtectedRoute page="inventory"><InventoryPage /></ProtectedRoute>} />
             <Route path="/inventory/inter-plant-transfer" element={<ProtectedRoute page="inventory"><StockTransferPage /></ProtectedRoute>} />
             <Route path="/inventory/inter-plant-transfer/:stoId/delivery-note" element={<ProtectedRoute page="inventory"><DeliveryNotePage /></ProtectedRoute>} />
+            <Route path="/inventory/inter-plant-transfer/:stoId/gate-pass" element={<ProtectedRoute page="inventory"><GatePassPage /></ProtectedRoute>} />
             <Route path="/purchasing-strategy/supplier-master" element={<ProtectedRoute page="supplier_master"><SupplierMasterPage /></ProtectedRoute>} />
             <Route path="/purchasing-strategy/quota-allocation" element={<ProtectedRoute page="quota_allocation"><QuotaAllocationPage /></ProtectedRoute>} />
             <Route path="/admin" element={<ProtectedRoute page="admin"><AdminPage /></ProtectedRoute>} />

@@ -1,0 +1,37 @@
+{
+  "summary": "Tested the new mandatory Freight Forwarder field on STO creation plus the redesigned Delivery Note and the new Gate Pass print pages. Backend: created /app/backend/tests/test_freight_forwarder_gate_pass.py (12 tests, 10 passed). Frontend: Playwright-verified client-side validation blocking, confirm-step + detail-modal display, Delivery Note for a Ray International site (STO-000041, STO-000042) and a Radish site (STO-000040), the Print Gate Pass button/new-tab flow and the CODE128 barcode render. Regression: Production Confirmation page loads clean with the PRODUCTION MODEL column. Core feature works end-to-end; 2 real defects found (500 instead of 404 on unknown STO; missing/incorrect State + State Code on the Radish P3 letterhead).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/stock-transfer/{sto_id}/delivery-note", "issue": "Unknown STO (e.g. STO-999999) returns HTTP 500 'Internal Server Error' - StockTransferOrderNotFoundError raised by stock_transfer_service.get_delivery_note_data is not caught in server.py (line ~4384), unlike other STO endpoints. Result: both DeliveryNotePage and GatePassPage show a raw/unhelpful error instead of a 404 'not found' message."},
+      {"endpoint": "GET /api/stock-transfer/{sto_id}/delivery-note (P3/Radish)", "issue": "ERP `comp` row for site P3 has StateCode = NULL and pin = NULL, so the Delivery Note ship-from block prints 'State Code: —' and no PIN. Also `Cstate` holds the literal 'INDIA'/'India' (not the state), so the doc prints 'State: INDIA' - wrong for a GST document. Suggest deriving State/State Code from the GSTIN prefix (09 -> Uttar Pradesh) when the comp columns are empty/bogus."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "StockTransferPage", "issue": "React console warning repeated dozens of times: 'Encountered two children with the same key' - duplicate keys in one of the Select option lists (likely duplicate warehouse_id in ship-to location / warehouse options). Cosmetic but noisy and can cause option duplication/omission.", "selector": "[data-testid='stock-transfer-ship-to-location-select']", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Delivery Note letterhead", "issues": ["Address is partly duplicated: street line already ends with 'ALIGARH-UP-202001' and the next line repeats 'ALIGARH - 202001'", "For P3 the city line shows only 'ALIGARH' (no PIN) and 'State Code: —' leaving an em-dash on a printed GST document"]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_freight_forwarder_gate_pass.py", "/app/test_reports/pytest/ff_gatepass.xml"],
+  "action_items": [
+    "Wrap stock_transfer_service.get_delivery_note_data in server.py with StockTransferOrderNotFoundError -> HTTPException(404) so bad/unknown STO IDs render the friendly page error instead of 500.",
+    "Add a fallback for missing/blank State + State Code (and PIN) in the delivery-note company blocks (e.g. GSTIN prefix -> state), P3 currently prints 'State: India  State Code: —'.",
+    "Fix the duplicate React key warning on the Stock Transfer page select options."
+  ],
+  "critical_code_review_comments": [
+    "server.py delivery-note route has no exception mapping while every other STO route does - inconsistent error contract.",
+    "get_delivery_note_data correctly degrades to {} when the ERP `comp` read fails (logged warning, page falls back to site ID) - good, but serial_number then silently degrades to just the Sale_Noc without the site/session segments; consider surfacing that the letterhead data is stale/unavailable on the printed doc."
+  ],
+  "updated_files": ["/app/backend/tests/test_freight_forwarder_gate_pass.py"],
+  "success_rate": {"backend": "83% (10/12 pytest cases)", "frontend": "100% of feature checks passed"},
+  "seed_data_creation": "No new STOs created (creation writes live to SAP/ERP). Used existing STO-000041 (P1->P8, FF null -> 'Self'), STO-000042 (FF 'pooja transport'), STO-000040 (P3->P2 Radish). Temp synthetic auth session/user docs were created and deleted afterwards.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "No end-user login for API; used synthetic vms_session via tests/_setup_sto_session.py (cookie 'vms_session'). All temp auth docs cleaned up.",
+  "context_for_next_testing_agent": "Verified PASSING: (1) freight_forwarder missing key -> 422, blank/whitespace -> 400/422, null -> 422; (2) client-side block shows form error 'Freight Forwarder is required.' and confirm dialog does NOT open (data-testid stock-transfer-form-error); (3) confirm dialog shows typed FF (stock-transfer-confirm-freight-forwarder), detail modal shows stored FF (STO-000042 -> 'pooja transport'); (4) Delivery Note dynamic letterhead: P1 -> 'RAY INTERNATIONAL', P3 -> 'RADISH TECHNOLOGIES', real street address+GSTIN+PAN for ship-from and both ship-to boxes; serial 'P1-746-2627' / 'P1-747-2627' / 'P3-1-2627'; Freight Forwarder line shows value or 'Self'; (5) Print Gate Pass button opens /gate-pass in a new tab; Gate Pass shows Serial 746, Date 25/08/2026, Type 'Delivery Challan', Customer 'RAY INTERNATIONAL' (ship-to P8), Vehicle UP81AA0099, Transport No 'Self', CODE128 barcode SVG rendered with text '746:P1:38094:C'. A real user-created STO-000043 (FF 'Pooja Transport', sale_noc 748) confirms end-to-end persistence of the new field through SAP+ERP sync. Regression: /production-confirmation loads with zero HTTP>=400 and the PRODUCTION MODEL column present. Note pytest run takes ~110s because every delivery-note call hits live SAP valuation/HSN + MS SQL.",
+  "rca_of_the_issue": "500 on unknown STO: server.py's /stock-transfer/{sto_id}/delivery-note calls stock_transfer_service.get_delivery_note_data via asyncio.to_thread with no try/except, so StockTransferOrderNotFoundError propagates as an unhandled exception -> 500 (confirmed in backend.err.log: 'stock_transfer_service.StockTransferOrderNotFoundError: Stock Transfer Order STO-999999 not found.'). Missing State Code on P3: source data gap in the read-only ERP `comp` table (StateCode/Cpin NULL for Ccode='P3'), passed straight through to the print view without a fallback."
+}

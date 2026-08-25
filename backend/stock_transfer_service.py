@@ -48,6 +48,8 @@ from production_confirmation_service import is_usable_stock_status
 from inventory_service import list_known_sites
 from sap_sto_client import SAPSTOError
 from sap_outbound_delivery_client import SAPOutboundDeliveryError
+import hsn_cache_service
+import company_cache_service
 import job_store
 
 logger = logging.getLogger(__name__)
@@ -90,7 +92,7 @@ def get_product_stock_locations(db, product_id: str, include_non_usable: bool = 
     these as visible-but-disabled options, never selectable as an actual
     transfer source."""
     product_id = (product_id or "").strip().upper()
-    hsn_code = sap_hsn_client.get_hsn_codes([product_id]).get(product_id) if sap_hsn_client else None
+    hsn_code = hsn_cache_service.get_hsn_codes_cached(db, [product_id], sap_hsn_client).get(product_id)
     doc = db[INVENTORY_CACHE_COLLECTION].find_one(
         {"_id": "latest", "items.product_id": product_id}, {"items.$": 1},
     )
@@ -250,6 +252,12 @@ def create_stock_transfer_order(db, payload: dict, created_by: str, sap_hsn_clie
     place_of_supply = (payload.get("place_of_supply") or "").strip()
     gr_no = (payload.get("gr_no") or "").strip()
     date_of_supply = (payload.get("date_of_supply") or "").strip()
+    # Freight Forwarder / Transporter name (Aug 27 2026, user's explicit
+    # ask - mandatory) - written to the SAP GST Note (_build_gst_note_text)
+    # AND the legacy ERP portal's own `Trans` field (sync_to_erp_portal),
+    # plus printed on the Delivery Note's Transport box and the Gate
+    # Pass's "Transport No" field.
+    freight_forwarder = (payload.get("freight_forwarder") or "").strip()
     if not transportation_mode:
         raise StockTransferValidationError("Transportation Mode is required.")
     if not vehicle_no:
@@ -260,6 +268,8 @@ def create_stock_transfer_order(db, payload: dict, created_by: str, sap_hsn_clie
         raise StockTransferValidationError("G.R No. is required.")
     if not date_of_supply:
         raise StockTransferValidationError("Date Of Supply is required.")
+    if not freight_forwarder:
+        raise StockTransferValidationError("Freight Forwarder is required.")
     try:
         date.fromisoformat(date_of_supply)
     except ValueError:
@@ -271,7 +281,7 @@ def create_stock_transfer_order(db, payload: dict, created_by: str, sap_hsn_clie
 
     resolved_items = []
     ship_from_site_id = None
-    hsn_codes = sap_hsn_client.get_hsn_codes([(raw.get("product_id") or "").strip().upper() for raw in items]) if sap_hsn_client else {}
+    hsn_codes = hsn_cache_service.get_hsn_codes_cached(db, [(raw.get("product_id") or "").strip().upper() for raw in items], sap_hsn_client)
     for idx, raw in enumerate(items, start=1):
         product_id = (raw.get("product_id") or "").strip().upper()
         source_warehouse_id = (raw.get("source_warehouse_id") or "").strip()
@@ -345,6 +355,7 @@ def create_stock_transfer_order(db, payload: dict, created_by: str, sap_hsn_clie
         "place_of_supply": place_of_supply,
         "gr_no": gr_no,
         "date_of_supply": date_of_supply,
+        "freight_forwarder": freight_forwarder,
         "items": resolved_items,
     }
     db[STO_COLLECTION].insert_one(sto_doc)
@@ -364,7 +375,8 @@ def _build_gst_note_text(doc: dict, item_price_hsn: list = None) -> str:
     where a human can see them, right on the Customer Requirement)."""
     parts = []
     for label, key in [("Mode", "transportation_mode"), ("Vehicle No", "vehicle_no"),
-                        ("Place of Supply", "place_of_supply"), ("GR No", "gr_no"), ("Date of Supply", "date_of_supply")]:
+                        ("Place of Supply", "place_of_supply"), ("GR No", "gr_no"), ("Date of Supply", "date_of_supply"),
+                        ("Freight Forwarder", "freight_forwarder")]:
         value = doc.get(key)
         if value:
             parts.append(f"{label}: {value}")
@@ -694,7 +706,7 @@ async def parse_natural_language_transfer_request(text: str, known_sites: list) 
     raise StockTransferValidationError(f"Could not understand that request right now ({last_error}) - please fill the form manually.")
 
 
-def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sap_hsn_client, sto_id: str) -> None:
+def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str) -> None:
     """Writes this Stock Transfer Order into the legacy Radish ERP portal
     (Aug 27 2026, user's explicit ask) via its own stored procedures - see
     erp_portal_client.py. Fires right after the order is created in SAP
@@ -709,14 +721,20 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sap_hsn_clie
       Pcode = Ship-to site's own plant code, unchanged - the portal
         reuses the exact same site codes as SAP.
       Rate/Amt/Amount/TaxableAmt = SAP's live Moving Average price x
-        quantity (never Standard Cost - see sap_valuation_client.py).
-      HSN_no = live SAP HSN Code, pulled via a custom Business Analytics
-        report on "Material Master Data" (see sap_hsn_client.py - this was
-        the only field on the whole tenant not PSM-blocked, added Aug 27
-        2026). Left blank (never invented) if that material has no HSN
-        code maintained in SAP yet.
-      Trans/Emp_no/ElecRefNo/Padd_Code1/Padd_Code2/Term1-3 all left
-        blank - user's explicit instruction (not captured/needed today).
+        quantity (never Standard Cost - see sap_valuation_client.py). This
+        is the ONE place this price is ever fetched live - also persisted
+        onto this order's own `items` here (Aug 27 2026, user's explicit
+        ask: "should be stored in mongo per record since u write to erp
+        anyway"), so get_delivery_note_data below never needs to re-fetch
+        it live on every single print.
+      HSN_no = reuses the `hsn_code` ALREADY resolved and stored on each
+        item at create_stock_transfer_order time (hsn_cache_service) -
+        never a fresh SAP call here.
+      Trans = Freight Forwarder / Transporter name (Aug 27 2026, user's
+        explicit ask - now a mandatory field on the STO form, see
+        create_stock_transfer_order). Emp_no/ElecRefNo/Padd_Code1/
+        Padd_Code2/Term1-3 all still left blank - user's explicit
+        instruction (not captured/needed today).
     """
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:
@@ -729,10 +747,10 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sap_hsn_clie
     }
     product_uuids = [u for u in product_uuid_by_id.values() if u]
     costs = sap_valuation_client.get_standard_costs(product_uuids) if product_uuids else {}
-    hsn_codes = sap_hsn_client.get_hsn_codes(product_ids)
 
     sale_date = datetime.strptime(doc["date_of_supply"], "%Y-%m-%d")
     line_items = []
+    stored_items = []
     total_amount = 0.0
     for item in doc["items"]:
         product_uuid = product_uuid_by_id.get(item["product_id"])
@@ -743,9 +761,10 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sap_hsn_clie
         total_amount += amt
         line_items.append({
             "product_id": item["product_id"], "description": item.get("description"),
-            "hsn_no": hsn_codes.get(item["product_id"]), "qty": qty, "unit": item.get("unit_of_measure") or "EA",
+            "hsn_no": item.get("hsn_code"), "qty": qty, "unit": item.get("unit_of_measure") or "EA",
             "rate": rate, "amt": amt, "dis_amt": 0, "taxable_amt": amt, "remark": None,
         })
+        stored_items.append({**item, "rate": rate, "amount": amt})
 
     header = {
         "comp_code": doc["ship_from_site_id"],
@@ -753,7 +772,7 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sap_hsn_clie
         "sale_date": sale_date,
         "pcode": doc["ship_to_site_id"],
         "padd_code1": None, "padd_code2": None,
-        "trans": None,
+        "trans": doc.get("freight_forwarder"),
         "veh_no": doc.get("vehicle_no"),
         "gr_no": doc.get("gr_no"),
         "gr_date": doc.get("date_of_supply"),
@@ -768,6 +787,7 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sap_hsn_clie
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
         "erp_portal_status": "synced", "erp_portal_error": None,
         "erp_sale_no": result["sale_no"], "erp_sale_noc": result["sale_noc"],
+        "items": stored_items,
     }})
 
 
@@ -790,55 +810,88 @@ def reset_erp_portal_sync_for_retry(db, sto_id: str) -> None:
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"erp_portal_status": "retrying", "erp_portal_error": None}})
 
 
-def get_delivery_note_data(db, sap_valuation_client, sap_hsn_client, sto_id: str) -> dict:
+def get_delivery_note_data(db, erp_portal_client, sto_id: str) -> dict:
     """Data for the in-app "Delivery Challan" print view (Aug 27 2026,
     user's explicit ask, referencing SAP's own printed template as the
-    layout target) - live SAP Rate + HSN per item, same lookups as
-    sync_to_erp_portal, plus the ERP portal's own Sale_No/Sale_Noc as the
-    document's Serial Number (user's explicit ask - "display both")."""
+    layout target), plus the ERP portal's own Sale_No/Sale_Noc as the
+    document's Serial Number (user's explicit ask - "display both").
+
+    Aug 27 2026 (later this session, performance fix - user's explicit
+    ask: "should be stored in mongo per record since u write to erp
+    anyway"): rate/amount/hsn_code are no longer fetched live from SAP on
+    every print - they're read straight off this order's own `items`,
+    where sync_to_erp_portal already persisted them (Moving Average
+    price, HSN Code) the ONE time this order was synced to the ERP
+    portal. An order that hasn't synced yet simply has no rate/hsn_code
+    stored (shows 0 / "—") - printing before syncing was never a
+    supported flow anyway (the Serial Number itself only exists post-sync).
+
+    Company Name/Address/GSTIN/PAN/current-fiscal-`session` for BOTH the
+    Ship-from and Ship-to sites comes from company_cache_service (Mongo
+    cache of the ERP's own `comp` table, refreshed periodically - not a
+    live MS SQL query per print, same user's-ask as above) - this is what
+    lets the print view show the correct "Radish Technologies" vs "Ray
+    International" letterhead. If a site is missing from `comp` entirely
+    (e.g. a newer site not yet onboarded there), falls back to just the
+    right company NAME via the same Site->Company mapping WIP Clearing
+    uses, so the letterhead is never wrong even without a full address.
+    Serial Number format is the user's explicit spec:
+    "{Ship-from CompCode}-{Sale_Noc}-{session}"."""
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:
         raise StockTransferOrderNotFoundError(f"Stock Transfer Order {sto_id} not found.")
 
-    product_ids = [item["product_id"] for item in doc["items"]]
-    product_uuid_by_id = {
-        c["_id"]: c.get("product_uuid")
-        for c in db["component_master"].find({"_id": {"$in": product_ids}}, {"product_uuid": 1})
-    }
-    product_uuids = [u for u in product_uuid_by_id.values() if u]
-    costs = sap_valuation_client.get_standard_costs(product_uuids) if product_uuids else {}
-    hsn_codes = sap_hsn_client.get_hsn_codes(product_ids)
-
     items = []
     total_amount = 0.0
     for item in doc["items"]:
-        product_uuid = product_uuid_by_id.get(item["product_id"])
-        cost = costs.get(product_uuid.upper()) if product_uuid else None
-        rate = cost["amount"] if cost else 0.0
+        rate = item.get("rate") or 0.0
         qty = item["requested_qty"]
-        amount = round(rate * qty, 3)
+        amount = item.get("amount")
+        if amount is None:
+            amount = round(rate * qty, 3)
         total_amount += amount
         items.append({
             "product_id": item["product_id"],
             "description": item.get("description"),
-            "hsn_code": hsn_codes.get(item["product_id"]) or item.get("hsn_code"),
+            "hsn_code": item.get("hsn_code"),
             "qty": qty,
             "unit": item.get("unit_of_measure") or "EA",
             "rate": rate,
             "amount": amount,
         })
 
+    company_info = company_cache_service.get_cached_company_info(
+        db, [doc["ship_from_site_id"], doc["ship_to_site_id"]], erp_portal_client,
+    )
+
+    def _company_or_fallback(site_id):
+        company = company_info.get(site_id)
+        if company:
+            return company
+        company_code, _ = company_and_set_of_books_for_site(site_id)
+        return {"company_name": "RAY INTERNATIONAL" if company_code == "RI" else "RADISH TECHNOLOGIES"}
+
+    ship_from_company = _company_or_fallback(doc["ship_from_site_id"])
+    ship_to_company = _company_or_fallback(doc["ship_to_site_id"])
+    session = ship_from_company.get("session")
+    erp_sale_noc = doc.get("erp_sale_noc")
+    serial_number = f"{doc['ship_from_site_id']}-{erp_sale_noc}-{session}" if erp_sale_noc and session else (str(erp_sale_noc) if erp_sale_noc else None)
+
     return {
         "sto_id": sto_id,
         "erp_sale_no": doc.get("erp_sale_no"),
-        "erp_sale_noc": doc.get("erp_sale_noc"),
+        "erp_sale_noc": erp_sale_noc,
+        "serial_number": serial_number,
         "date_of_supply": doc.get("date_of_supply"),
         "ship_from_site_id": doc["ship_from_site_id"],
         "ship_to_site_id": doc["ship_to_site_id"],
+        "ship_from_company": ship_from_company,
+        "ship_to_company": ship_to_company,
         "vehicle_no": doc.get("vehicle_no"),
         "gr_no": doc.get("gr_no"),
         "transportation_mode": doc.get("transportation_mode"),
         "place_of_supply": doc.get("place_of_supply"),
+        "freight_forwarder": doc.get("freight_forwarder"),
         "items": items,
         "total_amount": round(total_amount, 2),
     }
