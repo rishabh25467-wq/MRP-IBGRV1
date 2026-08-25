@@ -183,8 +183,9 @@ const STATUS_TONE = {
 const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
   const [confirmedQty, setConfirmedQty] = useState(row ? (row.open_quantity ?? "") : "");
   const [confirmedScrap, setConfirmedScrap] = useState("0");
+  const [hasScrap, setHasScrap] = useState(false);
   const [scrapCalc, setScrapCalc] = useState(null);
-  const [reason, setReason] = useState("none");
+  const [reason, setReason] = useState("");
   const [finished, setFinished] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingElapsed, setSavingElapsed] = useState(0);
@@ -211,8 +212,9 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
     if (row) {
       setConfirmedQty(row.open_quantity ?? "");
       setConfirmedScrap("0");
+      setHasScrap(false);
       setScrapCalc(null);
-      setReason("none");
+      setReason("");
       // Aug 2026 (user's explicit rule): "finished" is now ALWAYS true and
       // locked - every confirmation closes the lot for good and always
       // triggers a WIP Clearing Run. No more multi-stage partial
@@ -298,6 +300,21 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
       toast.error("Confirmed Scrap must be a valid, non-negative number");
       return;
     }
+    // Aug 25 2026, user's explicit ask: scrap is meaningful data (QC
+    // rejects, damage, etc.) - it must never be entered "by accident" as
+    // a stray number, and it must always carry a reason so the shop
+    // floor can trace WHY units were rejected. Gated behind the
+    // "Has Scrap" checkbox itself, so this only fires when that's on.
+    if (hasScrap) {
+      if (scrap === null || scrap <= 0) {
+        toast.error("Scrap Quantity must be greater than 0 when \"This confirmation has Scrap\" is checked");
+        return;
+      }
+      if (!reason) {
+        toast.error("Select a Scrap Reason (e.g. Quality Issue) before confirming");
+        return;
+      }
+    }
     // Aug 27 2026 fix (user's explicit ask - a real confirmation went
     // through with no by-product ever posted): block submission
     // up-front whenever a by-product IS expected (an RM component was
@@ -330,7 +347,7 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
         production_task_uuid: row.production_task_uuid,
         confirmed_quantity: qty,
         confirmed_scrap: scrap,
-        deviation_reason_code: reason === "none" ? null : reason,
+        deviation_reason_code: reason || null,
         confirmation_finished: finished,
         site_id: row.site_id,
         byproduct_material_output_uuid: byproductMatch?.material_output_uuid || null,
@@ -530,22 +547,40 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
               <span><strong>Cannot confirm yet:</strong> {scrapCalc.reason}</span>
             </div>
           )}
-          <div>
-            <Label className="text-xs font-bold text-[#344054]">Confirmed Scrap (Rejected Qty)</Label>
-            <Input type="number" value={confirmedScrap} onChange={(e) => setConfirmedScrap(e.target.value)} data-testid="confirm-scrap-input" />
-            <p className="text-[11px] text-[#98A2B3] mt-0.5">Manually enter rejected/defective units, if any. Unrelated to the by-product weight below.</p>
-          </div>
-          <div>
-            <Label className="text-xs font-bold text-[#344054]">Deviation Reason</Label>
-            <Select value={reason} onValueChange={setReason}>
-              <SelectTrigger data-testid="confirm-deviation-reason-select"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">None</SelectItem>
-                {reasons.map((r) => (
-                  <SelectItem key={r.code} value={r.code}>{r.code} - {r.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <div className="border border-[#D0D5DD] rounded-sm p-3 space-y-3" data-testid="scrap-section">
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="has-scrap-cb"
+                checked={hasScrap}
+                onCheckedChange={(checked) => {
+                  setHasScrap(!!checked);
+                  if (!checked) { setConfirmedScrap("0"); setReason(""); }
+                }}
+                data-testid="confirm-has-scrap-checkbox"
+              />
+              <Label htmlFor="has-scrap-cb" className="text-xs font-bold text-[#344054]">This confirmation has Scrap / Rejected units (QC issue, damage, etc.)</Label>
+            </div>
+            {hasScrap && (
+              <>
+                <div>
+                  <Label className="text-xs font-bold text-[#344054]">Scrap Quantity (Rejected Qty) *</Label>
+                  <Input type="number" value={confirmedScrap} onChange={(e) => setConfirmedScrap(e.target.value)} data-testid="confirm-scrap-input" />
+                  <p className="text-[11px] text-[#98A2B3] mt-0.5">Manually enter rejected/defective units. Unrelated to the by-product weight above.</p>
+                </div>
+                <div>
+                  <Label className="text-xs font-bold text-[#344054]">Scrap Reason *</Label>
+                  <Select value={reason} onValueChange={setReason}>
+                    <SelectTrigger data-testid="confirm-deviation-reason-select"><SelectValue placeholder="Select a reason..." /></SelectTrigger>
+                    <SelectContent>
+                      {reasons.map((r) => (
+                        <SelectItem key={r.code} value={r.code}>{r.code} - {r.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[11px] text-[#98A2B3] mt-0.5">Required whenever scrap units are recorded (e.g. Quality Issue, Material Damage).</p>
+                </div>
+              </>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <Checkbox id="finished-cb" checked={finished} disabled data-testid="confirm-finished-checkbox" />

@@ -1,3 +1,11 @@
+## UI fix (2026-08-25, continued) - Scrap entry now gated + reason mandatory
+
+- **User's explicit ask**: "Confirmed Scrap (Rejected Qty)" was a plain always-editable number input with no reason requirement. Changed to: a "This confirmation has Scrap / Rejected units (QC issue, damage, etc.)" checkbox that must be checked before the quantity input even appears; once checked, both "Scrap Quantity *" (must be > 0) and a new mandatory "Scrap Reason *" dropdown (reuses the existing Deviation Reason list - Quality Issue, Material Damage, etc.) must be filled before Confirm will submit. Unchecking resets both fields to blank/0.
+- Verified live in the browser (real SAP PRD tenant, Lot 11592): checkbox toggles the section correctly, both fields render with the right labels/placeholders; dialog closed via Cancel, no data submitted.
+
+---
+
+
 ## Bug fix (2026-08-25, continued) - Net Weight > Gross Weight silently clamped to "0 kg scrap" instead of blocking
 
 - **User-reported bug** (Lot 70524, PL-0037A): the scrap-calc panel showed Gross Weight 1.315 kg / Net Weight 1.344 kg / Scrap/unit 0 kg - physically impossible (a stamped part can't weigh more than its raw blank). Root cause: `_compute_scrap_calc` clamped negative scrap to 0 via `max(0, ...)` and let confirmation proceed with a meaningless 0kg by-product post to SAP, masking the real master-data error (either PL-0037A's Net Weight, pushed to SAP Aug 24, or FLAT-PL37's BOM qty is wrong - user still needs to verify which on the shop floor).
