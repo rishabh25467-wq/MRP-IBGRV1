@@ -1896,9 +1896,9 @@ const UrgentActionDashboard = () => {
 
   if (!data) return null;
   const tiles = [
-    { key: "overdue_pos", label: "Overdue POs", count: data.overdue_pos_count, rows: data.overdue_pos },
-    { key: "shortages", label: "Component Shortages", count: data.shortages_count, rows: data.shortages },
-    { key: "pending_store_approvals", label: "Pending Store Approvals", count: data.pending_store_approvals_count, rows: data.pending_store_approvals },
+    { key: "created_today", label: "Today Created Lot ID", count: data.created_today_count, rows: data.created_today },
+    { key: "pending_lots", label: "Pending Lot ID", count: data.pending_lots_count, rows: data.pending_lots },
+    { key: "shortages", label: "Pending Stock", count: data.shortages_count, rows: data.shortages },
   ];
   const allClear = tiles.every((t) => t.count === 0);
 
@@ -1928,11 +1928,25 @@ const UrgentActionDashboard = () => {
       </div>
       {expanded && (
         <div className="border border-[#D0D5DD] rounded-sm overflow-auto max-h-56" data-testid={`urgent-action-detail-${expanded}`}>
-          {expanded === "overdue_pos" && (
+          {expanded === "created_today" && (
             <table className="w-full text-[12px] border-collapse">
-              <thead><tr className="bg-[#F9FAFB]">{["Item", "Customer", "Due Date", "Qty Open"].map((h) => <th key={h} className="text-left px-2 py-1 border-b border-[#D0D5DD]">{h}</th>)}</tr></thead>
-              <tbody>{data.overdue_pos.map((r, i) => (
-                <tr key={i}><td className="px-2 py-1 border-b border-[#EAECF0]">{r.item_code}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{r.customer}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{r.due_date || r.target_ship_date}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{formatQty(r.qty_open)}</td></tr>
+              <thead><tr className="bg-[#F9FAFB]">{["Lot ID", "Output Product", "Site", "Planned", "Open"].map((h) => <th key={h} className="text-left px-2 py-1 border-b border-[#D0D5DD]">{h}</th>)}</tr></thead>
+              <tbody>{data.created_today.map((r, i) => (
+                <tr key={i}><td className="px-2 py-1 border-b border-[#EAECF0]">{r.production_lot_id}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{r.main_output_product}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{r.site_id}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{formatQty(r.planned_quantity)}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{formatQty(r.open_quantity)}</td></tr>
+              ))}</tbody>
+            </table>
+          )}
+          {expanded === "pending_lots" && (
+            <table className="w-full text-[12px] border-collapse">
+              <thead><tr className="bg-[#F9FAFB]">{["Type", "Lot ID / Proposal", "Product", "Site", "Open"].map((h) => <th key={h} className="text-left px-2 py-1 border-b border-[#D0D5DD]">{h}</th>)}</tr></thead>
+              <tbody>{data.pending_lots.map((r, i) => (
+                <tr key={i}>
+                  <td className="px-2 py-1 border-b border-[#EAECF0]">{r.kind === "lot" ? "Awaiting confirmation" : "SAP Order pending release"}</td>
+                  <td className="px-2 py-1 border-b border-[#EAECF0]">{r.kind === "lot" ? r.production_lot_id : (r.production_order_id || r.production_proposal_id)}</td>
+                  <td className="px-2 py-1 border-b border-[#EAECF0]">{r.kind === "lot" ? r.main_output_product : r.material_id}</td>
+                  <td className="px-2 py-1 border-b border-[#EAECF0]">{r.site_id}</td>
+                  <td className="px-2 py-1 border-b border-[#EAECF0]">{r.kind === "lot" ? formatQty(r.open_quantity) : "—"}</td>
+                </tr>
               ))}</tbody>
             </table>
           )}
@@ -1944,16 +1958,8 @@ const UrgentActionDashboard = () => {
               ))}</tbody>
             </table>
           )}
-          {expanded === "pending_store_approvals" && (
-            <table className="w-full text-[12px] border-collapse">
-              <thead><tr className="bg-[#F9FAFB]">{["Material", "Site", "Requested By"].map((h) => <th key={h} className="text-left px-2 py-1 border-b border-[#D0D5DD]">{h}</th>)}</tr></thead>
-              <tbody>{data.pending_store_approvals.map((r, i) => (
-                <tr key={i}><td className="px-2 py-1 border-b border-[#EAECF0]">{r.material_id}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{r.site_id}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{r.requester}</td></tr>
-              ))}</tbody>
-            </table>
-          )}
           <div className="px-2 py-1.5 text-right">
-            {expanded === "pending_store_approvals" && <a href="/storeapproval" className="text-[11px] text-[#175CD3] underline" data-testid="urgent-action-go-to-store-approval">Go to Store Approval →</a>}
+            {expanded === "shortages" && <a href="/storeapproval" className="text-[11px] text-[#175CD3] underline" data-testid="urgent-action-go-to-store-approval">Go to Store Approval →</a>}
           </div>
         </div>
       )}

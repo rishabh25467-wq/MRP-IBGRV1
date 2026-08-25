@@ -348,6 +348,27 @@ def get_order_creators(db, production_order_ids: list) -> dict:
     return creators
 
 
+def get_pending_order_releases(db, actor_name: str) -> list:
+    """"Pending Lot ID" tile's second signal (user's explicit ask, Aug 25
+    2026) - Proposals THIS user created that haven't been confirmed as
+    released into an actual SAP Order/Lot yet (still stuck somewhere in
+    the Proposal -> Order -> Release pipeline, e.g. a "pipeline_error" a
+    "Resume" was never clicked for, or genuinely still in progress)."""
+    docs = db[PROPOSAL_HISTORY_COLLECTION].find({
+        "type": "proposal_created", "actor": actor_name, "released": {"$ne": True},
+    }).sort("at", -1).limit(50)
+    return [
+        {
+            "material_id": d.get("material_id"), "site_id": d.get("site_id"),
+            "production_proposal_id": d.get("production_proposal_id"),
+            "production_order_id": d.get("production_order_id"),
+            "at": d["at"].isoformat(),
+        }
+        for d in docs
+    ]
+
+
+
 def load_stock_by_product(db) -> dict:
     """Loads the current inventory_cache (refreshed every 30 min from live
     SAP, see server.py's start_inventory_cache_refresh_loop) into a

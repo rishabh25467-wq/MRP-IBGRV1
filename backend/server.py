@@ -2551,25 +2551,48 @@ async def get_scrap_trend(request: Request):
 
 @api_router.get("/production-confirmation/urgent-actions")
 async def get_urgent_actions(request: Request):
-    """Urgent Action Dashboard (user's explicit ask, Aug 25 2026) - one
-    summary of 3 things needing attention right now: Overdue POs (from
-    the Open-PO Demand feed's last autosaved pull - due_date/target_ship_
-    date already past, qty_open still > 0), component Shortages (the
-    distinct components currently blocking a pending Store Approval
-    request), and Pending Store Approvals themselves. Site-scoped for a
-    "user"-role account (bound_sites), unrestricted for admin/super_admin
-    - same as the open-lots table above. Overdue POs are sales-order
-    lines with no reliable per-row site/plant field in the feed itself,
-    so that bucket is shown company-wide regardless of role."""
-    site_ids = _site_scope_for(request.state.user)
+    """Urgent Action Dashboard (user's explicit ask, Aug 25 2026, redesigned
+    same day): 3 tiles, all personal to the viewer (not "everyone's"):
+    1. Today Created Lot ID - lots I created today via Create Production
+       Order, that already have a real Lot ID (already visible in the
+       open-lots snapshot).
+    2. Pending Lot ID - combines (a) my own open lots not yet finished,
+       and (b) my own Proposals stuck before ever reaching a Lot/Order
+       release - together, "everything of mine still in flight".
+    3. Pending Stock - components currently blocking one of MY pending
+       Store Approval requests (was "Component Shortages", renamed).
+    Site-scoped via bound_sites for a "user"-role account, unrestricted
+    for admin/super_admin - same as the open-lots table."""
+    user = request.state.user
+    my_name = (user.get("name") or "").strip().lower()
+    site_ids = _site_scope_for(user)
 
-    pending = await asyncio.to_thread(store_approval_service.list_requests, db)
-    pending = [r for r in pending if r.get("status") == "pending"]
+    try:
+        rows = await asyncio.to_thread(sap_production_lot_client.find_open_lots, None, None, 300)
+    except (SAPProductionLotAuthError, SAPProductionLotError):
+        rows = []
+    rows = _filter_by_site_access(rows, user)
+    rows = await asyncio.to_thread(_attach_order_creators, rows, db)
+    my_rows = [r for r in rows if (r.get("created_by") or "").strip().lower() == my_name]
+
+    now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    start_ist_naive = datetime(now_ist.year, now_ist.month, now_ist.day)
+    today_start_utc = (start_ist_naive - timedelta(hours=5, minutes=30)).replace(tzinfo=timezone.utc)
+    created_today = [r for r in my_rows if r.get("order_created_at") and datetime.fromisoformat(r["order_created_at"]) >= today_start_utc]
+
+    pending_lots = [r for r in my_rows if not r.get("confirmation_finished")]
+    pending_releases = await asyncio.to_thread(production_confirmation_service.get_pending_order_releases, db, user.get("name") or "")
+    pending_combined = (
+        [{"kind": "lot", **r} for r in pending_lots]
+        + [{"kind": "release", **r} for r in pending_releases]
+    )
+
+    pending_approvals = await asyncio.to_thread(store_approval_service.list_requests, db)
+    pending_approvals = [r for r in pending_approvals if r.get("status") == "pending"]
     if site_ids is not None:
-        pending = [r for r in pending if r.get("site_id") in site_ids]
-
+        pending_approvals = [r for r in pending_approvals if r.get("site_id") in site_ids]
     shortages_by_product = {}
-    for r in pending:
+    for r in pending_approvals:
         for c in r.get("components", []):
             entry = shortages_by_product.setdefault(c["product_id"], {"product_id": c["product_id"], "description": c.get("description"), "sites": set()})
             entry["sites"].add(r.get("site_id"))
@@ -2578,23 +2601,13 @@ async def get_urgent_actions(request: Request):
         key=lambda x: x["product_id"],
     )
 
-    po_doc = await asyncio.to_thread(autosave_store.get_autosave, db, "open_po_demand")
-    today_str = datetime.now(timezone.utc).date().isoformat()
-    overdue_pos = []
-    for row in ((po_doc or {}).get("data") or {}).get("rows", []):
-        due = row.get("due_date") or row.get("target_ship_date")
-        qty_open = row.get("qty_open") or 0
-        if due and qty_open > 0 and due < today_str:
-            overdue_pos.append(row)
-    overdue_pos.sort(key=lambda r: r.get("due_date") or r.get("target_ship_date") or "")
-
     return {
-        "overdue_pos": overdue_pos[:20],
-        "overdue_pos_count": len(overdue_pos),
+        "created_today": created_today[:20],
+        "created_today_count": len(created_today),
+        "pending_lots": pending_combined[:20],
+        "pending_lots_count": len(pending_combined),
         "shortages": shortages[:20],
         "shortages_count": len(shortages),
-        "pending_store_approvals": pending[:20],
-        "pending_store_approvals_count": len(pending),
     }
 
 

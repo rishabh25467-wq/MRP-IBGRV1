@@ -1,3 +1,15 @@
+## Redesign (2026-08-25, continued) - Urgent Action tiles redesigned per user feedback
+
+- **Tile 1 "Today Created Lot ID"** (replaces "Overdue POs" entirely): lots I created today via Create Production Order, personal to the viewer.
+- **Tile 2 "Pending Lot ID"** (replaces "Pending Store Approvals"): combines my own open-not-yet-finished lots + my own Proposals stuck before ever reaching a released SAP Order (new `production_confirmation_service.get_pending_order_releases`).
+- **Tile 3 "Pending Stock"**: same logic as the old "Component Shortages" tile, renamed only.
+- Backend: `get_urgent_actions` rewritten around one shared open-lots fetch (personal to the viewer via `created_by` name match) instead of the old Open-PO Demand feed (dropped entirely per user's redesign ask).
+- Known slowness (not a bug, matches existing P2 backlog item "Background Job Throttling"): this endpoint's live SAP open-lots call can take 30-40s in this environment before the tiles populate - same root cause as other SAP-dependent page loads.
+- Verified live end-to-end (after discovering it just needed ~35s to resolve, not broken): tiles render, counts correct (3 Pending Stock items for P1), detail table + "Go to Store Approval" link work.
+
+---
+
+
 ## Access control fix (2026-08-25, continued) - "user" role sees only self-created production orders
 
 - **User's explicit ask**: on the Production Confirmation table, a plain "user" account should see only production orders THEY created; admin unaffected.
