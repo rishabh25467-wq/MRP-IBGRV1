@@ -524,8 +524,11 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
               )}
             </div>
           )}
-          {scrapCalc && !scrapCalc.available && (
-            <p className="text-[11px] text-[#667085]" data-testid="scrap-calc-unavailable">Scrap auto-calc unavailable: {scrapCalc.reason}</p>
+          {scrapCalc && !scrapCalc.available && scrapCalc.rm_product_id && (
+            <div className="text-[11px] text-[#B42318] bg-[#FEF3F2] border border-[#FECDCA] rounded-sm px-3 py-2 flex items-start gap-1.5" data-testid="scrap-calc-unavailable">
+              <WarningCircle size={13} weight="fill" className="shrink-0 mt-0.5" />
+              <span><strong>Cannot confirm yet:</strong> {scrapCalc.reason}</span>
+            </div>
           )}
           <div>
             <Label className="text-xs font-bold text-[#344054]">Confirmed Scrap (Rejected Qty)</Label>
@@ -552,8 +555,8 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose} data-testid="confirm-cancel-button">Cancel</Button>
-          <Button onClick={submit} disabled={saving || checkingAvailability} data-testid="confirm-submit-button">
-            {saving ? `${CONFIRM_PHASE_LABELS[savingPhase] || "Posting to SAP"} (${savingElapsed}s)...` : checkingAvailability ? "Checking stock..." : "Post Confirmation"}
+          <Button onClick={submit} disabled={saving || checkingAvailability || (scrapCalc?.rm_product_id && !scrapCalc?.available)} data-testid="confirm-submit-button">
+            {saving ? `${CONFIRM_PHASE_LABELS[savingPhase] || "Posting to SAP"} (${savingElapsed}s)...` : checkingAvailability ? "Checking stock..." : (scrapCalc?.rm_product_id && !scrapCalc?.available) ? "Fix weight data first" : "Post Confirmation"}
           </Button>
         </DialogFooter>
       </DialogContent>

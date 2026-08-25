@@ -1,3 +1,14 @@
+## Bug fix (2026-08-25, continued) - Net Weight > Gross Weight silently clamped to "0 kg scrap" instead of blocking
+
+- **User-reported bug** (Lot 70524, PL-0037A): the scrap-calc panel showed Gross Weight 1.315 kg / Net Weight 1.344 kg / Scrap/unit 0 kg - physically impossible (a stamped part can't weigh more than its raw blank). Root cause: `_compute_scrap_calc` clamped negative scrap to 0 via `max(0, ...)` and let confirmation proceed with a meaningless 0kg by-product post to SAP, masking the real master-data error (either PL-0037A's Net Weight, pushed to SAP Aug 24, or FLAT-PL37's BOM qty is wrong - user still needs to verify which on the shop floor).
+- **Fix**: `_compute_scrap_calc` now returns `available: False` with a clear "Data error: Net Weight X kg is greater than Gross Weight Y kg..." reason whenever net > gross, instead of silently clamping. This automatically plugs into the by-product enforcement built earlier this session (both `get_scrap_calc` preview endpoint and `confirm_production`'s backend block) - confirmation is now fully blocked (HTTP 400) until the master data is fixed, per user's explicit "stop further process" ask.
+- Frontend: the "unavailable" message is now a red warning box (was muted gray text) with "Cannot confirm yet: ..."; only shown when an RM component genuinely exists (never shown for assembly-only items with no by-product expected). Confirm button is now visually disabled + relabeled "Fix weight data first" in this state, not just blocked on click.
+- Verified live against the real PL-0037A/FLAT-PL37 data that reproduced the bug: `scrap-calc/PL-0037A` now returns the data-error message, and `POST /confirm` for Lot 70524 returns HTTP 400 with the same message.
+- Open action for user: determine which value is actually wrong (Net Weight 1.344 kg vs BOM qty 1.315 kg) and correct it - not yet resolved, only the app's response to the inconsistency is fixed.
+
+---
+
+
 ## Session update (2026-08-25, continued) - FG identification + auto SFG->FG Goods Movement after Production Confirmation
 
 - **FG identification (user question, answered)**: confirmed the app already has a deterministic rule (`bom_categorizer.py`) to distinguish a true Finished Goods item from a Sub-Assembly: has its own BOM AND is never used as a component inside any other product's BOM = FG; has its own BOM but IS used as a component elsewhere = Sub-Assembly. Verified live against real data (PL-0037 = FG, PL-0037A = Sub-Assembly, consumed inside PL-0037's own BOM).

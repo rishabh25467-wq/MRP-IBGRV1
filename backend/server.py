@@ -857,6 +857,26 @@ async def _compute_scrap_calc(product_id: str, material_inputs: Optional[List[Ma
         }
 
     gross_weight_kg = rm_item["quantity"]
+    # Aug 25 2026, user's explicit ask (real bug found live: PL-0037A on
+    # Lot 70524 - Net Weight 1.344 kg > FLAT-PL37 Gross Weight 1.315 kg,
+    # a physical impossibility since stamping/forming only ever REMOVES
+    # material). Previously this silently clamped to "Scrap/unit: 0 kg"
+    # and let the user post a meaningless 0kg by-product to SAP, masking
+    # a real master-data error. Now treated exactly like a missing Net
+    # Weight - "available": False - which blocks confirmation entirely
+    # (both the frontend guard and the backend enforcement in
+    # confirm_production reuse this same "available" flag).
+    if net_weight_kg > gross_weight_kg:
+        return {
+            "available": False,
+            "reason": (
+                f"Data error: Net Weight ({net_weight_kg} kg) is greater than Gross Weight ({gross_weight_kg} kg) - "
+                f"a finished part can never weigh more than the raw material it was made from. Fix the Net Weight "
+                f"on the Admin page or the BOM consumption qty for {rm_item['product_id']} before confirming."
+            ),
+            "rm_product_id": rm_item["product_id"], "rm_description": rm_item.get("description"),
+            "gross_weight_kg": gross_weight_kg, "net_weight_kg": net_weight_kg, "scrap_family": scrap_family,
+        }
     scrap_per_unit_kg = max(0, round(gross_weight_kg - net_weight_kg, 6))
     return {
         "available": True,
