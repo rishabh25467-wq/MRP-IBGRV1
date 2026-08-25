@@ -1,3 +1,14 @@
+## Session update (2026-08-25, continued 21) - Production Model ID now shown on Production Confirmation + Proposal/Order History tables
+
+- User's ask: "I need to identify which Production Model I used to create a production order" - the Production Model picked in the Source of Supply picker at order-creation time was never persisted anywhere.
+- **`CreateProductionProposalRequest`** (server.py) gained `production_model_id` (human-readable, e.g. "BK-0021_1", alongside the existing UUID) - frontend now sends `selectedSosOption.production_model_id` on order creation.
+- **`log_proposal_creation`** now saves it on the `production_order_creation_history` doc; **`get_proposal_and_release_history`** and **`get_order_creators`** (the join used by `_attach_order_creators` for the open-lots list) both now surface it.
+- **Frontend**: new "Production Model" column on both the main Production Confirmation grid (joined by Production Order ID, same mechanism as "Created By") and the Proposal/Order History table. Orders created before this fix show "—" (expected, confirmed with user).
+- **Tested live**: simulated a proposal+release history row end-to-end via direct service calls (confirmed `production_model_id` flows through both `get_proposal_and_release_history` and `get_order_creators`), then verified in the real UI against real lot 70411 - "Production Model" column correctly shows "BK-0021_1" on both tables, no layout issues (screenshot-verified). Self-tested (small backend+frontend change) - no testing_agent run.
+
+---
+
+
 ## Session update (2026-08-27, continued 20) - Production Confirmation shortage check now uses the LOT'S OWN exact SAP MaterialInput (no more BOM guessing)
 
 - **Root cause, fully resolved**: `check_component_availability`'s cached "highest revision" BOM guess (and even its newer site-scoped Source-of-Supply auto-resolve) could still pick the WRONG Production Model when SAP has 2+ active models for the same product (real case: BK-0021 at P2 needs FLAT-BK21, but the cache/guess kept resolving to SH4.5HR from a different site's model). SAP's own Production Lot XML (`QueryProductionLotISIIn`) already returns a `<MaterialInput>` block per ConfirmationGroup with the EXACT components that specific lot was planned against - no ambiguity possible, since it's the lot's own already-resolved data, not a guess.

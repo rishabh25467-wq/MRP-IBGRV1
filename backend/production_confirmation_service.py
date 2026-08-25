@@ -171,6 +171,10 @@ def log_proposal_creation(db, actor: str, request_payload: dict, result: dict, j
         "quantity": request_payload.get("quantity"),
         "unit_code": request_payload.get("unit_code"),
         "production_proposal_id": result.get("production_proposal_id"),
+        # Aug 2026, user's explicit ask: which Production Model (Source of
+        # Supply) was picked at creation time - can only ever be set here,
+        # never retroactively, since it's a one-time creation choice.
+        "production_model_id": request_payload.get("production_model_id"),
         "at": datetime.now(timezone.utc),
     })
 
@@ -214,6 +218,7 @@ def get_proposal_and_release_history(db, limit: int = 200) -> list:
             "unit_code": d.get("unit_code"),
             "production_proposal_id": d.get("production_proposal_id"),
             "production_order_id": d.get("production_order_id"),
+            "production_model_id": d.get("production_model_id"),
             "released": d.get("released"),
             "released_by": d.get("released_by"),
             "success": d.get("success"),
@@ -224,26 +229,35 @@ def get_proposal_and_release_history(db, limit: int = 200) -> list:
 
 
 def get_order_creators(db, production_order_ids: list) -> dict:
-    """{production_order_id: {"name": actor_name, "at": datetime}} for the
-    "Show mine"/"Sort by latest" controls (user's explicit ask, Aug 2026)
-    on the Production Confirmation table - "mine" means orders I
-    created/released, not orders I've merely confirmed. Prefers
-    `released_by` (the merged proposal_created row, the normal one-click
-    flow) over `actor` (the standalone manual Release-an-Order form,
-    which has no linked proposal row). `at` is the order-creation
-    timestamp, used so "latest" reflects when the order was actually
-    created rather than SAP's own (unexposed) lot ordering."""
+    """{production_order_id: {"name": actor_name, "at": datetime,
+    "production_model_id": str|None}} for the "Show mine"/"Sort by
+    latest" controls (user's explicit ask, Aug 2026) on the Production
+    Confirmation table - "mine" means orders I created/released, not
+    orders I've merely confirmed. Prefers `released_by` (the merged
+    proposal_created row, the normal one-click flow) over `actor` (the
+    standalone manual Release-an-Order form, which has no linked
+    proposal row). `at` is the order-creation timestamp, used so
+    "latest" reflects when the order was actually created rather than
+    SAP's own (unexposed) lot ordering. `production_model_id` (Aug 27
+    2026, user's explicit ask - "which Production Model did I use to
+    create this order?") is only ever known for orders created via the
+    Source of Supply picker after this fix - older orders show None,
+    the frontend renders that as "—"."""
     if not production_order_ids:
         return {}
     docs = db[PROPOSAL_HISTORY_COLLECTION].find(
         {"production_order_id": {"$in": production_order_ids}},
-        {"production_order_id": 1, "released_by": 1, "actor": 1, "at": 1, "released_at": 1},
+        {"production_order_id": 1, "released_by": 1, "actor": 1, "at": 1, "released_at": 1, "production_model_id": 1},
     ).sort("_id", 1)
     creators = {}
     for d in docs:
         order_id = d.get("production_order_id")
         if order_id:
-            creators[order_id] = {"name": d.get("released_by") or d.get("actor"), "at": d.get("released_at") or d.get("at")}
+            creators[order_id] = {
+                "name": d.get("released_by") or d.get("actor"),
+                "at": d.get("released_at") or d.get("at"),
+                "production_model_id": d.get("production_model_id"),
+            }
     return creators
 
 

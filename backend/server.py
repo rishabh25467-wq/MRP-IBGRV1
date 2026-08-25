@@ -2039,7 +2039,9 @@ def _attach_order_creators(rows: list, db) -> list:
     Confirmation table need to know who created/released each row's
     production order, and when - joins against
     production_order_creation_history (see
-    production_confirmation_service.get_order_creators)."""
+    production_confirmation_service.get_order_creators). Aug 27 2026: also
+    joins the Production Model ID used to create that order, so a planner
+    can identify which SAP Production Model/BOM this lot was built against."""
     order_ids = [r.get("production_order_id") for r in rows if r.get("production_order_id")]
     creators = production_confirmation_service.get_order_creators(db, order_ids)
     for r in rows:
@@ -2047,6 +2049,7 @@ def _attach_order_creators(rows: list, db) -> list:
         r["created_by"] = info.get("name")
         at = info.get("at")
         r["order_created_at"] = at.isoformat() if at else None
+        r["production_model_id"] = info.get("production_model_id")
     return rows
 
 
@@ -2303,6 +2306,11 @@ class CreateProductionProposalRequest(BaseModel):
     actor: str
     logistic_relationship_uuid: Optional[str] = None
     production_model_uuid: Optional[str] = None
+    # Aug 27 2026, user's explicit ask: human-readable Production Model ID
+    # (e.g. "BK-0021_1"), saved alongside the UUID purely for display on
+    # the Production Confirmation / Proposal-Order History tables - never
+    # sent to SAP itself (SAP only needs the UUID).
+    production_model_id: Optional[str] = None
 
 
 @api_router.get("/production-confirmation/source-of-supply-options/{material_id}")

@@ -1065,6 +1065,7 @@ const CreateOrderTab = ({ actorName }) => {
         actor: actorName.trim(),
         logistic_relationship_uuid: selectedSosOption ? selectedSosOption.logistic_relationship_uuid : null,
         production_model_uuid: selectedSosOption ? selectedSosOption.production_model_uuid : null,
+        production_model_id: selectedSosOption ? selectedSosOption.production_model_id : null,
       });
       const jobId = data.job_id;
       setActiveJobs((prev) => [{
@@ -1623,7 +1624,7 @@ const CreateOrderTab = ({ actorName }) => {
         <table className="w-full text-[12px] border-collapse" data-testid="proposal-history-table">
           <thead>
             <tr>
-              {["When", "By", "Action", "Product/Order", "Site", "Qty", "Result"].map((h) => (
+              {["When", "By", "Action", "Product/Order", "Production Model", "Site", "Qty", "Result"].map((h) => (
                 <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">{h}</th>
               ))}
             </tr>
@@ -1643,6 +1644,7 @@ const CreateOrderTab = ({ actorName }) => {
                       ? `${h.material_id} (Proposal ${h.production_proposal_id} \u2192 Order ${h.production_order_id})`
                       : `${h.material_id} (Proposal ${h.production_proposal_id})`}
                 </td>
+                <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]" data-testid={`proposal-history-model-cell-${i}`}>{h.production_model_id || "—"}</td>
                 <td className="border border-[#D0D5DD] px-2 py-1">{h.site_id || "—"}</td>
                 <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums">{h.quantity ?? "—"}</td>
                 <td className="border border-[#D0D5DD] px-2 py-1">
@@ -1654,7 +1656,7 @@ const CreateOrderTab = ({ actorName }) => {
                 </td>
               </tr>
             ))}
-            {!loadingHistory && history.length === 0 && <tr><td colSpan={7} className="text-center py-6 text-[#98A2B3] border border-[#D0D5DD]">No Production Orders created yet.</td></tr>}
+            {!loadingHistory && history.length === 0 && <tr><td colSpan={8} className="text-center py-6 text-[#98A2B3] border border-[#D0D5DD]">No Production Orders created yet.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -1890,7 +1892,7 @@ export default function ProductionConfirmationPage() {
             <table className="w-full text-[13px] border-collapse" data-testid="production-lots-table">
               <thead>
                 <tr>
-                  {["Lot ID", "Output Product", "Site", "Status", "Reporting Point", "Planned", "Confirmed So Far", "Open", "UOM", "Finished", "Created By", "Stock", "Last Confirmation", ""].map((h) => (
+                  {["Lot ID", "Output Product", "Site", "Status", "Reporting Point", "Planned", "Confirmed So Far", "Open", "UOM", "Finished", "Created By", "Production Model", "Stock", "Last Confirmation", ""].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">{h}</th>
                   ))}
                 </tr>
@@ -1914,6 +1916,7 @@ export default function ProductionConfirmationPage() {
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">{formatUnit(r.unit_code) || "—"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{r.confirmation_finished ? "Yes" : "No"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]" data-testid={`created-by-cell-${i}`}>{r.created_by || "—"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]" data-testid={`production-model-cell-${i}`}>{r.production_model_id || "—"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
                       {!stock ? (
                         <span className="text-[11px] text-[#98A2B3]" data-testid={`stock-badge-loading-${i}`}>…</span>
@@ -1957,13 +1960,13 @@ export default function ProductionConfirmationPage() {
                   );
                 })}
                 {rows.length === 0 && authError && (
-                  <tr><td colSpan={13} className="text-center py-8 text-[#B54708] bg-[#FFFAEB] border border-[#D0D5DD]" data-testid="blocked-state">Blocked by SAP authorization - see banner above.</td></tr>
+                  <tr><td colSpan={14} className="text-center py-8 text-[#B54708] bg-[#FFFAEB] border border-[#D0D5DD]" data-testid="blocked-state">Blocked by SAP authorization - see banner above.</td></tr>
                 )}
                 {rows.length === 0 && !authError && !loadError && (
-                  <tr><td colSpan={13} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="empty-state">No open production lots found.</td></tr>
+                  <tr><td colSpan={14} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="empty-state">No open production lots found.</td></tr>
                 )}
                 {rows.length > 0 && visibleRows.length === 0 && (
-                  <tr><td colSpan={13} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="filtered-empty-state">No rows match "Show mine" - no open lots were created by you.</td></tr>
+                  <tr><td colSpan={14} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="filtered-empty-state">No rows match "Show mine" - no open lots were created by you.</td></tr>
                 )}
               </tbody>
             </table>
