@@ -412,6 +412,98 @@ def _check_availability_against_stock(bom_doc: dict, stock_by_product: dict, con
     return {"checked": True, "reason": None, "components": components}
 
 
+def _desc_by_product_from_cache(db, product_ids: frozenset = None) -> dict:
+    """Best-effort product_id -> description lookup from inventory_cache
+    (the only local collection that reliably carries descriptions for ANY
+    product, including ones like FLAT-BK21 that never appear in any
+    cached BOM at all)."""
+    inventory_doc = db["inventory_cache"].find_one({"_id": "latest"})
+    desc = {}
+    for item in (inventory_doc or {}).get("items", []):
+        if product_ids is None or item["product_id"] in product_ids:
+            desc[item["product_id"]] = item.get("description")
+    return desc
+
+
+def _check_availability_against_material_inputs(
+    material_inputs: list, stock_by_product: dict, desc_by_product: dict, confirmed_quantity: float, site_id: str, sub_assembly_ids: frozenset = frozenset(),
+) -> dict:
+    """Same shape/logic as _check_availability_against_stock, but sourced
+    from this lot's own exact SAP MaterialInput list (see
+    check_component_availability_from_material_inputs) instead of a
+    guessed cached BOM."""
+    if not material_inputs:
+        return {"checked": False, "reason": "This lot has no planned components (MaterialInput) in SAP - cannot check component availability.", "components": []}
+    components = []
+    for mi in material_inputs:
+        product_id = mi.get("product_id")
+        if not product_id or mi.get("qty_per_unit") is None:
+            continue
+        required_qty = round(mi["qty_per_unit"] * confirmed_quantity, 4)
+        site_locations = site_locations_for_product(stock_by_product, product_id, site_id)
+        sfg_locations = [
+            loc for loc in (site_locations or [])
+            if (loc.get("warehouse_id") or "").endswith("-SFG") and is_usable_stock_status(loc.get("stock_status"), loc.get("restricted"))
+        ]
+        available_qty = None if site_locations is None else sum(loc["qty"] for loc in sfg_locations)
+        components.append({
+            "product_id": product_id,
+            "description": desc_by_product.get(product_id),
+            "unit_of_measure": mi.get("unit_code"),
+            "required_qty": required_qty,
+            "available_qty": available_qty,
+            "locations": site_locations or [],
+            "sufficient": required_qty <= 0 or (available_qty is not None and available_qty >= required_qty),
+            "is_sub_assembly": product_id in sub_assembly_ids,
+        })
+    return {"checked": True, "reason": None, "components": components}
+
+
+def check_component_availability_from_material_inputs(
+    db, material_inputs: list, confirmed_quantity: float, site_id: str, sap_inventory_client=None, sfg_only: bool = False,
+) -> dict:
+    """Aug 27 2026 fix for the mis-diagnosed "wrong Production Model"
+    shortage bug: `check_component_availability` had to GUESS which of a
+    product's several active SAP Production Models applies (cached
+    "highest revision" default, or a site-scoped Source-of-Supply
+    lookup that still needs 0/1/2+ disambiguation) - but each Production
+    Lot returned by SAPProductionLotClient already carries its own exact,
+    already-resolved MaterialInput list (the real components SAP itself
+    planned this specific lot against, e.g. FLAT-BK21 for lot 70411 at
+    P2, never SH4.5HR). This bypasses BOM resolution entirely - no
+    guessing, no ambiguity, always correct for any lot that has already
+    been planned/released in SAP. Same live-stock-first/cache-fallback
+    behavior as check_component_availability."""
+    product_ids = [mi["product_id"] for mi in material_inputs if mi.get("product_id")]
+    stock_by_product = None
+    desc_by_product = {}
+    if sap_inventory_client is not None:
+        try:
+            if sfg_only:
+                live_rows = sap_inventory_client.get_inventory_detail(warehouse_ids=[f"{site_id}/{site_id}-SFG"])
+            else:
+                live_rows = sap_inventory_client.get_inventory_detail(site_id=site_id)
+            stock_by_product = {}
+            for row in live_rows:
+                stock_by_product.setdefault(row["product_id"], []).append({
+                    "site": row.get("site"), "logistics_area": row.get("logistics_area"),
+                    "logistics_area_id": row.get("logistics_area_id"),
+                    "stock_status": row.get("stock_status"), "restricted": row.get("restricted", False), "qty": row["qty"],
+                    "company_code": row.get("company_code"),
+                })
+                desc_by_product.setdefault(row["product_id"], row.get("description"))
+        except Exception:
+            stock_by_product = None  # fall through to cache below
+    if stock_by_product is None:
+        stock_by_product = load_stock_by_product(db)
+    if product_ids and any(pid not in desc_by_product for pid in product_ids):
+        desc_by_product.update({k: v for k, v in _desc_by_product_from_cache(db, frozenset(product_ids)).items() if k not in desc_by_product})
+    sub_assembly_ids = frozenset(
+        d["_id"] for d in db["bom_node_cache"].find({"_id": {"$in": product_ids}, "groups": {"$ne": []}}, {"_id": 1})
+    ) if product_ids else frozenset()
+    return _check_availability_against_material_inputs(material_inputs, stock_by_product, desc_by_product, confirmed_quantity, site_id, sub_assembly_ids)
+
+
 def _resolve_bom_doc(db, main_output_product: str, override_bom_id: str = None, sap_soap_client=None) -> dict:
     """Shared by check_component_availability and get_bom_stock_status -
     see override_bom_id's docstring on check_component_availability."""
@@ -430,7 +522,7 @@ def _resolve_bom_doc(db, main_output_product: str, override_bom_id: str = None, 
 def check_component_availability(
     db, main_output_product: str, confirmed_quantity: float, site_id: str,
     sap_inventory_client=None, override_bom_id: str = None, sap_soap_client=None,
-    sfg_only: bool = False,
+    sfg_only: bool = False, sap_production_model_client=None, sap_production_model_bom_client=None,
 ) -> dict:
     """Compares BOM component requirements (from the app's own bom_node_cache,
     scaled to the quantity about to be confirmed) against on-hand stock at
@@ -471,7 +563,31 @@ def check_component_availability(
     back into bom_node_cache - a one-off, per-order correction, not a
     global cache change. Silently falls back to the cached default doc if
     the live fetch fails or `sap_soap_client` isn't provided, so this is
-    purely additive/never blocks the pre-flight check on its own."""
+    purely additive/never blocks the pre-flight check on its own.
+
+    `sap_production_model_client`/`sap_production_model_bom_client` (Aug
+    27 2026, user's explicit bug report - existing-lot Production
+    Confirmation for BK-0021 at P2 showed a shortage against "SH4.5HR",
+    but SAP's real released Production Model for P2 (BK-0021_1) uses
+    "FLAT-BK21" - a DIFFERENT, also-Released Production Model (BK-0021_2)
+    for a different site uses SH4.5HR, and the cached "highest revision"
+    guess had no way to know which one this lot's site actually needs).
+    When `override_bom_id` isn't already given, and both these clients
+    are provided, auto-resolves it: looks up this material's Source of
+    Supply options scoped to THIS site - if there's exactly one
+    unambiguous Production Model valid for this site, uses its real
+    locked BillOfMaterialID instead of the cached guess. Any ambiguity
+    (0 or 2+ site-scoped models) or lookup failure silently falls back to
+    the old cached-default behavior - never blocks the check on its own."""
+    if not override_bom_id and sap_production_model_client is not None and sap_production_model_bom_client is not None:
+        try:
+            product_uuid = (db["component_master"].find_one({"_id": main_output_product}, {"product_uuid": 1}) or {}).get("product_uuid")
+            if product_uuid:
+                options = sap_production_model_client.get_source_of_supply_options(product_uuid, site_id)
+                if len(options) == 1:
+                    override_bom_id = sap_production_model_bom_client.get_bill_of_material_id_for_model(options[0]["production_model_uuid"])
+        except Exception as e:
+            logger.warning(f"Component availability: site-scoped Production Model auto-resolve failed for '{main_output_product}' at {site_id}, using cached default instead: {e}")
     bom_doc = _resolve_bom_doc(db, main_output_product, override_bom_id, sap_soap_client)
     stock_by_product = None
     if sap_inventory_client is not None:
@@ -585,19 +701,40 @@ def check_component_availability_batch(db, rows: list) -> list:
     """Batch counterpart of check_component_availability() for the open-lots
     list - fetches inventory_cache and every needed bom_node_cache doc ONCE
     (not once per row) so a 100+ row list stays instant. `rows` is a list
-    of {main_output_product, quantity, site_id}; returns a same-length list
-    of {checked, reason, sufficient_all, short_components} - a compact
-    summary (not the full component list) since the list view only needs a
-    badge + the short ones for a tooltip, not every sufficient component."""
+    of {main_output_product, quantity, site_id, material_inputs}; returns a
+    same-length list of {checked, reason, sufficient_all, short_components}
+    - a compact summary (not the full component list) since the list view
+    only needs a badge + the short ones for a tooltip, not every sufficient
+    component.
+
+    Aug 27 2026: when a row carries `material_inputs` (this lot's own exact
+    SAP MaterialInput list, from SAPProductionLotClient - see
+    check_component_availability_from_material_inputs), that is used
+    directly instead of guessing a BOM by main_output_product alone - the
+    same "wrong Production Model" bug this list's badges had too. Rows
+    without it (e.g. lots SAP returned with no planned MaterialInput yet)
+    fall back to the old cached-BOM behavior unchanged."""
     stock_by_product = load_stock_by_product(db)
 
-    product_ids = {r["main_output_product"] for r in rows if r.get("main_output_product")}
-    bom_docs = {d["_id"]: d for d in db["bom_node_cache"].find({"_id": {"$in": list(product_ids)}})}
+    bom_needed_ids = {r["main_output_product"] for r in rows if r.get("main_output_product") and not r.get("material_inputs")}
+    bom_docs = {d["_id"]: d for d in db["bom_node_cache"].find({"_id": {"$in": list(bom_needed_ids)}})} if bom_needed_ids else {}
+
+    mi_product_ids = frozenset(mi["product_id"] for r in rows for mi in (r.get("material_inputs") or []) if mi.get("product_id"))
+    desc_by_product = _desc_by_product_from_cache(db, mi_product_ids) if mi_product_ids else {}
+    sub_assembly_ids = frozenset(
+        d["_id"] for d in db["bom_node_cache"].find({"_id": {"$in": list(mi_product_ids)}, "groups": {"$ne": []}}, {"_id": 1})
+    ) if mi_product_ids else frozenset()
 
     results = []
     for r in rows:
-        bom_doc = bom_docs.get(r.get("main_output_product"))
-        result = _check_availability_against_stock(bom_doc, stock_by_product, r.get("quantity") or 0, r.get("site_id"))
+        material_inputs = r.get("material_inputs")
+        if material_inputs:
+            result = _check_availability_against_material_inputs(
+                material_inputs, stock_by_product, desc_by_product, r.get("quantity") or 0, r.get("site_id"), sub_assembly_ids,
+            )
+        else:
+            bom_doc = bom_docs.get(r.get("main_output_product"))
+            result = _check_availability_against_stock(bom_doc, stock_by_product, r.get("quantity") or 0, r.get("site_id"))
         short = [c for c in result["components"] if not c["sufficient"]]
         results.append({
             "checked": result["checked"],

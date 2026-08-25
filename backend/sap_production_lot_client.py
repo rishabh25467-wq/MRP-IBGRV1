@@ -167,6 +167,23 @@ class SAPProductionLotClient:
                 "target_logistics_area_id": _first_tag(mo_block, "TargetLogisticsAreaID"),
             } for mo_block in _all_blocks(group_block, "MaterialOutput")]
 
+            # Exact planned components for THIS lot's own ConfirmationGroup
+            # (Aug 2026 fix - see production_confirmation_service.
+            # check_component_availability_from_material_inputs): unlike
+            # guessing a BOM by ProductID alone (ambiguous when SAP has
+            # multiple active Production Models for the same product,
+            # e.g. BK-0021 has both FLAT-BK21 and SH4.5HR-based models
+            # released for different sites), SAP's own MaterialInput block
+            # here already carries the EXACT components this specific lot
+            # was planned against - no guessing needed at all.
+            material_inputs_raw = [{
+                "product_id": _first_tag(mi_block, "ProductID"),
+                "unit_code": _first_tag_attr(mi_block, "PlannedQuantity", "unitCode"),
+                "planned_quantity": _to_float(_first_tag(mi_block, "PlannedQuantity")),
+                "total_confirmed_quantity": _to_float(_first_tag(mi_block, "TotalConfirmedQuantity")),
+                "source_logistics_area_id": _first_tag(mi_block, "SourceLogisticsAreaID"),
+            } for mi_block in _all_blocks(group_block, "MaterialInput")]
+
             for rp_block in _all_blocks(group_block, "ReportingPoint"):
                 unit_code = (
                     _first_tag_attr(rp_block, "PlannedQuantity", "unitCode")
@@ -174,6 +191,18 @@ class SAPProductionLotClient:
                     or _first_tag_attr(rp_block, "TotalConfirmedQuantity", "unitCode")
                 )
                 finished_raw = _first_tag(rp_block, "ConfirmationFinishedIndicator")
+                rp_planned_quantity = _to_float(_first_tag(rp_block, "PlannedQuantity"))
+                # Scales each component's total planned quantity (planned
+                # against the WHOLE lot's output) down to a per-output-unit
+                # ratio, the same shape the old BOM-based check already
+                # used (item["quantity"] * confirmed_quantity) - so this
+                # Reporting Point's own PlannedQuantity is the correct
+                # denominator, not the confirmed_quantity being entered now.
+                material_inputs = [{
+                    **mi,
+                    "qty_per_unit": round(mi["planned_quantity"] / rp_planned_quantity, 6)
+                    if mi.get("planned_quantity") is not None and rp_planned_quantity else None,
+                } for mi in material_inputs_raw]
                 rows.append({
                     "production_lot_id": production_lot_id,
                     "production_lot_uuid": production_lot_uuid,
@@ -194,6 +223,7 @@ class SAPProductionLotClient:
                     "open_quantity": _to_float(_first_tag(rp_block, "OpenQuantity")),
                     "confirmation_finished": finished_raw == "true",
                     "material_outputs": material_outputs,
+                    "material_inputs": material_inputs,
                 })
         return rows
 

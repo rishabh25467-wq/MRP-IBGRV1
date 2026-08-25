@@ -2520,7 +2520,7 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
                 logger.warning(f"create-and-release job {job_id}: real-BOM-for-model lookup failed, using cached default instead: {e}")
         availability = await asyncio.to_thread(
             production_confirmation_service.check_component_availability, db, payload.material_id, payload.quantity, payload.site_id,
-            sap_inventory_client, override_bom_id, sap_soap_client, True,
+            sap_inventory_client, override_bom_id, sap_soap_client, True, sap_production_model_client, sap_production_model_bom_client,
         )
         short = [c for c in availability["components"] if not c["sufficient"]] if availability["checked"] else []
 
@@ -3114,8 +3114,21 @@ async def get_proposal_and_release_history():
     return {"entries": await asyncio.to_thread(production_confirmation_service.get_proposal_and_release_history, db)}
 
 
-@api_router.get("/production-confirmation/component-availability")
-async def get_component_availability(main_output_product: str, confirmed_quantity: float, site_id: str):
+class MaterialInputItem(BaseModel):
+    product_id: str
+    unit_code: Optional[str] = None
+    qty_per_unit: Optional[float] = None
+
+
+class ComponentAvailabilityRequest(BaseModel):
+    main_output_product: str
+    confirmed_quantity: float
+    site_id: str
+    material_inputs: Optional[List[MaterialInputItem]] = None
+
+
+@api_router.post("/production-confirmation/component-availability")
+async def get_component_availability(payload: ComponentAvailabilityRequest):
     # Aug 2026 bug fix: this endpoint gates the Confirm dialog's real SAP
     # write, so it's supposed to pull LIVE SFG/RM/QC stock (see
     # check_component_availability's docstring) rather than the
@@ -3125,10 +3138,23 @@ async def get_component_availability(main_output_product: str, confirmed_quantit
     # a goods movement outside this app's own tracked Store Approval flow
     # moved SFG stock from 0.24 to 4.24 in SAP itself, and this endpoint
     # kept reporting the old 0.24 (short) until this fix.
-    result = await asyncio.to_thread(
-        production_confirmation_service.check_component_availability,
-        db, main_output_product, confirmed_quantity, site_id, sap_inventory_client,
-    )
+    #
+    # Aug 27 2026: when the frontend already has this lot's own exact
+    # SAP MaterialInput list (attached to the row by SAPProductionLotClient),
+    # it's sent here instead of guessing a BOM by main_output_product alone
+    # - see check_component_availability_from_material_inputs. Falls back
+    # to the old guessing behavior only if a lot genuinely has none.
+    if payload.material_inputs:
+        result = await asyncio.to_thread(
+            production_confirmation_service.check_component_availability_from_material_inputs,
+            db, [mi.dict() for mi in payload.material_inputs], payload.confirmed_quantity, payload.site_id, sap_inventory_client,
+        )
+    else:
+        result = await asyncio.to_thread(
+            production_confirmation_service.check_component_availability,
+            db, payload.main_output_product, payload.confirmed_quantity, payload.site_id, sap_inventory_client,
+            None, sap_soap_client, False, sap_production_model_client, sap_production_model_bom_client,
+        )
     return result
 
 
@@ -3163,6 +3189,7 @@ class ComponentAvailabilityBatchRow(BaseModel):
     main_output_product: Optional[str] = None
     quantity: float
     site_id: Optional[str] = None
+    material_inputs: Optional[List[MaterialInputItem]] = None
 
 
 class ComponentAvailabilityBatchRequest(BaseModel):

@@ -165,8 +165,9 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
     }
     const timer = setTimeout(() => {
       setCheckingAvailability(true);
-      axios.get(`${API}/production-confirmation/component-availability`, {
-        params: { main_output_product: row.main_output_product, confirmed_quantity: Number(confirmedQty), site_id: row.site_id },
+      axios.post(`${API}/production-confirmation/component-availability`, {
+        main_output_product: row.main_output_product, confirmed_quantity: Number(confirmedQty), site_id: row.site_id,
+        material_inputs: row.material_inputs || null,
       }).then(({ data }) => setAvailability(data)).catch(() => setAvailability(null)).finally(() => setCheckingAvailability(false));
     }, 400);
     return () => clearTimeout(timer);
@@ -1694,7 +1695,7 @@ export default function ProductionConfirmationPage() {
       return;
     }
     axios.post(`${API}/production-confirmation/component-availability-batch`, {
-      rows: rows.map((r) => ({ main_output_product: r.main_output_product, quantity: r.open_quantity || 0, site_id: r.site_id })),
+      rows: rows.map((r) => ({ main_output_product: r.main_output_product, quantity: r.open_quantity || 0, site_id: r.site_id, material_inputs: r.material_inputs || null })),
     }).then(({ data }) => {
       const map = {};
       rows.forEach((r, i) => { map[rowKey(r)] = data.results[i]; });
