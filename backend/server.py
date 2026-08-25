@@ -2351,6 +2351,35 @@ async def _confirm_production_inner(job_id: str, payload: ConfirmProductionReque
         except SAPWipClearingError as e:
             result["wip_clearing"] = {"success": False, "log": str(e)}
 
+    # Aug 27 2026, user's explicit ask: right after WIP is cleared, a
+    # genuine Finished Goods item (per the same FG/Sub-Assembly rule the
+    # Inventory page's categorizer uses) needs a follow-up SFG -> FG
+    # Goods Movement - a Sub-Assembly (e.g. a bare part later packed into
+    # its own FG) stays in SFG on purpose, feeding the next assembly
+    # step, so it's deliberately left untouched. If this item was never
+    # categorized yet, run the SAME deterministic rule live right now
+    # (get_or_classify_category) instead of silently skipping - only
+    # falls back to skipping if bom_node_cache has no BOM at all for it
+    # (genuinely can't tell). Job status updates here let the frontend
+    # show the user exactly which step is running instead of one long
+    # opaque "Saving..." spinner.
+    if payload.confirmation_finished and result.get("success") and payload.site_id and payload.main_output_product and payload.confirmed_quantity:
+        job_store.update_job(db, job_id, {"status": "checking_category"})
+        category, _ = await asyncio.to_thread(
+            production_confirmation_service.get_or_classify_category, db, payload.main_output_product,
+        )
+        if category == "Finished Goods":
+            job_store.update_job(db, job_id, {"status": "moving_to_fg"})
+            owner_party_id, _ = company_and_set_of_books_for_site(payload.site_id)
+            fg_movement = await asyncio.to_thread(
+                store_approval_service._trigger_goods_movement,
+                sap_goods_movement_client, owner_party_id, payload.main_output_product,
+                f"{payload.site_id}-SFG", f"{payload.site_id}-FG",
+                payload.confirmed_quantity, payload.unit_code or "EA", payload.site_id,
+            )
+            result["fg_movement"] = fg_movement
+        job_store.update_job(db, job_id, {"status": "running"})
+
     # testing_agent iteration_105: a normal (non-exception) SAP business
     # rejection - e.g. backflush failing for insufficient stock, exactly
     # the Lot 70222 scenario this whole fix was born from - came back as
@@ -2396,6 +2425,40 @@ async def retry_wip_clearing(payload: RetryWipClearingRequest):
     if not updated:
         raise HTTPException(status_code=404, detail=f"No confirmation history found yet for Lot {payload.production_lot_id}")
     return {"wip_clearing": wip_result}
+
+
+class RetryFgMovementRequest(BaseModel):
+    production_lot_id: str
+    site_id: str
+    main_output_product: str
+    confirmed_quantity: float
+    unit_code: Optional[str] = None
+    actor: str
+
+
+@api_router.post("/production-confirmation/retry-fg-movement")
+async def retry_fg_movement(payload: RetryFgMovementRequest):
+    """Re-fires just the SFG -> FG Goods Movement for a lot whose
+    confirmation/WIP Clearing already succeeded but the movement itself
+    failed - "Retry" button next to a failed "FG Moved" chip (Aug 27
+    2026, user's explicit ask). Does not touch the main confirmation/
+    WIP/by-product data, only overwrites the fg_movement outcome on
+    that lot's most recent history entry."""
+    if not payload.actor.strip():
+        raise HTTPException(status_code=400, detail="actor (your name) is required")
+    owner_party_id, _ = company_and_set_of_books_for_site(payload.site_id)
+    fg_movement = await asyncio.to_thread(
+        store_approval_service._trigger_goods_movement,
+        sap_goods_movement_client, owner_party_id, payload.main_output_product,
+        f"{payload.site_id}-SFG", f"{payload.site_id}-FG",
+        payload.confirmed_quantity, payload.unit_code or "EA", payload.site_id,
+    )
+    updated = await asyncio.to_thread(
+        production_confirmation_service.retry_fg_movement_for_lot, db, payload.production_lot_id, fg_movement,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"No confirmation history found yet for Lot {payload.production_lot_id}")
+    return {"fg_movement": fg_movement}
 
 
 @api_router.get("/production-confirmation/history")

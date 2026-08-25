@@ -78,9 +78,11 @@ const isLocationRestricted = (loc) => isRestrictedStatus(loc?.stock_status) || !
 // the LAST confirmation's outcome persistently on the row itself.
 // Aug 27 2026 (user's explicit ask): a failed "WIP Cleared" chip now
 // carries its own inline "Retry" so a stalled step can be fixed right
-// here instead of only being visible/actionable elsewhere.
-const LastConfirmationBadges = ({ data, productionLotId, siteId, actorName, onRetried }) => {
-  const [retrying, setRetrying] = useState(false);
+// here instead of only being visible/actionable elsewhere. Same for a
+// failed "FG Moved" chip (SFG -> FG Goods Movement retry).
+const LastConfirmationBadges = ({ data, productionLotId, siteId, mainOutputProduct, unitCode, actorName, onRetried }) => {
+  const [retryingWip, setRetryingWip] = useState(false);
+  const [retryingFg, setRetryingFg] = useState(false);
   if (!data) return <span className="text-[#98A2B3] text-xs">—</span>;
   const chip = (ok, label) => (
     <span className={`flex items-center gap-1 text-[10px] px-1 py-0.5 rounded-sm border w-fit ${
@@ -91,18 +93,34 @@ const LastConfirmationBadges = ({ data, productionLotId, siteId, actorName, onRe
     </span>
   );
   const retryWip = async () => {
-    setRetrying(true);
+    setRetryingWip(true);
     try {
       const { data: res } = await axios.post(`${API}/production-confirmation/retry-wip-clearing`, {
         production_lot_id: productionLotId, site_id: siteId, actor: actorName.trim(),
       });
       if (res.wip_clearing?.success) toast.success(`WIP Clearing Run succeeded for Lot ${productionLotId}`);
       else toast.error(`WIP Clearing Run failed again: ${res.wip_clearing?.log || "see SAP for details"}`);
-      onRetried?.(productionLotId, res.wip_clearing);
+      onRetried?.(productionLotId, { wip_clearing: res.wip_clearing });
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed to retry WIP Clearing");
     } finally {
-      setRetrying(false);
+      setRetryingWip(false);
+    }
+  };
+  const retryFg = async () => {
+    setRetryingFg(true);
+    try {
+      const { data: res } = await axios.post(`${API}/production-confirmation/retry-fg-movement`, {
+        production_lot_id: productionLotId, site_id: siteId, main_output_product: mainOutputProduct,
+        confirmed_quantity: data.confirmed_quantity, unit_code: unitCode, actor: actorName.trim(),
+      });
+      if (res.fg_movement?.ok) toast.success(`Moved to ${siteId}-FG for Lot ${productionLotId}`);
+      else toast.error(`FG Movement failed again: ${res.fg_movement?.error || "see SAP for details"}`);
+      onRetried?.(productionLotId, { fg_movement: res.fg_movement });
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to retry FG Movement");
+    } finally {
+      setRetryingFg(false);
     }
   };
   return (
@@ -114,20 +132,45 @@ const LastConfirmationBadges = ({ data, productionLotId, siteId, actorName, onRe
           {!data.wip_clearing.success && siteId && (
             <button
               type="button"
-              disabled={retrying}
+              disabled={retryingWip}
               onClick={retryWip}
               className="text-[10px] underline text-[#175CD3] hover:text-[#0E4B99] disabled:opacity-50"
               data-testid="retry-wip-clearing-button"
             >
-              {retrying ? "Retrying..." : "Retry"}
+              {retryingWip ? "Retrying..." : "Retry"}
             </button>
           )}
         </div>
       )}
       {data.byproduct_confirmation != null && chip(!!data.byproduct_confirmation.success, "By-product")}
+      {data.fg_movement != null && (
+        <div className="flex items-center gap-1">
+          {chip(!!data.fg_movement.ok, "FG Moved")}
+          {!data.fg_movement.ok && siteId && mainOutputProduct && (
+            <button
+              type="button"
+              disabled={retryingFg}
+              onClick={retryFg}
+              className="text-[10px] underline text-[#175CD3] hover:text-[#0E4B99] disabled:opacity-50"
+              data-testid="retry-fg-movement-button"
+            >
+              {retryingFg ? "Retrying..." : "Retry"}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 };
+
+// Aug 27 2026, user's explicit ask: clear step-by-step progress while
+// confirming, instead of one opaque "Posting to SAP..." label for the
+// whole duration.
+const CONFIRM_PHASE_LABELS = {
+  checking_category: "Checking item category (Finished Goods vs Sub-Assembly)...",
+  moving_to_fg: "Moving stock to FG warehouse...",
+};
+
 
 
 const STATUS_TONE = {
@@ -145,6 +188,7 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
   const [finished, setFinished] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingElapsed, setSavingElapsed] = useState(0);
+  const [savingPhase, setSavingPhase] = useState(null);
   const [availability, setAvailability] = useState(null);
   const [checkingAvailability, setCheckingAvailability] = useState(false);
   const [confirmError, setConfirmError] = useState(null);
@@ -271,6 +315,7 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
       return;
     }
     setSaving(true);
+    setSavingPhase(null);
     setConfirmError(null);
     try {
       const { data: jobData } = await axios.post(`${API}/production-confirmation/confirm`, {
@@ -317,6 +362,10 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
         try {
           const { data } = await axios.get(`${API}/production-confirmation/confirm/status/${jobData.job_id}`);
           job = data;
+          // Aug 27 2026 (user's explicit ask): "show progress with steps
+          // clearly" while the backend is live-checking category/moving
+          // stock to FG, instead of one opaque "Posting to SAP..." label.
+          setSavingPhase(job.status);
         } catch {
           continue; // transient network hiccup - just retry on the next tick
         }
@@ -352,6 +401,13 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
             toast.success(`WIP Clearing Run triggered for Lot ${row.production_lot_id}`);
           } else {
             toast.error(`WIP Clearing Run failed: ${data.wip_clearing.log || "see history for details"}`);
+          }
+        }
+        if (data.fg_movement) {
+          if (data.fg_movement.ok) {
+            toast.success(`Finished Goods moved to ${row.site_id}-FG for Lot ${row.production_lot_id}`);
+          } else {
+            toast.error(`FG Movement failed: ${data.fg_movement.error || "see history for details"}`);
           }
         }
         onConfirmed(row);
@@ -497,7 +553,7 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
         <DialogFooter>
           <Button variant="outline" onClick={onClose} data-testid="confirm-cancel-button">Cancel</Button>
           <Button onClick={submit} disabled={saving || checkingAvailability} data-testid="confirm-submit-button">
-            {saving ? `Posting to SAP (${savingElapsed}s)...` : checkingAvailability ? "Checking stock..." : "Post Confirmation"}
+            {saving ? `${CONFIRM_PHASE_LABELS[savingPhase] || "Posting to SAP"} (${savingElapsed}s)...` : checkingAvailability ? "Checking stock..." : "Post Confirmation"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -584,7 +640,7 @@ const HistoryDialog = ({ open, onClose }) => {
             <table className="w-full text-[12px] border-collapse" data-testid="confirmation-history-table">
               <thead>
                 <tr>
-                  {["When", "By", "Lot", "Product", "Qty", "Scrap", "Finished", "Result", "WIP Clearing"].map((h) => (
+                  {["When", "By", "Lot", "Product", "Qty", "Scrap", "Finished", "Result", "WIP Clearing", "FG Movement"].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">{h}</th>
                   ))}
                 </tr>
@@ -605,9 +661,12 @@ const HistoryDialog = ({ open, onClose }) => {
                     <td className="border border-[#D0D5DD] px-2 py-1">
                       {!e.wip_clearing ? "—" : e.wip_clearing.success ? <Badge variant="outline" className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Cleared</Badge> : <Badge variant="outline" className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>}
                     </td>
+                    <td className="border border-[#D0D5DD] px-2 py-1">
+                      {!e.fg_movement ? "—" : e.fg_movement.ok ? <Badge variant="outline" className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Moved</Badge> : <Badge variant="outline" className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>}
+                    </td>
                   </tr>
                 ))}
-                {entries.length === 0 && <tr><td colSpan={9} className="text-center py-6 text-[#98A2B3] border border-[#D0D5DD]">No confirmations submitted yet.</td></tr>}
+                {entries.length === 0 && <tr><td colSpan={10} className="text-center py-6 text-[#98A2B3] border border-[#D0D5DD]">No confirmations submitted yet.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -2068,9 +2127,11 @@ export default function ProductionConfirmationPage() {
                         data={lastConf}
                         productionLotId={r.production_lot_id}
                         siteId={r.site_id}
+                        mainOutputProduct={r.main_output_product}
+                        unitCode={r.unit_code}
                         actorName={actorName}
-                        onRetried={(lotId, wipResult) => setLastConfirmationByLot((prev) => (
-                          prev[lotId] ? { ...prev, [lotId]: { ...prev[lotId], wip_clearing: wipResult } } : prev
+                        onRetried={(lotId, patch) => setLastConfirmationByLot((prev) => (
+                          prev[lotId] ? { ...prev, [lotId]: { ...prev[lotId], ...patch } } : prev
                         ))}
                       />
                     </td>

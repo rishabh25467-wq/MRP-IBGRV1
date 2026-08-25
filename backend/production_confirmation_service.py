@@ -97,6 +97,7 @@ def log_confirmation(db, actor: str, request_payload: dict, result: dict) -> Non
         "byproduct_confirmed_quantity": request_payload.get("byproduct_confirmed_quantity"),
         "byproduct_unit_code": request_payload.get("byproduct_unit_code"),
         "byproduct_confirmation": result.get("byproduct_confirmation"),
+        "fg_movement": result.get("fg_movement"),
         "at": datetime.now(timezone.utc),
     })
 
@@ -122,6 +123,7 @@ def get_confirmation_history(db, production_lot_id: str = None, limit: int = 200
             "byproduct_confirmed_quantity": d.get("byproduct_confirmed_quantity"),
             "byproduct_unit_code": d.get("byproduct_unit_code"),
             "byproduct_confirmation": d.get("byproduct_confirmation"),
+            "fg_movement": d.get("fg_movement"),
             "at": d["at"].isoformat(),
         }
         for d in docs
@@ -161,9 +163,50 @@ def get_latest_confirmation_by_lot(db, production_lot_ids: list) -> dict:
             "success": d.get("success"),
             "wip_clearing": d.get("wip_clearing"),
             "byproduct_confirmation": d.get("byproduct_confirmation"),
+            # Aug 27 2026, user's explicit ask: FG Goods Movement outcome +
+            # the confirmed_quantity a "Retry" button needs to re-post the
+            # exact same quantity (site_id/unit_code/main_output_product
+            # are already on the open-lots row itself, no need to also
+            # carry them here).
+            "fg_movement": d.get("fg_movement"),
+            "confirmed_quantity": d.get("confirmed_quantity"),
             "at": d["at"].isoformat(),
         }
     return result
+
+
+def get_or_classify_category(db, product_id: str):
+    """Prefers the already-tagged component_master category (rule OR
+    manual - never overwrites either); falls back to a live, single-
+    product classification (bom_categorizer.classify_single_product_live)
+    and persists it, for an item that was never run through the
+    Inventory page's categorizer at all. Returns (category|None,
+    was_live_checked: bool)."""
+    import bom_categorizer
+    doc = db["component_master"].find_one({"_id": product_id}, {"category": 1})
+    cached = (doc or {}).get("category")
+    if cached:
+        return cached, False
+    live_category = bom_categorizer.classify_single_product_live(db, product_id)
+    if live_category:
+        db["component_master"].update_one(
+            {"_id": product_id},
+            {"$set": {"category": live_category, "category_source": "rule", "categorized_at": datetime.now(timezone.utc)}},
+            upsert=True,
+        )
+    return live_category, True
+
+
+def retry_fg_movement_for_lot(db, production_lot_id: str, fg_movement_result: dict) -> bool:
+    """Overwrites the FG Goods Movement outcome on the most recent
+    confirmation history doc for this lot ("Retry" button next to a
+    failed "FG Moved" chip - Aug 27 2026, user's explicit ask). Returns
+    False if no confirmation history exists yet for this lot."""
+    latest = db[HISTORY_COLLECTION].find_one({"production_lot_id": production_lot_id}, sort=[("at", -1)])
+    if not latest:
+        return False
+    db[HISTORY_COLLECTION].update_one({"_id": latest["_id"]}, {"$set": {"fg_movement": fg_movement_result}})
+    return True
 
 
 PROPOSAL_HISTORY_COLLECTION = "production_order_creation_history"

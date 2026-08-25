@@ -378,6 +378,25 @@ async def categorize_items(items: list[dict], db) -> dict:
     return results
 
 
+def classify_single_product_live(db, product_id: str) -> str | None:
+    """Live, single-product version of the same deterministic rule
+    categorize_full_inventory uses below (has_own_bom - used_as_component)
+    - re-run on demand for exactly one product instead of waiting for the
+    Inventory page's next batch pass. Used by Production Confirmation
+    (Aug 27 2026, user's explicit ask) to decide, at confirmation time,
+    whether a just-finished lot's output is a genuine Finished Goods item
+    (triggers an SFG -> FG Goods Movement) or a Sub-Assembly (stays in
+    SFG). Returns None (caller must skip, never guess) if `product_id`
+    has no bom_node_cache entry at all yet - can't determine either way."""
+    bom_doc = db["bom_node_cache"].find_one({"_id": product_id}, {"found": 1})
+    if not bom_doc or not bom_doc.get("found"):
+        return None
+    used_elsewhere = db["bom_node_cache"].find_one(
+        {"_id": {"$ne": product_id}, "groups.items.product_id": product_id}, {"_id": 1},
+    )
+    return "Sub-Assembly" if used_elsewhere else "Finished Goods"
+
+
 async def categorize_full_inventory(db, items: list[dict]) -> dict:
     """Bulk-categorizes every item CURRENTLY on the Inventory page - unlike
     categorize_items above, which BOM Explorer/Purchasing Plan only ever
