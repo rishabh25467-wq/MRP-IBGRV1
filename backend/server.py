@@ -2492,6 +2492,101 @@ async def get_production_confirmation_history(production_lot_id: Optional[str] =
     return {"entries": entries}
 
 
+def _site_scope_for(user: dict):
+    """None = unrestricted (admin/super_admin); otherwise the exact set of
+    sites (possibly empty) a "user"-role account is bound to."""
+    if user.get("role") in ("super_admin", "admin"):
+        return None
+    return set(user.get("bound_sites", []))
+
+
+@api_router.get("/production-confirmation/confirmed-today")
+async def get_confirmed_today(request: Request):
+    """"Confirmed Today" dashboard tile (user's explicit ask, Aug 25
+    2026) - distinct lots confirmed since midnight IST (the shop floor's
+    actual "today", not UTC's)."""
+    now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    start_ist_naive = datetime(now_ist.year, now_ist.month, now_ist.day)
+    start_utc = (start_ist_naive - timedelta(hours=5, minutes=30)).replace(tzinfo=timezone.utc)
+    end_utc = start_utc + timedelta(days=1)
+    site_ids = _site_scope_for(request.state.user)
+    count = await asyncio.to_thread(production_confirmation_service.count_confirmed_today, db, start_utc, end_utc, site_ids)
+    return {"confirmed_today": count}
+
+
+@api_router.get("/production-confirmation/scrap-trend")
+async def get_scrap_trend(request: Request):
+    """"Scrap Trend" dashboard tile (user's explicit ask, Aug 25 2026) -
+    scrap qty + confirmation count grouped by Reason over the last 7
+    days, e.g. Quality Issue vs Material Damage."""
+    start_utc = datetime.now(timezone.utc) - timedelta(days=7)
+    site_ids = _site_scope_for(request.state.user)
+    rows, reasons = await asyncio.gather(
+        asyncio.to_thread(production_confirmation_service.get_scrap_reason_breakdown, db, start_utc, site_ids),
+        asyncio.to_thread(production_confirmation_service.get_deviation_reasons, db),
+    )
+    label_by_code = {r["code"]: r["label"] for r in reasons}
+    breakdown = [
+        {
+            "code": row["_id"],
+            "label": label_by_code.get(row["_id"], row["_id"] or "No reason given"),
+            "total_scrap": row["total_scrap"],
+            "count": row["count"],
+        }
+        for row in rows
+    ]
+    return {"breakdown": breakdown, "days": 7}
+
+
+@api_router.get("/production-confirmation/urgent-actions")
+async def get_urgent_actions(request: Request):
+    """Urgent Action Dashboard (user's explicit ask, Aug 25 2026) - one
+    summary of 3 things needing attention right now: Overdue POs (from
+    the Open-PO Demand feed's last autosaved pull - due_date/target_ship_
+    date already past, qty_open still > 0), component Shortages (the
+    distinct components currently blocking a pending Store Approval
+    request), and Pending Store Approvals themselves. Site-scoped for a
+    "user"-role account (bound_sites), unrestricted for admin/super_admin
+    - same as the open-lots table above. Overdue POs are sales-order
+    lines with no reliable per-row site/plant field in the feed itself,
+    so that bucket is shown company-wide regardless of role."""
+    site_ids = _site_scope_for(request.state.user)
+
+    pending = await asyncio.to_thread(store_approval_service.list_requests, db)
+    pending = [r for r in pending if r.get("status") == "pending"]
+    if site_ids is not None:
+        pending = [r for r in pending if r.get("site_id") in site_ids]
+
+    shortages_by_product = {}
+    for r in pending:
+        for c in r.get("components", []):
+            entry = shortages_by_product.setdefault(c["product_id"], {"product_id": c["product_id"], "description": c.get("description"), "sites": set()})
+            entry["sites"].add(r.get("site_id"))
+    shortages = sorted(
+        [{**v, "sites": sorted(s for s in v["sites"] if s)} for v in shortages_by_product.values()],
+        key=lambda x: x["product_id"],
+    )
+
+    po_doc = await asyncio.to_thread(autosave_store.get_autosave, db, "open_po_demand")
+    today_str = datetime.now(timezone.utc).date().isoformat()
+    overdue_pos = []
+    for row in ((po_doc or {}).get("data") or {}).get("rows", []):
+        due = row.get("due_date") or row.get("target_ship_date")
+        qty_open = row.get("qty_open") or 0
+        if due and qty_open > 0 and due < today_str:
+            overdue_pos.append(row)
+    overdue_pos.sort(key=lambda r: r.get("due_date") or r.get("target_ship_date") or "")
+
+    return {
+        "overdue_pos": overdue_pos[:20],
+        "overdue_pos_count": len(overdue_pos),
+        "shortages": shortages[:20],
+        "shortages_count": len(shortages),
+        "pending_store_approvals": pending[:20],
+        "pending_store_approvals_count": len(pending),
+    }
+
+
 class LatestConfirmationBatchRequest(BaseModel):
     production_lot_ids: List[str]
 

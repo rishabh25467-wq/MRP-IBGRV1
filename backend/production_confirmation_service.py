@@ -86,6 +86,7 @@ def log_confirmation(db, actor: str, request_payload: dict, result: dict) -> Non
         "production_lot_id": request_payload.get("production_lot_id"),
         "reporting_point_id": request_payload.get("reporting_point_id"),
         "main_output_product": request_payload.get("main_output_product"),
+        "site_id": request_payload.get("site_id"),
         "confirmed_quantity": request_payload.get("confirmed_quantity"),
         "confirmed_scrap": request_payload.get("confirmed_scrap"),
         "deviation_reason_code": request_payload.get("deviation_reason_code"),
@@ -100,6 +101,36 @@ def log_confirmation(db, actor: str, request_payload: dict, result: dict) -> Non
         "fg_movement": result.get("fg_movement"),
         "at": datetime.now(timezone.utc),
     })
+
+
+def count_confirmed_today(db, start_utc, end_utc, site_ids) -> int:
+    """Aug 25 2026, user's explicit ask - "Confirmed Today" dashboard
+    tile. Distinct lots (not raw confirmation events - a lot may be
+    confirmed more than once) with a SUCCESSFUL confirmation logged
+    within [start_utc, end_utc). site_ids=None means admin/super_admin
+    (no restriction); an empty set correctly returns 0 for a "user" with
+    no sites bound yet, same fail-closed default as Store Binding."""
+    query = {"at": {"$gte": start_utc, "$lt": end_utc}, "success": True}
+    if site_ids is not None:
+        query["site_id"] = {"$in": list(site_ids)}
+    return len(db[HISTORY_COLLECTION].distinct("production_lot_id", query))
+
+
+def get_scrap_reason_breakdown(db, start_utc, site_ids) -> list:
+    """Aug 25 2026, user's explicit ask - "Scrap Trend" dashboard tile:
+    total scrap qty + confirmation count grouped by Deviation/Scrap
+    Reason code, over the last N days (start_utc). Caller (server.py)
+    joins the returned codes against get_deviation_reasons() for labels."""
+    match = {"at": {"$gte": start_utc}, "confirmed_scrap": {"$gt": 0}}
+    if site_ids is not None:
+        match["site_id"] = {"$in": list(site_ids)}
+    pipeline = [
+        {"$match": match},
+        {"$group": {"_id": "$deviation_reason_code", "total_scrap": {"$sum": "$confirmed_scrap"}, "count": {"$sum": 1}}},
+        {"$sort": {"total_scrap": -1}},
+    ]
+    return list(db[HISTORY_COLLECTION].aggregate(pipeline))
+
 
 
 def get_confirmation_history(db, production_lot_id: str = None, limit: int = 200) -> list:

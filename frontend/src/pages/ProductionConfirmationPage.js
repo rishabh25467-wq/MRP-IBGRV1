@@ -1883,6 +1883,104 @@ const CreateOrderTab = ({ actorName }) => {
 };
 
 // -------------------- Main page --------------------
+// Urgent Action Dashboard (user's explicit ask, Aug 25 2026) - top-of-page
+// summary of 3 things needing attention right now. Self-fetches on
+// mount so it doesn't have to be threaded through the parent's state.
+const UrgentActionDashboard = () => {
+  const [data, setData] = useState(null);
+  const [expanded, setExpanded] = useState(null);
+
+  useEffect(() => {
+    axios.get(`${API}/production-confirmation/urgent-actions`).then(({ data }) => setData(data)).catch(() => {});
+  }, []);
+
+  if (!data) return null;
+  const tiles = [
+    { key: "overdue_pos", label: "Overdue POs", count: data.overdue_pos_count, rows: data.overdue_pos },
+    { key: "shortages", label: "Component Shortages", count: data.shortages_count, rows: data.shortages },
+    { key: "pending_store_approvals", label: "Pending Store Approvals", count: data.pending_store_approvals_count, rows: data.pending_store_approvals },
+  ];
+  const allClear = tiles.every((t) => t.count === 0);
+
+  return (
+    <div className="bg-white border border-[#D0D5DD] rounded-sm p-3 space-y-2" data-testid="urgent-action-dashboard">
+      <div className="flex items-center gap-1.5 text-[#475467]">
+        <WarningCircle size={14} weight="bold" />
+        <span className="font-heading text-xs font-bold uppercase tracking-wider">Urgent Actions</span>
+        {allClear && <span className="text-[11px] text-[#027A48] ml-1">All clear</span>}
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {tiles.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => setExpanded(expanded === t.key ? null : t.key)}
+            disabled={t.count === 0}
+            className={`text-left rounded-sm border p-3 transition-colors ${
+              t.count > 0 ? "bg-[#FEF3F2] border-[#FECDCA] hover:bg-[#FEE4E2] cursor-pointer" : "bg-[#F9FAFB] border-[#EAECF0] cursor-default"
+            }`}
+            data-testid={`urgent-action-tile-${t.key}`}
+          >
+            <div className={`text-2xl font-bold tabular-nums ${t.count > 0 ? "text-[#B42318]" : "text-[#98A2B3]"}`}>{t.count}</div>
+            <div className="text-xs text-[#475467]">{t.label}{t.count > 0 ? " - click for details" : ""}</div>
+          </button>
+        ))}
+      </div>
+      {expanded && (
+        <div className="border border-[#D0D5DD] rounded-sm overflow-auto max-h-56" data-testid={`urgent-action-detail-${expanded}`}>
+          {expanded === "overdue_pos" && (
+            <table className="w-full text-[12px] border-collapse">
+              <thead><tr className="bg-[#F9FAFB]">{["Item", "Customer", "Due Date", "Qty Open"].map((h) => <th key={h} className="text-left px-2 py-1 border-b border-[#D0D5DD]">{h}</th>)}</tr></thead>
+              <tbody>{data.overdue_pos.map((r, i) => (
+                <tr key={i}><td className="px-2 py-1 border-b border-[#EAECF0]">{r.item_code}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{r.customer}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{r.due_date || r.target_ship_date}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{formatQty(r.qty_open)}</td></tr>
+              ))}</tbody>
+            </table>
+          )}
+          {expanded === "shortages" && (
+            <table className="w-full text-[12px] border-collapse">
+              <thead><tr className="bg-[#F9FAFB]">{["Component", "Description", "Site(s)"].map((h) => <th key={h} className="text-left px-2 py-1 border-b border-[#D0D5DD]">{h}</th>)}</tr></thead>
+              <tbody>{data.shortages.map((r, i) => (
+                <tr key={i}><td className="px-2 py-1 border-b border-[#EAECF0]">{r.product_id}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{r.description}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{r.sites.join(", ")}</td></tr>
+              ))}</tbody>
+            </table>
+          )}
+          {expanded === "pending_store_approvals" && (
+            <table className="w-full text-[12px] border-collapse">
+              <thead><tr className="bg-[#F9FAFB]">{["Material", "Site", "Requested By"].map((h) => <th key={h} className="text-left px-2 py-1 border-b border-[#D0D5DD]">{h}</th>)}</tr></thead>
+              <tbody>{data.pending_store_approvals.map((r, i) => (
+                <tr key={i}><td className="px-2 py-1 border-b border-[#EAECF0]">{r.material_id}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{r.site_id}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{r.requester}</td></tr>
+              ))}</tbody>
+            </table>
+          )}
+          <div className="px-2 py-1.5 text-right">
+            {expanded === "pending_store_approvals" && <a href="/storeapproval" className="text-[11px] text-[#175CD3] underline" data-testid="urgent-action-go-to-store-approval">Go to Store Approval →</a>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ScrapTrendCard = ({ scrapTrend }) => {
+  const total = scrapTrend.breakdown.reduce((s, r) => s + (r.total_scrap || 0), 0);
+  return (
+    <div className="bg-white border border-[#D0D5DD] rounded-sm p-3 shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] flex flex-col gap-1.5" data-testid="stat-scrap-trend">
+      <div className="flex items-center gap-1.5 text-[#475467]">
+        <WarningCircle size={14} weight="bold" />
+        <span className="font-heading text-xs font-bold uppercase tracking-wider">Scrap ({scrapTrend.days}d)</span>
+      </div>
+      <span className="font-sans text-2xl font-bold tabular-nums text-[#1D2939]">{formatQty(total)}</span>
+      {scrapTrend.breakdown.length > 0 && (
+        <div className="text-[11px] text-[#667085] space-y-0.5">
+          {scrapTrend.breakdown.slice(0, 3).map((r) => (
+            <div key={r.code || "none"} data-testid={`scrap-trend-reason-${r.code || "none"}`}>{r.label}: {formatQty(r.total_scrap)} ({r.count})</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 export default function ProductionConfirmationPage() {
   // Aug 2026, user's explicit ask (same change as Store Approval): the
   // manual "Your name" box is gone - this page already requires Entra ID
@@ -1904,6 +2002,13 @@ export default function ProductionConfirmationPage() {
   const [showHistory, setShowHistory] = useState(false);
   const [stockByRow, setStockByRow] = useState({});
   const [lastConfirmationByLot, setLastConfirmationByLot] = useState({});
+  const [confirmedToday, setConfirmedToday] = useState(0);
+  const [scrapTrend, setScrapTrend] = useState({ breakdown: [], days: 7 });
+
+  useEffect(() => {
+    axios.get(`${API}/production-confirmation/confirmed-today`).then(({ data }) => setConfirmedToday(data.confirmed_today)).catch(() => {});
+    axios.get(`${API}/production-confirmation/scrap-trend`).then(({ data }) => setScrapTrend(data)).catch(() => {});
+  }, []);
 
   const loadReasons = useCallback(() => {
     axios.get(`${API}/production-confirmation/deviation-reasons`).then(({ data }) => setReasons(data.reasons)).catch(() => {});
@@ -2032,6 +2137,7 @@ export default function ProductionConfirmationPage() {
           </TabsContent>
 
           <TabsContent value="confirm" className="space-y-4">
+        <UrgentActionDashboard />
         {authError && (
           <Alert className="bg-[#FFFAEB] border-[#FEDF89]" data-testid="auth-error-banner">
             <WarningCircle size={16} className="text-[#B54708]" />
@@ -2098,9 +2204,11 @@ export default function ProductionConfirmationPage() {
           </Button>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-md">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <StatCard icon={ListChecks} label="Reporting Points Shown" value={visibleRows.length} testId="stat-reporting-points" />
           <StatCard icon={CheckCircle} label="Distinct Lots" value={new Set(visibleRows.map((r) => r.production_lot_id)).size} testId="stat-distinct-lots" />
+          <StatCard icon={CheckCircle} label="Confirmed Today" value={confirmedToday} testId="stat-confirmed-today" />
+          <ScrapTrendCard scrapTrend={scrapTrend} />
         </div>
 
         {loading ? (

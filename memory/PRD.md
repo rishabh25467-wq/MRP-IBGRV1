@@ -1,3 +1,15 @@
+## Feature batch (2026-08-25, continued) - Site-Scoped test account, Confirmed Today, Scrap Trend, Urgent Action Dashboard
+
+- **Site-Scoped Production Users**: left one synthetic test account in the DB per user's explicit request ("for me to try") - `p1.floor.test@rampgroup.co.in`, role "user", bound_sites=["P1"], allowed_pages=["production_confirmation"]. Session token + browser console instructions in `/app/memory/test_credentials.md`. Real users should still log in with their real Microsoft account once, then be granted access via Access Management (no code changes needed there - bound_sites already applies generically, not just to Store Approval).
+- **Confirmed Today card**: new `GET /api/production-confirmation/confirmed-today` - distinct lots with a successful confirmation since midnight IST (shop-floor's actual "today"), site-scoped for non-admins.
+- **Scrap Trend (7d) card**: new `GET /api/production-confirmation/scrap-trend` - total scrap qty + count grouped by Scrap/Deviation Reason over the last 7 days, site-scoped. `log_confirmation` now also stores `site_id` (needed for this scoping - wasn't persisted before).
+- **Urgent Action Dashboard**: new `GET /api/production-confirmation/urgent-actions`, rendered as a new top section on the Production Confirmation page - 3 clickable tiles (Overdue POs from the last autosaved Open-PO Demand feed pull - due_date past + qty_open>0, company-wide since the feed has no per-row site field; Component Shortages - distinct components blocking a pending Store Approval, site-scoped; Pending Store Approvals themselves, site-scoped), each expandable to a detail table, with a "Go to Store Approval" link.
+- Both `open-lots` and `proposal-history` (Recent Activity, previous session's fix) plus these 3 new endpoints now consistently use the same bound_sites scoping.
+- Tested live in-browser as the P1 test user (screenshot): 159 overdue POs (unfiltered, as designed), 3/13 shortages and 2/7 pending approvals correctly narrowed to P1 vs an admin session's full counts. Also curl-verified all 3 new endpoints return real, non-empty data against the live SAP-connected tenant.
+
+---
+
+
 ## Access control fix (2026-08-25, continued) - Production Confirmation + Create Production table scoped to bound sites
 
 - **User's explicit ask**: Production Confirmation table and Create Production Order table should only show what belongs to that user; admin sees all.
