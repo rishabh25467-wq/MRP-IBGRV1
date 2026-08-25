@@ -1,3 +1,13 @@
+## Removal (2026-08-25, continued) - Urgent Action Dashboard removed per user request
+
+- User asked to remove the just-added/redesigned Urgent Action tile section entirely.
+- Removed: `UrgentActionDashboard` component + its render call from `ProductionConfirmationPage.js`, the `GET /api/production-confirmation/urgent-actions` endpoint, and `production_confirmation_service.get_pending_order_releases` (dead code with no other callers).
+- Kept intact: "Confirmed Today" and "Scrap (7d)" stat cards (separate feature, not part of this removal request), plus the "user sees only self-created lots" backend enforcement on the main table.
+- Verified: page compiles clean, loads fine, no `urgent-action-dashboard` element present, other cards unaffected.
+
+---
+
+
 ## Redesign (2026-08-25, continued) - Urgent Action tiles redesigned per user feedback
 
 - **Tile 1 "Today Created Lot ID"** (replaces "Overdue POs" entirely): lots I created today via Create Production Order, personal to the viewer.

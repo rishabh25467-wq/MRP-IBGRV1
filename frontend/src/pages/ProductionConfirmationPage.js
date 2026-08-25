@@ -1883,90 +1883,6 @@ const CreateOrderTab = ({ actorName }) => {
 };
 
 // -------------------- Main page --------------------
-// Urgent Action Dashboard (user's explicit ask, Aug 25 2026) - top-of-page
-// summary of 3 things needing attention right now. Self-fetches on
-// mount so it doesn't have to be threaded through the parent's state.
-const UrgentActionDashboard = () => {
-  const [data, setData] = useState(null);
-  const [expanded, setExpanded] = useState(null);
-
-  useEffect(() => {
-    axios.get(`${API}/production-confirmation/urgent-actions`).then(({ data }) => setData(data)).catch(() => {});
-  }, []);
-
-  if (!data) return null;
-  const tiles = [
-    { key: "created_today", label: "Today Created Lot ID", count: data.created_today_count, rows: data.created_today },
-    { key: "pending_lots", label: "Pending Lot ID", count: data.pending_lots_count, rows: data.pending_lots },
-    { key: "shortages", label: "Pending Stock", count: data.shortages_count, rows: data.shortages },
-  ];
-  const allClear = tiles.every((t) => t.count === 0);
-
-  return (
-    <div className="bg-white border border-[#D0D5DD] rounded-sm p-3 space-y-2" data-testid="urgent-action-dashboard">
-      <div className="flex items-center gap-1.5 text-[#475467]">
-        <WarningCircle size={14} weight="bold" />
-        <span className="font-heading text-xs font-bold uppercase tracking-wider">Urgent Actions</span>
-        {allClear && <span className="text-[11px] text-[#027A48] ml-1">All clear</span>}
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        {tiles.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            onClick={() => setExpanded(expanded === t.key ? null : t.key)}
-            disabled={t.count === 0}
-            className={`text-left rounded-sm border p-3 transition-colors ${
-              t.count > 0 ? "bg-[#FEF3F2] border-[#FECDCA] hover:bg-[#FEE4E2] cursor-pointer" : "bg-[#F9FAFB] border-[#EAECF0] cursor-default"
-            }`}
-            data-testid={`urgent-action-tile-${t.key}`}
-          >
-            <div className={`text-2xl font-bold tabular-nums ${t.count > 0 ? "text-[#B42318]" : "text-[#98A2B3]"}`}>{t.count}</div>
-            <div className="text-xs text-[#475467]">{t.label}{t.count > 0 ? " - click for details" : ""}</div>
-          </button>
-        ))}
-      </div>
-      {expanded && (
-        <div className="border border-[#D0D5DD] rounded-sm overflow-auto max-h-56" data-testid={`urgent-action-detail-${expanded}`}>
-          {expanded === "created_today" && (
-            <table className="w-full text-[12px] border-collapse">
-              <thead><tr className="bg-[#F9FAFB]">{["Lot ID", "Output Product", "Site", "Planned", "Open"].map((h) => <th key={h} className="text-left px-2 py-1 border-b border-[#D0D5DD]">{h}</th>)}</tr></thead>
-              <tbody>{data.created_today.map((r, i) => (
-                <tr key={i}><td className="px-2 py-1 border-b border-[#EAECF0]">{r.production_lot_id}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{r.main_output_product}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{r.site_id}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{formatQty(r.planned_quantity)}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{formatQty(r.open_quantity)}</td></tr>
-              ))}</tbody>
-            </table>
-          )}
-          {expanded === "pending_lots" && (
-            <table className="w-full text-[12px] border-collapse">
-              <thead><tr className="bg-[#F9FAFB]">{["Type", "Lot ID / Proposal", "Product", "Site", "Open"].map((h) => <th key={h} className="text-left px-2 py-1 border-b border-[#D0D5DD]">{h}</th>)}</tr></thead>
-              <tbody>{data.pending_lots.map((r, i) => (
-                <tr key={i}>
-                  <td className="px-2 py-1 border-b border-[#EAECF0]">{r.kind === "lot" ? "Awaiting confirmation" : "SAP Order pending release"}</td>
-                  <td className="px-2 py-1 border-b border-[#EAECF0]">{r.kind === "lot" ? r.production_lot_id : (r.production_order_id || r.production_proposal_id)}</td>
-                  <td className="px-2 py-1 border-b border-[#EAECF0]">{r.kind === "lot" ? r.main_output_product : r.material_id}</td>
-                  <td className="px-2 py-1 border-b border-[#EAECF0]">{r.site_id}</td>
-                  <td className="px-2 py-1 border-b border-[#EAECF0]">{r.kind === "lot" ? formatQty(r.open_quantity) : "—"}</td>
-                </tr>
-              ))}</tbody>
-            </table>
-          )}
-          {expanded === "shortages" && (
-            <table className="w-full text-[12px] border-collapse">
-              <thead><tr className="bg-[#F9FAFB]">{["Component", "Description", "Site(s)"].map((h) => <th key={h} className="text-left px-2 py-1 border-b border-[#D0D5DD]">{h}</th>)}</tr></thead>
-              <tbody>{data.shortages.map((r, i) => (
-                <tr key={i}><td className="px-2 py-1 border-b border-[#EAECF0]">{r.product_id}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{r.description}</td><td className="px-2 py-1 border-b border-[#EAECF0]">{r.sites.join(", ")}</td></tr>
-              ))}</tbody>
-            </table>
-          )}
-          <div className="px-2 py-1.5 text-right">
-            {expanded === "shortages" && <a href="/storeapproval" className="text-[11px] text-[#175CD3] underline" data-testid="urgent-action-go-to-store-approval">Go to Store Approval →</a>}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
 const ScrapTrendCard = ({ scrapTrend }) => {
   const total = scrapTrend.breakdown.reduce((s, r) => s + (r.total_scrap || 0), 0);
   return (
@@ -2143,7 +2059,6 @@ export default function ProductionConfirmationPage() {
           </TabsContent>
 
           <TabsContent value="confirm" className="space-y-4">
-        <UrgentActionDashboard />
         {authError && (
           <Alert className="bg-[#FFFAEB] border-[#FEDF89]" data-testid="auth-error-banner">
             <WarningCircle size={16} className="text-[#B54708]" />

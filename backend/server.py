@@ -2549,68 +2549,6 @@ async def get_scrap_trend(request: Request):
     return {"breakdown": breakdown, "days": 7}
 
 
-@api_router.get("/production-confirmation/urgent-actions")
-async def get_urgent_actions(request: Request):
-    """Urgent Action Dashboard (user's explicit ask, Aug 25 2026, redesigned
-    same day): 3 tiles, all personal to the viewer (not "everyone's"):
-    1. Today Created Lot ID - lots I created today via Create Production
-       Order, that already have a real Lot ID (already visible in the
-       open-lots snapshot).
-    2. Pending Lot ID - combines (a) my own open lots not yet finished,
-       and (b) my own Proposals stuck before ever reaching a Lot/Order
-       release - together, "everything of mine still in flight".
-    3. Pending Stock - components currently blocking one of MY pending
-       Store Approval requests (was "Component Shortages", renamed).
-    Site-scoped via bound_sites for a "user"-role account, unrestricted
-    for admin/super_admin - same as the open-lots table."""
-    user = request.state.user
-    my_name = (user.get("name") or "").strip().lower()
-    site_ids = _site_scope_for(user)
-
-    try:
-        rows = await asyncio.to_thread(sap_production_lot_client.find_open_lots, None, None, 300)
-    except (SAPProductionLotAuthError, SAPProductionLotError):
-        rows = []
-    rows = _filter_by_site_access(rows, user)
-    rows = await asyncio.to_thread(_attach_order_creators, rows, db)
-    my_rows = [r for r in rows if (r.get("created_by") or "").strip().lower() == my_name]
-
-    now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
-    start_ist_naive = datetime(now_ist.year, now_ist.month, now_ist.day)
-    today_start_utc = (start_ist_naive - timedelta(hours=5, minutes=30)).replace(tzinfo=timezone.utc)
-    created_today = [r for r in my_rows if r.get("order_created_at") and datetime.fromisoformat(r["order_created_at"]) >= today_start_utc]
-
-    pending_lots = [r for r in my_rows if not r.get("confirmation_finished")]
-    pending_releases = await asyncio.to_thread(production_confirmation_service.get_pending_order_releases, db, user.get("name") or "")
-    pending_combined = (
-        [{"kind": "lot", **r} for r in pending_lots]
-        + [{"kind": "release", **r} for r in pending_releases]
-    )
-
-    pending_approvals = await asyncio.to_thread(store_approval_service.list_requests, db)
-    pending_approvals = [r for r in pending_approvals if r.get("status") == "pending"]
-    if site_ids is not None:
-        pending_approvals = [r for r in pending_approvals if r.get("site_id") in site_ids]
-    shortages_by_product = {}
-    for r in pending_approvals:
-        for c in r.get("components", []):
-            entry = shortages_by_product.setdefault(c["product_id"], {"product_id": c["product_id"], "description": c.get("description"), "sites": set()})
-            entry["sites"].add(r.get("site_id"))
-    shortages = sorted(
-        [{**v, "sites": sorted(s for s in v["sites"] if s)} for v in shortages_by_product.values()],
-        key=lambda x: x["product_id"],
-    )
-
-    return {
-        "created_today": created_today[:20],
-        "created_today_count": len(created_today),
-        "pending_lots": pending_combined[:20],
-        "pending_lots_count": len(pending_combined),
-        "shortages": shortages[:20],
-        "shortages_count": len(shortages),
-    }
-
-
 class LatestConfirmationBatchRequest(BaseModel):
     production_lot_ids: List[str]
 
