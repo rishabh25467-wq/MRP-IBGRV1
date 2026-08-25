@@ -1,20 +1,25 @@
-"""SAP Business ByDesign custom OData client for Net Weight / Surface Area.
+"""SAP Business ByDesign custom OData client for Net Weight / Surface Area
+/ Gross Weight.
 
 Backed by a custom OData service ("materialgeneralinfo", Business Object
 "Material", Business Context "Material - General Information") exposing
-the Material root node's ObjectID/InternalID/UUID plus the SAP admin's 2
+the Material root node's ObjectID/InternalID/UUID plus the SAP admin's
 custom fields ("Item Net Weight" / ItemNetWeight1, "Surface
-Area(Sq.Inch)" / SurfaceAreaSqInch) as their flattened Key User Tool OData
-properties: `<field>content_KUT` (Edm.Decimal, the numeric value) and
-`<field>unitCode_KUT` (Edm.String, the unit e.g. KGM/INK). Both fields
-initially hit a persistent SOAP ManageMaterialIn write restriction (live-
-confirmed 18 Aug 2026 across 3 Communication Scenario/Arrangement
-recreations) - exposing them directly via this custom OData service
-instead (once the SAP admin ticked their content/unitCode sub-properties
-in the OData Service Builder and reactivated) resolved it: live-confirmed
-working read+write round trip 18 Aug 2026 on Material 5989825-2.1, same
-CSRF+session approach as sap_planning_client.py's already-proven
-materialltmsl write-back."""
+Area(Sq.Inch)" / SurfaceAreaSqInch, "Item Gross Weight" / ItemGrossWeight
+- added by the SAP admin Aug 27 2026, previously didn't exist) as their
+flattened Key User Tool OData properties: `<field>content_KUT`
+(Edm.Decimal, the numeric value) and `<field>unitCode_KUT` (Edm.String,
+the unit e.g. KGM/INK). Net Weight/Surface Area initially hit a
+persistent SOAP ManageMaterialIn write restriction (live-confirmed 18 Aug
+2026 across 3 Communication Scenario/Arrangement recreations) - exposing
+them directly via this custom OData service instead (once the SAP admin
+ticked their content/unitCode sub-properties in the OData Service
+Builder and reactivated) resolved it: live-confirmed working read+write
+round trip 18 Aug 2026 on Material 5989825-2.1, same CSRF+session
+approach as sap_planning_client.py's already-proven materialltmsl
+write-back. Item Gross Weight live-confirmed working read+write 27 Aug
+2026 on Material MSPIPE20X30 - same PATCH mechanics, no extra work
+needed once added to PHYSICAL_FIELD_CONFIG below."""
 import requests
 from requests.auth import HTTPBasicAuth
 
@@ -40,6 +45,7 @@ COLLECTION = "MaterialCollection"
 PHYSICAL_FIELD_CONFIG = {
     "net_weight_kg": ("ItemNetWeight1content_KUT", "ItemNetWeight1unitCode_KUT", "KGM"),
     "surface_area_sqin": ("SurfaceAreaSqInchcontent_KUT", "SurfaceAreaSqInchunitCode_KUT", "INK"),
+    "gross_weight_kg": ("ItemGrossWeightcontent_KUT", "ItemGrossWeightunitCode_KUT", "KGM"),
 }
 PHYSICAL_FIELD_TO_SAP_PROPERTY = {field: content for field, (content, _, _) in PHYSICAL_FIELD_CONFIG.items()}
 
@@ -143,15 +149,15 @@ def bulk_push_physical_to_sap(db, physical_client, progress_callback=None) -> di
     them to SAP one row at a time was impractical. Mirrors
     sap_planning_client.bulk_push_to_sap's exact structure (bounded
     ThreadPoolExecutor concurrency - safe here too, each push is one
-    material's own PATCH, no cross-material contention). Only pushes
-    net_weight_kg/surface_area_sqin - gross_weight_kg has no SAP field
-    (Aug 2026 decision: local-only for now). Returns
+    material's own PATCH, no cross-material contention). Pushes
+    net_weight_kg/surface_area_sqin/gross_weight_kg - all 3 now have a
+    real SAP field (Item Gross Weight added 27 Aug 2026). Returns
     {total, pushed, failed: [{product_id, error}]}."""
     from datetime import datetime, timezone
     from concurrent.futures import ThreadPoolExecutor
 
     docs = list(db["component_master"].find({
-        "$or": [{"net_weight_kg": {"$ne": None}}, {"surface_area_sqin": {"$ne": None}}],
+        "$or": [{"net_weight_kg": {"$ne": None}}, {"surface_area_sqin": {"$ne": None}}, {"gross_weight_kg": {"$ne": None}}],
     }))
     total = len(docs)
     pushed = 0

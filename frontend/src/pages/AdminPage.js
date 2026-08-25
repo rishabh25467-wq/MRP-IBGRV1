@@ -1179,7 +1179,6 @@ export default function AdminPage() {
               <Fragment key={key}>
                 <div className="text-[#344054] self-center">
                   {label}
-                  {key === "gross_weight_kg" && <span className="text-[10px] text-[#98A2B3] block">(local only, not pushed to SAP)</span>}
                 </div>
                 <div className="tabular-nums text-[#667085] self-center" data-testid={`weight-dims-sap-${key}`}>
                   {physicalSapData?.attributes?.[key] != null ? `${physicalSapData.attributes[key].toFixed(3)} ${unit}` : "—"}

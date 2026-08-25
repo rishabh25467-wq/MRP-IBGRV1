@@ -3438,7 +3438,7 @@ async def push_physical_attributes_to_sap(product_id: str):
         raise HTTPException(status_code=404, detail="Unknown component")
     values = {field: doc.get(field) for field in PHYSICAL_FIELD_TO_SAP_PROPERTY}
     if not any(v is not None for v in values.values()):
-        raise HTTPException(status_code=400, detail="Set Net Weight and/or Surface Area for this component before pushing")
+        raise HTTPException(status_code=400, detail="Set Net Weight, Surface Area, and/or Gross Weight for this component before pushing")
 
     try:
         await asyncio.to_thread(sap_material_physical_client.push_physical_attributes, product_id, values)
