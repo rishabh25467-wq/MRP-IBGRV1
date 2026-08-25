@@ -76,7 +76,11 @@ const isLocationRestricted = (loc) => isRestrictedStatus(loc?.stock_status) || !
 // User's explicit ask: today posting/WIP-clearing/by-product outcomes
 // only ever show as a toast at confirm-time, then vanish - this renders
 // the LAST confirmation's outcome persistently on the row itself.
-const LastConfirmationBadges = ({ data }) => {
+// Aug 27 2026 (user's explicit ask): a failed "WIP Cleared" chip now
+// carries its own inline "Retry" so a stalled step can be fixed right
+// here instead of only being visible/actionable elsewhere.
+const LastConfirmationBadges = ({ data, productionLotId, siteId, actorName, onRetried }) => {
+  const [retrying, setRetrying] = useState(false);
   if (!data) return <span className="text-[#98A2B3] text-xs">—</span>;
   const chip = (ok, label) => (
     <span className={`flex items-center gap-1 text-[10px] px-1 py-0.5 rounded-sm border w-fit ${
@@ -86,14 +90,45 @@ const LastConfirmationBadges = ({ data }) => {
       {label}
     </span>
   );
+  const retryWip = async () => {
+    setRetrying(true);
+    try {
+      const { data: res } = await axios.post(`${API}/production-confirmation/retry-wip-clearing`, {
+        production_lot_id: productionLotId, site_id: siteId, actor: actorName.trim(),
+      });
+      if (res.wip_clearing?.success) toast.success(`WIP Clearing Run succeeded for Lot ${productionLotId}`);
+      else toast.error(`WIP Clearing Run failed again: ${res.wip_clearing?.log || "see SAP for details"}`);
+      onRetried?.(productionLotId, res.wip_clearing);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to retry WIP Clearing");
+    } finally {
+      setRetrying(false);
+    }
+  };
   return (
     <div className="space-y-0.5" data-testid="last-confirmation-badges">
       {chip(!!data.success, "Posted")}
-      {data.wip_clearing != null && chip(!!data.wip_clearing.success, "WIP Cleared")}
+      {data.wip_clearing != null && (
+        <div className="flex items-center gap-1">
+          {chip(!!data.wip_clearing.success, "WIP Cleared")}
+          {!data.wip_clearing.success && siteId && (
+            <button
+              type="button"
+              disabled={retrying}
+              onClick={retryWip}
+              className="text-[10px] underline text-[#175CD3] hover:text-[#0E4B99] disabled:opacity-50"
+              data-testid="retry-wip-clearing-button"
+            >
+              {retrying ? "Retrying..." : "Retry"}
+            </button>
+          )}
+        </div>
+      )}
       {data.byproduct_confirmation != null && chip(!!data.byproduct_confirmation.success, "By-product")}
     </div>
   );
 };
+
 
 const STATUS_TONE = {
   Released: "bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]",
@@ -219,6 +254,22 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
       toast.error("Confirmed Scrap must be a valid, non-negative number");
       return;
     }
+    // Aug 27 2026 fix (user's explicit ask - a real confirmation went
+    // through with no by-product ever posted): block submission
+    // up-front whenever a by-product IS expected (an RM component was
+    // found) but can't actually be posted right now - either the weight
+    // data is missing, or there's nowhere to post it to - instead of
+    // silently letting the confirmation through with by-product fields
+    // all null. Skipped only when scrapCalc genuinely found no RM
+    // component at all (a real assembly-only item with no by-product).
+    if (scrapCalc?.rm_product_id && !scrapCalc.available) {
+      toast.error(`Cannot confirm: by-product is expected but its weight can't be calculated yet (${scrapCalc.reason}). Fix this first so the by-product is never skipped.`);
+      return;
+    }
+    if (scrapCalc?.available && !byproductMatch && !canAutoCreateByproduct) {
+      toast.error("Cannot confirm: a by-product is expected but there's no Output Products line to post it to and no target storage area to create one - contact support before confirming this lot.");
+      return;
+    }
     setSaving(true);
     setConfirmError(null);
     try {
@@ -244,6 +295,7 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
         new_byproduct_target_logistics_area_id: canAutoCreateByproduct && byproductQty > 0 ? mainOutputRow.target_logistics_area_id : null,
         new_byproduct_confirmed_quantity: canAutoCreateByproduct && byproductQty > 0 ? byproductQty : null,
         new_byproduct_unit_code: canAutoCreateByproduct && byproductQty > 0 ? "KGM" : null,
+        material_inputs: row.material_inputs || null,
         actor: actorName.trim(),
       });
       // Runs as a background job (Aug 2026 fix) - posting to SAP can take
@@ -690,6 +742,7 @@ const CreateOrderTab = ({ actorName }) => {
   const suggestionDebounceRef = useRef(null);
   const suggestionRequestRef = useRef(null);
   const pollingJobIdsRef = useRef(new Set());
+  const [resumingJobId, setResumingJobId] = useState(null);
 
   const COMMON_UOM_CODES = ["EA", "KGM", "MTR", "LTR", "PC", "SET", "BOX", "TO"];
 
@@ -888,6 +941,32 @@ const CreateOrderTab = ({ actorName }) => {
   const removeActiveJob = (jobId) => setActiveJobs((prev) => prev.filter((j) => j.job_id !== jobId));
   const toggleJobExpand = (jobId) => setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, expanded: !j.expanded } : j)));
 
+  // "Resume" action (Aug 27 2026, user's explicit ask) on a failed order
+  // job that already has a known SAP Proposal ID - hands that ID + the
+  // original form snapshot back to the backend, which resumes the
+  // Proposal -> Order -> Release pipeline under a fresh job_id instead of
+  // requiring a trip to the SAP UI to finish it by hand.
+  const resumeFailedJob = async (job) => {
+    setResumingJobId(job.job_id);
+    try {
+      const { data } = await axios.post(`${API}/production-confirmation/create-and-release-order/${job.job_id}/resume`, {
+        actor: actorName.trim(),
+      });
+      removeActiveJob(job.job_id);
+      setActiveJobs((prev) => [...prev, {
+        job_id: data.job_id, material_id: job.material_id, site_id: job.site_id,
+        quantity: job.quantity, unit_code: job.unit_code, status: "waiting_for_order",
+        startedAt: Date.now(), elapsedSeconds: 0,
+      }]);
+      pollJob(data.job_id);
+      toast.success(`Resuming from Proposal ${data.production_proposal_id} - no need to use the SAP UI`);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to resume order creation");
+    } finally {
+      setResumingJobId(null);
+    }
+  };
+
   // Runs entirely independently per job - multiple can be in flight at
   // once, each polling its own status on its own timer, none of them
   // blocking the form above from starting yet another order.
@@ -966,8 +1045,14 @@ const CreateOrderTab = ({ actorName }) => {
               setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, status: "failed", failure: job.result, error: job.error } : j)));
               break;
             }
-            toast.error(job.error || "Failed to create Production Order in SAP");
-            removeActiveJob(jobId);
+            // Aug 27 2026 fix (user's explicit ask - "if an error happens
+            // during production order creation ... it would be ideal to
+            // have a recovery on app frontend"): any OTHER mid-pipeline
+            // failure used to just toast + vanish, forcing a trip to the
+            // SAP UI to find and finish a Proposal that may already
+            // exist there. Now it stays on screen with the real reason
+            // and a "Resume" action when a Proposal ID is known.
+            setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, status: "failed", failure: job.result, error: job.error } : j)));
             break;
           }
         }
@@ -1490,7 +1575,9 @@ const CreateOrderTab = ({ actorName }) => {
                           </Badge>
                         </>
                       ) : j.status === "failed" ? (
-                        <Badge variant="outline" className="border bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">SFG Shortage - Blocked</Badge>
+                        <Badge variant="outline" className="border bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">
+                          {j.failure?.reason === "sfg_shortage" ? "SFG Shortage - Blocked" : "Failed"}
+                        </Badge>
                       ) : (
                         <OrderStepTracker status={j.status} elapsedSeconds={j.elapsedSeconds} />
                       )}
@@ -1507,7 +1594,19 @@ const CreateOrderTab = ({ actorName }) => {
                           <Button size="sm" variant="outline" onClick={() => toggleJobExpand(j.job_id)} data-testid={`active-order-view-button-${i}`}>{j.expanded ? "Hide" : "View"}</Button>
                         ) : <span className="text-[11px] text-[#98A2B3]">Loading...</span>
                       ) : j.status === "failed" ? (
-                        <Button size="sm" variant="outline" onClick={() => removeActiveJob(j.job_id)} data-testid={`active-order-dismiss-button-${i}`}>Dismiss</Button>
+                        <div className="flex flex-wrap gap-1.5">
+                          {j.failure?.reason !== "sfg_shortage" && j.failure?.production_proposal_id && (
+                            <Button
+                              size="sm"
+                              disabled={resumingJobId === j.job_id}
+                              onClick={() => resumeFailedJob(j)}
+                              data-testid={`active-order-resume-button-${i}`}
+                            >
+                              {resumingJobId === j.job_id ? "Resuming..." : "Resume"}
+                            </Button>
+                          )}
+                          <Button size="sm" variant="outline" onClick={() => removeActiveJob(j.job_id)} data-testid={`active-order-dismiss-button-${i}`}>Dismiss</Button>
+                        </div>
                       ) : (
                         <Button
                           size="sm"
@@ -1522,7 +1621,7 @@ const CreateOrderTab = ({ actorName }) => {
                       )}
                     </td>
                   </tr>
-                  {j.status === "failed" && j.failure && (
+                  {j.status === "failed" && j.failure?.reason === "sfg_shortage" && (
                     <tr data-testid={`active-order-sfg-shortage-${i}`}>
                       <td colSpan={6} className="border border-[#D0D5DD] px-2 py-2 bg-[#FEF3F2]">
                         <p className="text-[11px] text-[#B42318] mb-1.5">
@@ -1562,6 +1661,26 @@ const CreateOrderTab = ({ actorName }) => {
                           <ArrowClockwise size={12} className={`mr-1 ${refreshingSfgStock ? "animate-spin" : ""}`} />
                           {refreshingSfgStock ? `Refreshing (${refreshSfgElapsed}s)...` : "Refresh Live SFG Stock & Retry"}
                         </Button>
+                      </td>
+                    </tr>
+                  )}
+                  {j.status === "failed" && j.failure && j.failure.reason !== "sfg_shortage" && (
+                    <tr data-testid={`active-order-pipeline-error-${i}`}>
+                      <td colSpan={6} className="border border-[#D0D5DD] px-2 py-2 bg-[#FEF3F2]">
+                        <p className="text-[11px] text-[#B42318] mb-1" data-testid={`active-order-pipeline-error-reason-${i}`}>
+                          <strong>Why this failed:</strong> {j.error || "SAP reported an unexpected error"}
+                        </p>
+                        {j.failure.production_proposal_id ? (
+                          <p className="text-[11px] text-[#93370D]">
+                            Proposal <strong>{j.failure.production_proposal_id}</strong>
+                            {j.failure.production_order_id ? <> and Order <strong>{j.failure.production_order_id}</strong></> : null} already exist in SAP -
+                            click <strong>Resume</strong> to let the app pick up from here automatically (no need to open the SAP UI).
+                          </p>
+                        ) : (
+                          <p className="text-[11px] text-[#93370D]">
+                            Nothing was created in SAP yet before this failed - fix the issue above and create a new order.
+                          </p>
+                        )}
                       </td>
                     </tr>
                   )}
@@ -1945,7 +2064,15 @@ export default function ProductionConfirmationPage() {
                       )}
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5" data-testid={`last-confirmation-cell-${i}`}>
-                      <LastConfirmationBadges data={lastConf} />
+                      <LastConfirmationBadges
+                        data={lastConf}
+                        productionLotId={r.production_lot_id}
+                        siteId={r.site_id}
+                        actorName={actorName}
+                        onRetried={(lotId, wipResult) => setLastConfirmationByLot((prev) => (
+                          prev[lotId] ? { ...prev, [lotId]: { ...prev[lotId], wip_clearing: wipResult } } : prev
+                        ))}
+                      />
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
                       <Button

@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -84,6 +85,31 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
+
+
+def _get_build_version() -> dict:
+    """Short git commit hash + date, computed once at startup (Aug 27
+    2026, user's explicit ask: "add build version on footer") - this
+    repo has no separate semantic-version bump step, so the current git
+    commit is the most accurate, zero-maintenance stand-in for "what
+    build is actually running right now"."""
+    try:
+        commit = subprocess.check_output(
+            ["git", "log", "-1", "--format=%h|%cd", "--date=format:%d %b %Y"],
+            cwd=Path(__file__).parent.parent, timeout=5,
+        ).decode().strip()
+        short_hash, commit_date = commit.split("|", 1)
+        return {"commit": short_hash, "commit_date": commit_date}
+    except Exception:
+        return {"commit": None, "commit_date": None}
+
+
+BUILD_VERSION = _get_build_version()
+
+
+@api_router.get("/version")
+async def get_build_version():
+    return BUILD_VERSION
 
 
 @api_router.get("/docs/sap-integrations")
@@ -784,32 +810,17 @@ class ScrapCalcRequest(BaseModel):
     material_inputs: Optional[List[MaterialInputItem]] = None
 
 
-@api_router.post("/production-confirmation/scrap-calc/{product_id}")
-async def get_scrap_calc(product_id: str, payload: ScrapCalcRequest = ScrapCalcRequest()):
-    """Auto-calculates the expected scrap-per-unit for an output product:
-    Gross Weight (the raw-material component's own consumption quantity)
-    minus Net Weight (the finished item's own weight, already captured
-    via the Admin page's Net Weight tool). The RM child is picked via
-    _pick_rm_item (excludes Zn, prefers Iron/Brass/Copper family keyword
-    matches). Returns {"available": False, "reason": ...} if either side
-    is missing.
-
-    Aug 27 2026 fix (same root cause/fix as
-    check_component_availability_from_material_inputs): when the caller
-    already has this specific lot's exact SAP MaterialInput list
-    (`payload.material_inputs`, from SAPProductionLotClient), it's used
-    directly instead of guessing via the cached "highest revision" BOM -
-    real bug: lot 70422's real MaterialInput is FLAT-BK21, but this
-    endpoint kept guessing SH4.5HR (from a DIFFERENT Production Model,
-    BK-0021_2) because it only ever looked at `bom_node_cache` keyed by
-    product_id alone. Falls back to the old cached-BOM guess only when
-    no material_inputs are given (e.g. very old cached rows)."""
-    if payload.material_inputs:
+async def _compute_scrap_calc(product_id: str, material_inputs: Optional[List[MaterialInputItem]]) -> dict:
+    """Shared calc used by both the scrap-calc endpoint (frontend preview)
+    and confirm_production's backend enforcement (Aug 27 2026) - kept as a
+    single function so the two can never drift apart. See get_scrap_calc
+    below for the full field-by-field explanation."""
+    if material_inputs:
         inv_doc = db["inventory_cache"].find_one({"_id": "latest"})
         desc_by_product = {it["product_id"]: it.get("description") for it in (inv_doc or {}).get("items", [])}
         mass_items = [
             {"product_id": mi.product_id, "description": desc_by_product.get(mi.product_id), "quantity": mi.qty_per_unit}
-            for mi in payload.material_inputs
+            for mi in material_inputs
             if mi.qty_per_unit is not None and (mi.unit_code or "").upper() == "KGM"
         ]
     else:
@@ -856,6 +867,33 @@ async def get_scrap_calc(product_id: str, payload: ScrapCalcRequest = ScrapCalcR
         "scrap_per_unit_kg": scrap_per_unit_kg,
         "scrap_family": scrap_family,
     }
+
+
+@api_router.post("/production-confirmation/scrap-calc/{product_id}")
+async def get_scrap_calc(product_id: str, payload: ScrapCalcRequest = ScrapCalcRequest()):
+    """Auto-calculates the expected scrap-per-unit for an output product:
+    Gross Weight (the raw-material component's own consumption quantity)
+    minus Net Weight (the finished item's own weight, already captured
+    via the Admin page's Net Weight tool). The RM child is picked via
+    _pick_rm_item (excludes Zn, prefers Iron/Brass/Copper family keyword
+    matches). Returns {"available": False, "reason": ...} if either side
+    is missing, and omits "rm_product_id" entirely when no mass-based RM
+    component exists at all (e.g. an assembly-only item like a hardware
+    kit in a bag - no by-product is ever expected for these, and
+    confirm_production's backend check below treats the two cases
+    differently for exactly this reason).
+
+    Aug 27 2026 fix (same root cause/fix as
+    check_component_availability_from_material_inputs): when the caller
+    already has this specific lot's exact SAP MaterialInput list
+    (`payload.material_inputs`, from SAPProductionLotClient), it's used
+    directly instead of guessing via the cached "highest revision" BOM -
+    real bug: lot 70422's real MaterialInput is FLAT-BK21, but this
+    endpoint kept guessing SH4.5HR (from a DIFFERENT Production Model,
+    BK-0021_2) because it only ever looked at `bom_node_cache` keyed by
+    product_id alone. Falls back to the old cached-BOM guess only when
+    no material_inputs are given (e.g. very old cached rows)."""
+    return await _compute_scrap_calc(product_id, payload.material_inputs)
 
 
 class RefreshAttachmentsRequest(BaseModel):
@@ -2136,6 +2174,7 @@ class ConfirmProductionRequest(BaseModel):
     new_byproduct_target_logistics_area_id: Optional[str] = None
     new_byproduct_confirmed_quantity: Optional[float] = None
     new_byproduct_unit_code: Optional[str] = None
+    material_inputs: Optional[List[MaterialInputItem]] = None
     actor: str
 
 
@@ -2166,6 +2205,34 @@ def _clarify_confirm_error(raw_error: str, production_lot_id: str) -> str:
 async def confirm_production(payload: ConfirmProductionRequest):
     if not payload.actor.strip():
         raise HTTPException(status_code=400, detail="actor (your name) is required")
+    # Aug 27 2026 fix (user's explicit ask, part 2): the frontend already
+    # blocks the Confirm button when a by-product is expected but not
+    # posted - this mirrors that SAME check server-side, using the exact
+    # same _compute_scrap_calc used to render the frontend's panel, so a
+    # confirmation can never slip through no matter what state the UI is
+    # in (stale tab, direct API call, etc). An item with NO mass-based RM
+    # component at all (rm_product_id absent - e.g. a hardware
+    # sub-assembly kit in a bag) never expected a by-product in the
+    # first place and is correctly skipped below, same as the frontend.
+    if payload.main_output_product:
+        scrap_calc = await _compute_scrap_calc(payload.main_output_product, payload.material_inputs)
+        if scrap_calc.get("rm_product_id") and not scrap_calc.get("available"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot confirm Lot {payload.production_lot_id}: by-product is expected but its weight can't be calculated yet ({scrap_calc.get('reason')}). Fix this first so the by-product is never skipped.",
+            )
+        if scrap_calc.get("available"):
+            has_existing_target = bool(payload.byproduct_material_output_uuid) and payload.byproduct_confirmed_quantity is not None
+            has_new_target = (
+                bool(payload.new_byproduct_product_id)
+                and bool(payload.new_byproduct_target_logistics_area_id)
+                and payload.new_byproduct_confirmed_quantity is not None
+            )
+            if not has_existing_target and not has_new_target:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot confirm Lot {payload.production_lot_id}: a by-product is expected but there's no Output Products line to post it to and no target storage area to create one - contact support before confirming this lot.",
+                )
     job_id = str(uuid.uuid4())
     job_store.create_job(db, job_id, {"status": "running"})
     asyncio.create_task(_run_confirm_production_job(job_id, payload))
@@ -2224,6 +2291,26 @@ async def _confirm_production_inner(job_id: str, payload: ConfirmProductionReque
         except SAPProductionLotError as e:
             byproduct_confirmation = {"success": False, "logs": [{"note": str(e)}]}
 
+    # Aug 27 2026 fix (user's explicit ask - a real production confirmation
+    # went through with NO by-product ever posted): previously, if the
+    # by-product SAP call above failed (or an exception was caught), the
+    # code still went ahead and posted the main ReportingPoint confirmation
+    # below anyway - and per the comment above, if confirmation_finished
+    # was also true, the lot got permanently closed with SAP then
+    # rejecting ANY further attempt to add the missing by-product. Now: a
+    # by-product that was actually ATTEMPTED (has a real target - existing
+    # line or a new one) but failed hard-stops here, BEFORE the main
+    # confirmation is ever sent, so the user can fix the issue and retry
+    # with nothing yet posted to SAP.
+    if byproduct_confirmation is not None and not byproduct_confirmation.get("success"):
+        note = (byproduct_confirmation.get("logs") or [{}])[-1].get("note") or "Unknown error"
+        job_store.update_job(db, job_id, {
+            "status": "failed",
+            "error": f"By-product posting failed, so the main confirmation was NOT submitted (nothing was posted to SAP) - fix the issue below and retry: {note}",
+            "byproduct_confirmation": byproduct_confirmation,
+        })
+        return
+
     try:
         result = await asyncio.to_thread(
             sap_production_lot_client.confirm_reporting_point,
@@ -2277,6 +2364,38 @@ async def _confirm_production_inner(job_id: str, payload: ConfirmProductionReque
 
     await asyncio.to_thread(production_confirmation_service.log_confirmation, db, payload.actor, payload.dict(), result)
     job_store.update_job(db, job_id, {"status": "done", "result": result})
+
+
+class RetryWipClearingRequest(BaseModel):
+    production_lot_id: str
+    site_id: str
+    actor: str
+
+
+@api_router.post("/production-confirmation/retry-wip-clearing")
+async def retry_wip_clearing(payload: RetryWipClearingRequest):
+    """Re-fires just the WIP Clearing Run for a lot whose confirmation
+    already posted successfully but the WIP step itself failed - "Retry"
+    button next to the failed "WIP Cleared" chip (Aug 2026, user's
+    explicit ask). Does not touch the main confirmation/by-product data
+    at all, only overwrites the wip_clearing outcome on that lot's most
+    recent history entry."""
+    if not payload.actor.strip():
+        raise HTTPException(status_code=400, detail="actor (your name) is required")
+    try:
+        wip_result = await asyncio.to_thread(
+            sap_wip_clearing_client.run_wip_clearing, payload.production_lot_id, payload.site_id,
+        )
+    except SAPWipClearingError as e:
+        wip_result = {"success": False, "log": str(e)}
+    except Exception as e:
+        wip_result = {"success": False, "log": f"Unexpected error: {e}"}
+    updated = await asyncio.to_thread(
+        production_confirmation_service.retry_wip_clearing_for_lot, db, payload.production_lot_id, wip_result,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"No confirmation history found yet for Lot {payload.production_lot_id}")
+    return {"wip_clearing": wip_result}
 
 
 @api_router.get("/production-confirmation/history")
@@ -2512,6 +2631,7 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
     request and PAUSES (job status "waiting_store_approval") until a
     warehouse user (or the requester, for a partial issue) resolves it -
     see store_approval_service.py + _continue_order_creation below."""
+    proposal_id = None  # bound up-front so the generic except below can always report it, even if the failure happens before it's ever assigned
     try:
         # Pre-flight stock check - LIVE from SAP (not the cache) since this
         # gates a real SAP write; ~47s for SAP's inventory report (a heavy
@@ -2630,7 +2750,15 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
         await _continue_order_creation(job_id, payload, proposal_id)
     except Exception as e:
         logger.error(f"create-and-release job {job_id} failed: {e}")
-        job_store.update_job(db, job_id, {"status": "failed", "error": str(e)})
+        # Aug 27 2026 fix (user's explicit ask - "if an error happens
+        # during production order creation ... it would be ideal to have
+        # a recovery on app frontend"): carry forward whatever proposal_id
+        # is already known (None if the failure happened before Create
+        # Proposal ever ran) so the frontend can offer a "Resume" action
+        # instead of forcing a trip to the SAP UI to find/finish it.
+        job_store.update_job(db, job_id, {"status": "failed", "error": str(e), "result": {
+            "reason": "pipeline_error", "production_proposal_id": proposal_id, "production_order_id": None,
+        }})
 
 
 async def _continue_order_creation(job_id: str, payload: "CreateProductionProposalRequest", proposal_id: str):
@@ -2794,7 +2922,13 @@ async def _continue_order_creation(job_id: str, payload: "CreateProductionPropos
         }})
     except Exception as e:
         logger.error(f"create-and-release job {job_id} failed: {e}")
-        job_store.update_job(db, job_id, {"status": "failed", "error": str(e)})
+        # Same reasoning as _run_create_and_release_job's except block -
+        # the Proposal (and possibly an Order) may already exist in SAP by
+        # this point, so both are carried forward for the frontend's
+        # "Resume" action rather than getting lost behind a dead-end toast.
+        job_store.update_job(db, job_id, {"status": "failed", "error": str(e), "result": {
+            "reason": "pipeline_error", "production_proposal_id": proposal_id, "production_order_id": new_order_id,
+        }})
 
 
 @api_router.post("/production-confirmation/create-and-release-order")
@@ -2841,6 +2975,43 @@ async def cancel_create_and_release_job(job_id: str):
         raise HTTPException(status_code=400, detail="This order run has already finished - nothing to stop")
     job_store.update_job(db, job_id, {"cancel_requested": True})
     return {"ok": True}
+
+
+class ResumeFailedOrderRequest(BaseModel):
+    actor: str
+
+
+@api_router.post("/production-confirmation/create-and-release-order/{job_id}/resume")
+async def resume_failed_create_and_release_job(job_id: str, payload: ResumeFailedOrderRequest):
+    """Recovery action for a job that hit a real error mid-pipeline (Aug 27
+    2026, user's explicit ask - "if an error happens during production
+    order creation ... it would be ideal to have a recovery on app
+    frontend"). Reads the failed job's own payload_snapshot + whatever
+    production_proposal_id it had already reached in SAP, and resumes the
+    Proposal -> Order -> Release pipeline from exactly that point under a
+    fresh job_id - no need to open the SAP UI and finish it by hand."""
+    if not payload.actor.strip():
+        raise HTTPException(status_code=400, detail="actor (your name) is required")
+    old_job = job_store.get_job(db, job_id)
+    if old_job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    if old_job.get("status") != "failed":
+        raise HTTPException(
+            status_code=400,
+            detail="This order run is not in a failed state - resuming it would risk a second pipeline running against the same SAP Proposal. Only a failed job can be resumed.",
+        )
+    snapshot = old_job.get("payload_snapshot")
+    proposal_id = (old_job.get("result") or {}).get("production_proposal_id")
+    if not snapshot or not proposal_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot resume - no SAP Proposal was ever created for this order, so there's nothing to resume from. Fix the underlying issue and create a new order instead.",
+        )
+    resumed_payload = CreateProductionProposalRequest(**snapshot)
+    new_job_id = str(uuid.uuid4())
+    job_store.create_job(db, new_job_id, {"status": "running", "result": None, "error": None, "payload_snapshot": snapshot})
+    asyncio.create_task(_continue_order_creation(new_job_id, resumed_payload, proposal_id))
+    return {"job_id": new_job_id, "production_proposal_id": proposal_id}
 
 
 @api_router.post("/production-confirmation/refresh-live-sfg-stock")

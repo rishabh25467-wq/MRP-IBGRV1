@@ -128,6 +128,19 @@ def get_confirmation_history(db, production_lot_id: str = None, limit: int = 200
     ]
 
 
+def retry_wip_clearing_for_lot(db, production_lot_id: str, wip_result: dict) -> bool:
+    """Overwrites the WIP Clearing outcome on the most recent confirmation
+    history doc for this lot ("Retry" button next to a failed "WIP
+    Cleared" chip - Aug 2026, user's explicit ask). Returns False if no
+    confirmation history exists yet for this lot (shouldn't normally
+    happen - a WIP Clearing Run only ever fires after a real confirmation)."""
+    latest = db[HISTORY_COLLECTION].find_one({"production_lot_id": production_lot_id}, sort=[("at", -1)])
+    if not latest:
+        return False
+    db[HISTORY_COLLECTION].update_one({"_id": latest["_id"]}, {"$set": {"wip_clearing": wip_result}})
+    return True
+
+
 def get_latest_confirmation_by_lot(db, production_lot_ids: list) -> dict:
     """One aggregation, not N queries - same batch pattern used by
     check_component_availability_batch for the STOCK column. User's

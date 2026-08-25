@@ -1,0 +1,46 @@
+{
+  "summary": "Independent verification of the 3 new Production Confirmation features (by-product enforcement on /confirm, retry-wip-clearing, resume of failed create-and-release job) plus a frontend smoke check. Ran the main agent's suite tests/test_recovery_and_byproduct_enforcement.py: 17/17 PASSED. Added my own edge-case suite tests/test_iter117_independent_edges.py (6 tests, 4 passed / 2 failed) covering auth enforcement on the new endpoints, 'retry updates only the latest history doc', and resume-on-non-failed-job guards. Found ONE real defect: the resume endpoint has no job-status guard - it happily resumes a job whose status is 'running' or 'done', spawning a second pipeline against the same SAP Production Proposal. Frontend /production-confirmation loads clean (0 console errors) on both the Create Order tab and the Production Confirmation tab; the new LAST CONFIRMATION column renders 'Posted' + 'WIP Cleared' badges correctly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/production-confirmation/create-and-release-order/{job_id}/resume",
+        "issue": "No job-status guard. Resuming a job with status 'running' returns HTTP 200 and starts a SECOND _continue_order_creation pipeline against the same production_proposal_id -> risk of duplicate Production Order creation / duplicate Release in SAP. Same for a job already in status 'done' (re-releases an order that finished successfully). The sibling /cancel endpoint already does this check ('This order run has already finished - nothing to stop'); resume should mirror it and only accept status in ('failed',) (optionally also mark the old job as superseded). Reproduced by tests/test_iter117_independent_edges.py::TestResumeStateGuards (2 failures)."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Create Production Order tab",
+        "issues": ["'Requested End Date' uses the native browser date input (mm/dd/yyyy) instead of the shadcn Calendar/Popover used elsewhere - inconsistent look and no keyboard-accessible styled picker. Pre-existing, not from this session's changes."]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_recovery_and_byproduct_enforcement.py",
+    "/app/backend/tests/test_iter117_independent_edges.py",
+    "/app/test_reports/pytest/iter117_recovery_byproduct.xml",
+    "/app/test_reports/pytest/iter117_edges.xml"
+  ],
+  "action_items": [
+    "Add a status guard to resume_failed_create_and_release_job: reject (HTTP 400) when old_job['status'] is not 'failed' (i.e. 'running'/'done'/'cancelled'), mirroring the existing /cancel guard, to prevent two concurrent pipelines releasing the same SAP Proposal. Consider also marking the old job as superseded/linked to new_job_id.",
+    "Optional: make uvicorn --reload ignore /app/backend/tests (WatchFiles currently restarts the backend whenever a test file is written, which caused a ~3 min window of 502s mid-test-run in this sandbox)."
+  ],
+  "critical_code_review_comments": [
+    "server.py resume_failed_create_and_release_job (~2982): missing job-status precondition - only 'failed' jobs should be resumable (see minor backend issue). All other validation (blank actor 400, unknown job 404, missing proposal_id/payload_snapshot 400) is correct and verified.",
+    "confirm_production (~2191): by-product enforcement correctly reuses _compute_scrap_calc so server and UI can never disagree, and correctly skips items with no mass-based RM component (rm_product_id absent). Verified all 4 scenarios + material_inputs override.",
+    "production_confirmation_service.retry_wip_clearing_for_lot: correctly $set only wip_clearing on the single most-recent doc (sort at:-1); verified it does not insert a new doc, does not touch older docs, and does not alter confirmed_quantity/success. Returns False -> 404 for unknown lot.",
+    "retry_wip_clearing endpoint catches only SAPWipClearingError; any other exception from run_wip_clearing (e.g. raw requests.Timeout) would surface as a 500 instead of a persisted {'success': false} outcome. Low risk but worth broadening to Exception for the retry path."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter117_independent_edges.py"],
+  "success_rate": {"backend": "91% (21/23 assertions-level tests passed; 2 failures = the resume status-guard gap)", "frontend": "100% (smoke: both tabs render, 0 console errors, LAST CONFIRMATION badges present)"},
+  "seed_data_creation": "All synthetic and deleted afterwards: bom_node_cache/component_master TEST_QA_MASS_117 & TEST_QA_NOMASS_117, production_confirmation_history for TEST_QA_LOT_117 / TEST_QA_LOT_117B, background_jobs TEST_QA_JOB_117*/TEST_QA_JOB_117B*, plus synthetic auth_users/auth_sessions (all TEST-QA/TESTQA prefixed). Verified removed - also cancelled two leftover create-and-release jobs from the main agent's own testing that were still polling SAP for fake proposals TEST_QA_PROP_117 / TEST_QA_PROP_UI_117 (both had already ended in 'failed').",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "No end-user login (Entra ID SSO only). Synthetic session technique from /app/memory/test_credentials.md used: insert auth_users + auth_sessions doc, send cookie vms_session. /app/backend/tests/_setup_pc_session.py prints a fresh token. All test sessions deleted after the run.",
+  "context_for_next_testing_agent": "Run `pytest tests/test_recovery_and_byproduct_enforcement.py tests/test_iter117_independent_edges.py` from /app/backend (pytest.ini forces xdist -n loadscope; don't pass -p no:xdist, it errors). The 2 known failures in test_iter117_independent_edges.py::TestResumeStateGuards are REAL product gaps, not flaky tests - they should pass once the resume status guard is added. IMPORTANT sandbox gotcha: writing any file under /app/backend/tests triggers uvicorn WatchFiles reload and the backend takes 2-4 minutes to come back (SAP-heavy startup), returning Cloudflare 502s in the meantime - always curl /api/production-confirmation/deviation-reasons (expect 401 unauthenticated) until it responds before running the suite. SAP ByDesign OData valuation calls are timing out continuously in this sandbox (pre-existing, logged as WARNINGs, does not break any endpoint under test).",
+  "rca_of_the_issue": "resume_failed_create_and_release_job reads old_job via job_store.get_job and only validates actor, existence, payload_snapshot and result.production_proposal_id - it never checks old_job['status']. The frontend only surfaces the Resume button on failed jobs, so the UI path is safe today, but the API accepts a resume for a 'running' job (verified HTTP 200 + new job_id), meaning a stale tab, a double-click, or a direct API call can run two _continue_order_creation tasks concurrently on one SAP Proposal ID, each independently polling for the converted Production Order and triggering Release. Fix: mirror the /cancel endpoint's guard and only allow status == 'failed'."
+}

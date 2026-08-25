@@ -136,7 +136,7 @@ PAGE_ROUTE_RULES = [
 # Paths the auth middleware never gates - login must stay reachable while
 # logged out, and /auth/me must never itself 401 (the frontend uses it to
 # find out WHETHER it's logged in).
-PUBLIC_PATHS = {"/api/", "/api/auth/login", "/api/auth/callback", "/api/auth/me"}
+PUBLIC_PATHS = {"/api/", "/api/auth/login", "/api/auth/callback", "/api/auth/me", "/api/version"}
 
 
 def ensure_indexes(db) -> None:
