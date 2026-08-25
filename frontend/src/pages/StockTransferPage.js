@@ -88,7 +88,7 @@ export default function StockTransferPage() {
   const [shipToSiteOptions, setShipToSiteOptions] = useState([]);
   const [shipToLocationId, setShipToLocationId] = useState("");
   const [shipToLocationOptions, setShipToLocationOptions] = useState([]);
-  const [requestedDeliveryDate, setRequestedDeliveryDate] = useState("");
+  const [requestedDeliveryDate, setRequestedDeliveryDate] = useState(todayISO());
   // GST / E-way bill compliance fields (Aug 2026, user's explicit ask) -
   // mandatory; pushed live to SAP as a Note on the Customer Requirement
   // (see stock_transfer_service.py's _build_gst_note_text).
@@ -96,7 +96,7 @@ export default function StockTransferPage() {
   const [vehicleNo, setVehicleNo] = useState("");
   const [placeOfSupply, setPlaceOfSupply] = useState("");
   const [grNo, setGrNo] = useState("");
-  const [dateOfSupply, setDateOfSupply] = useState("");
+  const [dateOfSupply, setDateOfSupply] = useState(todayISO());
   // Freight Forwarder / Transporter name (Aug 27 2026, user's explicit
   // ask - mandatory) - written to the SAP GST Note AND the legacy ERP
   // portal's own `Trans` field, printed on the Delivery Note + Gate Pass.
@@ -471,8 +471,8 @@ export default function StockTransferPage() {
           setSapSubmitMessage(`Created in SAP as ${formatSapId(data.result?.sap_order_id) || "—"}. Now posting Goods Issue...`);
           toast.success(`Stock Transfer Order created in SAP (${formatSapId(data.result?.sap_order_id) || "—"}).`);
           setItems([]);
-          setShipToSiteId(""); setShipToLocationId(""); setRequestedDeliveryDate(""); setFormError(null);
-          setVehicleNo(""); setPlaceOfSupply(""); setGrNo(""); setDateOfSupply(""); setTransportationMode("By Road"); setFreightForwarder("");
+          setShipToSiteId(""); setShipToLocationId(""); setRequestedDeliveryDate(todayISO()); setFormError(null);
+          setVehicleNo(""); setPlaceOfSupply(""); setGrNo(""); setDateOfSupply(todayISO()); setTransportationMode("By Road"); setFreightForwarder("");
           loadRecentOrders();
           if (data.sto_id) pollGiStatus(data.sto_id);
           return;
@@ -559,7 +559,7 @@ export default function StockTransferPage() {
       addedLine = await addItem(nlPreview.product_id, null, nlPreview.quantity);
     }
     if (nlPreview.ship_to_site_id) setShipToSiteId(nlPreview.ship_to_site_id);
-    if (nlPreview.requested_delivery_date) setRequestedDeliveryDate(nlPreview.requested_delivery_date);
+    if (nlPreview.requested_delivery_date) { setRequestedDeliveryDate(nlPreview.requested_delivery_date); setDateOfSupply(nlPreview.requested_delivery_date); }
     // Auto-apply the AI's top-suggested Source Warehouse too (Aug 27
     // 2026, user's explicit ask) - without a resolved Source Warehouse,
     // Ship-from Site stays blank, which keeps Ship-to Site/Location
@@ -830,7 +830,19 @@ export default function StockTransferPage() {
           </div>
           <div className="max-w-xs">
             <Label className="text-xs font-bold text-[#344054]">Requested Delivery Date*</Label>
-            <Input type="date" min={todayISO()} value={requestedDeliveryDate} onChange={(e) => setRequestedDeliveryDate(e.target.value)} data-testid="stock-transfer-delivery-date-input" />
+            <Input
+              type="date"
+              min={todayISO()}
+              value={requestedDeliveryDate}
+              onChange={(e) => {
+                // Aug 27 2026, user's explicit ask: Date Of Supply follows
+                // whatever is entered here, so it doesn't have to be
+                // re-typed - still independently editable afterward below.
+                setRequestedDeliveryDate(e.target.value);
+                setDateOfSupply(e.target.value);
+              }}
+              data-testid="stock-transfer-delivery-date-input"
+            />
           </div>
         </div>
 

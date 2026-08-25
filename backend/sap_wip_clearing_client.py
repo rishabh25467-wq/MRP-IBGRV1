@@ -26,7 +26,12 @@ SITE_TO_COMPANY = {
     "P8": ("RI", "RSOB"),
     # Aug 27 2026, user's explicit ask: 2 more Company RI locations.
     "P5": ("RI", "RSOB"),
+    # "P1W" is the ERP's own `comp.pcode` value for site W1 (confirmed
+    # live, Aug 27 2026), not itself a site_id ever looked up here - kept
+    # anyway (harmless) alongside the real site_id "W1", which the
+    # live `comp` table also confirms is Company RI.
     "P1W": ("RI", "RSOB"),
+    "W1": ("RI", "RSOB"),
 }
 DEFAULT_COMPANY = ("RT", "RDOB")
 

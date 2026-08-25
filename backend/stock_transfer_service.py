@@ -718,8 +718,13 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str)
       CompCode = Ship-from Site ID directly (e.g. "P3") - NOT the
         Site->Company mapping used elsewhere for WIP Clearing (RI/RT never
         needs to reach this legacy portal at all, user's explicit fix).
-      Pcode = Ship-to site's own plant code, unchanged - the portal
-        reuses the exact same site codes as SAP.
+      Pcode = the ship-to site's own ERP-internal plant code, looked up
+        from the ERP's own `comp.pcode` column (via company_cache_service
+        - Aug 27 2026 fix, confirmed live against real DeliveryChallan
+        history: e.g. Ship-to P8 -> Pcode "R2970", never the raw site ID
+        "P8" itself). Falls back to the raw site ID only if that site has
+        no pcode registered in `comp` at all (site P6 today - user's
+        explicit choice for this gap).
       Rate/Amt/Amount/TaxableAmt = SAP's live Moving Average price x
         quantity (never Standard Cost - see sap_valuation_client.py). This
         is the ONE place this price is ever fetched live - also persisted
@@ -735,6 +740,10 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str)
         create_stock_transfer_order). Emp_no/ElecRefNo/Padd_Code1/
         Padd_Code2/Term1-3 all still left blank - user's explicit
         instruction (not captured/needed today).
+      InvStk_status = always "Open" on creation (user's explicit ask,
+        Aug 27 2026) - see erp_portal_client.create_delivery_challan
+        (the stored proc itself has no parameter for this column at all,
+        so it's set via one extra UPDATE right after the insert).
     """
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:
@@ -766,11 +775,14 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str)
         })
         stored_items.append({**item, "rate": rate, "amount": amt})
 
+    ship_to_company = company_cache_service.get_cached_company_info(db, [doc["ship_to_site_id"]], erp_portal_client).get(doc["ship_to_site_id"])
+    pcode = (ship_to_company or {}).get("pcode") or doc["ship_to_site_id"]
+
     header = {
         "comp_code": doc["ship_from_site_id"],
         "elec_ref_no": None,
         "sale_date": sale_date,
-        "pcode": doc["ship_to_site_id"],
+        "pcode": pcode,
         "padd_code1": None, "padd_code2": None,
         "trans": doc.get("freight_forwarder"),
         "veh_no": doc.get("vehicle_no"),

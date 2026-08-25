@@ -9,6 +9,14 @@
 ---
 
 
+## Session update (2026-08-27, continued 25) - Date auto-fill + ERP Pcode resolution + InvStk_status="Open"
+
+- **Requested Delivery Date** now defaults to today; whatever is entered there auto-fills **Date Of Supply** (still independently editable after) - also applied to the AI Quick Entry flow and the post-submit form reset.
+- **ERP Pcode fix** (found live, confirmed with user before wiring): `comp.pcode` is the ERP's own internal plant code per site (e.g. P8→"R2970", P3→"RTP3") - confirmed against real historical `DeliveryChallan` rows that Pcode = the SHIP-TO site's own `comp.pcode`, NOT our app's raw site ID (the bug). `sync_to_erp_portal` now resolves it via `company_cache_service` (already-cached, no extra live call), falling back to the raw site ID only for site P6 (has no pcode registered in `comp` at all - user's explicit choice for this gap).
+- **InvStk_status fix**: `Pro_DeliveryChallan_Insert` has no parameter for this column at all (confirmed against the proc's own signature) - it was always left blank. `erp_portal_client.create_delivery_challan` now runs one extra `UPDATE DeliveryChallan SET InvStk_status='Open' WHERE Sale_No=... AND CompCode=...` right after the insert, in the same transaction.
+- Also added site "W1" to `SITE_TO_COMPANY` (confirmed live via `comp` table: W1 = Company RI, was previously missing/defaulting to RT) - "P1W" (its ERP pcode, not itself a site_id) was already added last session, kept alongside.
+- Self-tested live: `get_company_info` confirmed correct pcode per site (R2970/RTP3/null-for-P6/etc.), the UPDATE SQL syntax verified against a real row with an explicit ROLLBACK (no data changed), frontend date auto-fill compiled and verified in code. No brand-new STO was created end-to-end in this session (avoided an unnecessary live SAP+ERP write) - **next real STO creation will be the first live end-to-end proof of the Pcode/InvStk_status fields**; recommend a quick check after your next real order.
+
 ## Session update (2026-08-25/27, continued 24) - Performance fix: HSN Code + ERP company/address + Rate all now cached in Mongo (no more live SAP/MSSQL calls on Add Item or every Delivery Note/Gate Pass print)
 
 - User reported: item-add on the Stock Transfer form felt slow, and asked whether stock refresh was live-per-click (it wasn't - already cache-based) or the Delivery Note/Gate Pass print was slow (it was - confirmed live in backend logs: SAP itself was timing out, and every print made 3 live external calls with zero caching).

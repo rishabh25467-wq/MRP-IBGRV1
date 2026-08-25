@@ -101,6 +101,14 @@ class ERPPortalClient:
             "gstin": gstin,
             "pan": (row[9] or "").strip() or None,
             "session": (row[10] or "").strip() or None,
+            # Aug 27 2026, user's explicit ask: the ERP's OWN internal
+            # plant code for this site (confirmed live against real
+            # DeliveryChallan history: the ship-to site's own `pcode` is
+            # what actually belongs in that table's Pcode column, NOT
+            # our app's raw Site ID) - None if never registered in `comp`
+            # for this site (e.g. P6 today - caller falls back to the
+            # raw site code in that case).
+            "pcode": (row[11] or "").strip() or None,
         }
 
     def get_company_info(self, codes: list) -> dict:
@@ -124,7 +132,7 @@ class ERPPortalClient:
             cur = conn.cursor()
             placeholders = ",".join("%s" for _ in codes)
             cur.execute(
-                f"SELECT Ccode, C_name, Cadd1, Cadd2, Ccity, Cpin, Cstate, StateCode, GSTIN, pan_no, session "
+                f"SELECT Ccode, C_name, Cadd1, Cadd2, Ccity, Cpin, Cstate, StateCode, GSTIN, pan_no, session, pcode "
                 f"FROM comp WHERE Ccode IN ({placeholders})",
                 tuple(codes),
             )
@@ -141,7 +149,7 @@ class ERPPortalClient:
         conn = self._connect()
         try:
             cur = conn.cursor()
-            cur.execute("SELECT Ccode, C_name, Cadd1, Cadd2, Ccity, Cpin, Cstate, StateCode, GSTIN, pan_no, session FROM comp")
+            cur.execute("SELECT Ccode, C_name, Cadd1, Cadd2, Ccity, Cpin, Cstate, StateCode, GSTIN, pan_no, session, pcode FROM comp")
             return {(row[0] or "").strip(): self._row_to_company_dict(row) for row in cur.fetchall()}
         except Exception as e:
             raise ERPPortalError(f"ERP Portal read (comp, full refresh) failed: {e}")
@@ -186,6 +194,18 @@ class ERPPortalClient:
                     item["amt"], item.get("dis_amt") or 0, item.get("taxable_amt") if item.get("taxable_amt") is not None else item["amt"],
                     (item.get("remark") or "")[:200],
                 ))
+            conn.commit()
+            # Aug 27 2026, user's explicit ask: InvStk_status is a real
+            # column on DeliveryChallan, but Pro_DeliveryChallan_Insert
+            # has no parameter for it at all (confirmed against the
+            # proc's own signature) - it's left NULL by that proc. A
+            # brand new row is marked "Open" (their own convention -
+            # existing ERP values seen elsewhere are "GP Print"/"Close"/
+            # "Transit", set later by other screens in their workflow).
+            cur.execute(
+                "UPDATE DeliveryChallan SET InvStk_status = 'Open' WHERE Sale_No = %s AND CompCode = %s",
+                (sale_no, header["comp_code"]),
+            )
             conn.commit()
             return {"sale_no": sale_no, "sale_noc": sale_noc}
         except ERPPortalError:
