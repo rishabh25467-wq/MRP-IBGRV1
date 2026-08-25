@@ -2168,13 +2168,15 @@ export default function ProductionConfirmationPage() {
             <ArrowClockwise size={14} className="mr-1.5" /> Refresh
           </Button>
           <div className="w-px h-6 bg-[#D0D5DD] mx-1" />
-          <Select value={creatorFilter} onValueChange={setCreatorFilter}>
-            <SelectTrigger className="w-40 bg-white" data-testid="creator-filter-select"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all" data-testid="creator-filter-all">Show all</SelectItem>
-              <SelectItem value="mine" data-testid="creator-filter-mine">Show mine</SelectItem>
-            </SelectContent>
-          </Select>
+          {user?.role !== "user" && (
+            <Select value={creatorFilter} onValueChange={setCreatorFilter}>
+              <SelectTrigger className="w-40 bg-white" data-testid="creator-filter-select"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all" data-testid="creator-filter-all">Show all</SelectItem>
+                <SelectItem value="mine" data-testid="creator-filter-mine">Show mine</SelectItem>
+              </SelectContent>
+            </Select>
+          )}
           <Button
             variant="outline"
             onClick={() => setSortLatestFirst((s) => !s)}

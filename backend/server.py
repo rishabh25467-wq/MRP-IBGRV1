@@ -2161,7 +2161,18 @@ async def get_open_production_lots(request: Request, status: str = Query("open",
     # same Site Binding mechanism as Store Approval) - admin/super_admin
     # keep seeing everything, unchanged.
     rows = _filter_by_site_access(rows, request.state.user)
-    return {"rows": await asyncio.to_thread(_attach_order_creators, rows, db)}
+    rows = await asyncio.to_thread(_attach_order_creators, rows, db)
+    # Aug 25 2026, user's explicit follow-up ask: on top of the site
+    # restriction above, a plain "user" account only ever sees the
+    # production orders THEY themselves created (matches the existing
+    # "Show mine" toggle's own name-matching logic, just enforced server-
+    # side instead of an optional client toggle) - admin/super_admin still
+    # see every order regardless of who created it.
+    user = request.state.user
+    if user.get("role") not in ("super_admin", "admin"):
+        my_name = (user.get("name") or "").strip().lower()
+        rows = [r for r in rows if (r.get("created_by") or "").strip().lower() == my_name]
+    return {"rows": rows}
 
 
 @api_router.get("/production-confirmation/lot/{production_lot_id}")

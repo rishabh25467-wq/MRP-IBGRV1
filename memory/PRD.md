@@ -1,3 +1,13 @@
+## Access control fix (2026-08-25, continued) - "user" role sees only self-created production orders
+
+- **User's explicit ask**: on the Production Confirmation table, a plain "user" account should see only production orders THEY created; admin unaffected.
+- `GET /api/production-confirmation/open-lots` now enforces this server-side for role=="user" (matches `created_by` - already joined via `_attach_order_creators` - against the caller's own name, case-insensitive), on top of the existing site-scoping. admin/super_admin see everything as before.
+- Frontend: the "Show all / Show mine" dropdown is now hidden for role=="user" (moot - backend always returns "mine" for them); still available for admin/super_admin.
+- Verified via curl with 2 synthetic accounts + a screenshot: a "user" whose name matched a real historical creator got 0 rows (their past orders are already closed/no longer "open", correctly excluded) and the P1 test user (never created anything) also got 0 - both expected, not bugs; admin still saw all 200 fetched rows.
+
+---
+
+
 ## Feature batch (2026-08-25, continued) - Site-Scoped test account, Confirmed Today, Scrap Trend, Urgent Action Dashboard
 
 - **Site-Scoped Production Users**: left one synthetic test account in the DB per user's explicit request ("for me to try") - `p1.floor.test@rampgroup.co.in`, role "user", bound_sites=["P1"], allowed_pages=["production_confirmation"]. Session token + browser console instructions in `/app/memory/test_credentials.md`. Real users should still log in with their real Microsoft account once, then be granted access via Access Management (no code changes needed there - bound_sites already applies generically, not just to Store Approval).
