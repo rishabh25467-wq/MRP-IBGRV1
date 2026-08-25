@@ -9,6 +9,13 @@
 ---
 
 
+## Session update (2026-08-25, continued 26) - Split "Inventory Management" into 3 independent access rights
+
+- User's ask: separate access rights for Inter Plant Stock Transfer and Goods Issue - found Goods Issue already had its own right (`store_approval`), but Inter Plant Stock Transfer was bundled under the same "inventory" permission as Stock Overview (no way to grant one without the other).
+- New page key `stock_transfer` ("Inter Plant Stock Transfer") added to `auth_service.py`'s `PAGE_CATALOG`/`PAGE_ROUTE_RULES` (covers `/api/stock-transfer/*`, plus added to the shared `/api/products/search` and `/api/store-requests/known-sites` rules it also depends on). `inventory` relabeled "Stock Overview" and `store_approval` relabeled "Goods Issue" for clarity (backend keys unchanged, no migration needed - no `role=user` account currently has "inventory" granted).
+- Frontend: `NavTabs.jsx`'s "Inter Plant Stock Transfer" sub-tab now gates on `stock_transfer`; new `App.js` routes (`/inventory/inter-plant-transfer`, its delivery-note, its gate-pass) all switched from `page="inventory"` to `page="stock_transfer"`; `AuthContext.jsx` PAGE_LABELS updated to match.
+- Verified live: a test `user`-role account with ONLY `stock_transfer` granted got 200 on `/api/stock-transfer/orders` but 403 on `/api/inventory` and `/api/store-requests` - confirmed fully independent. Access Management screenshot confirms 3 separate checkboxes (Stock Overview / Inter Plant Stock Transfer / Goods Issue).
+
 ## Session update (2026-08-27, continued 25) - Date auto-fill + ERP Pcode resolution + InvStk_status="Open"
 
 - **Requested Delivery Date** now defaults to today; whatever is entered there auto-fills **Date Of Supply** (still independently editable after) - also applied to the AI Quick Entry flow and the post-submit form reset.

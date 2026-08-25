@@ -36,7 +36,9 @@ const TABS = [
 
 const INVENTORY_SUBTABS = [
   { to: "/inventory", label: "Stock Overview", testId: "nav-inventory-stock-overview", page: "inventory" },
-  { to: "/inventory/inter-plant-transfer", label: "Inter Plant Stock Transfer", testId: "nav-inventory-stock-transfer", page: "inventory" },
+  // Aug 27 2026, user's explicit ask: own grantable right, separate from
+  // Stock Overview above.
+  { to: "/inventory/inter-plant-transfer", label: "Inter Plant Stock Transfer", testId: "nav-inventory-stock-transfer", page: "stock_transfer" },
   // Aug 2026, user's explicit ask: links out to the existing Store
   // Approval screen (public/unauthenticated route, unchanged) - just a
   // shortcut into it from the main nav, no backend permission change.

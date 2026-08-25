@@ -77,9 +77,9 @@ function App() {
             <Route path="/production-plan" element={<ProtectedRoute page="production_plan"><ProductionPlanPage /></ProtectedRoute>} />
             <Route path="/production-confirmation" element={<ProtectedRoute page="production_confirmation"><ProductionConfirmationPage /></ProtectedRoute>} />
             <Route path="/inventory" element={<ProtectedRoute page="inventory"><InventoryPage /></ProtectedRoute>} />
-            <Route path="/inventory/inter-plant-transfer" element={<ProtectedRoute page="inventory"><StockTransferPage /></ProtectedRoute>} />
-            <Route path="/inventory/inter-plant-transfer/:stoId/delivery-note" element={<ProtectedRoute page="inventory"><DeliveryNotePage /></ProtectedRoute>} />
-            <Route path="/inventory/inter-plant-transfer/:stoId/gate-pass" element={<ProtectedRoute page="inventory"><GatePassPage /></ProtectedRoute>} />
+            <Route path="/inventory/inter-plant-transfer" element={<ProtectedRoute page="stock_transfer"><StockTransferPage /></ProtectedRoute>} />
+            <Route path="/inventory/inter-plant-transfer/:stoId/delivery-note" element={<ProtectedRoute page="stock_transfer"><DeliveryNotePage /></ProtectedRoute>} />
+            <Route path="/inventory/inter-plant-transfer/:stoId/gate-pass" element={<ProtectedRoute page="stock_transfer"><GatePassPage /></ProtectedRoute>} />
             <Route path="/purchasing-strategy/supplier-master" element={<ProtectedRoute page="supplier_master"><SupplierMasterPage /></ProtectedRoute>} />
             <Route path="/purchasing-strategy/quota-allocation" element={<ProtectedRoute page="quota_allocation"><QuotaAllocationPage /></ProtectedRoute>} />
             <Route path="/admin" element={<ProtectedRoute page="admin"><AdminPage /></ProtectedRoute>} />

@@ -30,13 +30,16 @@ export const PAGE_LABELS = {
   purchasing_plan: "Procurement Planning",
   production_plan: "Production Planning",
   production_confirmation: "Production Confirmation",
-  inventory: "Inventory Management",
+  inventory: "Stock Overview",
+  // Aug 27 2026, user's explicit ask: split out of "inventory" into its
+  // own grantable right.
+  stock_transfer: "Inter Plant Stock Transfer",
   supplier_master: "Supplier Master",
   quota_allocation: "Quota Allocation",
   admin: "Component Master (Admin)",
   admin_sap_write: "SAP Write (Admin)",
   admin_create_material: "Create Material (Admin)",
-  store_approval: "Store Approval",
+  store_approval: "Goods Issue",
 };
 
 const AuthContext = createContext(null);

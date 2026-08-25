@@ -66,7 +66,7 @@ PAGE_CATALOG = [
     {"key": "purchasing_plan", "label": "Purchasing Plan"},
     {"key": "production_plan", "label": "Production Plan"},
     {"key": "production_confirmation", "label": "Production Confirmation"},
-    {"key": "inventory", "label": "Inventory"},
+    {"key": "inventory", "label": "Stock Overview"},
     {"key": "supplier_master", "label": "Supplier Master"},
     {"key": "quota_allocation", "label": "Quota Allocation"},
     {"key": "admin", "label": "Admin"},
@@ -75,7 +75,12 @@ PAGE_CATALOG = [
     # Aug 2026 - Store Approval moved from unauthenticated/public to
     # requiring Entra ID login (user's explicit ask), so it now needs its
     # own grantable page permission like every other page.
-    {"key": "store_approval", "label": "Store Approval"},
+    {"key": "store_approval", "label": "Goods Issue"},
+    # Aug 27 2026, user's explicit ask: split out of "inventory" (Stock
+    # Overview) into its own grantable right - previously anyone with
+    # Stock Overview automatically also got Inter Plant Stock Transfer,
+    # with no way to grant one without the other.
+    {"key": "stock_transfer", "label": "Inter Plant Stock Transfer"},
 ]
 PAGE_KEYS = {p["key"] for p in PAGE_CATALOG}
 
@@ -96,7 +101,9 @@ PAGE_ROUTE_RULES = [
     ("/api/production-plan/", {"production_plan"}),
     ("/api/production-confirmation/", {"production_confirmation"}),
     ("/api/inventory", {"inventory"}),
-    ("/api/stock-transfer", {"inventory"}),
+    # Aug 27 2026, user's explicit ask: Inter Plant Stock Transfer is now
+    # its own grantable right, separate from Stock Overview above.
+    ("/api/stock-transfer", {"stock_transfer"}),
     ("/api/suppliers/bulk-push-erp-to-sap", {"admin_sap_write"}),
     ("/api/suppliers/sap-price-specs", {"quota_allocation", "admin_sap_write"}),
     ("/api/suppliers/erp-prices/", {"quota_allocation"}),
@@ -104,7 +111,7 @@ PAGE_ROUTE_RULES = [
     ("/api/suppliers/sap-receipt-dates/", {"quota_allocation"}),
     ("/api/suppliers/sync-from-sap", {"supplier_master"}),
     ("/api/suppliers", {"supplier_master", "quota_allocation"}),
-    ("/api/products/search", {"quota_allocation", "production_confirmation", "inventory"}),
+    ("/api/products/search", {"quota_allocation", "production_confirmation", "inventory", "stock_transfer"}),
     ("/api/quota-arrangements/", {"quota_allocation"}),
     ("/api/admin/components", {"admin"}),
     ("/api/admin/categories", {"admin"}),
@@ -119,6 +126,10 @@ PAGE_ROUTE_RULES = [
     # other /api/store-requests/* endpoint (queue, decision, issue, etc.)
     # still requires store_approval specifically.
     ("/api/store-requests/journal", {"store_approval", "production_confirmation"}),
+    # Aug 27 2026: Inter Plant Stock Transfer's "Refresh Site Stock"
+    # dropdown reuses this same site list - harmless read-only endpoint,
+    # same pattern as the /journal override right above.
+    ("/api/store-requests/known-sites", {"store_approval", "stock_transfer"}),
     ("/api/store-requests", {"store_approval"}),
 ]
 
