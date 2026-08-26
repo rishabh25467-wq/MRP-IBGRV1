@@ -216,4 +216,42 @@ class SAPProductionModelBomClient:
                     best_version, best_bom_id = version, bom_id
         return best_bom_id
 
+    def get_bill_of_operations_id_for_model_id(self, production_model_id: str) -> str | None:
+        """Same APPEND-ONLY-log/max-VersionID caveat as
+        get_bill_of_material_id_for_model above, but keyed by the
+        human-readable Production Model ID (all we have on file for an
+        existing order - see production_order_creation_history) rather
+        than its UUID, and returning BillOfOperationsID instead (Aug 2026,
+        user's ask - "I need Reporting Point Description")."""
+        resp = requests.get(
+            f"{self.base_url}/ReleasedExecutionProductionModelCollection",
+            auth=self.auth,
+            headers={"Accept": "application/json"},
+            params={
+                "$filter": f"ProductionModelID eq '{production_model_id}'",
+                "$expand": "ReleasedExecutionProductionModelProductionSegment",
+                "$format": "json",
+            },
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            raise SAPProductionModelError(f"SAP returned HTTP {resp.status_code}: {resp.text[:300]}")
+        data = resp.json()
+        if "error" in data:
+            raise SAPProductionModelError(data["error"].get("message", {}).get("value", "Unknown OData error"))
+
+        best_version, best_boo_id = -1, None
+        for rem in _as_list(data.get("d", {}).get("results")):
+            for seg in _as_list(rem.get("ReleasedExecutionProductionModelProductionSegment")):
+                boo_id = seg.get("BillOfOperationsID")
+                if not boo_id:
+                    continue
+                try:
+                    version = int(seg.get("VersionID") or -1)
+                except (TypeError, ValueError):
+                    version = -1
+                if version > best_version:
+                    best_version, best_boo_id = version, boo_id
+        return best_boo_id
+
 

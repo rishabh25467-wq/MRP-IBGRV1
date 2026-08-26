@@ -93,13 +93,24 @@ const LastConfirmationBadges = ({ data, productionLotId, lastConfKey, taskFinish
       {label}
     </span>
   );
+  // Aug 2026 fix - see server.py's _all_lot_operations_finished: WIP
+  // Clearing (and FG Movement) is skipped, not failed, while other
+  // operations on a multi-step lot are still open - a neutral chip so
+  // this never looks like a real error with a pointless Retry button.
+  const neutralChip = (label, title) => (
+    <span title={title} className="flex items-center gap-1 text-[10px] px-1 py-0.5 rounded-sm border w-fit bg-[#F9FAFB] text-[#667085] border-[#EAECF0]">
+      <Circle size={10} weight="fill" />
+      {label}
+    </span>
+  );
   const retryWip = async () => {
     setRetryingWip(true);
     try {
       const { data: res } = await axios.post(`${API}/production-confirmation/retry-wip-clearing`, {
         production_lot_id: productionLotId, site_id: siteId, actor: actorName.trim(),
       });
-      if (res.wip_clearing?.success) toast.success(`WIP Clearing Run succeeded for Lot ${productionLotId}`);
+      if (res.wip_clearing?.skipped) toast.info(res.wip_clearing.log || "Other operations on this lot are still open - WIP Clearing deferred");
+      else if (res.wip_clearing?.success) toast.success(`WIP Clearing Run succeeded for Lot ${productionLotId}`);
       else toast.error(`WIP Clearing Run failed again: ${res.wip_clearing?.log || "see SAP for details"}`);
       onRetried?.(lastConfKey || productionLotId, { wip_clearing: res.wip_clearing });
     } catch (e) {
@@ -115,8 +126,9 @@ const LastConfirmationBadges = ({ data, productionLotId, lastConfKey, taskFinish
         production_lot_id: productionLotId, site_id: siteId, main_output_product: mainOutputProduct,
         confirmed_quantity: data.confirmed_quantity, unit_code: unitCode, actor: actorName.trim(),
       });
-      if (res.fg_movement?.ok) toast.success(`Moved to ${siteId}-FG for Lot ${productionLotId}`);
-      else toast.error(`FG Movement failed again: ${res.fg_movement?.error || "see SAP for details"}`);
+      if (res.fg_movement?.skipped) toast.info(res.fg_movement.error_detail || "Other operations on this lot are still open - FG Goods Movement deferred");
+      else if (res.fg_movement?.ok) toast.success(`Moved to ${siteId}-FG for Lot ${productionLotId}`);
+      else toast.error(`FG Movement failed again: ${res.fg_movement?.error || res.fg_movement?.error_detail || "see SAP for details"}`);
       onRetried?.(lastConfKey || productionLotId, { fg_movement: res.fg_movement });
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed to retry FG Movement");
@@ -142,8 +154,10 @@ const LastConfirmationBadges = ({ data, productionLotId, lastConfKey, taskFinish
       )}
       {data.wip_clearing != null && (
         <div className="flex items-center gap-1">
-          {chip(!!data.wip_clearing.success, "WIP Cleared")}
-          {!data.wip_clearing.success && siteId && (
+          {data.wip_clearing.skipped
+            ? neutralChip("WIP Pending", data.wip_clearing.log)
+            : chip(!!data.wip_clearing.success, "WIP Cleared")}
+          {!data.wip_clearing.skipped && !data.wip_clearing.success && siteId && (
             <button
               type="button"
               disabled={retryingWip}
@@ -175,8 +189,10 @@ const LastConfirmationBadges = ({ data, productionLotId, lastConfKey, taskFinish
       )}
       {data.fg_movement != null && (
         <div className="flex items-center gap-1">
-          {chip(!!data.fg_movement.ok, "FG Moved")}
-          {!data.fg_movement.ok && siteId && mainOutputProduct && (
+          {data.fg_movement.skipped
+            ? neutralChip("FG Pending", data.fg_movement.error_detail)
+            : chip(!!data.fg_movement.ok, "FG Moved")}
+          {!data.fg_movement.skipped && !data.fg_movement.ok && siteId && mainOutputProduct && (
             <button
               type="button"
               disabled={retryingFg}
@@ -460,17 +476,21 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons, maxFromP
           }
         }
         if (finished && data.wip_clearing) {
-          if (data.wip_clearing.success) {
+          if (data.wip_clearing.skipped) {
+            toast.info(data.wip_clearing.log || `WIP Clearing deferred for Lot ${row.production_lot_id} - other operations are still open`);
+          } else if (data.wip_clearing.success) {
             toast.success(`WIP Clearing Run triggered for Lot ${row.production_lot_id}`);
           } else {
             toast.error(`WIP Clearing Run failed: ${data.wip_clearing.log || "see history for details"}`);
           }
         }
         if (data.fg_movement) {
-          if (data.fg_movement.ok) {
+          if (data.fg_movement.skipped) {
+            toast.info(data.fg_movement.error_detail || `FG Goods Movement deferred for Lot ${row.production_lot_id} - other operations are still open`);
+          } else if (data.fg_movement.ok) {
             toast.success(`Finished Goods moved to ${row.site_id}-FG for Lot ${row.production_lot_id}`);
           } else {
-            toast.error(`FG Movement failed: ${data.fg_movement.error || "see history for details"}`);
+            toast.error(`FG Movement failed: ${data.fg_movement.error || data.fg_movement.error_detail || "see history for details"}`);
           }
         }
         onConfirmed(row);
@@ -494,7 +514,7 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons, maxFromP
         <DialogHeader>
           <DialogTitle>Confirm Production Task</DialogTitle>
           <DialogDescription>
-            Lot {row.production_lot_id} · {row.main_output_product || "—"} · Reporting Point {row.reporting_point_id || "—"}
+            Lot {row.production_lot_id} · {row.main_output_product || "—"} · Reporting Point {row.reporting_point_description || row.reporting_point_id || "—"}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3 py-1">
@@ -756,7 +776,7 @@ const HistoryDialog = ({ open, onClose }) => {
                       {e.success ? <Badge variant="outline" className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Success</Badge> : <Badge variant="outline" className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>}
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1">
-                      {!e.wip_clearing ? "—" : e.wip_clearing.success ? <Badge variant="outline" className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Cleared</Badge> : <Badge variant="outline" className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>}
+                      {!e.wip_clearing ? "—" : e.wip_clearing.skipped ? <Badge variant="outline" className="bg-[#F9FAFB] text-[#667085] border-[#EAECF0]" title={e.wip_clearing.log}>Pending</Badge> : e.wip_clearing.success ? <Badge variant="outline" className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Cleared</Badge> : <Badge variant="outline" className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>}
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1">
                       {!e.fg_movement ? "—" : e.fg_movement.ok ? <Badge variant="outline" className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Moved</Badge> : <Badge variant="outline" className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>}
@@ -1123,6 +1143,24 @@ const CreateOrderTab = ({ actorName }) => {
     }
   };
 
+  // "Retry Now" (Aug 2026, user's explicit ask) - lets an impatient user
+  // fire the Release trigger immediately instead of waiting out the
+  // background job's own ~90s retrigger cycle. The background loop keeps
+  // running/re-triggering on its own schedule regardless of this call's
+  // outcome, so this can never make things worse.
+  const forceRetrigger = async (jobId) => {
+    setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, retrying: true } : j)));
+    try {
+      const { data } = await axios.post(`${API}/production-confirmation/create-and-release-order/${jobId}/force-retrigger`);
+      if (data.success) toast.success("SAP accepted the retry - still watching for the resulting Order");
+      else toast.error(data.error || "SAP rejected the retry - it will keep auto-retrying in the background");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to retry");
+    } finally {
+      setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, retrying: false } : j)));
+    }
+  };
+
   // Runs entirely independently per job - multiple can be in flight at
   // once, each polling its own status on its own timer, none of them
   // blocking the form above from starting yet another order.
@@ -1171,7 +1209,13 @@ const CreateOrderTab = ({ actorName }) => {
             }
             continue;
           }
-          setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, status: job.status } : j)));
+          setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? {
+            ...j, status: job.status,
+            productionProposalId: job.production_proposal_id || j.productionProposalId,
+            releaseTriggerCount: job.release_trigger_count,
+            lastReleaseTriggerOk: job.last_release_trigger_ok,
+            lastReleaseTriggerError: job.last_release_trigger_error,
+          } : j)));
           if (job.status === "done") {
             const result = job.result;
             if (result.production_order_id && result.released) {
@@ -1283,6 +1327,10 @@ const CreateOrderTab = ({ actorName }) => {
     }
     if (!materialId.trim() || !siteId.trim() || !quantity) {
       toast.error("Product, Site and Quantity are required");
+      return;
+    }
+    if (Number(quantity) <= 0) {
+      toast.error("Quantity must be greater than zero");
       return;
     }
     if (sosLoading) {
@@ -1735,7 +1783,21 @@ const CreateOrderTab = ({ actorName }) => {
                           {j.failure?.reason === "sfg_shortage" ? "SFG Shortage - Blocked" : "Failed"}
                         </Badge>
                       ) : (
-                        <OrderStepTracker status={j.status} elapsedSeconds={j.elapsedSeconds} />
+                        <>
+                          <OrderStepTracker status={j.status} elapsedSeconds={j.elapsedSeconds} />
+                          {j.status === "waiting_for_order" && j.releaseTriggerCount > 0 && (
+                            <div className="text-[11px] text-[#667085] mt-1" data-testid={`active-order-trigger-detail-${i}`}>
+                              Waiting for SAP to convert Proposal {j.productionProposalId || "—"} into an Order - trigger attempt #{j.releaseTriggerCount}
+                              {j.lastReleaseTriggerOk === false && j.lastReleaseTriggerError && (
+                                j.lastReleaseTriggerError.toLowerCase().includes("already requested") ? (
+                                  <span className="text-[#175CD3]"> (SAP already accepted an earlier attempt - confirming the resulting Order now)</span>
+                                ) : (
+                                  <span className="text-[#B54708]"> ({j.lastReleaseTriggerError})</span>
+                                )
+                              )}
+                            </div>
+                          )}
+                        </>
                       )}
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
@@ -1764,16 +1826,30 @@ const CreateOrderTab = ({ actorName }) => {
                           <Button size="sm" variant="outline" onClick={() => removeActiveJob(j.job_id)} data-testid={`active-order-dismiss-button-${i}`}>Dismiss</Button>
                         </div>
                       ) : (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={j.stopping}
-                          onClick={() => stopTrackingJob(j.job_id)}
-                          title="Stops this app's own tracking only - if a SAP Proposal was already created, it stays in SAP un-converted, it is not deleted"
-                          data-testid={`active-order-stop-button-${i}`}
-                        >
-                          {j.stopping ? "Stopping..." : "Stop"}
-                        </Button>
+                        <div className="flex flex-wrap gap-1.5">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={j.stopping}
+                            onClick={() => stopTrackingJob(j.job_id)}
+                            title="Stops this app's own tracking only - if a SAP Proposal was already created, it stays in SAP un-converted, it is not deleted"
+                            data-testid={`active-order-stop-button-${i}`}
+                          >
+                            {j.stopping ? "Stopping..." : "Stop"}
+                          </Button>
+                          {j.status === "waiting_for_order" && j.elapsedSeconds >= 120 && !(j.lastReleaseTriggerError || "").toLowerCase().includes("already requested") && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={j.retrying}
+                              onClick={() => forceRetrigger(j.job_id)}
+                              title="Fire the SAP Release trigger right now instead of waiting for the next automatic attempt"
+                              data-testid={`active-order-retry-now-button-${i}`}
+                            >
+                              {j.retrying ? "Retrying..." : "Retry Now"}
+                            </Button>
+                          )}
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -2276,8 +2352,8 @@ export default function ProductionConfirmationTestPage() {
                       <Badge variant="outline" className={`${STATUS_TONE[r.life_cycle_status_label] || "bg-slate-100 text-slate-600 border-slate-200"} border`}>{r.life_cycle_status_label}</Badge>
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">
-                      {r.operation_description || r.reporting_point_id || "—"}
-                      {r.operation_description && r.reporting_point_id && (
+                      {r.reporting_point_description || r.operation_description || r.reporting_point_id || "—"}
+                      {(r.reporting_point_description || r.operation_description) && r.reporting_point_id && (
                         <span className="text-[10px] text-[#98A2B3] ml-1">({r.reporting_point_id})</span>
                       )}
                     </td>

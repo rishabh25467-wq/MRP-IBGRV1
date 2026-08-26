@@ -474,7 +474,7 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
         <DialogHeader>
           <DialogTitle>Confirm Production Task</DialogTitle>
           <DialogDescription>
-            Lot {row.production_lot_id} · {row.main_output_product || "—"} · Reporting Point {row.reporting_point_id || "—"}
+            Lot {row.production_lot_id} · {row.main_output_product || "—"} · Reporting Point {row.reporting_point_description || row.reporting_point_id || "—"}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3 py-1">
@@ -2266,8 +2266,8 @@ export default function ProductionConfirmationPage() {
                       <Badge variant="outline" className={`${STATUS_TONE[r.life_cycle_status_label] || "bg-slate-100 text-slate-600 border-slate-200"} border`}>{r.life_cycle_status_label}</Badge>
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">
-                      {r.operation_description || r.reporting_point_id || "—"}
-                      {r.operation_description && r.reporting_point_id && (
+                      {r.reporting_point_description || r.operation_description || r.reporting_point_id || "—"}
+                      {(r.reporting_point_description || r.operation_description) && r.reporting_point_id && (
                         <span className="text-[10px] text-[#98A2B3] ml-1">({r.reporting_point_id})</span>
                       )}
                     </td>

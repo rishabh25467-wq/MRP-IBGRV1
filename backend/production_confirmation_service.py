@@ -16,6 +16,56 @@ logger = logging.getLogger(__name__)
 
 REASON_COLLECTION = "deviation_reason_master"
 HISTORY_COLLECTION = "production_confirmation_history"
+BOO_ID_CACHE_COLLECTION = "boo_id_cache"
+BOO_DESCRIPTIONS_CACHE_COLLECTION = "boo_descriptions_cache"
+
+
+def get_reporting_point_descriptions(db, sap_production_model_bom_client, sap_boo_client, production_model_ids: list) -> dict:
+    """{production_model_id: {reporting_point_id: description}} (Aug 2026,
+    user's explicit ask - "I NEED REPORTING POINT DESCRIPTION EX:
+    BLANK+PUNCH, FLAT-LANCER"). Two-hop lookup, both cached indefinitely
+    (a released Bill of Operations' structure essentially never changes):
+    Production Model ID -> BillOfOperationsID (OData, ReleasedExecution-
+    ProductionModelCollection) -> {ElementID: ElementDescription} (SOAP,
+    ReadProductionBillofOperations). A model with no BillOfOperationsID
+    (older orders never captured one) or that hits any SAP error is just
+    left out of the returned dict - the caller falls back to the raw RP
+    code, same as before this feature existed."""
+    result = {}
+    for model_id in sorted({m for m in production_model_ids if m}):
+        cached_boo = db[BOO_ID_CACHE_COLLECTION].find_one({"_id": model_id})
+        if cached_boo is not None:
+            boo_id = cached_boo.get("bill_of_operations_id")
+        else:
+            try:
+                boo_id = sap_production_model_bom_client.get_bill_of_operations_id_for_model_id(model_id)
+            except Exception as e:
+                logger.warning(f"Reporting Point descriptions: BillOfOperationsID lookup failed for model {model_id}: {e}")
+                boo_id = None
+            db[BOO_ID_CACHE_COLLECTION].update_one(
+                {"_id": model_id},
+                {"$set": {"bill_of_operations_id": boo_id, "cached_at": datetime.now(timezone.utc)}},
+                upsert=True,
+            )
+        if not boo_id:
+            continue
+        cached_desc = db[BOO_DESCRIPTIONS_CACHE_COLLECTION].find_one({"_id": boo_id})
+        if cached_desc is not None:
+            descriptions = cached_desc.get("descriptions") or {}
+        else:
+            try:
+                descriptions = sap_boo_client.get_marker_element_descriptions(boo_id)
+            except Exception as e:
+                logger.warning(f"Reporting Point descriptions: SAP lookup failed for BillOfOperationsID {boo_id}: {e}")
+                descriptions = {}
+            db[BOO_DESCRIPTIONS_CACHE_COLLECTION].update_one(
+                {"_id": boo_id},
+                {"$set": {"descriptions": descriptions, "cached_at": datetime.now(timezone.utc)}},
+                upsert=True,
+            )
+        if descriptions:
+            result[model_id] = descriptions
+    return result
 
 # Aug 2026: SAP's own stock-status field can carry values like "Inspection"
 # (Quality Inspection hold) or "Blocked" - this stock physically sits in

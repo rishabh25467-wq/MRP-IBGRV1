@@ -30,6 +30,7 @@ from sap_sto_client import SAPSTOClient
 from sap_outbound_delivery_client import SAPOutboundDeliveryClient, SAPOutboundDeliveryError
 from erp_portal_client import ERPPortalClient
 from sap_production_model_client import SAPProductionModelClient, SAPProductionModelError, SAPProductionModelBomClient
+from sap_boo_client import SAPBooClient, SAPBooError
 from sap_goods_movement_client import SAPGoodsMovementClient, SAPGoodsMovementError
 from sap_production_order_release_client import SAPProductionOrderReleaseClient, SAPProductionOrderReleaseError
 from sap_material_physical_client import (
@@ -242,6 +243,12 @@ sap_production_model_bom_client = SAPProductionModelBomClient(
     base_url=os.environ['SAP_ODATA_PRODUCTION_MODEL_BOM_BASE_URL'],
     username=os.environ['SAP_ODATA_USERNAME'],
     password=os.environ['SAP_ODATA_PASSWORD'],
+)
+
+sap_boo_client = SAPBooClient(
+    endpoint=os.environ['SAP_SOAP_BOO_ENDPOINT'],
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
 )
 
 sap_goods_movement_client = SAPGoodsMovementClient(
@@ -2147,6 +2154,17 @@ def _attach_order_creators(rows: list, db) -> list:
         at = info.get("at")
         r["order_created_at"] = at.isoformat() if at else None
         r["production_model_id"] = info.get("production_model_id")
+    # Aug 2026, user's explicit ask ("I NEED REPORTING POINT DESCRIPTION
+    # EX: BLANK+PUNCH, FLAT-LANCER") - resolved per-model (a RP code like
+    # "RP_10" means something different on every Bill of Operations), so
+    # batch it once for every distinct model_id in this page's rows rather
+    # than once per row.
+    descriptions_by_model = production_confirmation_service.get_reporting_point_descriptions(
+        db, sap_production_model_bom_client, sap_boo_client,
+        [r.get("production_model_id") for r in rows],
+    )
+    for r in rows:
+        r["reporting_point_description"] = (descriptions_by_model.get(r.get("production_model_id")) or {}).get(r.get("reporting_point_id"))
     return rows
 
 
