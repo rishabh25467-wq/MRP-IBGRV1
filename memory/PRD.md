@@ -1,3 +1,15 @@
+## Supplier Portal Phase 3 + 4 + JDE Oracle theme + Phase 1 goes LIVE (2026-08-26, continued)
+
+- **Phase 3 (shipment 2-way match)**: vendor picks a PO line item, ships a qty validated against remaining open qty (tracked via `supplier_portal_shipments` + `_shipped_qty_so_far` aggregation, vendor-scoped), gets an exclusive 6-char alphanumeric doc code (ambiguous 0/O/1/I excluded).
+- **Phase 4 (GRN approval)**: `/admin/grn-approval` - staff lookup by code, physically match goods+invoice, Approve/Reject. Approve ALWAYS marks internal status="approved" regardless of SAP connectivity (never blocks staff), and separately attempts a real Goods Receipt post to SAP (Quality Inspection stock) via `sap_gsa_write_client.py`, tracked as `sap_sync_status: "pending"|"posted"`.
+- New page permission `supplier_portal_admin` also gates `/api/admin/grn/*` (same internal team as vendor-onboarding approvals).
+- `testing_agent` iteration_121: 100% pass; fixed 3 hardening items (vendor-scoped shipped-qty match, broadened exception guard around SAP posting so no surprise ever blocks internal approval, humanized GRN status badges).
+- **JDE Oracle theme applied** (user's explicit ask) to all 6 new Supplier Portal/GRN pages per `/app/design_guidelines.json` (Oracle JD Edwards EnterpriseOne/Alta UI look): IBM Plex Sans (`.font-sans`)/JetBrains Mono (`.font-data`), `#0076CC` brand blue, dense flat `rounded-sm` tables/badges/buttons, `#F5F6F7` page bg. Internal pages only restyled their own content (NavTabs left untouched).
+- **Phase 1 went LIVE same day**: user supplied real `SAP_SOAP_PO_ENDPOINT` (QueryPurchaseOrderQueryIn) + `SAP_SOAP_PO_MANAGE_ENDPOINT` (ManagePurchaseOrderIn - provided but unused, see why in `sap_po_client.py`). Live-verified: this tenant's query response already includes full line-item detail (no 2nd Read call needed), and portal `vendor_code` = SAP `PartySellerPartyKey/PartyID` (confirmed against real supplier G1287, 66 real open items returned). "Open" = `DeliveryProcessingStatusCode != "3"`. End-to-end tested live (real PO fetch + real shipment creation) then fully cleaned up (test account reverted to dummy vendor_code `S9999`, the live-PO test shipment + G1287 cache deleted) so the test account no longer has access to the real vendor's live data.
+- **Phase 4 SAP posting still blocked**: needs a NEW write-capable GSA endpoint (`SAP_SOAP_GSA_WRITE_ENDPOINT`, distinct from both PO endpoints above and from the existing read-only GSA endpoint) + `_EMERGENTBOM` write authorization grant.
+- Not built yet: Phase 5 (QMS API-key feed).
+
+
 ## Supplier Portal Phase 1 + 2 (2026-08-26) - external vendor onboarding + JWT auth, SAP PO fetch boilerplate
 
 - **New product line**: a 5-phase external Supplier Portal (separate from the internal Entra ID SSO app) - this session built Phase 1 (SAP PO fetch client, boilerplate only) + Phase 2 (vendor onboarding/auth, fully working end to end).
