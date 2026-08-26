@@ -1736,7 +1736,11 @@ const CreateOrderTab = ({ actorName }) => {
                             <div className="text-[11px] text-[#667085] mt-1" data-testid={`active-order-trigger-detail-${i}`}>
                               Waiting for SAP to convert Proposal {j.productionProposalId || "—"} into an Order - trigger attempt #{j.releaseTriggerCount}
                               {j.lastReleaseTriggerOk === false && j.lastReleaseTriggerError && (
-                                <span className="text-[#B54708]"> ({j.lastReleaseTriggerError})</span>
+                                j.lastReleaseTriggerError.toLowerCase().includes("already requested") ? (
+                                  <span className="text-[#175CD3]"> (SAP already accepted an earlier attempt - confirming the resulting Order now)</span>
+                                ) : (
+                                  <span className="text-[#B54708]"> ({j.lastReleaseTriggerError})</span>
+                                )
                               )}
                             </div>
                           )}
@@ -1780,7 +1784,7 @@ const CreateOrderTab = ({ actorName }) => {
                           >
                             {j.stopping ? "Stopping..." : "Stop"}
                           </Button>
-                          {j.status === "waiting_for_order" && j.elapsedSeconds >= 120 && (
+                          {j.status === "waiting_for_order" && j.elapsedSeconds >= 120 && !(j.lastReleaseTriggerError || "").toLowerCase().includes("already requested") && (
                             <Button
                               size="sm"
                               variant="outline"
