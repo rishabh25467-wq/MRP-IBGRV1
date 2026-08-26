@@ -62,9 +62,27 @@ def recover_orphaned_jobs(db, message: str) -> int:
     """Call once at process startup, before any new job can be created -
     marks every job still sitting in an ORPHANABLE_JOB_STATUSES status as
     failed with `message`, so the UI never keeps polling a job that will
-    never resolve on its own. Returns how many were recovered."""
-    result = db[COLLECTION_NAME].update_many(
+    never resolve on its own. Returns how many were recovered.
+
+    Aug 2026 fix (real incident: Proposal 225857 for PL-0037A) - `result`
+    used to stay untouched (null, since these jobs never got a chance to
+    set it themselves), which hid the frontend's "Resume" button even
+    though a real SAP Proposal (and sometimes an Order) already existed
+    and just needed finishing. Every ORPHANABLE job that already has a
+    top-level production_proposal_id/production_order_id (set as soon as
+    each is known, well before the job ever finishes) now carries them
+    into `result`, in the same shape a normal failure uses."""
+    orphaned = list(db[COLLECTION_NAME].find(
         {"status": {"$in": list(ORPHANABLE_JOB_STATUSES)}},
-        {"$set": {"status": "failed", "error": message}},
-    )
-    return result.modified_count
+        {"production_proposal_id": 1, "production_order_id": 1},
+    ))
+    for job in orphaned:
+        db[COLLECTION_NAME].update_one({"_id": job["_id"]}, {"$set": {
+            "status": "failed", "error": message,
+            "result": {
+                "reason": "pipeline_error",
+                "production_proposal_id": job.get("production_proposal_id"),
+                "production_order_id": job.get("production_order_id"),
+            },
+        }})
+    return len(orphaned)
