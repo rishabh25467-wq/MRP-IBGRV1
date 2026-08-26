@@ -1272,6 +1272,10 @@ const CreateOrderTab = ({ actorName }) => {
       toast.error("Product, Site and Quantity are required");
       return;
     }
+    if (Number(quantity) <= 0) {
+      toast.error("Quantity must be greater than zero");
+      return;
+    }
     if (sosLoading) {
       toast.error("Still checking this Product ID with SAP - wait a moment and try again");
       return;
@@ -1510,7 +1514,7 @@ const CreateOrderTab = ({ actorName }) => {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <Label className="text-xs font-bold text-[#344054]">Quantity</Label>
-              <Input type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)} data-testid="create-proposal-qty-input" />
+              <Input type="number" min="0.01" step="any" value={quantity} onChange={(e) => setQuantity(e.target.value)} data-testid="create-proposal-qty-input" />
             </div>
             <div>
               <Label className="text-xs font-bold text-[#344054]">Requested End Date</Label>

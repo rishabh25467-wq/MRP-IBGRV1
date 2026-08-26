@@ -3179,6 +3179,8 @@ async def _continue_order_creation(job_id: str, payload: "CreateProductionPropos
 async def create_and_release_production_order(payload: CreateProductionProposalRequest):
     if not payload.actor.strip():
         raise HTTPException(status_code=400, detail="actor (your name) is required")
+    if payload.quantity <= 0:
+        raise HTTPException(status_code=400, detail="Quantity must be greater than zero")
     avail_dt = None
     if payload.availability_datetime:
         try:
