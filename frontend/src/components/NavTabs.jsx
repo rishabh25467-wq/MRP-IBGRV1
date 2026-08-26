@@ -55,6 +55,7 @@ const ADMIN_SUBTABS = [
   { to: "/admin/sap-write", label: "SAP Write", testId: "nav-admin-sap-write", page: "admin_sap_write" },
   { to: "/admin/l1-l2-report", label: "L1/L2 Item Report", testId: "nav-admin-l1l2-report", page: "admin" },
   { to: "/admin/create-material", label: "Create Material", testId: "nav-admin-create-material", page: "admin_create_material" },
+  { to: "/admin/supplier-portal-approvals", label: "Supplier Portal Approvals", testId: "nav-admin-supplier-portal-approvals", page: "supplier_portal_admin" },
 ];
 
 export const NavTabs = () => {

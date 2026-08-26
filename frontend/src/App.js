@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import BomExplorerPage from "@/pages/BomExplorerPage";
 import PurchasingPlanPage from "@/pages/PurchasingPlanPage";
 import ProductionPlanPage from "@/pages/ProductionPlanPage";
@@ -18,7 +18,13 @@ import StoreApprovalPage from "@/pages/StoreApprovalPage";
 import LoginPage from "@/pages/LoginPage";
 import PendingAccessPage from "@/pages/PendingAccessPage";
 import AccessManagementPage from "@/pages/AccessManagementPage";
+import SupplierPortalApprovalsPage from "@/pages/SupplierPortalApprovalsPage";
+import SupplierSignupPage from "@/pages/supplier-portal/SupplierSignupPage";
+import SupplierLoginPage from "@/pages/supplier-portal/SupplierLoginPage";
+import SupplierPendingPage from "@/pages/supplier-portal/SupplierPendingPage";
+import SupplierDashboardPage from "@/pages/supplier-portal/SupplierDashboardPage";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import { SupplierAuthProvider, useSupplierAuth } from "@/contexts/SupplierAuthContext";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { Footer } from "@/components/Footer";
 
@@ -51,6 +57,7 @@ const FIRST_ACCESSIBLE_PAGE_ROUTES = [
   ["admin_sap_write", "/admin/sap-write"],
   ["admin_create_material", "/admin/create-material"],
   ["store_approval", "/storeapproval"],
+  ["supplier_portal_admin", "/admin/supplier-portal-approvals"],
 ];
 
 function HomeRoute() {
@@ -68,44 +75,80 @@ function HomeRoute() {
   );
 }
 
+// Aug 2026 - external Supplier Portal: separate JWT-based user base
+// (vendors, not Azure AD identities), so it must never be wrapped by the
+// internal AuthGate below (which forces a Microsoft sign-in for anyone
+// without a `vms_session` cookie - suppliers don't have one at all).
+function SupplierPortalGate() {
+  const { account, loading } = useSupplierAuth();
+  if (loading) return null;
+  if (!account) return <Navigate to="/supplier-portal/login" replace />;
+  if (account.status !== "approved") return <SupplierPendingPage />;
+  return <SupplierDashboardPage />;
+}
+
+function InternalApp() {
+  return (
+    <AuthGate>
+      <div className="min-h-screen flex flex-col">
+        <div className="flex-1">
+          <Routes>
+            <Route path="/" element={<HomeRoute />} />
+            <Route path="/purchasing-plan" element={<ProtectedRoute page="purchasing_plan"><PurchasingPlanPage /></ProtectedRoute>} />
+            <Route path="/production-plan" element={<ProtectedRoute page="production_plan"><ProductionPlanPage /></ProtectedRoute>} />
+            <Route path="/production-confirmation" element={<ProtectedRoute page="production_confirmation"><ProductionConfirmationPage /></ProtectedRoute>} />
+            {/* Aug 2026 - admin-only test page for multi-Reporting-Point
+                models (RP10/RP20/END style) - superAdminOnly, not part of
+                PAGE_CATALOG, so it can never be granted to a regular user. */}
+            <Route path="/admin/production-confirmation-test" element={<ProtectedRoute superAdminOnly><ProductionConfirmationTestPage /></ProtectedRoute>} />
+            <Route path="/inventory" element={<ProtectedRoute page="inventory"><InventoryPage /></ProtectedRoute>} />
+            <Route path="/inventory/inter-plant-transfer" element={<ProtectedRoute page="stock_transfer"><StockTransferPage /></ProtectedRoute>} />
+            <Route path="/inventory/inter-plant-transfer/:stoId/delivery-note" element={<ProtectedRoute page="stock_transfer"><DeliveryNotePage /></ProtectedRoute>} />
+            <Route path="/inventory/inter-plant-transfer/:stoId/gate-pass" element={<ProtectedRoute page="stock_transfer"><GatePassPage /></ProtectedRoute>} />
+            <Route path="/purchasing-strategy/supplier-master" element={<ProtectedRoute page="supplier_master"><SupplierMasterPage /></ProtectedRoute>} />
+            <Route path="/purchasing-strategy/quota-allocation" element={<ProtectedRoute page="quota_allocation"><QuotaAllocationPage /></ProtectedRoute>} />
+            <Route path="/admin" element={<ProtectedRoute page="admin"><AdminPage /></ProtectedRoute>} />
+            <Route path="/admin/sap-write" element={<ProtectedRoute page="admin_sap_write"><SapWritePage /></ProtectedRoute>} />
+            <Route path="/admin/create-material" element={<ProtectedRoute page="admin_create_material"><CreateMaterialPage /></ProtectedRoute>} />
+            <Route path="/admin/l1-l2-report" element={<ProtectedRoute page="admin"><L1L2ReportPage /></ProtectedRoute>} />
+            <Route path="/admin/access-management" element={<ProtectedRoute superAdminOnly><AccessManagementPage /></ProtectedRoute>} />
+            <Route path="/admin/supplier-portal-approvals" element={<ProtectedRoute page="supplier_portal_admin"><SupplierPortalApprovalsPage /></ProtectedRoute>} />
+            <Route path="/storeapproval" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
+            <Route path="/storeapproval/journal" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
+            <Route path="/storeapproval/balance" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
+            <Route path="/storeapproval/movements" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
+            <Route path="/storeapproval/request/:requestId" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
+          </Routes>
+        </div>
+        <Footer />
+      </div>
+    </AuthGate>
+  );
+}
+
+function AppShell() {
+  const { pathname } = useLocation();
+  if (pathname.startsWith("/supplier-portal")) {
+    return (
+      <Routes>
+        <Route path="/supplier-portal/signup" element={<SupplierSignupPage />} />
+        <Route path="/supplier-portal/login" element={<SupplierLoginPage />} />
+        <Route path="/supplier-portal" element={<SupplierPortalGate />} />
+        <Route path="/supplier-portal/dashboard" element={<SupplierPortalGate />} />
+      </Routes>
+    );
+  }
+  return <InternalApp />;
+}
+
 function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <AuthGate>
-          <div className="min-h-screen flex flex-col">
-            <div className="flex-1">
-              <Routes>
-                <Route path="/" element={<HomeRoute />} />
-                <Route path="/purchasing-plan" element={<ProtectedRoute page="purchasing_plan"><PurchasingPlanPage /></ProtectedRoute>} />
-                <Route path="/production-plan" element={<ProtectedRoute page="production_plan"><ProductionPlanPage /></ProtectedRoute>} />
-                <Route path="/production-confirmation" element={<ProtectedRoute page="production_confirmation"><ProductionConfirmationPage /></ProtectedRoute>} />
-                {/* Aug 2026 - admin-only test page for multi-Reporting-Point
-                    models (RP10/RP20/END style) - superAdminOnly, not part of
-                    PAGE_CATALOG, so it can never be granted to a regular user. */}
-                <Route path="/admin/production-confirmation-test" element={<ProtectedRoute superAdminOnly><ProductionConfirmationTestPage /></ProtectedRoute>} />
-                <Route path="/inventory" element={<ProtectedRoute page="inventory"><InventoryPage /></ProtectedRoute>} />
-                <Route path="/inventory/inter-plant-transfer" element={<ProtectedRoute page="stock_transfer"><StockTransferPage /></ProtectedRoute>} />
-                <Route path="/inventory/inter-plant-transfer/:stoId/delivery-note" element={<ProtectedRoute page="stock_transfer"><DeliveryNotePage /></ProtectedRoute>} />
-                <Route path="/inventory/inter-plant-transfer/:stoId/gate-pass" element={<ProtectedRoute page="stock_transfer"><GatePassPage /></ProtectedRoute>} />
-                <Route path="/purchasing-strategy/supplier-master" element={<ProtectedRoute page="supplier_master"><SupplierMasterPage /></ProtectedRoute>} />
-                <Route path="/purchasing-strategy/quota-allocation" element={<ProtectedRoute page="quota_allocation"><QuotaAllocationPage /></ProtectedRoute>} />
-                <Route path="/admin" element={<ProtectedRoute page="admin"><AdminPage /></ProtectedRoute>} />
-                <Route path="/admin/sap-write" element={<ProtectedRoute page="admin_sap_write"><SapWritePage /></ProtectedRoute>} />
-                <Route path="/admin/create-material" element={<ProtectedRoute page="admin_create_material"><CreateMaterialPage /></ProtectedRoute>} />
-                <Route path="/admin/l1-l2-report" element={<ProtectedRoute page="admin"><L1L2ReportPage /></ProtectedRoute>} />
-                <Route path="/admin/access-management" element={<ProtectedRoute superAdminOnly><AccessManagementPage /></ProtectedRoute>} />
-                <Route path="/storeapproval" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
-                <Route path="/storeapproval/journal" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
-                <Route path="/storeapproval/balance" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
-                <Route path="/storeapproval/movements" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
-                <Route path="/storeapproval/request/:requestId" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
-              </Routes>
-            </div>
-            <Footer />
-          </div>
-        </AuthGate>
-      </BrowserRouter>
+      <SupplierAuthProvider>
+        <BrowserRouter>
+          <AppShell />
+        </BrowserRouter>
+      </SupplierAuthProvider>
     </AuthProvider>
   );
 }

@@ -1,0 +1,45 @@
+{
+  "summary": "Full backend + browser E2E test of the new external Supplier Portal (Phase 1 boilerplate + Phase 2 onboarding/auth). Created /app/backend/tests/test_supplier_portal.py (25 pytest cases: signup multipart + validation, pending login, PO 403/503, admin list/approve/reject/document-download, logout, brute-force lockout, bcrypt/cookie hardening, internal Entra regression) -> 24/25 pass. Playwright covered: signup form with real file uploads (inline errors for missing files + short password, 'Request Submitted' screen), wrong-password inline error with NO Microsoft redirect, pending vendor -> Approval Pending screen, admin approvals page via synthetic vms_session (pending row w/ GST/PAN numbers, GST/PAN doc links return real 200 files with correct content-type, Approve moves row Pending->Approved, Reject-with-reason moves row to Rejected), approved vendor dashboard (company name, vendor code, email, 'SAP Connection Coming Soon' from expected 503), vendor logout clears supplier_token while leaving vms_session intact, logged-out /supplier-portal/dashboard -> supplier login (no Entra redirect), logged-out /inventory still shows 'Continue with Microsoft', supplier-only staff gets 'Access Denied' on /inventory, mobile 390px signup has no overflow. Two real defects found (brute-force lockout ineffective; rejection reason never surfaced to vendor).",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/supplier-portal/login", "issue": "Brute-force lockout never triggers. supplier_portal_service._attempts_key() uses request.client.host, which in this k8s/ingress setup is the rotating ingress pod IP (observed 10.232.131.130 and 10.232.132.143 alternating), so 7 consecutive failed logins for the same email produced two separate counter docs (count 3 and 4) and the 6th/7th attempt still returned 'Invalid email or password' instead of 'Too many failed attempts'. Reproduced twice (pytest TestBruteForceLockout + /tmp/probe_lockout.py). Secondary risk: because the key is shared-IP based, once it DOES hit 5 it would lock every vendor behind that ingress IP. Fix: key the counter on normalized email (optionally + X-Forwarded-For first hop) rather than request.client.host.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "POST /api/supplier-portal/signup", "issue": "No server-side format validation for email / gst_number / pan_number (accepts 'abc' as email and arbitrary GST/PAN strings). Email format is only enforced by the client-side input type=email."},
+      {"endpoint": "supplier_portal_login_attempts collection", "issue": "No TTL index / cleanup on failed-attempt docs; grows unbounded (ensure_indexes only creates the email unique index)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "SupplierPortalApprovalsPage", "issue": "GST / PAN document links have no data-testid (had to select by link text). Links themselves work (200, correct content-type).", "selector": "a[href*='/documents/gst']", "priority": "LOW"},
+      {"component": "SupplierPortalApprovalsPage reject dialog", "issue": "React a11y warning: 'Missing `Description` or `aria-describedby={undefined}` for {DialogContent}'.", "selector": "[data-testid='supplier-portal-approvals-reject-dialog']", "priority": "LOW"}
+    ],
+    "integration_issues": [
+      {"flow": "Admin rejects vendor -> vendor next login", "issue": "SPEC GAP: the stored rejection_reason is never shown to the vendor. supplier_portal_service.authenticate() raises for status=='rejected', so login returns 401 with the generic 'Your onboarding request was rejected. Please contact the purchasing team.' and the vendor never reaches the Rejected screen. As a result SupplierPendingPage's rejected branch (data-testid supplier-pending-rejected-icon) and the rejection_reason field in account_public_view are dead code. Requested behaviour was that the reason is shown back to the vendor on their next login attempt. Fix: allow rejected accounts to authenticate (session issued) and let the Pending/Rejected screen render status+rejection_reason, or return the reason in the 401 detail.", "affected_selectors": ["supplier-login-error", "supplier-pending-rejected-icon"]}
+    ],
+    "design_issues": [
+      {"screen": "Supplier Portal (signup/login/pending/dashboard)", "issues": ["No blocking issues - dark navy/amber theme is consistent, contrast is adequate, mobile 390px has zero horizontal overflow.", "Minor: the 'Approval Pending' screen renders at URL /supplier-portal/dashboard rather than a dedicated /supplier-portal/pending route (cosmetic/deep-link only)."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_supplier_portal.py", "/app/test_reports/pytest/supplier_portal_results.xml"],
+  "action_items": [
+    "Fix brute-force lockout keying (use email, not request.client.host - ingress IP rotates so lockout never fires).",
+    "Surface rejection_reason to the rejected vendor (currently stored + shown to admin only; vendor sees a generic 401 message and the rejected UI branch is unreachable).",
+    "Add data-testid to the GST/PAN document links on the approvals page.",
+    "Optional: add email/GST/PAN format validation server-side and a TTL index on supplier_portal_login_attempts."
+  ],
+  "critical_code_review_comments": [
+    "supplier_portal_service._attempts_key(email, ip): ip comes from request.client.host = ingress pod IP behind the k8s ingress; both wrong (splits counters, lockout never fires) and dangerous (shared-IP lockout of unrelated vendors). Key on email.",
+    "authenticate() rejecting status=='rejected' before token issue makes account_public_view's rejection_reason and SupplierPendingPage's rejected branch unreachable - either remove the dead code or change the flow.",
+    "server.py is 5505 lines; the supplier-portal route block should move into its own APIRouter module (also flagged in prior iterations).",
+    "Uvicorn --reload watches /app/backend/tests, so creating/editing a test file restarts the backend and produces ~30-60s of 502s. Consider excluding tests/ from the reload watch to keep test runs stable."
+  ],
+  "updated_files": ["/app/backend/tests/test_supplier_portal.py"],
+  "success_rate": {"backend": "96% (24/25 pytest)", "frontend": "100% of UI flows rendered/worked; 1 spec-level gap (rejection reason not shown to vendor)"},
+  "seed_data_creation": "Created and then deleted transient vendors (uitest_*, test_vendor_*, lock_*). DB left with only the pre-existing approved vendor1@testco.com (Test Vendor Co / S9999) plus cleared supplier_portal_login_attempts. Object-storage doc blobs for deleted accounts were not purged (orphaned files - low impact).",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "Internal admin synthetic Entra session cookie vms_session=_nNTeagpGyLWuMhFLKHF2qvr0lfmKm8P (supplier.approver.test@rampgroup.co.in, allowed_pages=[supplier_portal_admin]) - verified working. Approved vendor vendor1@testco.com / Passw0rd123 still present.",
+  "context_for_next_testing_agent": "Run `python -m pytest tests/test_supplier_portal.py` from /app/backend (25 cases). Note: writing files under /app/backend triggers a uvicorn reload -> transient 502s; wait ~25s after any file write before running the suite. Only failing test is TestBruteForceLockout (real bug, ingress-IP keying). Verified expected-by-design behaviours: GET /api/supplier-portal/purchase-orders returns 503 (SAP not wired) for approved vendors, GET /api/auth/me is public (200 authenticated:false) - do not assert 401 on it. Internal regression confirmed clean: logged-out internal /api/* = 401, supplier JWT does not authenticate internal routes, supplier-only staff gets 403/Access Denied on other pages, vendor logout leaves vms_session intact.",
+  "rca_of_the_issue": "Lockout: _attempts_key() concatenates the email with request.client.host. Behind the k8s ingress/Cloudflare, request.client.host is the ingress pod IP and there are multiple ingress replicas, so consecutive requests from the same real client alternate between IPs (verified in the supplier_portal_login_attempts collection: two docs for the same email with counts 3 and 4 after 7 attempts). The count therefore never reaches MAX_FAILED_ATTEMPTS=5 and locked_until stays None. Rejection reason: authenticate() raises SupplierPortalAuthError for rejected accounts, so no supplier_token is issued and the frontend's rejected-status screen (which is the only place rejection_reason is rendered) can never be reached."
+}

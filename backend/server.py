@@ -13,8 +13,8 @@ from typing import List, Optional
 
 import requests
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
-from fastapi.responses import PlainTextResponse
+from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, ValidationError
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
@@ -37,6 +37,7 @@ from sap_material_physical_client import (
     SAPMaterialPhysicalClient, SAPMaterialPhysicalError, PHYSICAL_FIELD_TO_SAP_PROPERTY, bulk_push_physical_to_sap,
 )
 from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplierAuthError, SAPSupplierNotConfiguredError
+from sap_po_client import SAPPurchaseOrderClient, SAPPurchaseOrderError, SAPPurchaseOrderNotConfiguredError
 from sap_price_spec_client import SAPPriceSpecClient, SAPPriceSpecError, bulk_push_erp_prices_to_sap
 from sap_supplier_invoice_client import SAPSupplierInvoiceClient, SAPSupplierInvoiceError
 from sap_cost_estimate_client import SAPCostEstimateClient, SAPCostEstimateError
@@ -70,6 +71,8 @@ import job_store
 import supplier_service
 import stock_transfer_service
 import company_cache_service
+import object_storage_service
+import supplier_portal_service
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -123,6 +126,18 @@ async def get_sap_integrations_doc():
 
 
 @app.on_event("startup")
+async def init_object_storage():
+    """Supplier Portal onboarding (GST/PAN uploads) needs this ready
+    before the first signup - failure here is logged, not fatal, since
+    put_object/get_object lazily re-init on their own first call too."""
+    try:
+        await asyncio.to_thread(object_storage_service.init_storage)
+        logger.info("Object storage initialized")
+    except Exception as e:
+        logger.error(f"Object storage init failed (will retry lazily on first use): {e}")
+
+
+@app.on_event("startup")
 async def configure_default_executor():
     """Raise asyncio.to_thread's shared default executor size well above
     Python's default (min(32, cpu_count+4)). This app funnels essentially
@@ -143,6 +158,7 @@ db = mongo_client[os.environ['DB_NAME']]
 job_store.ensure_indexes(db)
 auth_service.ensure_indexes(db)
 store_approval_service.ensure_indexes(db)
+supplier_portal_service.ensure_indexes(db)
 
 _recovered_jobs = job_store.recover_orphaned_jobs(
     db, "Interrupted by a backend restart/deploy while this step was running - please retry this action."
@@ -265,6 +281,14 @@ sap_material_physical_client = SAPMaterialPhysicalClient(
 
 sap_supplier_client = SAPSupplierClient(
     endpoint=os.environ['SAP_SOAP_SUPPLIER_ENDPOINT'],
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
+)
+
+# Supplier Portal Phase 1 (Aug 2026) - blocked on the user sharing/
+# activating the real SAP endpoint, see sap_po_client.py module docstring.
+sap_po_client = SAPPurchaseOrderClient(
+    endpoint=os.environ.get('SAP_SOAP_PO_ENDPOINT'),
     username=os.environ['SAP_SOAP_USERNAME'],
     password=os.environ['SAP_SOAP_PASSWORD'],
 )
@@ -5112,6 +5136,133 @@ async def post_stock_transfer_parse_nl(payload: StockTransferNLParseRequest):
         return await stock_transfer_service.parse_natural_language_transfer_request(payload.text, known_sites)
     except stock_transfer_service.StockTransferValidationError as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+
+# ==================== Supplier Portal (external vendors, Aug 2026) ====================
+# Own JWT-based auth (supplier_portal_service.py), separate from every
+# other route in this app - bypassed entirely by the Entra ID middleware
+# via EXTERNAL_PORTAL_PATH_PREFIXES in auth_service.py. Admin-side
+# approval routes (/api/admin/supplier-portal/*) are the opposite: Entra
+# ID-gated like every other internal page, via the new
+# "supplier_portal_admin" page permission.
+
+class SupplierLoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class SupplierRejectRequest(BaseModel):
+    reason: str = ""
+
+
+@api_router.post("/supplier-portal/signup")
+async def post_supplier_portal_signup(
+    vendor_code: str = Form(...),
+    company_name: str = Form(...),
+    email: str = Form(...),
+    password: str = Form(...),
+    gst_number: str = Form(...),
+    pan_number: str = Form(...),
+    gst_doc: UploadFile = File(...),
+    pan_doc: UploadFile = File(...),
+):
+    gst_bytes = await gst_doc.read()
+    pan_bytes = await pan_doc.read()
+    try:
+        account = await asyncio.to_thread(
+            supplier_portal_service.signup, db, vendor_code, company_name, email, password,
+            gst_number, pan_number,
+            gst_bytes, gst_doc.filename, gst_doc.content_type,
+            pan_bytes, pan_doc.filename, pan_doc.content_type,
+        )
+    except supplier_portal_service.SupplierPortalValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "pending_approval", "account_id": account["_id"]}
+
+
+@api_router.post("/supplier-portal/login")
+async def post_supplier_portal_login(payload: SupplierLoginRequest, response: Response, request: Request):
+    try:
+        account = await asyncio.to_thread(supplier_portal_service.authenticate, db, payload.email, payload.password)
+    except supplier_portal_service.SupplierPortalAuthError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    token = supplier_portal_service.create_access_token(account["_id"], account["email"])
+    response.set_cookie(
+        supplier_portal_service.SESSION_COOKIE_NAME, token, httponly=True, secure=True, samesite="lax",
+        max_age=int(supplier_portal_service.SESSION_TTL.total_seconds()), path="/",
+    )
+    return supplier_portal_service.account_public_view(account)
+
+
+@api_router.post("/supplier-portal/logout")
+async def post_supplier_portal_logout(response: Response):
+    response.delete_cookie(supplier_portal_service.SESSION_COOKIE_NAME, path="/")
+    return {"ok": True}
+
+
+@api_router.get("/supplier-portal/me")
+async def get_supplier_portal_me(request: Request):
+    account = await asyncio.to_thread(supplier_portal_service.get_current_account, request, db)
+    if not account:
+        return {"authenticated": False}
+    return supplier_portal_service.account_public_view(account)
+
+
+def _require_supplier_account(request: Request) -> dict:
+    account = supplier_portal_service.get_current_account(request, db)
+    if not account:
+        raise HTTPException(status_code=401, detail="Login required")
+    return account
+
+
+@api_router.get("/supplier-portal/purchase-orders")
+async def get_supplier_portal_purchase_orders(request: Request):
+    account = await asyncio.to_thread(_require_supplier_account, request)
+    if account.get("status") != "approved":
+        raise HTTPException(status_code=403, detail="Your account is pending admin approval")
+    try:
+        pos = await asyncio.to_thread(sap_po_client.get_open_pos_for_vendor, account["vendor_code"])
+    except SAPPurchaseOrderNotConfiguredError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except SAPPurchaseOrderError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"purchase_orders": pos}
+
+
+@api_router.get("/admin/supplier-portal/accounts")
+async def get_admin_supplier_portal_accounts(status: str = Query(None)):
+    return {"accounts": await asyncio.to_thread(supplier_portal_service.list_accounts, db, status)}
+
+
+@api_router.post("/admin/supplier-portal/{account_id}/approve")
+async def post_admin_supplier_portal_approve(account_id: str, request: Request):
+    approver = (request.state.user.get("name") or request.state.user.get("email") or "Unknown").strip()
+    try:
+        await asyncio.to_thread(supplier_portal_service.approve_account, db, account_id, approver)
+    except supplier_portal_service.SupplierPortalNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"status": "approved"}
+
+
+@api_router.post("/admin/supplier-portal/{account_id}/reject")
+async def post_admin_supplier_portal_reject(account_id: str, payload: SupplierRejectRequest, request: Request):
+    approver = (request.state.user.get("name") or request.state.user.get("email") or "Unknown").strip()
+    try:
+        await asyncio.to_thread(supplier_portal_service.reject_account, db, account_id, approver, payload.reason)
+    except supplier_portal_service.SupplierPortalNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"status": "rejected"}
+
+
+@api_router.get("/admin/supplier-portal/{account_id}/documents/{doc_type}")
+async def get_admin_supplier_portal_document(account_id: str, doc_type: str):
+    if doc_type not in ("gst", "pan"):
+        raise HTTPException(status_code=400, detail="Invalid document type")
+    try:
+        data, content_type, filename = await asyncio.to_thread(supplier_portal_service.get_document, db, account_id, doc_type)
+    except supplier_portal_service.SupplierPortalNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return Response(content=data, media_type=content_type, headers={"Content-Disposition": f'inline; filename="{filename}"'})
 
 
 app.include_router(api_router)

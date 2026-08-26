@@ -40,6 +40,7 @@ export const PAGE_LABELS = {
   admin_sap_write: "SAP Write (Admin)",
   admin_create_material: "Create Material (Admin)",
   store_approval: "Goods Issue",
+  supplier_portal_admin: "Supplier Portal Approvals",
 };
 
 const AuthContext = createContext(null);

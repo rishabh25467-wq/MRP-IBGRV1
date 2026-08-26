@@ -81,6 +81,11 @@ PAGE_CATALOG = [
     # Stock Overview automatically also got Inter Plant Stock Transfer,
     # with no way to grant one without the other.
     {"key": "stock_transfer", "label": "Inter Plant Stock Transfer"},
+    # Aug 2026: internal staff review/approval of external vendor
+    # signups + (later phases) GRN approval for the new Supplier Portal.
+    # Distinct from the Supplier Portal itself, which is NOT an Entra ID
+    # page at all - see EXTERNAL_PORTAL_PATH_PREFIXES below.
+    {"key": "supplier_portal_admin", "label": "Supplier Portal Approvals"},
 ]
 PAGE_KEYS = {p["key"] for p in PAGE_CATALOG}
 
@@ -131,12 +136,24 @@ PAGE_ROUTE_RULES = [
     # same pattern as the /journal override right above.
     ("/api/store-requests/known-sites", {"store_approval", "stock_transfer"}),
     ("/api/store-requests", {"store_approval"}),
+    # Aug 2026: internal approval side of the new Supplier Portal
+    # (Entra ID-authenticated staff, distinct from the JWT-authenticated
+    # external supplier routes below).
+    ("/api/admin/supplier-portal", {"supplier_portal_admin"}),
 ]
 
 # Paths the auth middleware never gates - login must stay reachable while
 # logged out, and /auth/me must never itself 401 (the frontend uses it to
 # find out WHETHER it's logged in).
 PUBLIC_PATHS = {"/api/", "/api/auth/login", "/api/auth/callback", "/api/auth/me", "/api/version"}
+
+# Aug 2026: the external Supplier Portal is a completely separate user
+# base (vendors, not Azure AD identities) with its OWN JWT-based
+# auth/session (see supplier_portal_service.py) - every route under this
+# prefix enforces its own auth internally and must never be gated by the
+# Entra ID middleware below (would 401 every request since suppliers
+# have no `vms_session` cookie at all).
+EXTERNAL_PORTAL_PATH_PREFIXES = ("/api/supplier-portal/",)
 
 
 def ensure_indexes(db) -> None:
@@ -278,6 +295,7 @@ def create_auth_middleware(db):
             request.method == "OPTIONS"
             or not path.startswith("/api/")
             or path in PUBLIC_PATHS
+            or path.startswith(EXTERNAL_PORTAL_PATH_PREFIXES)
         ):
             return await call_next(request)
 
