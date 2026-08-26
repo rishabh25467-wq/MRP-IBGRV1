@@ -1484,6 +1484,11 @@ const CreateOrderTab = ({ actorName }) => {
                 Product ID not recognized in SAP - pick a suggestion above or check the spelling.
               </p>
             )}
+            {sosChecked && !sosLoading && materialUuid && sosOptions.length === 0 && (
+              <p className="text-xs text-[#B54708] mt-1" data-testid="no-production-model-warning">
+                Product recognized in SAP, but no Production Model/BOM is set up for it yet at any Site - set one up in SAP first, or type a Site manually below if you know one already exists.
+              </p>
+            )}
             {sosCheckFailed && (
               <p className="text-xs text-[#B54708] mt-1" data-testid="product-lookup-failed-warning">
                 Could not verify this Product ID with SAP just now (network hiccup) - you can still proceed, or blur the field again to retry.

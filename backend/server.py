@@ -2727,6 +2727,20 @@ async def get_source_of_supply_options(material_id: str, site_id: str = None):
     doc = db["component_master"].find_one({"_id": material_id}) or db["bom_node_cache"].find_one({"_id": material_id})
     material_uuid = (doc or {}).get("product_uuid")
     base_uom = (doc or {}).get("base_uom")
+    if not material_uuid:
+        # Aug 2026 fix (real incident - a just-created SAP Material, our
+        # own component_master/bom_node_cache caches only get a
+        # product_uuid via periodic syncs or a prior BOM explosion, so a
+        # brand new material silently returned zero options/no Site
+        # autofill, looking like SAP data "couldn't be fetched"). Live
+        # fallback, same call already used by the Inventory page's deep
+        # lookup - resolve directly from SAP instead of giving up.
+        try:
+            material_uuid = await asyncio.to_thread(sap_material_client.resolve_uuid, material_id)
+        except SAPMaterialError:
+            material_uuid = None
+        if material_uuid:
+            db["component_master"].update_one({"_id": material_id}, {"$set": {"product_uuid": material_uuid}}, upsert=True)
     if base_uom is None:
         try:
             sap_result = await asyncio.to_thread(sap_material_physical_client.get_physical_attributes, material_id)
