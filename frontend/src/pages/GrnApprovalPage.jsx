@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import "@/App.css";
 import axios from "axios";
-import { MagnifyingGlass, CheckCircle, XCircle, Truck, PlugsConnected } from "@phosphor-icons/react";
+import { MagnifyingGlass, CheckCircle, XCircle, Truck, PlugsConnected, Shield } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -9,6 +9,7 @@ import { Toaster, toast } from "@/components/ui/sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { NavTabs } from "@/components/NavTabs";
+import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -95,8 +96,23 @@ export default function GrnApprovalPage() {
 
   return (
     <div className="min-h-screen bg-[#F5F6F7] font-sans" data-testid="grn-approval-page">
-      <NavTabs />
       <Toaster position="top-right" richColors />
+      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
+        <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
+          <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
+            <Shield size={18} weight="fill" className="text-white" />
+          </div>
+          <div className="flex flex-col leading-tight">
+            <span className="font-heading text-[16px] font-bold text-white tracking-tight">Materials Hub</span>
+            <span className="font-sans text-[12px] text-white/70 hidden sm:inline">GRN Approval</span>
+          </div>
+        </div>
+        <div className="w-px h-7 bg-white/25 shrink-0" />
+        <div className="flex items-center gap-3 flex-1 justify-start min-w-0">
+          <NavTabs />
+        </div>
+        <SapConnectionStatus />
+      </header>
       <div className="max-w-4xl mx-auto p-4 md:p-6">
         <div className="flex items-center gap-2 mb-1">
           <Truck size={18} weight="fill" className="text-[#0076CC]" />

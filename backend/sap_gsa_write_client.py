@@ -15,21 +15,25 @@ cannot write. The write/maintain operation is
 <PurchaseOrderReference><BusinessTransactionDocumentReference><ID> (PO
 ID) + <ItemID> (PO Item ID) + <TypeCode>001</TypeCode>.
 
-BLOCKED as of Aug 2026, TWO separate things needed before go-live:
-  1. The real Manage/write GSA endpoint URL (SAP_SOAP_GSA_WRITE_ENDPOINT,
-     distinct from SAP_SOAP_GSA_ENDPOINT above - left blank in .env).
-  2. The `_EMERGENTBOM` technical user granted the "Maintain goods and
-     service acknowledgement" service operation (it currently only has
-     "Find", per sap_gsa_client.py's docstring).
-  3. STILL OPEN/UNVERIFIED even once the above two land: whether this
-     Item node accepts an explicit stock-status override at all, or
-     whether routing new stock into Quality Inspection is governed
-     entirely by the Product's own Inspection Plan configuration in SAP
-     (user confirmed "Quality Inspection stock" = TargetInventoryStockStatusCode="1"
-     is the intent - but that field lives on the sibling Goods Movement
-     schema, not confirmed present here). MUST be verified against the
-     real WSDL/a sandbox PO before this goes live - do not trust the
-     envelope below blindly, it is best-effort from public SAP docs only.
+BLOCKED as of Aug 2026, ONE thing left before go-live:
+  - Live-verified Aug 26 2026: SAP_SOAP_GSA_WRITE_ENDPOINT is now configured and
+    reachable (confirmed via a GET connectivity probe - HTTP 415, the
+    same "endpoint exists, POST a body" signature as every other live
+    SOAP client in this app). NOT yet POSTed to for real - deliberately
+    held back pending the user's explicit go-ahead, since this writes a
+    real Goods Receipt into their LIVE production SAP tenant (same SAP
+    system regardless of preview/production app environment) - a wrong
+    field name here does not fail safely, it either errors or posts bad
+    data against a real Purchase Order.
+  - STILL OPEN/UNVERIFIED: whether this Item node accepts an explicit
+    stock-status override at all, or whether routing new stock into
+    Quality Inspection is governed entirely by the Product's own
+    Inspection Plan configuration in SAP (user confirmed "Quality
+    Inspection stock" = TargetInventoryStockStatusCode="1" is the
+    intent - but that field lives on the sibling Goods Movement schema,
+    not confirmed present here). MUST be verified against a real GRN
+    approval (ideally against a test/low-risk PO the user nominates)
+    before this is trusted for every-day use.
 
 post_goods_receipt raises SAPGSAWriteNotConfiguredError until
 SAP_SOAP_GSA_WRITE_ENDPOINT is set - the ONLY caller is
@@ -43,9 +47,14 @@ from requests.auth import HTTPBasicAuth
 
 from sap_rate_limiter import sap_semaphore
 
-# TODO: confirm the exact SOAPAction string against the real WSDL once
-# the write endpoint + technical user authorization are granted.
-SOAP_ACTION = "http://sap.com/xi/SAPGlobal20/Global/ManageGoodsAndServiceAcknowledgementIn/GSABundleMaintainRequestConfirmation_sync"
+# Namespace confirmed via SAP help docs (help.sap.com PSM_ISI_R_II_SRM_GSA_MBO):
+# GSA services live under http://sap.com/xi/A1S/Global, NOT the
+# SAPGlobal20 namespace used by the Purchase Order query service.
+GSA_NAMESPACE = "http://sap.com/xi/A1S/Global"
+# TODO: confirm the exact SOAPAction string against the real WSDL if the
+# live tenant rejects an empty SOAPAction (every other client in this
+# app that has been live-tested so far - PO query - accepts "").
+SOAP_ACTION = ""
 
 
 class SAPGSAWriteError(Exception):
@@ -73,7 +82,7 @@ _ITEM_TEMPLATE = """  <Item>
 _ENVELOPE_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
 <soapenv:Body>
-<n0:GSABundleMaintainRequest_sync xmlns:n0="http://sap.com/xi/SAPGlobal20/Global">
+<n0:GSABundleMaintainRequest_sync xmlns:n0="{namespace}">
  <BasicMessageHeader/>
  <GoodsAndServiceAcknowledgement actionCode="01">
   <BusinessTransactionDocumentTypeCode>282</BusinessTransactionDocumentTypeCode>
