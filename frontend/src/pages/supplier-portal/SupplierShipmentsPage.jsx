@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { Buildings, SignOut, CheckCircle, XCircle, Clock, ArrowLeft, PencilSimple, Plus, X, PlugsConnected } from "@phosphor-icons/react";
+import { Buildings, SignOut, CheckCircle, XCircle, Clock, ArrowLeft, PencilSimple, Plus, X, PlugsConnected, MagnifyingGlass } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -39,6 +39,7 @@ export default function SupplierShipmentsPage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [search, setSearch] = useState("");
 
   const load = async () => {
     try {
@@ -71,17 +72,19 @@ export default function SupplierShipmentsPage() {
   const filteredShipments = useMemo(() => {
     const from = dateFrom ? new Date(`${dateFrom}T00:00:00`) : null;
     const to = dateTo ? new Date(`${dateTo}T23:59:59`) : null;
+    const q = search.trim().toLowerCase();
     return shipments.filter((s) => {
       if (statusFilter !== "all" && s.status !== statusFilter) return false;
       const created = new Date(s.created_at);
       if (from && created < from) return false;
       if (to && created > to) return false;
+      if (q && !s._id.toLowerCase().includes(q) && !s.items.some((it) => (it.po_number || "").toLowerCase().includes(q))) return false;
       return true;
     });
-  }, [shipments, statusFilter, dateFrom, dateTo]);
+  }, [shipments, statusFilter, dateFrom, dateTo, search]);
 
-  const clearFilters = () => { setStatusFilter("all"); setDateFrom(""); setDateTo(""); };
-  const filtersActive = statusFilter !== "all" || !!dateFrom || !!dateTo;
+  const clearFilters = () => { setStatusFilter("all"); setDateFrom(""); setDateTo(""); setSearch(""); };
+  const filtersActive = statusFilter !== "all" || !!dateFrom || !!dateTo || !!search;
 
   const addableItems = useMemo(() => {
     if (!editing) return [];
@@ -146,6 +149,16 @@ export default function SupplierShipmentsPage() {
         <p className="text-sm text-[#5B738B] mt-1">You can edit an "In Transit" shipment's contents anytime before it's received and posted to SAP - once approved, it's locked.</p>
 
         <div className="mt-4 flex items-center gap-2 flex-wrap" data-testid="supplier-shipments-filters">
+          <div className="relative">
+            <MagnifyingGlass size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#5B738B]" />
+            <Input
+              placeholder="Search doc code or PO number..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-8 h-9 w-56 rounded-sm border-[#CBD3DB] text-sm"
+              data-testid="supplier-shipments-search-input"
+            />
+          </div>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
             <SelectTrigger className="w-40 h-9 rounded-sm border-[#CBD3DB] bg-white text-sm" data-testid="supplier-shipments-status-filter">
               <SelectValue placeholder="Status" />

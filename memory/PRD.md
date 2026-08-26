@@ -1,3 +1,8 @@
+- **Shipment Search** (2026-08-28): added a search box next to the status/date filters on the Shipments
+  page - matches on doc code (`_id`) or any item's `po_number`, combines with the existing status/date
+  filters and the "N of M shipments" counter/Clear button. Client-side only, no backend change.
+
+
 ## FEATURE BATCH #2: Bulk Cart Add + Shipment History Filters (2026-08-28)
 
 - **Bulk Cart Add**: a "Select all N items" link appears once per PO group in the dashboard table
