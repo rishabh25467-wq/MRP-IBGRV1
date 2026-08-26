@@ -10,6 +10,7 @@ import { useSupplierAuth } from "@/contexts/SupplierAuthContext";
 
 const SHIPMENT_STATUS_BADGE = {
   in_transit: { label: "In Transit", className: "bg-[#E3A008]/15 text-[#8A6116]", icon: Clock },
+  discrepancy: { label: "Discrepancy", className: "bg-[#E02424]/15 text-[#B91C1C]", icon: XCircle },
   approved: { label: "Received", className: "bg-[#10B981]/15 text-[#0B7A56]", icon: CheckCircle },
   rejected: { label: "Rejected", className: "bg-[#E02424]/10 text-[#B91C1C]", icon: XCircle },
 };
@@ -168,6 +169,7 @@ export default function SupplierShipmentsPage() {
             <SelectContent>
               <SelectItem value="all" data-testid="supplier-shipments-status-filter-all">All Statuses</SelectItem>
               <SelectItem value="in_transit" data-testid="supplier-shipments-status-filter-in_transit">In Transit</SelectItem>
+              <SelectItem value="discrepancy" data-testid="supplier-shipments-status-filter-discrepancy">Discrepancy</SelectItem>
               <SelectItem value="approved" data-testid="supplier-shipments-status-filter-approved">Received</SelectItem>
               <SelectItem value="rejected" data-testid="supplier-shipments-status-filter-rejected">Rejected</SelectItem>
             </SelectContent>
@@ -225,6 +227,9 @@ export default function SupplierShipmentsPage() {
                         {s.status === "rejected" && s.rejection_reason && (
                           <div className="text-xs text-[#B91C1C] mt-1">{s.rejection_reason}</div>
                         )}
+                        {s.status === "discrepancy" && s.discrepancy_reason && (
+                          <div className="text-xs text-[#B91C1C] mt-1">{s.discrepancy_reason}</div>
+                        )}
                         {s.status === "approved" && (
                           <div className="text-xs mt-1 flex items-center gap-1" style={{ color: s.sap_sync_status === "posted" ? "#0B7A56" : "#1D4ED8" }}>
                             <PlugsConnected size={11} /> {s.sap_sync_status === "posted" ? "Posted to SAP" : "SAP posting pending"}
@@ -232,7 +237,7 @@ export default function SupplierShipmentsPage() {
                         )}
                       </td>
                       <td className="px-3 py-2 text-right">
-                        {s.status === "in_transit" && (
+                        {(s.status === "in_transit" || s.status === "discrepancy") && (
                           <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); openEdit(s); }} className="rounded-sm" data-testid={`supplier-shipment-edit-button-${s._id}`}>
                             <PencilSimple size={12} className="mr-1" /> Edit
                           </Button>
@@ -352,6 +357,16 @@ export default function SupplierShipmentsPage() {
           {detailShipment?.status === "rejected" && detailShipment?.rejection_reason && (
             <div className="text-sm text-[#B91C1C] bg-[#E02424]/10 border border-[#E02424]/30 rounded-sm px-3 py-2" data-testid="supplier-shipment-detail-rejection-reason">
               Reason: {detailShipment.rejection_reason}
+            </div>
+          )}
+
+          {detailShipment?.status === "discrepancy" && detailShipment?.discrepancy_reason && (
+            <div className="text-sm text-[#B91C1C] bg-[#E02424]/10 border border-[#E02424]/30 rounded-sm px-3 py-2" data-testid="supplier-shipment-detail-discrepancy-reason">
+              Discrepancy: {detailShipment.discrepancy_reason}
+              <div className="text-xs mt-1">
+                Flagged items: {(detailShipment.discrepancy_items || []).map((it) => `${it.po_number}/${it.item_number}`).join(", ")}
+              </div>
+              <div className="text-xs mt-1 text-[#5B738B]">Please edit this shipment to fix the mismatch - it will automatically go back to "In Transit" for re-review.</div>
             </div>
           )}
 

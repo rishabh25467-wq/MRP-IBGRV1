@@ -41,6 +41,7 @@ supplier_shipment_service.approve_shipment(), which treats that as a
 "queued, will sync once SAP is connected" state rather than a hard
 failure of the internal approval itself."""
 from xml.sax.saxutils import escape
+import re
 
 import requests
 from requests.auth import HTTPBasicAuth
@@ -63,6 +64,17 @@ class SAPGSAWriteError(Exception):
 
 class SAPGSAWriteNotConfiguredError(SAPGSAWriteError):
     pass
+
+
+def _extract_fault_message(raw_xml: str) -> str:
+    """SAP's SOAP faults bury the one human-readable line inside
+    <faultstring>...</faultstring> behind a wall of namespace boilerplate
+    - surface just that (falls back to a short truncated raw snippet if
+    the shape doesn't match, e.g. a non-SOAP error page)."""
+    match = re.search(r"<faultstring[^>]*>(.*?)</faultstring>", raw_xml, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return raw_xml[:300]
 
 
 _ITEM_TEMPLATE = """  <Item>
@@ -124,5 +136,5 @@ class SAPGSAWriteClient:
         except requests.exceptions.RequestException as e:
             raise SAPGSAWriteError(f"SAP Goods Receipt service unreachable: {e}")
         if resp.status_code != 200:
-            raise SAPGSAWriteError(f"SAP rejected the Goods Receipt (HTTP {resp.status_code}): {resp.text[:500]}")
+            raise SAPGSAWriteError(f"SAP rejected the Goods Receipt (HTTP {resp.status_code}): {_extract_fault_message(resp.text)}")
         return {"ok": True, "raw_xml": resp.text[:2000]}

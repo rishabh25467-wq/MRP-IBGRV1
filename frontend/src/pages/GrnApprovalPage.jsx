@@ -1,13 +1,16 @@
 import { useState, useEffect } from "react";
 import "@/App.css";
 import axios from "axios";
-import { MagnifyingGlass, CheckCircle, XCircle, Truck, PlugsConnected, Shield } from "@phosphor-icons/react";
+import { MagnifyingGlass, CheckCircle, XCircle, Truck, PlugsConnected, Shield, WarningCircle, ArrowsClockwise } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 
@@ -16,6 +19,7 @@ const API = `${BACKEND_URL}/api`;
 
 const STATUS_BADGE = {
   in_transit: { label: "In Transit", className: "bg-[#E3A008]/15 text-[#8A6116] rounded-sm" },
+  discrepancy: { label: "Discrepancy", className: "bg-[#E02424]/15 text-[#B91C1C] rounded-sm" },
   approved: { label: "Received", className: "bg-[#10B981]/15 text-[#0B7A56] rounded-sm" },
   rejected: { label: "Rejected", className: "bg-[#E02424]/10 text-[#B91C1C] rounded-sm" },
 };
@@ -30,6 +34,17 @@ export default function GrnApprovalPage() {
   const [rejectReason, setRejectReason] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const [sites, setSites] = useState([]);
+  const [warehouses, setWarehouses] = useState([]);
+  const [supplierDocNum, setSupplierDocNum] = useState("");
+  const [siteId, setSiteId] = useState("");
+  const [warehouseId, setWarehouseId] = useState("");
+  const [warehousesLoading, setWarehousesLoading] = useState(false);
+
+  const [discOpen, setDiscOpen] = useState(false);
+  const [discReason, setDiscReason] = useState("");
+  const [discItems, setDiscItems] = useState({});
+
   const loadPending = async () => {
     try {
       const { data } = await axios.get(`${API}/admin/grn/shipments`, { params: { status: "in_transit" } });
@@ -39,9 +54,40 @@ export default function GrnApprovalPage() {
     }
   };
 
+  const loadSites = async () => {
+    try {
+      const { data } = await axios.get(`${API}/admin/grn/sites`);
+      setSites(data.sites || []);
+      if ((data.sites || []).length === 1) setSiteId(data.sites[0]);
+    } catch (err) {
+      toast.error("Could not load sites", { description: err?.response?.data?.detail || err.message });
+    }
+  };
+
   useEffect(() => {
     loadPending();
+    loadSites();
   }, []);
+
+  useEffect(() => {
+    if (!siteId) {
+      setWarehouses([]);
+      setWarehouseId("");
+      return;
+    }
+    setWarehousesLoading(true);
+    setWarehouseId("");
+    axios.get(`${API}/admin/grn/warehouses/${siteId}`)
+      .then(({ data }) => setWarehouses(data.warehouses || []))
+      .catch((err) => toast.error("Could not load warehouses", { description: err?.response?.data?.detail || err.message }))
+      .finally(() => setWarehousesLoading(false));
+  }, [siteId]);
+
+  const resetApprovalForm = () => {
+    setSupplierDocNum("");
+    setWarehouseId("");
+    if (sites.length !== 1) setSiteId("");
+  };
 
   const lookup = async (targetCode) => {
     const value = (targetCode || code).trim();
@@ -53,6 +99,7 @@ export default function GrnApprovalPage() {
       const { data } = await axios.get(`${API}/admin/grn/lookup/${value}`);
       setShipment(data);
       setCode(value);
+      resetApprovalForm();
     } catch (err) {
       setSearchError(err?.response?.data?.detail || "No shipment found for this code");
     } finally {
@@ -61,18 +108,43 @@ export default function GrnApprovalPage() {
   };
 
   const approve = async () => {
+    if (!siteId || !warehouseId) {
+      toast.error("Select a Site and Warehouse before approving");
+      return;
+    }
     setBusy(true);
     try {
-      const { data } = await axios.post(`${API}/admin/grn/${shipment._id}/approve`);
+      const { data } = await axios.post(`${API}/admin/grn/${shipment._id}/approve`, {
+        supplier_doc_num: supplierDocNum, site_id: siteId, warehouse_id: warehouseId,
+      });
       setShipment(data);
-      if (data.sap_sync_status === "posted") {
-        toast.success("Goods Receipt posted to SAP");
+      if (data.sap_sync_status === "posted" && data.sap_movement_status === "posted") {
+        toast.success(`Goods Receipt posted + stock moved to ${data.site_id}/${data.warehouse_id}`);
+      } else if (data.sap_sync_status === "posted") {
+        toast.warning("Goods Receipt posted to SAP - warehouse movement still pending", { description: JSON.stringify(data.sap_movement_result) });
       } else {
         toast.warning("Approved internally - SAP posting is pending", { description: data.sap_gr_result?.reason });
       }
       loadPending();
     } catch (err) {
       toast.error("Approval failed", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const retryMovement = async () => {
+    setBusy(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/grn/${shipment._id}/retry-movement`);
+      setShipment(data);
+      if (data.sap_movement_status === "posted") {
+        toast.success(`Stock moved to ${data.site_id}/${data.warehouse_id}`);
+      } else {
+        toast.warning("Movement still pending", { description: JSON.stringify(data.sap_movement_result) });
+      }
+    } catch (err) {
+      toast.error("Retry failed", { description: err?.response?.data?.detail || err.message });
     } finally {
       setBusy(false);
     }
@@ -93,6 +165,48 @@ export default function GrnApprovalPage() {
       setBusy(false);
     }
   };
+
+  const openDiscrepancy = () => {
+    setDiscReason("");
+    setDiscItems({});
+    setDiscOpen(true);
+  };
+
+  const toggleDiscItem = (poNumber, itemNumber) => {
+    const key = `${poNumber}::${itemNumber}`;
+    setDiscItems((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const submitDiscrepancy = async () => {
+    const items = Object.entries(discItems)
+      .filter(([, checked]) => checked)
+      .map(([key]) => {
+        const [po_number, item_number] = key.split("::");
+        return { po_number, item_number };
+      });
+    if (!discReason.trim()) {
+      toast.error("A discrepancy reason is required");
+      return;
+    }
+    if (items.length === 0) {
+      toast.error("Select at least one mismatched line item");
+      return;
+    }
+    setBusy(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/grn/${shipment._id}/discrepancy`, { reason: discReason, items });
+      setShipment(data);
+      setDiscOpen(false);
+      toast.success("Discrepancy logged - shipment parked until the vendor edits it or you override");
+      loadPending();
+    } catch (err) {
+      toast.error("Could not log discrepancy", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const isActionable = shipment && (shipment.status === "in_transit" || shipment.status === "discrepancy");
 
   return (
     <div className="min-h-screen bg-[#F5F6F7] font-sans" data-testid="grn-approval-page">
@@ -143,8 +257,19 @@ export default function GrnApprovalPage() {
                 <div className="text-lg font-data font-bold text-[#0076CC]">{shipment._id}</div>
                 <div className="text-sm text-[#5B738B]">{shipment.company_name} ({shipment.vendor_code}) · {[...new Set(shipment.items.map((it) => it.po_number))].map((p) => `PO ${p}`).join(", ")}</div>
               </div>
-              <Badge className={STATUS_BADGE[shipment.status].className}>{STATUS_BADGE[shipment.status].label}</Badge>
+              <Badge className={STATUS_BADGE[shipment.status].className} data-testid="grn-status-badge">{STATUS_BADGE[shipment.status].label}</Badge>
             </div>
+
+            {shipment.status === "discrepancy" && (
+              <div className="mt-4 text-sm px-3 py-2.5 rounded-sm border border-[#E02424]/30 bg-[#E02424]/5 text-[#B91C1C]" data-testid="grn-discrepancy-banner">
+                <div className="flex items-center gap-2 font-semibold"><WarningCircle size={16} weight="fill" /> Discrepancy logged by {shipment.discrepancy_marked_by}</div>
+                <div className="mt-1">{shipment.discrepancy_reason}</div>
+                <div className="mt-1 text-xs">
+                  Flagged items: {(shipment.discrepancy_items || []).map((it) => `${it.po_number}/${it.item_number}`).join(", ")}
+                </div>
+                <div className="mt-1 text-xs text-[#5B738B]">Ask the vendor to edit this shipment - saving their edit will automatically bring it back to "In Transit" for re-review.</div>
+              </div>
+            )}
 
             <table className="w-full text-sm mt-4 border-collapse">
               <thead className="text-[#5B738B] text-xs uppercase">
@@ -169,26 +294,88 @@ export default function GrnApprovalPage() {
               </tbody>
             </table>
 
-            {shipment.status === "in_transit" && (
-              <div className="flex gap-2 mt-5">
-                <Button onClick={approve} disabled={busy} className="rounded-sm bg-[#10B981] hover:bg-[#0B7A56] transition-colors duration-150" data-testid="grn-approve-button">
-                  <CheckCircle size={14} className="mr-1" /> Approve &amp; Post to SAP
-                </Button>
-                <Button variant="outline" onClick={() => setRejectOpen(true)} className="rounded-sm border-[#E02424]/40 text-[#B91C1C]" data-testid="grn-reject-button">
-                  <XCircle size={14} className="mr-1" /> Reject
-                </Button>
+            {isActionable && (
+              <div className="mt-5 border-t border-[#CBD3DB] pt-4 space-y-3">
+                <div className="grid sm:grid-cols-3 gap-3">
+                  <div>
+                    <Label className="text-xs text-[#5B738B]">Supplier Invoice Number</Label>
+                    <Input
+                      placeholder="e.g. INV-4521"
+                      value={supplierDocNum}
+                      onChange={(e) => setSupplierDocNum(e.target.value)}
+                      className="rounded-sm border-[#CBD3DB] mt-1"
+                      data-testid="grn-supplier-doc-num-input"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs text-[#5B738B]">Site</Label>
+                    <Select value={siteId} onValueChange={setSiteId} disabled={sites.length === 1}>
+                      <SelectTrigger className="rounded-sm border-[#CBD3DB] mt-1" data-testid="grn-site-select">
+                        <SelectValue placeholder="Select site" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {sites.map((s) => (<SelectItem key={s} value={s} data-testid={`grn-site-option-${s}`}>{s}</SelectItem>))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-[#5B738B]">Warehouse</Label>
+                    <Select value={warehouseId} onValueChange={setWarehouseId} disabled={!siteId || warehousesLoading}>
+                      <SelectTrigger className="rounded-sm border-[#CBD3DB] mt-1" data-testid="grn-warehouse-select">
+                        <SelectValue placeholder={warehousesLoading ? "Loading..." : "Select warehouse"} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {warehouses.map((w) => (
+                          <SelectItem key={w.warehouse_id} value={w.warehouse_id} data-testid={`grn-warehouse-option-${w.warehouse_id}`}>
+                            {w.warehouse_name || w.warehouse_id} ({w.warehouse_id})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <div className="flex gap-2">
+                  <Button onClick={approve} disabled={busy} className="rounded-sm bg-[#10B981] hover:bg-[#0B7A56] transition-colors duration-150" data-testid="grn-approve-button">
+                    <CheckCircle size={14} className="mr-1" /> Approve &amp; Post to SAP
+                  </Button>
+                  <Button variant="outline" onClick={() => setRejectOpen(true)} className="rounded-sm border-[#E02424]/40 text-[#B91C1C]" data-testid="grn-reject-button">
+                    <XCircle size={14} className="mr-1" /> Reject
+                  </Button>
+                  {shipment.status === "in_transit" && (
+                    <Button variant="outline" onClick={openDiscrepancy} className="rounded-sm border-[#E3A008]/50 text-[#8A6116]" data-testid="grn-mark-discrepancy-button">
+                      <WarningCircle size={14} className="mr-1" /> Mark Discrepancy
+                    </Button>
+                  )}
+                </div>
               </div>
             )}
 
             {shipment.status === "approved" && (
-              <div className="mt-4 text-sm px-3 py-2 rounded-sm flex items-center gap-2 border" data-testid="grn-sap-sync-status"
-                   style={shipment.sap_sync_status === "posted" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : { color: "#1D4ED8", background: "rgba(63,131,248,0.1)", borderColor: "rgba(63,131,248,0.3)" }}>
-                {shipment.sap_sync_status === "posted"
-                  ? <CheckCircle size={16} />
-                  : <PlugsConnected size={16} />}
-                {shipment.sap_sync_status === "posted"
-                  ? "Goods Receipt posted to SAP"
-                  : `SAP posting pending${shipment.sap_gr_result?.reason ? ` - ${shipment.sap_gr_result.reason}` : ""}`}
+              <div className="mt-4 space-y-2">
+                <div className="text-sm px-3 py-2 rounded-sm flex items-center gap-2 border" data-testid="grn-sap-sync-status"
+                     style={shipment.sap_sync_status === "posted" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : { color: "#1D4ED8", background: "rgba(63,131,248,0.1)", borderColor: "rgba(63,131,248,0.3)" }}>
+                  {shipment.sap_sync_status === "posted" ? <CheckCircle size={16} /> : <PlugsConnected size={16} />}
+                  {shipment.sap_sync_status === "posted"
+                    ? "Goods Receipt posted to SAP"
+                    : `SAP posting pending${shipment.sap_gr_result?.reason ? ` - ${shipment.sap_gr_result.reason}` : ""}`}
+                </div>
+                <div className="text-sm px-3 py-2 rounded-sm flex items-center justify-between gap-2 border" data-testid="grn-sap-movement-status"
+                     style={shipment.sap_movement_status === "posted" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : { color: "#B45309", background: "rgba(227,160,8,0.1)", borderColor: "rgba(227,160,8,0.3)" }}>
+                  <span className="flex items-center gap-2">
+                    {shipment.sap_movement_status === "posted" ? <CheckCircle size={16} /> : <PlugsConnected size={16} />}
+                    {shipment.sap_movement_status === "posted"
+                      ? `Stock moved to ${shipment.site_id}/${shipment.warehouse_id}`
+                      : shipment.sap_movement_status === "not_applicable"
+                      ? "Warehouse movement skipped - Goods Receipt has not posted to SAP yet"
+                      : `Warehouse movement pending${shipment.warehouse_id ? ` (target ${shipment.site_id}/${shipment.warehouse_id})` : ""}`}
+                  </span>
+                  {shipment.sap_movement_status !== "posted" && shipment.sap_sync_status === "posted" && (
+                    <Button size="sm" variant="outline" onClick={retryMovement} disabled={busy} className="rounded-sm h-7 text-xs" data-testid="grn-retry-movement-button">
+                      <ArrowsClockwise size={12} className="mr-1" /> Retry
+                    </Button>
+                  )}
+                </div>
               </div>
             )}
 
@@ -236,6 +423,38 @@ export default function GrnApprovalPage() {
           <div className="flex justify-end gap-2 mt-2">
             <Button variant="outline" className="rounded-sm" onClick={() => setRejectOpen(false)}>Cancel</Button>
             <Button onClick={reject} disabled={busy} className="rounded-sm bg-[#E02424] hover:bg-[#B91C1C] transition-colors duration-150" data-testid="grn-reject-confirm-button">Confirm Reject</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={discOpen} onOpenChange={setDiscOpen}>
+        <DialogContent className="rounded-sm" data-testid="grn-discrepancy-dialog">
+          <DialogHeader>
+            <DialogTitle className="font-sans">Mark Discrepancy</DialogTitle>
+            <DialogDescription>Select the mismatched line item(s) and explain what doesn't match - the vendor will need to edit this shipment before it can be re-reviewed.</DialogDescription>
+          </DialogHeader>
+          <Textarea
+            placeholder="e.g. Invoice shows 500 EA but only 480 EA physically received on item 2"
+            value={discReason}
+            onChange={(e) => setDiscReason(e.target.value)}
+            className="rounded-sm border-[#CBD3DB]"
+            data-testid="grn-discrepancy-reason-input"
+          />
+          <div className="space-y-1.5 max-h-56 overflow-y-auto border border-[#CBD3DB] rounded-sm p-2">
+            {shipment?.items.map((it, i) => {
+              const key = `${it.po_number}::${it.item_number}`;
+              return (
+                <label key={i} className="flex items-center gap-2 text-sm cursor-pointer py-1" data-testid={`grn-discrepancy-item-label-${key}`}>
+                  <Checkbox checked={!!discItems[key]} onCheckedChange={() => toggleDiscItem(it.po_number, it.item_number)} data-testid={`grn-discrepancy-item-checkbox-${key}`} />
+                  <span className="font-data">{it.po_number}/{it.item_number}</span>
+                  <span className="text-[#5B738B]">{it.description} · {it.ship_qty} {it.unit_of_measure}</span>
+                </label>
+              );
+            })}
+          </div>
+          <div className="flex justify-end gap-2 mt-2">
+            <Button variant="outline" className="rounded-sm" onClick={() => setDiscOpen(false)}>Cancel</Button>
+            <Button onClick={submitDiscrepancy} disabled={busy} className="rounded-sm bg-[#E3A008] hover:bg-[#B87F06] text-white transition-colors duration-150" data-testid="grn-discrepancy-confirm-button">Log Discrepancy</Button>
           </div>
         </DialogContent>
       </Dialog>

@@ -5365,6 +5365,40 @@ class GrnRejectRequest(BaseModel):
     reason: str = ""
 
 
+class GrnDiscrepancyItem(BaseModel):
+    po_number: str
+    item_number: str
+
+
+class GrnDiscrepancyRequest(BaseModel):
+    reason: str
+    items: List[GrnDiscrepancyItem] = []
+
+
+class GrnApproveRequest(BaseModel):
+    supplier_doc_num: str = ""
+    site_id: str
+    warehouse_id: str
+
+
+@api_router.get("/admin/grn/sites")
+async def get_admin_grn_sites(request: Request):
+    """Site dropdown for the GRN screen - a store-bound user only ever
+    sees their own bound site(s) (auto-locks on the frontend when there's
+    exactly one), admin/super_admin see every known site. Reuses the same
+    Store Assignment binding already on Access Management (generic to any
+    role="user" account, not just Store Approval)."""
+    sites = await asyncio.to_thread(list_known_sites, db)
+    return {"sites": _visible_sites_for_user(request.state.user, sites)}
+
+
+@api_router.get("/admin/grn/warehouses/{site_id}")
+async def get_admin_grn_warehouses(site_id: str, request: Request):
+    if not _has_site_access(request.state.user, site_id):
+        raise HTTPException(status_code=403, detail="You are not bound to this site")
+    return {"warehouses": await asyncio.to_thread(stock_transfer_service.list_known_warehouses_for_site, db, site_id)}
+
+
 @api_router.get("/admin/grn/shipments")
 async def get_admin_grn_shipments(status: str = Query(None)):
     return {"shipments": await asyncio.to_thread(supplier_shipment_service.list_shipments, db, status)}
@@ -5379,10 +5413,45 @@ async def get_admin_grn_lookup(doc_code: str):
 
 
 @api_router.post("/admin/grn/{doc_code}/approve")
-async def post_admin_grn_approve(doc_code: str, request: Request):
+async def post_admin_grn_approve(doc_code: str, payload: GrnApproveRequest, request: Request):
     approver = (request.state.user.get("name") or request.state.user.get("email") or "Unknown").strip()
+    if not _has_site_access(request.state.user, payload.site_id):
+        raise HTTPException(status_code=403, detail="You are not bound to this site")
+    owner_party_id, _ = company_and_set_of_books_for_site(payload.site_id)
     try:
-        return await asyncio.to_thread(supplier_shipment_service.approve_shipment, db, doc_code, approver, sap_gsa_write_client)
+        return await asyncio.to_thread(
+            supplier_shipment_service.approve_shipment, db, doc_code, approver, payload.supplier_doc_num,
+            payload.site_id, payload.warehouse_id, sap_gsa_write_client, sap_goods_movement_client, owner_party_id,
+        )
+    except supplier_shipment_service.ShipmentNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except supplier_shipment_service.ShipmentValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api_router.post("/admin/grn/{doc_code}/retry-movement")
+async def post_admin_grn_retry_movement(doc_code: str, request: Request):
+    doc = await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
+    if doc.get("site_id") and not _has_site_access(request.state.user, doc["site_id"]):
+        raise HTTPException(status_code=403, detail="You are not bound to this site")
+    owner_party_id, _ = company_and_set_of_books_for_site(doc.get("site_id"))
+    try:
+        return await asyncio.to_thread(
+            supplier_shipment_service.retry_goods_movement, db, doc_code, sap_goods_movement_client, owner_party_id,
+        )
+    except supplier_shipment_service.ShipmentNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except supplier_shipment_service.ShipmentValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api_router.post("/admin/grn/{doc_code}/discrepancy")
+async def post_admin_grn_discrepancy(doc_code: str, payload: GrnDiscrepancyRequest, request: Request):
+    marker = (request.state.user.get("name") or request.state.user.get("email") or "Unknown").strip()
+    try:
+        return await asyncio.to_thread(
+            supplier_shipment_service.mark_discrepancy, db, doc_code, marker, payload.reason, [i.dict() for i in payload.items],
+        )
     except supplier_shipment_service.ShipmentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except supplier_shipment_service.ShipmentValidationError as e:

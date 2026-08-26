@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 125 - full backend + frontend test of the Phase 4 GRN enhancements (Site/Warehouse selection with bound-site auto-lock, Supplier Doc Num, discrepancy mark/auto-clear, 2-step live SAP write tracking). Backend: 12/12 pytest cases pass (/api/admin/grn/sites, /warehouses/{site}, /discrepancy, /approve, /reject, /retry-movement, vendor PUT auto-clear). Frontend: staff GRN page (site auto-lock to P2 + disabled, 8 real P2 warehouses, doc-num input, approve client-side guard, discrepancy dialog validation x3 negative cases, discrepancy banner, Mark-Discrepancy hidden while Approve/Reject stay, approve->two status boxes, reject from in_transit, unknown-code error) and vendor portal (Discrepancy badge on row + detail modal + reason + flagged items, discrepancy status filter, Edit available and edit auto-clears back to In Transit) all verified working end-to-end. Expected dummy-PO SAP rejection on step 1 with step 2 correctly skipped (not_applicable) - not flagged as a bug per the request. Only minor UI/perf issues found; no functional defects.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/admin/grn/sites", "issue": "Observed a 46.7s response once and a hard 502 (ingress 60s cut-off) on a cold call. inventory_service.list_known_sites() loads the entire single inventory_cache doc (projection items.locations.site) on every request. When it exceeds 60s the GRN page shows a 'Could not load sites' toast, the Site dropdown stays empty and staff cannot approve at all. Recommend a precomputed/cached site list (or a tiny separate doc) instead of scanning the whole snapshot per request. Repeat calls after a fresh backend start were 0.4-0.5s."},
+      {"endpoint": "GET /api/bom/connection-status", "issue": "403 for the store-bound GRN user (only has supplier_portal_admin). The SapConnectionStatus widget on the GRN page therefore always renders a red 'SAP Disconnected' badge for exactly the users who own this page - misleading. Either exclude the widget from this page or don't page-gate the connection-status probe."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "GrnApprovalPage - grn-sap-movement-status", "issue": "When sap_movement_status === 'not_applicable' (step 1 didn't post, step 2 legitimately skipped) the amber box reads 'Warehouse movement pending (target P2/P2-QC)'. It should say the movement was skipped because the Goods Receipt has not posted yet, otherwise staff think there is an actionable pending movement (no Retry button is shown, correctly).", "selector": "[data-testid=\"grn-sap-movement-status\"]", "priority": "MEDIUM"},
+      {"component": "GrnApprovalPage - grn-sap-sync-status", "issue": "The raw SAP SOAP fault envelope (full XML, ~400 chars incl. namespaces) is dumped verbatim into the status box. Should surface a short human message (e.g. 'SAP rejected the Goods Receipt - transaction ID xxx') with the raw fault behind a collapsible/tooltip.", "selector": "[data-testid=\"grn-sap-sync-status\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "GRN Approval page", "issues": ["Header shows a red 'SAP Disconnected' pill for the store-bound GRN user due to the 403 above (false alarm)", "Pending Shipments table refresh after Approve is fire-and-forget (loadPending not awaited), so the just-approved row can linger for a moment before disappearing - cosmetic only, it does clear"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_grn_discrepancy_iter125.py",
+    "/app/test_reports/pytest/iter125_grn.xml",
+    "/app/tests/_seed_grn_ui_125.py"
+  ],
+  "action_items": [
+    "Cache/precompute the site list behind GET /api/admin/grn/sites - a cold call took 46.7s and 502'd once, which blocks GRN approval entirely",
+    "Fix the 'not_applicable' movement copy on grn-sap-movement-status (say 'skipped - Goods Receipt not posted' instead of 'pending')",
+    "Stop showing 'SAP Disconnected' / calling /api/bom/connection-status on the GRN page for users without bom_explorer access (403 today)",
+    "Truncate/collapse the raw SOAP fault XML in the SAP posting status box"
+  ],
+  "critical_code_review_comments": [
+    "supplier_shipment_service.approve_shipment docstring still claims step 2 lands stock 'as RESTRICTED Quality Inspection stock' - contradicts the confirmed tenant limitation documented in _post_goods_movement_for_items (plain move only). Update the docstring so future readers aren't misled.",
+    "supplier_shipment_service._post_goods_movement_for_items hardcodes the movement SOURCE as f'{site_id}-RM'; for a receipt that SAP actually landed elsewhere this will keep failing. Consider making the source configurable/derivable rather than a convention baked into code.",
+    "GET /api/admin/grn/shipments and /api/admin/grn/lookup/{code} are NOT site-scoped (any authorised GRN user sees/looks up every site's shipments) while approve/retry-movement ARE site-gated - inconsistent; confirm this is intended.",
+    "inventory_service.list_known_sites() is now on a page-load critical path but does a full-document scan of the inventory_cache snapshot on every call - see the 46.7s/502 observation."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_grn_discrepancy_iter125.py",
+    "/app/tests/_seed_grn_ui_125.py"
+  ],
+  "success_rate": {"backend": "100% (12/12)", "frontend": "100% of tested flows (2 minor copy/widget issues)"},
+  "seed_data_creation": "Two S9999 fixture shipments created via the vendor API for UI testing: 8WZBGX (TESTGRN1 items 1+2, used for discrepancy -> vendor edit auto-clear -> staff reject) and REBKDP (TESTGRN2 item 1, approved -> expected SAP-side GSA rejection, movement not_applicable). pytest run created and closed out several additional short-lived TESTGRN shipments (all ended rejected/approved, none left in_transit). Fixture PO cache rows for S9999 untouched.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "Internal GRN staff: vms_session=XAlQkzY5hG8PB3MdokeHOlLvQVFkAQuFFqwSgDD6Dpk (supplier.approver.test@rampgroup.co.in, bound_sites=['P2'], valid to Sep 9 2026) - verified working. Vendor: vendor1@testco.com / DummyTest123 (S9999) - verified working.",
+  "context_for_next_testing_agent": "Run backend tests with `cd /app/backend && python -m pytest tests/test_grn_discrepancy_iter125.py -n0 -p no:randomly -v` (pytest.ini forces xdist loadscope which breaks these ordered, shared-fixture tests). IMPORTANT ENVIRONMENT GOTCHA: writing/deleting ANY file under /app/backend (including tests/) triggers uvicorn --reload; the old worker's non-daemon SAP background threads (30s-timeout OData calls) keep the old process alive, so the backend returns 502/timeouts for 1-4 minutes after every file touch. Put seed/helper scripts under /app/tests instead, and sleep or `sudo supervisorctl restart backend` before hitting the API. Fixture POs TESTGRN1 (items 1,2) / TESTGRN2 (item 1) for S9999 still have plenty of open qty. Discrepancy flow, site/warehouse gating, and the 2-step approve are fully covered; PO table/cart flows were not re-tested this iteration.",
+  "rca_of_the_issue": "No functional defects found. The observed /api/admin/grn/sites 46.7s/502 traces to inventory_service.list_known_sites() reading and iterating the whole inventory_cache document per request; it is fast (0.5s) when Mongo/thread-pool is idle but degrades badly while the background inventory/valuation refresh is running, and the ingress cuts off at 60s. The dummy-PO SAP GSA HTTP 500 (real SOAP fault with transaction ID) and the resulting sap_movement_status='not_applicable' are correct expected behaviour, not bugs."
+}

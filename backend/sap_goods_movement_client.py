@@ -14,7 +14,15 @@ Envelope shape mirrors Radish's own proven dry-run output exactly (live-
 verified against this tenant several times this session) - this app's use
 case never flips the restricted-use flag (always plain RM -> SFG, same
 flag both sides), so the "2-step move" complexity Radish's wrapper handles
-for flag-flipping moves does not apply here."""
+for flag-flipping moves does not apply here.
+
+Aug 2026: also reused by the Supplier Portal's GRN approval (Phase 4,
+step 2) to land a received PO's stock into the receiver's chosen
+warehouse with an explicit RESTRICTED Quality Inspection status -
+`target_stock_status_code="1"` + `target_restricted_use=True` (SAP's
+InventoryStockStatusCode="1" = in inspection, InventoryRestrictedUseIndicator
+governs the RESTRICTED flag) - both default to the original plain-move
+behavior (blank/false) for every other existing caller."""
 import logging
 import re
 import uuid
@@ -59,11 +67,13 @@ def _resolve_unit_code(quantity_type_code: str) -> str:
 
 
 def _build_envelope(external_id, external_item_id, site_id, product_id, owner_party_id,
-                     source_area, target_area, quantity, unit_code, quantity_type_code, transaction_dt) -> str:
+                     source_area, target_area, quantity, unit_code, quantity_type_code, transaction_dt,
+                     target_stock_status_code="", target_restricted_use=False) -> str:
     from xml.sax.saxutils import escape
     site_id, product_id, owner_party_id = escape(site_id), escape(product_id), escape(owner_party_id)
     source_area, target_area = escape(source_area), escape(target_area)
     quantity_str = format(quantity, "f").rstrip("0").rstrip(".") or "0"
+    restricted_str = "true" if target_restricted_use else "false"
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:glob="http://sap.com/xi/SAPGlobal20/Global">
   <soapenv:Body>
@@ -76,8 +86,8 @@ def _build_envelope(external_id, external_item_id, site_id, product_id, owner_pa
           <ExternalItemID>{external_item_id}</ExternalItemID>
           <MaterialInternalID>{product_id}</MaterialInternalID>
           <OwnerPartyInternalID>{owner_party_id}</OwnerPartyInternalID>
-          <InventoryRestrictedUseIndicator>false</InventoryRestrictedUseIndicator>
-          <InventoryStockStatusCode></InventoryStockStatusCode>
+          <InventoryRestrictedUseIndicator>{restricted_str}</InventoryRestrictedUseIndicator>
+          <InventoryStockStatusCode>{target_stock_status_code}</InventoryStockStatusCode>
           <SourceLogisticsAreaID>{source_area}</SourceLogisticsAreaID>
           <TargetLogisticsAreaID>{target_area}</TargetLogisticsAreaID>
           <InventoryItemChangeQuantity>
@@ -123,7 +133,8 @@ class SAPGoodsMovementClient:
 
     def goods_movement(self, owner_party_id: str, product_id: str, source_logistics_area_id: str,
                         target_logistics_area_id: str, quantity: float, quantity_uom: str,
-                        site_id: str, dry_run: bool = True) -> dict:
+                        site_id: str, dry_run: bool = True, target_stock_status_code: str = "",
+                        target_restricted_use: bool = False) -> dict:
         if quantity <= 0:
             raise SAPGoodsMovementError("quantity must be > 0")
         external_id = f"MOV-{uuid.uuid4().hex[:6].upper()}"
@@ -135,6 +146,7 @@ class SAPGoodsMovementClient:
             _normalize_logistics_area_id(source_logistics_area_id),
             _normalize_logistics_area_id(target_logistics_area_id),
             quantity, unit_code, quantity_uom, transaction_dt,
+            target_stock_status_code=target_stock_status_code, target_restricted_use=target_restricted_use,
         )
         if dry_run:
             return {"ok": True, "dry_run": True, "external_id": external_id, "envelope": envelope}

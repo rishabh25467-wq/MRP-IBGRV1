@@ -206,6 +206,10 @@ def _compute_no_bom_flags(db) -> dict:
     return {"roots_with_bom": roots_with_bom, "leaf_ids": leaf_ids, "historical_leaf_ids": historical_leaf_ids}
 
 
+_KNOWN_SITES_CACHE = {"sites": None, "at": 0.0}
+_KNOWN_SITES_CACHE_TTL_SECONDS = 300
+
+
 def list_known_sites(db):
     """Full list of real SAP site codes (P1, P2, P3...) derived from
     inventory_cache's location data - same pattern InventoryPage.js already
@@ -213,7 +217,17 @@ def list_known_sites(db):
     Approval Plant/Site filter previously only listed sites that happened
     to have a currently-open request, so a real site like P9 silently
     never showed up as an option whenever it had no pending request at
-    that exact moment."""
+    that exact moment.
+
+    Aug 28 2026 perf fix: this now sits on the GRN page's critical load
+    path (GET /admin/grn/sites) and a full items[].locations[] scan of the
+    whole inventory_cache snapshot took 46.7s (once even a 502, past the
+    60s ingress cutoff) while the background inventory/valuation refresh
+    was running concurrently - the site list barely ever changes, so a
+    5-minute in-process cache avoids re-scanning on every single call."""
+    now = time.time()
+    if _KNOWN_SITES_CACHE["sites"] is not None and now - _KNOWN_SITES_CACHE["at"] < _KNOWN_SITES_CACHE_TTL_SECONDS:
+        return _KNOWN_SITES_CACHE["sites"]
     doc = db[INVENTORY_CACHE_COLLECTION].find_one({"_id": INVENTORY_CACHE_ID}, {"items.locations.site": 1})
     sites = set()
     for item in (doc or {}).get("items", []):
@@ -221,7 +235,10 @@ def list_known_sites(db):
             site = loc.get("site")
             if site:
                 sites.add(site.split("-")[-1])
-    return sorted(sites)
+    result = sorted(sites)
+    _KNOWN_SITES_CACHE["sites"] = result
+    _KNOWN_SITES_CACHE["at"] = now
+    return result
 
 
 def get_cached_inventory(db):

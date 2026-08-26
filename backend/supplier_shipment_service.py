@@ -13,13 +13,31 @@ for as long as it stays `status="in_transit"` - the moment internal
 staff Approve or Reject it, it's locked (user's explicit ask).
 
 Phase 4: internal staff enter that code, physically match goods +
-supplier invoice, and Approve - which immediately attempts to post the
-real Goods Receipt to SAP via sap_gsa_write_client, ONE call PER
-distinct PO number in the shipment (a shipment can now span multiple
-POs - see above). The internal approval itself is NEVER blocked by SAP
-being unreachable/not yet configured - `sap_sync_status` tracks that
-separately so staff always know whether SAP has actually received the
-posting yet.
+supplier invoice, and Approve - which immediately attempts a 2-STEP live
+SAP write: (1) posts the real Goods Receipt via sap_gsa_write_client, ONE
+call PER distinct PO number in the shipment (a shipment can now span
+multiple POs), then (2) - since the GSA schema itself has NO field for
+warehouse/quality-status (confirmed against SAP's own help docs, Aug 28
+2026) - a follow-up Goods Movement (sap_goods_movement_client, reused
+from Store Approval) moves each line's received qty into the receiver's
+chosen warehouse. NOTE (confirmed live, Aug 28 2026): forcing an
+explicit RESTRICTED/Quality-Inspection stock status on that movement is
+NOT achievable on this tenant as currently configured - see
+_post_goods_movement_for_items's docstring below for the live test that
+proved this; step 2 today only does a PLAIN move into the chosen
+warehouse. The internal approval itself is NEVER blocked by SAP being
+unreachable - `sap_sync_status`/`sap_movement_status` track each step
+separately so staff always know exactly how far a shipment got.
+
+Discrepancy handling (Aug 28 2026, user's explicit ask): the RECEIVING
+STORE staff (not the vendor) mark a mismatch with a free-text reason +
+the specific line item(s) that don't match - status becomes
+"discrepancy", no SAP write happens. The intended resolution path is the
+store calling the vendor, who edits their own shipment (still allowed
+while status="discrepancy") - any such edit automatically clears the
+discrepancy and puts the shipment back to "in_transit" for re-review.
+Staff can also still directly Approve/Reject straight from "discrepancy"
+if they decide to override rather than wait for an edit.
 """
 import secrets
 import string
@@ -205,6 +223,11 @@ def create_shipment(db, account: dict, requested_items: list, vendor_code: str =
         "status": "in_transit",
         "sap_sync_status": "not_applicable",
         "sap_gr_result": None,
+        "sap_movement_status": "not_applicable",
+        "sap_movement_result": None,
+        "supplier_doc_num": None,
+        "site_id": None,
+        "warehouse_id": None,
         "created_at": now,
         "updated_at": now,
         "approved_at": None,
@@ -212,6 +235,10 @@ def create_shipment(db, account: dict, requested_items: list, vendor_code: str =
         "rejected_at": None,
         "rejected_by": None,
         "rejection_reason": None,
+        "discrepancy_reason": None,
+        "discrepancy_items": None,
+        "discrepancy_marked_by": None,
+        "discrepancy_marked_at": None,
     }
     db[SHIPMENTS_COLLECTION].insert_one(doc)
     return doc
@@ -219,21 +246,28 @@ def create_shipment(db, account: dict, requested_items: list, vendor_code: str =
 
 def update_shipment_items(db, account: dict, doc_code: str, requested_items: list) -> dict:
     """Lets a vendor add/remove/change quantities on their OWN shipment
-    for as long as it's still `in_transit` - locked the moment it's
-    Approved or Rejected (user's explicit ask, Aug 28 2026). Scoped by
-    the SHIPMENT's own vendor_code (set at creation, possibly under a
-    testing-mode impersonation - see create_shipment above), not the
-    account's own vendor_code, so editing stays consistent regardless
-    of which vendor was being viewed when it was created."""
+    for as long as it's still `in_transit` OR `discrepancy` - locked the
+    moment it's Approved or Rejected (user's explicit ask, Aug 28 2026).
+    Editing a `discrepancy` shipment automatically clears the flag and
+    puts it back to `in_transit` for staff to re-review (that's the
+    whole point of the discrepancy note - "fix it and it comes back").
+    Scoped by the SHIPMENT's own vendor_code (set at creation, possibly
+    under a testing-mode impersonation - see create_shipment above), not
+    the account's own vendor_code, so editing stays consistent
+    regardless of which vendor was being viewed when it was created."""
     doc = get_shipment_by_code(db, doc_code)
     if doc["account_id"] != account["_id"]:
         raise ShipmentNotFoundError("No shipment found for this code")
-    if doc["status"] != "in_transit":
+    if doc["status"] not in ("in_transit", "discrepancy"):
         raise ShipmentValidationError("This shipment has already been processed and can no longer be changed")
     resolved_items = _resolve_items(db, doc["vendor_code"], requested_items, exclude_doc_code=doc_code)
-    db[SHIPMENTS_COLLECTION].update_one(
-        {"_id": doc["_id"]}, {"$set": {"items": resolved_items, "updated_at": datetime.now(timezone.utc)}},
-    )
+    update = {"items": resolved_items, "updated_at": datetime.now(timezone.utc)}
+    if doc["status"] == "discrepancy":
+        update.update({
+            "status": "in_transit", "discrepancy_reason": None, "discrepancy_items": None,
+            "discrepancy_marked_by": None, "discrepancy_marked_at": None,
+        })
+    db[SHIPMENTS_COLLECTION].update_one({"_id": doc["_id"]}, {"$set": update})
     return get_shipment_by_code(db, doc_code)
 
 
@@ -255,7 +289,7 @@ def get_shipment_by_code(db, doc_code: str) -> dict:
 
 def reject_shipment(db, doc_code: str, rejected_by: str, reason: str) -> dict:
     doc = get_shipment_by_code(db, doc_code)
-    if doc["status"] != "in_transit":
+    if doc["status"] not in ("in_transit", "discrepancy"):
         raise ShipmentValidationError(f"Shipment is already {doc['status']}")
     db[SHIPMENTS_COLLECTION].update_one(
         {"_id": doc["_id"]},
@@ -267,16 +301,91 @@ def reject_shipment(db, doc_code: str, rejected_by: str, reason: str) -> dict:
     return get_shipment_by_code(db, doc_code)
 
 
-def approve_shipment(db, doc_code: str, approved_by: str, gsa_write_client) -> dict:
-    """Internal approval is recorded unconditionally (staff have already
-    physically matched goods + invoice) - the SAP posting attempt is
-    best-effort and tracked separately via sap_sync_status, so a SAP
-    outage or the still-outstanding write-access blocker never stops
-    staff from doing their job in this app. Posts ONE Goods Receipt call
-    PER distinct PO number in the shipment (a shipment can now span
-    multiple POs)."""
+def mark_discrepancy(db, doc_code: str, marked_by: str, reason: str, items: list) -> dict:
+    """Store staff (not the vendor) flag a physical mismatch - free-text
+    reason + the specific line item(s) that don't match. No SAP write
+    happens while a shipment sits in this state; the expected fix path
+    is the vendor editing their own shipment (see update_shipment_items),
+    which auto-clears this and puts it back to in_transit."""
     doc = get_shipment_by_code(db, doc_code)
     if doc["status"] != "in_transit":
+        raise ShipmentValidationError(f"Shipment is already {doc['status']}")
+    reason = (reason or "").strip()
+    if not reason:
+        raise ShipmentValidationError("A discrepancy reason is required")
+    if not items:
+        raise ShipmentValidationError("Select at least one mismatched line item")
+    valid_keys = {(it["po_number"], it["item_number"]) for it in doc["items"]}
+    flagged = []
+    for it in items:
+        key = (it.get("po_number"), it.get("item_number"))
+        if key not in valid_keys:
+            raise ShipmentValidationError(f"Item {it.get('item_number')} on PO {it.get('po_number')} is not part of this shipment")
+        flagged.append({"po_number": key[0], "item_number": key[1]})
+    db[SHIPMENTS_COLLECTION].update_one(
+        {"_id": doc["_id"]},
+        {"$set": {
+            "status": "discrepancy", "discrepancy_reason": reason, "discrepancy_items": flagged,
+            "discrepancy_marked_by": marked_by, "discrepancy_marked_at": datetime.now(timezone.utc),
+        }},
+    )
+    return get_shipment_by_code(db, doc_code)
+
+
+def _post_goods_movement_for_items(db, doc, goods_movement_client, owner_party_id: str, site_id: str, warehouse_id: str) -> dict:
+    """Step 2 of the live SAP write - moves each shipment line's
+    received qty into the receiver's chosen warehouse. Source area
+    defaults to this app's own "{site}-RM" convention (same one used
+    everywhere else for raw-material receiving) - the GSA schema itself
+    gives no way to know for certain where SAP landed the Goods Receipt,
+    so this is a best-effort default (see sap_gsa_write_client.py module
+    docstring); a real SAP-side rejection here is expected to happen and
+    be iterated on, not a local bug.
+
+    IMPORTANT, confirmed live Aug 28 2026: passing an explicit
+    InventoryStockStatusCode ("1"/Quality Inspection) OR
+    InventoryRestrictedUseIndicator=true on the TARGET - EITHER one
+    alone - is rejected by this tenant with "No inventory items found
+    for external id ..." (verified via a real, immediately-reversed 1 EA
+    P2-RM->P2-QC test movement: plain move succeeds, either flag alone
+    fails the same way). So this tenant's Goods Movement service, as
+    configured today, cannot force RESTRICTED/Quality-Inspection status
+    this way - this does a PLAIN move only. Getting real RESTRICTED QI
+    stock needs either the product's own SAP Inspection Plan config (so
+    the GSA's own automatic receiving flow routes it there) or a
+    different SAP service/config - flagged as a known open item, not
+    silently claimed as working."""
+    per_item = []
+    all_ok = True
+    for it in doc["items"]:
+        try:
+            result = goods_movement_client.goods_movement(
+                owner_party_id=owner_party_id, product_id=it["product_id"],
+                source_logistics_area_id=f"{site_id}-RM", target_logistics_area_id=warehouse_id,
+                quantity=it["ship_qty"], quantity_uom=it.get("unit_of_measure") or "EA", site_id=site_id,
+                dry_run=False,
+            )
+        except Exception as e:
+            result = {"ok": False, "error": str(e)}
+        if not result.get("ok"):
+            all_ok = False
+        per_item.append({"po_number": it["po_number"], "item_number": it["item_number"], "product_id": it["product_id"], **result})
+    return {"ok": all_ok, "per_item": per_item}
+
+
+def approve_shipment(db, doc_code: str, approved_by: str, supplier_doc_num: str, site_id: str, warehouse_id: str,
+                      gsa_write_client, goods_movement_client, owner_party_id: str) -> dict:
+    """Internal approval is recorded unconditionally (staff have already
+    physically matched goods + invoice) - the SAP posting attempt is
+    best-effort and tracked separately via sap_sync_status/
+    sap_movement_status, so a SAP outage never stops staff from doing
+    their job in this app. Two-step live write: (1) ONE Goods Receipt
+    call PER distinct PO number in the shipment, then (2), only if step
+    1 fully succeeded, a Goods Movement per line item into the chosen
+    warehouse (PLAIN move only - see _post_goods_movement_for_items'
+    docstring for the confirmed RESTRICTED/Quality-Inspection limitation)."""
+    doc = get_shipment_by_code(db, doc_code)
+    if doc["status"] not in ("in_transit", "discrepancy"):
         raise ShipmentValidationError(f"Shipment is already {doc['status']}")
 
     grouped_by_po = {}
@@ -302,11 +411,42 @@ def approve_shipment(db, doc_code: str, approved_by: str, gsa_write_client) -> d
         # attempt, expected or not (found by testing_agent, iteration_121).
         sap_gr_result = {"ok": False, "reason": str(e)}
 
+    sap_movement_status = "not_applicable"
+    sap_movement_result = None
+    if sap_sync_status == "posted":
+        sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, owner_party_id, site_id, warehouse_id)
+        sap_movement_status = "posted" if sap_movement_result.get("ok") else "pending"
+    else:
+        sap_movement_result = {"ok": False, "reason": "Skipped - Goods Receipt (step 1) did not succeed yet"}
+
     db[SHIPMENTS_COLLECTION].update_one(
         {"_id": doc["_id"]},
         {"$set": {
             "status": "approved", "approved_at": datetime.now(timezone.utc), "approved_by": approved_by,
+            "supplier_doc_num": (supplier_doc_num or "").strip() or None, "site_id": site_id, "warehouse_id": warehouse_id,
             "sap_sync_status": sap_sync_status, "sap_gr_result": sap_gr_result,
+            "sap_movement_status": sap_movement_status, "sap_movement_result": sap_movement_result,
         }},
+    )
+    return get_shipment_by_code(db, doc_code)
+
+
+def retry_goods_movement(db, doc_code: str, goods_movement_client, owner_party_id: str) -> dict:
+    """Retries ONLY step 2 (the Goods Movement into the chosen warehouse)
+    for a shipment whose Goods Receipt (step 1) already posted but the
+    movement itself failed/is still pending - mirrors the retry-wip-
+    clearing pattern already used elsewhere in this app."""
+    doc = get_shipment_by_code(db, doc_code)
+    if doc["status"] != "approved":
+        raise ShipmentValidationError("This shipment has not been approved yet")
+    if doc.get("sap_sync_status") != "posted":
+        raise ShipmentValidationError("The Goods Receipt (step 1) has not posted to SAP yet - nothing to retry")
+    if not doc.get("site_id") or not doc.get("warehouse_id"):
+        raise ShipmentValidationError("This shipment has no warehouse recorded to retry into")
+    sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, owner_party_id, doc["site_id"], doc["warehouse_id"])
+    sap_movement_status = "posted" if sap_movement_result.get("ok") else "pending"
+    db[SHIPMENTS_COLLECTION].update_one(
+        {"_id": doc["_id"]},
+        {"$set": {"sap_movement_status": sap_movement_status, "sap_movement_result": sap_movement_result}},
     )
     return get_shipment_by_code(db, doc_code)

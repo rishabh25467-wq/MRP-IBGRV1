@@ -1,3 +1,43 @@
+## FEATURE BATCH #3: GRN Site/Warehouse selection + Discrepancy flow + live 2-step SAP write (2026-08-28)
+
+- **Site + Warehouse selection on GRN Approval**: `GET /admin/grn/sites` returns the internal staff
+  member's own `bound_sites` (auto-locks the Site dropdown when there's exactly one - reuses the
+  existing generic "Store Assignment" binding on Access Management, no new admin UI needed) or every
+  known site for admin/super_admin. `GET /admin/grn/warehouses/{site_id}` (403 if not bound to that
+  site) loads real SAP warehouses for the chosen site via `stock_transfer_service.list_known_warehouses_for_site`.
+  One warehouse applies to the WHOLE shipment (user's explicit ask - never per-line).
+- **Supplier Invoice Number** (free-text `supplier_doc_num`) captured at approval time.
+- **Discrepancy flow**: RECEIVING STORE staff (not the vendor) call `POST /admin/grn/{code}/discrepancy`
+  with a free-text reason + specific mismatched line item(s) - status becomes `discrepancy`, no SAP
+  write happens. The vendor can still edit their OWN shipment while `discrepancy` (same as `in_transit`)
+  - any such edit auto-clears the discrepancy and resets status back to `in_transit` for re-review.
+  Staff can also Approve/Reject directly from `discrepancy` as an override.
+- **Live 2-step SAP write on Approve**: step 1 (unchanged) posts the real Goods Receipt (GSA) per
+  distinct PO in the shipment; step 2 (NEW), only attempted if step 1's `sap_sync_status` becomes
+  `posted`, calls `sap_goods_movement_client.goods_movement()` to move each line's qty into the chosen
+  warehouse - tracked separately as `sap_movement_status` (`not_applicable`/`pending`/`posted`) with a
+  `POST /admin/grn/{code}/retry-movement` retry action in the UI.
+  - **Live-tested this session** (user's explicit go-ahead): approved a dummy shipment (2 EA of
+    P27175) - GSA POST genuinely reached SAP and got a real SAP-side rejection (expected, PO doesn't
+    exist in SAP - proves connectivity/schema, not a bug).
+  - **CONFIRMED TENANT LIMITATION** (live-tested via a real, immediately-reversed 1 EA P2-RM->P2-QC
+    movement, then isolated each field): setting `InventoryStockStatusCode`/`InventoryRestrictedUseIndicator`
+    on the Goods Movement target - EITHER alone - is rejected ("No inventory items found for external
+    id...") by this SAP tenant; a plain move succeeds. GRN's step 2 today does a PLAIN move only - true
+    "RESTRICTED Quality Inspection" stock needs either the product's own SAP Inspection Plan config (so
+    the GSA's own automatic receiving flow routes it there) or a different SAP service - open item, not
+    solved this session.
+- **Perf/consistency fixes from testing_agent (iteration 125, 100% functional pass, no defects)**:
+  `inventory_service.list_known_sites()` now has a 5-min in-process TTL cache (was scanning the whole
+  inventory_cache doc on every GRN page load, once hit 46.7s/502); `/api/bom/connection-status`
+  no longer requires the `bom_explorer` page permission (was falsely showing "SAP Disconnected" for
+  GRN-only staff); SAP SOAP fault messages now extract just the `<faultstring>` instead of dumping the
+  raw XML envelope; "movement skipped" vs "movement pending" copy fixed for the `not_applicable` case.
+- Test fixtures: vendor `S9999` / `vendor1@testco.com` password changed to `DummyTest123`; fixture open
+  POs `TESTGRN1` (2 items) + `TESTGRN2` (1 item) seeded for GRN testing without touching real SAP data.
+  See `/app/memory/test_credentials.md`.
+
+
 - **Shipment Search** (2026-08-28): added a search box next to the status/date filters on the Shipments
   page - matches on doc code (`_id`) or any item's `po_number`, combines with the existing status/date
   filters and the "N of M shipments" counter/Clear button. Client-side only, no backend change.

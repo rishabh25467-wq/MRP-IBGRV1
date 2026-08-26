@@ -98,6 +98,12 @@ PAGE_KEYS = {p["key"] for p in PAGE_CATALOG}
 # require_login below) but no specific page permission - used for small
 # shared/utility endpoints not tied to one visible page.
 PAGE_ROUTE_RULES = [
+    # Aug 28 2026: the connection-status widget renders on EVERY page
+    # (by design, see SapConnectionStatus.jsx) but was gated behind the
+    # bom_explorer permission via the general /api/bom/ rule below - any
+    # user without bom_explorer (e.g. GRN staff) got a false "SAP
+    # Disconnected" 403. No specific page needed, just a valid session.
+    ("/api/bom/connection-status", set()),
     ("/api/bom/", {"bom_explorer"}),
     ("/api/sap/cost-estimate-run", {"bom_explorer"}),
     ("/api/purchasing-plan/", {"purchasing_plan"}),
