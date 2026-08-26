@@ -56,6 +56,7 @@ const ADMIN_SUBTABS = [
   { to: "/admin/l1-l2-report", label: "L1/L2 Item Report", testId: "nav-admin-l1l2-report", page: "admin" },
   { to: "/admin/create-material", label: "Create Material", testId: "nav-admin-create-material", page: "admin_create_material" },
   { to: "/admin/supplier-portal-approvals", label: "Supplier Portal Approvals", testId: "nav-admin-supplier-portal-approvals", page: "supplier_portal_admin" },
+  { to: "/admin/grn-approval", label: "GRN Approval", testId: "nav-admin-grn-approval", page: "supplier_portal_admin" },
 ];
 
 export const NavTabs = () => {

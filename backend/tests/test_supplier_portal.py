@@ -186,11 +186,16 @@ class TestSignupApprovePipeline:
         lst = admin_client.get(f"{API}/admin/supplier-portal/accounts", params={"status": "rejected"}).json()["accounts"]
         acct = [a for a in lst if a["_id"] == aid][0]
         assert acct["rejection_reason"] == "TEST_ docs unreadable"
-        # rejected vendor cannot log in
-        login = requests.post(f"{API}/supplier-portal/login",
-                              json={"email": new_vendor_email, "password": "Passw0rd123"})
-        assert login.status_code == 401, login.text
-        assert "rejected" in login.json()["detail"].lower()
+        # Rejected vendor CAN authenticate (intentional since iteration_120) but is
+        # surfaced status=rejected + reason; data routes stay gated on approved.
+        s = requests.Session()
+        login = s.post(f"{API}/supplier-portal/login",
+                       json={"email": new_vendor_email, "password": "Passw0rd123"})
+        assert login.status_code == 200, login.text
+        assert login.json()["status"] == "rejected"
+        assert login.json()["rejection_reason"] == "TEST_ docs unreadable"
+        po = s.get(f"{API}/supplier-portal/purchase-orders")
+        assert po.status_code == 403, f"rejected vendor must not read POs: {po.status_code} {po.text[:200]}"
 
     def test_08_approve_moves_out_of_pending(self, admin_client, created_ids, new_vendor_email):
         aid = created_ids[0]
@@ -204,14 +209,17 @@ class TestSignupApprovePipeline:
         assert acct["rejection_reason"] is None
         assert acct["approved_by"]
 
-    def test_09_approved_vendor_login_and_po_503(self, new_vendor_email):
+    def test_09_approved_vendor_login_and_po_cached_fallback(self, new_vendor_email):
         s = requests.Session()
         r = s.post(f"{API}/supplier-portal/login", json={"email": new_vendor_email, "password": "Passw0rd123"})
         assert r.status_code == 200, r.text
         assert r.json()["status"] == "approved"
         po = s.get(f"{API}/supplier-portal/purchase-orders")
-        assert po.status_code == 503, f"expected 503 not-configured, got {po.status_code} {po.text}"
-        assert "wired up" in po.json()["detail"].lower() or "not configured" in po.json()["detail"].lower()
+        # Phase 3: SAP PO endpoint unconfigured -> graceful cached fallback, not 503
+        assert po.status_code == 200, po.text
+        body = po.json()
+        assert body["live_sync"] is False
+        assert isinstance(body["purchase_orders"], list)
 
     def test_10_logout_clears_session(self, new_vendor_email):
         s = requests.Session()

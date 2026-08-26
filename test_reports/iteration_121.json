@@ -1,0 +1,48 @@
+{
+  "summary": "Phase 3 (shipment + 2-way match) and Phase 4 (internal GRN approval with best-effort SAP GR posting) tested end-to-end: 24 new pytest API tests (all pass) + full browser flows for the vendor dashboard (login -> Ship dialog -> 6-char code -> shipments table) and the internal GRN Approval page (case-insensitive lookup, approve with SAP-pending banner+toast, reject with reason, pending-row click, unknown-code error). Phase 1/2 regression suite re-run: 25/25 pass after updating 2 stale assertions that contradicted intentional behaviour changes. No functional defects found; only minor/cosmetic and hardening observations.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "supplier_shipment_service._shipped_qty_so_far", "issue": "Aggregation matches on po_number only (no vendor_code filter), so if two vendors ever have the same PO number cached, one vendor's shipments would consume the other's remaining open qty in the 2-way match."},
+      {"endpoint": "POST /api/supplier-portal/shipments", "issue": "Remaining-qty check and insert are not atomic - two concurrent submissions on the same PO item can both pass validation and over-ship (no unique/conditional write guard)."},
+      {"endpoint": "POST /api/admin/grn/{code}/approve", "issue": "Only SAPGSAWriteError is caught; any other unexpected exception from the SAP client path (non-requests error) would surface as HTTP 500 and block the internal approval, contradicting the 'approval never blocked' requirement. Suggest catching Exception for the posting attempt only."},
+      {"endpoint": "N/A (design gap)", "issue": "No retry/backfill path for shipments left at sap_sync_status='pending'. Once SAP_SOAP_GSA_WRITE_ENDPOINT is configured, already-approved shipments will stay 'pending' forever - a re-post endpoint or background retry job is needed."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/admin/grn-approval", "issues": ["Status badge renders the raw enum ('in_transit', 'approved', 'rejected') whereas the vendor dashboard shows friendly labels ('In Transit', 'Received', 'Rejected') - inconsistent wording for the same data."]},
+      {"screen": "Vendor shipment doc code", "issues": ["Doc code alphabet includes visually ambiguous characters (0/O, 1/I) - observed codes YXW0D3 and 3XI023. Since the code is hand-transcribed onto physical paperwork and typed at the dock, excluding O/0/I/1 would cut transcription errors."]},
+      {"screen": "Global nav (restricted internal user)", "issues": ["For a user with only supplier_portal_admin the single top-nav group is labelled 'Master Data' but contains 'Supplier Portal Approvals' + 'GRN Approval' - misleading group label (pre-existing NavTabs grouping, not new this session)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_supplier_shipment_grn.py",
+    "/app/backend/tests/test_supplier_portal.py",
+    "/app/test_reports/pytest/grn_results.xml"
+  ],
+  "action_items": [
+    "Add vendor_code to the _shipped_qty_so_far $match so 2-way match is scoped per vendor.",
+    "Broaden the exception guard around gsa_write_client.post_goods_receipt() to Exception so no SAP-side surprise can 500 the internal approval.",
+    "Plan a retry/re-post path for shipments stuck at sap_sync_status='pending' once the real GSA write endpoint lands.",
+    "Optional: humanise the status badge text on the GRN page and drop ambiguous 0/O/1/I from the doc-code alphabet."
+  ],
+  "critical_code_review_comments": [
+    "server.py is ~5589 lines - well past the 700-line guideline; the supplier-portal/GRN route block is a good candidate to move into its own router module.",
+    "create_shipment() validates remaining qty then inserts without any atomic guard - concurrent vendor submissions can breach the PO open quantity.",
+    "_shipped_qty_so_far() is not vendor-scoped (see backend minor issues)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_supplier_shipment_grn.py (new)",
+    "/app/backend/tests/test_supplier_portal.py (2 stale assertions updated: rejected vendor now authenticates with status=rejected + 403 on POs; PO list now 200 with live_sync=false instead of 503)"
+  ],
+  "success_rate": {"backend": "100% (24/24 new Phase 3/4 tests, 25/25 Phase 1/2 regression)", "frontend": "100% of tested flows"},
+  "seed_data_creation": "Created shipments via UI/API on PO4500012345 for vendor S9999: YXW0D3 (item 10, 25 EA, approved via UI -> sap_sync_status=pending) and 3XI023 (item 20, 60 KGM, rejected via UI with reason 'TEST_UI crate damaged in transit', qty released back to 1200). All pytest-created shipments were deleted by fixture teardown. Also seeded a permission-less internal session for 403 testing: auth_users '_id: test-tid:test-oid-noperm-grn' (noperm.grn.test@rampgroup.co.in, allowed_pages=[]) with auth_sessions vms_session='TESTNOPERMGRNSESSION0000000000AA'.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "vendor1@testco.com / Passw0rd123 (S9999); internal admin cookie vms_session=_nNTeagpGyLWuMhFLKHF2qvr0lfmKm8P (supplier_portal_admin); no-permission cookie vms_session=TESTNOPERMGRNSESSION0000000000AA",
+  "context_for_next_testing_agent": "Phase 3/4 API coverage lives in /app/backend/tests/test_supplier_shipment_grn.py (2-way match incl. zero/negative/over-qty and post-prior-shipment limits, doc-code uniqueness, case-insensitive lookup, approve never blocked by blank SAP config, double-approve/reject 400, reject qty release, 401/403 gating incl. a no-permission internal session). IMPORTANT ENV GOTCHA: writing any file under /app/backend triggers uvicorn watchfiles reload; the reload takes 1-4 minutes on this app (SAP background refresh jobs), during which the public URL returns Cloudflare 502s and every test fails spuriously. Always sleep ~20-30s and confirm /api/supplier-portal/me returns 200 before running pytest after editing files under /app/backend.",
+  "rca_of_the_issue": "The only failures seen were (a) transient 502s caused by backend hot-reload after writing test files under /app/backend (environment artifact, not an app bug - all tests pass on a settled backend), and (b) two stale Phase 1/2 assertions that still expected the pre-Phase-3 behaviour (503 on /purchase-orders and 401 for rejected-vendor login); both were intentionally changed by the developer, so the test expectations were updated rather than the app."
+}

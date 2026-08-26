@@ -38,6 +38,7 @@ from sap_material_physical_client import (
 )
 from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplierAuthError, SAPSupplierNotConfiguredError
 from sap_po_client import SAPPurchaseOrderClient, SAPPurchaseOrderError, SAPPurchaseOrderNotConfiguredError
+from sap_gsa_write_client import SAPGSAWriteClient
 from sap_price_spec_client import SAPPriceSpecClient, SAPPriceSpecError, bulk_push_erp_prices_to_sap
 from sap_supplier_invoice_client import SAPSupplierInvoiceClient, SAPSupplierInvoiceError
 from sap_cost_estimate_client import SAPCostEstimateClient, SAPCostEstimateError
@@ -73,6 +74,7 @@ import stock_transfer_service
 import company_cache_service
 import object_storage_service
 import supplier_portal_service
+import supplier_shipment_service
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -159,6 +161,7 @@ job_store.ensure_indexes(db)
 auth_service.ensure_indexes(db)
 store_approval_service.ensure_indexes(db)
 supplier_portal_service.ensure_indexes(db)
+supplier_shipment_service.ensure_indexes(db)
 
 _recovered_jobs = job_store.recover_orphaned_jobs(
     db, "Interrupted by a backend restart/deploy while this step was running - please retry this action."
@@ -289,6 +292,15 @@ sap_supplier_client = SAPSupplierClient(
 # activating the real SAP endpoint, see sap_po_client.py module docstring.
 sap_po_client = SAPPurchaseOrderClient(
     endpoint=os.environ.get('SAP_SOAP_PO_ENDPOINT'),
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
+)
+
+# Supplier Portal Phase 4 (Aug 2026) - blocked on a new write-capable GSA
+# endpoint + a technical-user authorization grant, see
+# sap_gsa_write_client.py module docstring.
+sap_gsa_write_client = SAPGSAWriteClient(
+    endpoint=os.environ.get('SAP_SOAP_GSA_WRITE_ENDPOINT'),
     username=os.environ['SAP_SOAP_USERNAME'],
     password=os.environ['SAP_SOAP_PASSWORD'],
 )
@@ -5220,13 +5232,45 @@ async def get_supplier_portal_purchase_orders(request: Request):
     account = await asyncio.to_thread(_require_supplier_account, request)
     if account.get("status") != "approved":
         raise HTTPException(status_code=403, detail="Your account is pending admin approval")
+    live_sync = True
     try:
         pos = await asyncio.to_thread(sap_po_client.get_open_pos_for_vendor, account["vendor_code"])
-    except SAPPurchaseOrderNotConfiguredError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    except SAPPurchaseOrderError as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    return {"purchase_orders": pos}
+        await asyncio.to_thread(supplier_shipment_service.refresh_po_cache, db, account["vendor_code"], pos)
+    except SAPPurchaseOrderError:
+        live_sync = False
+    pos = await asyncio.to_thread(supplier_shipment_service.get_cached_pos_with_remaining, db, account["vendor_code"])
+    return {"purchase_orders": pos, "live_sync": live_sync}
+
+
+class ShipmentItemRequest(BaseModel):
+    item_number: str
+    ship_qty: float
+
+
+class ShipmentCreateRequest(BaseModel):
+    po_number: str
+    items: List[ShipmentItemRequest]
+
+
+@api_router.post("/supplier-portal/shipments")
+async def post_supplier_portal_shipment(payload: ShipmentCreateRequest, request: Request):
+    account = await asyncio.to_thread(_require_supplier_account, request)
+    if account.get("status") != "approved":
+        raise HTTPException(status_code=403, detail="Your account is pending admin approval")
+    try:
+        shipment = await asyncio.to_thread(
+            supplier_shipment_service.create_shipment, db, account, payload.po_number,
+            [i.dict() for i in payload.items],
+        )
+    except supplier_shipment_service.ShipmentValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return shipment
+
+
+@api_router.get("/supplier-portal/shipments")
+async def get_supplier_portal_shipments(request: Request):
+    account = await asyncio.to_thread(_require_supplier_account, request)
+    return {"shipments": await asyncio.to_thread(supplier_shipment_service.list_shipments_for_vendor, db, account["vendor_code"])}
 
 
 @api_router.get("/admin/supplier-portal/accounts")
@@ -5263,6 +5307,47 @@ async def get_admin_supplier_portal_document(account_id: str, doc_type: str):
     except supplier_portal_service.SupplierPortalNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return Response(content=data, media_type=content_type, headers={"Content-Disposition": f'inline; filename="{filename}"'})
+
+
+# ---- Phase 4: internal GRN approval -> automated SAP Goods Receipt ----
+
+class GrnRejectRequest(BaseModel):
+    reason: str = ""
+
+
+@api_router.get("/admin/grn/shipments")
+async def get_admin_grn_shipments(status: str = Query(None)):
+    return {"shipments": await asyncio.to_thread(supplier_shipment_service.list_shipments, db, status)}
+
+
+@api_router.get("/admin/grn/lookup/{doc_code}")
+async def get_admin_grn_lookup(doc_code: str):
+    try:
+        return await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
+    except supplier_shipment_service.ShipmentNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@api_router.post("/admin/grn/{doc_code}/approve")
+async def post_admin_grn_approve(doc_code: str, request: Request):
+    approver = (request.state.user.get("name") or request.state.user.get("email") or "Unknown").strip()
+    try:
+        return await asyncio.to_thread(supplier_shipment_service.approve_shipment, db, doc_code, approver, sap_gsa_write_client)
+    except supplier_shipment_service.ShipmentNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except supplier_shipment_service.ShipmentValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api_router.post("/admin/grn/{doc_code}/reject")
+async def post_admin_grn_reject(doc_code: str, payload: GrnRejectRequest, request: Request):
+    approver = (request.state.user.get("name") or request.state.user.get("email") or "Unknown").strip()
+    try:
+        return await asyncio.to_thread(supplier_shipment_service.reject_shipment, db, doc_code, approver, payload.reason)
+    except supplier_shipment_service.ShipmentNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except supplier_shipment_service.ShipmentValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 app.include_router(api_router)

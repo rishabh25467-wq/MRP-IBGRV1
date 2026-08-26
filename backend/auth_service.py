@@ -138,8 +138,11 @@ PAGE_ROUTE_RULES = [
     ("/api/store-requests", {"store_approval"}),
     # Aug 2026: internal approval side of the new Supplier Portal
     # (Entra ID-authenticated staff, distinct from the JWT-authenticated
-    # external supplier routes below).
+    # external supplier routes below). Both the vendor-onboarding
+    # approvals AND the Phase 4 GRN approval screen share this same page
+    # permission - one internal team, one page.
     ("/api/admin/supplier-portal", {"supplier_portal_admin"}),
+    ("/api/admin/grn", {"supplier_portal_admin"}),
 ]
 
 # Paths the auth middleware never gates - login must stay reachable while

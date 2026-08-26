@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { Buildings, CheckCircle, UploadSimple } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,7 +24,6 @@ const FIELD_DEFS = [
 ];
 
 export default function SupplierSignupPage() {
-  const navigate = useNavigate();
   const [form, setForm] = useState({ vendor_code: "", company_name: "", email: "", password: "", gst_number: "", pan_number: "" });
   const [gstDoc, setGstDoc] = useState(null);
   const [panDoc, setPanDoc] = useState(null);
@@ -56,16 +55,16 @@ export default function SupplierSignupPage() {
 
   if (done) {
     return (
-      <div className="min-h-screen bg-[#0F172A] flex items-center justify-center p-4" data-testid="supplier-signup-success">
-        <div className="max-w-md w-full bg-white rounded-2xl p-8 text-center shadow-2xl">
-          <CheckCircle size={48} weight="fill" className="text-[#F59E0B] mx-auto mb-4" />
-          <h1 className="font-heading text-xl font-bold text-[#0F172A]">Request Submitted</h1>
-          <p className="text-sm text-[#475467] mt-2">
+      <div className="min-h-screen bg-[#F5F6F7] font-sans flex items-center justify-center p-4" data-testid="supplier-signup-success">
+        <div className="max-w-md w-full bg-white rounded-sm border border-[#CBD3DB] shadow-sm p-8 text-center">
+          <CheckCircle size={40} weight="fill" className="text-[#10B981] mx-auto mb-4" />
+          <h1 className="font-sans text-lg font-bold text-[#111827]">Request Submitted</h1>
+          <p className="text-sm text-[#5B738B] mt-2">
             Thanks for registering. Your onboarding request is now pending review by our purchasing team.
             You'll be able to sign in once your account is approved.
           </p>
           <Link to="/supplier-portal/login">
-            <Button className="mt-6 w-full bg-[#0F172A] hover:bg-[#1E293B]" data-testid="supplier-signup-go-to-login">Go to Sign In</Button>
+            <Button className="mt-6 w-full rounded-sm bg-[#0076CC] hover:bg-[#4DA3E0] transition-colors duration-150" data-testid="supplier-signup-go-to-login">Go to Sign In</Button>
           </Link>
         </div>
       </div>
@@ -73,26 +72,26 @@ export default function SupplierSignupPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0F172A] flex items-center justify-center p-4" data-testid="supplier-signup-page">
-      <div className="max-w-lg w-full bg-white rounded-2xl p-8 shadow-2xl">
-        <div className="flex items-center gap-2 mb-1">
-          <Buildings size={24} weight="fill" className="text-[#F59E0B]" />
-          <span className="font-heading font-bold text-[#0F172A] tracking-tight">Supplier Portal</span>
+    <div className="min-h-screen bg-[#F5F6F7] font-sans flex items-center justify-center p-4" data-testid="supplier-signup-page">
+      <div className="max-w-lg w-full bg-white rounded-sm border border-[#CBD3DB] shadow-sm p-8">
+        <div className="flex items-center gap-2 mb-1 pb-3 border-b border-[#CBD3DB]">
+          <Buildings size={22} weight="fill" className="text-[#0076CC]" />
+          <span className="font-sans font-bold text-[#111827] tracking-tight">Supplier Portal</span>
         </div>
-        <h1 className="font-heading text-lg font-bold text-[#0F172A] mt-3">Vendor Onboarding</h1>
-        <p className="text-sm text-[#667085] mt-1">Register with your SAP vendor code to start viewing your Purchase Orders online.</p>
+        <h1 className="font-sans text-base font-bold text-[#111827] mt-4">Vendor Onboarding</h1>
+        <p className="text-sm text-[#5B738B] mt-1">Register with your SAP vendor code to start viewing your Purchase Orders online.</p>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
           {FIELD_DEFS.map((f) => (
             <div key={f.name}>
-              <Label className="text-xs font-semibold text-[#344054]">{f.label}</Label>
+              <Label className="text-xs font-semibold text-[#5B738B]">{f.label}</Label>
               <Input
                 type={f.type || "text"}
                 placeholder={f.placeholder}
                 value={form[f.name]}
                 onChange={(e) => setForm({ ...form, [f.name]: e.target.value })}
                 required
-                className="mt-1"
+                className="mt-1 rounded-sm border-[#CBD3DB] focus:ring-2 focus:ring-[#4DA3E0] focus:outline-none"
                 data-testid={`supplier-signup-input-${f.name}`}
               />
             </div>
@@ -100,16 +99,16 @@ export default function SupplierSignupPage() {
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label className="text-xs font-semibold text-[#344054]">GST Certificate</Label>
-              <label className="mt-1 flex items-center gap-2 border border-dashed border-[#D0D5DD] rounded-lg px-3 py-2 text-xs text-[#667085] cursor-pointer hover:border-[#F59E0B]">
+              <Label className="text-xs font-semibold text-[#5B738B]">GST Certificate</Label>
+              <label className="mt-1 flex items-center gap-2 border border-dashed border-[#CBD3DB] rounded-sm px-3 py-2 text-xs text-[#5B738B] cursor-pointer hover:border-[#0076CC] transition-colors duration-150">
                 <UploadSimple size={16} />
                 <span className="truncate">{gstDoc ? gstDoc.name : "Upload file"}</span>
                 <input type="file" accept=".pdf,.png,.jpg,.jpeg" className="hidden" onChange={(e) => setGstDoc(e.target.files?.[0] || null)} data-testid="supplier-signup-gst-doc-input" />
               </label>
             </div>
             <div>
-              <Label className="text-xs font-semibold text-[#344054]">PAN Card</Label>
-              <label className="mt-1 flex items-center gap-2 border border-dashed border-[#D0D5DD] rounded-lg px-3 py-2 text-xs text-[#667085] cursor-pointer hover:border-[#F59E0B]">
+              <Label className="text-xs font-semibold text-[#5B738B]">PAN Card</Label>
+              <label className="mt-1 flex items-center gap-2 border border-dashed border-[#CBD3DB] rounded-sm px-3 py-2 text-xs text-[#5B738B] cursor-pointer hover:border-[#0076CC] transition-colors duration-150">
                 <UploadSimple size={16} />
                 <span className="truncate">{panDoc ? panDoc.name : "Upload file"}</span>
                 <input type="file" accept=".pdf,.png,.jpg,.jpeg" className="hidden" onChange={(e) => setPanDoc(e.target.files?.[0] || null)} data-testid="supplier-signup-pan-doc-input" />
@@ -117,15 +116,15 @@ export default function SupplierSignupPage() {
             </div>
           </div>
 
-          {error && <div className="text-sm text-[#B42318] bg-[#FEF3F2] border border-[#FDA29B] rounded-lg px-3 py-2" data-testid="supplier-signup-error">{error}</div>}
+          {error && <div className="text-sm text-[#B91C1C] bg-[#E02424]/10 border border-[#E02424]/30 rounded-sm px-3 py-2" data-testid="supplier-signup-error">{error}</div>}
 
-          <Button type="submit" disabled={submitting} className="w-full bg-[#0F172A] hover:bg-[#1E293B]" data-testid="supplier-signup-submit-button">
+          <Button type="submit" disabled={submitting} className="w-full rounded-sm bg-[#0076CC] hover:bg-[#4DA3E0] transition-colors duration-150" data-testid="supplier-signup-submit-button">
             {submitting ? "Submitting..." : "Submit for Approval"}
           </Button>
         </form>
 
-        <p className="text-xs text-[#667085] text-center mt-5">
-          Already registered? <Link to="/supplier-portal/login" className="text-[#0F172A] font-semibold underline" data-testid="supplier-signup-login-link">Sign in</Link>
+        <p className="text-xs text-[#5B738B] text-center mt-5">
+          Already registered? <Link to="/supplier-portal/login" className="text-[#0076CC] font-semibold underline" data-testid="supplier-signup-login-link">Sign in</Link>
         </p>
       </div>
     </div>
