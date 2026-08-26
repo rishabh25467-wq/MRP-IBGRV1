@@ -3,6 +3,14 @@
   filters and the "N of M shipments" counter/Clear button. Client-side only, no backend change.
 
 
+- **Shipment Detail Modal** (2026-08-28): clicking any shipment row (Edit button stops propagation) opens
+  a modal with the full item list, created/approved/rejected timestamps + who approved/rejected, the
+  rejection reason if any, and (for approved shipments) the SAP Posting Status section showing
+  `sap_sync_status` plus a per-PO breakdown from `sap_gr_result.per_po` when available. Verified live via
+  screenshot - correctly surfaced a real historical SAP error from before this session's
+  `sap_gsa_write_client.py` namespace fix, confirming the modal reflects real stored data.
+
+
 ## FEATURE BATCH #2: Bulk Cart Add + Shipment History Filters (2026-08-28)
 
 - **Bulk Cart Add**: a "Select all N items" link appears once per PO group in the dashboard table

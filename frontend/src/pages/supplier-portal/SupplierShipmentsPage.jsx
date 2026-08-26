@@ -41,6 +41,8 @@ export default function SupplierShipmentsPage() {
   const [dateTo, setDateTo] = useState("");
   const [search, setSearch] = useState("");
 
+  const [detailShipment, setDetailShipment] = useState(null);
+
   const load = async () => {
     try {
       const params = isImpersonating ? { as_vendor: vendorCode } : {};
@@ -209,7 +211,7 @@ export default function SupplierShipmentsPage() {
                   const badge = SHIPMENT_STATUS_BADGE[s.status] || SHIPMENT_STATUS_BADGE.in_transit;
                   const Icon = badge.icon;
                   return (
-                    <tr key={s._id} className="border-b border-[#CBD3DB]" data-testid={`supplier-shipment-row-${s._id}`}>
+                    <tr key={s._id} onClick={() => setDetailShipment(s)} className="border-b border-[#CBD3DB] cursor-pointer hover:bg-[#F5F6F7]/60 transition-colors duration-150" data-testid={`supplier-shipment-row-${s._id}`}>
                       <td className="px-3 py-2 font-data font-bold text-[#111827]">{s._id}</td>
                       <td className="px-3 py-2 font-data text-xs text-[#5B738B]">{new Date(s.created_at).toLocaleDateString()}</td>
                       <td className="px-3 py-2 font-data text-xs">{[...new Set(s.items.map((it) => it.po_number))].join(", ")}</td>
@@ -231,7 +233,7 @@ export default function SupplierShipmentsPage() {
                       </td>
                       <td className="px-3 py-2 text-right">
                         {s.status === "in_transit" && (
-                          <Button size="sm" variant="outline" onClick={() => openEdit(s)} className="rounded-sm" data-testid={`supplier-shipment-edit-button-${s._id}`}>
+                          <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); openEdit(s); }} className="rounded-sm" data-testid={`supplier-shipment-edit-button-${s._id}`}>
                             <PencilSimple size={12} className="mr-1" /> Edit
                           </Button>
                         )}
@@ -322,6 +324,82 @@ export default function SupplierShipmentsPage() {
               {saving ? "Saving..." : "Yes, Save Changes"}
             </Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!detailShipment} onOpenChange={(o) => !o && setDetailShipment(null)}>
+        <DialogContent className="rounded-sm max-w-2xl" data-testid="supplier-shipment-detail-modal">
+          <DialogHeader>
+            <DialogTitle className="font-sans font-data flex items-center gap-2">
+              {detailShipment?._id}
+              {detailShipment && (() => {
+                const badge = SHIPMENT_STATUS_BADGE[detailShipment.status] || SHIPMENT_STATUS_BADGE.in_transit;
+                const Icon = badge.icon;
+                return (
+                  <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-sm text-xs font-semibold ${badge.className}`}>
+                    <Icon size={12} /> {badge.label}
+                  </span>
+                );
+              })()}
+            </DialogTitle>
+            <DialogDescription>
+              Created {detailShipment && new Date(detailShipment.created_at).toLocaleString()}
+              {detailShipment?.status === "approved" && detailShipment?.approved_at && ` · Received ${new Date(detailShipment.approved_at).toLocaleString()}${detailShipment.approved_by ? ` by ${detailShipment.approved_by}` : ""}`}
+              {detailShipment?.status === "rejected" && detailShipment?.rejected_at && ` · Rejected ${new Date(detailShipment.rejected_at).toLocaleString()}${detailShipment.rejected_by ? ` by ${detailShipment.rejected_by}` : ""}`}
+            </DialogDescription>
+          </DialogHeader>
+
+          {detailShipment?.status === "rejected" && detailShipment?.rejection_reason && (
+            <div className="text-sm text-[#B91C1C] bg-[#E02424]/10 border border-[#E02424]/30 rounded-sm px-3 py-2" data-testid="supplier-shipment-detail-rejection-reason">
+              Reason: {detailShipment.rejection_reason}
+            </div>
+          )}
+
+          <table className="w-full text-sm border-collapse mt-2">
+            <thead className="text-[#5B738B] text-xs uppercase">
+              <tr>
+                <th className="text-left py-1 font-semibold">PO Number</th>
+                <th className="text-left py-1 font-semibold">Item</th>
+                <th className="text-left py-1 font-semibold">Description</th>
+                <th className="text-right py-1 font-semibold">Ship Qty</th>
+                <th className="text-right py-1 font-semibold">PO Qty</th>
+              </tr>
+            </thead>
+            <tbody>
+              {detailShipment?.items.map((it, i) => (
+                <tr key={i} className="border-t border-[#CBD3DB]" data-testid={`supplier-shipment-detail-item-${it.po_number}-${it.item_number}`}>
+                  <td className="py-1.5 font-data">{it.po_number}</td>
+                  <td className="py-1.5 font-data">{it.item_number}</td>
+                  <td className="py-1.5">{it.description}</td>
+                  <td className="py-1.5 text-right font-data font-semibold">{it.ship_qty} {it.unit_of_measure}</td>
+                  <td className="py-1.5 text-right font-data text-[#5B738B]">{it.po_qty}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {detailShipment?.status === "approved" && (
+            <div className="border-t border-[#CBD3DB] pt-3 mt-1" data-testid="supplier-shipment-detail-sap-status">
+              <div className="text-xs font-semibold text-[#5B738B] uppercase mb-1.5">SAP Posting Status</div>
+              <div className="flex items-center gap-1.5 text-sm" style={{ color: detailShipment.sap_sync_status === "posted" ? "#0B7A56" : "#1D4ED8" }}>
+                <PlugsConnected size={14} />
+                {detailShipment.sap_sync_status === "posted" ? "Posted to SAP" : "SAP posting pending"}
+              </div>
+              {detailShipment.sap_gr_result?.per_po && (
+                <div className="mt-2 space-y-1">
+                  {detailShipment.sap_gr_result.per_po.map((r, i) => (
+                    <div key={i} className="text-xs flex items-center gap-2" data-testid={`supplier-shipment-detail-sap-po-result-${r.po_number}`}>
+                      <span className="font-data font-semibold">PO {r.po_number}</span>
+                      <span className={r.ok !== false ? "text-[#0B7A56]" : "text-[#B91C1C]"}>{r.ok !== false ? "Received by SAP" : (r.reason || "SAP rejected this posting")}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {detailShipment.sap_gr_result?.reason && !detailShipment.sap_gr_result?.per_po && (
+                <div className="text-xs text-[#B91C1C] mt-1">{detailShipment.sap_gr_result.reason}</div>
+              )}
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>
