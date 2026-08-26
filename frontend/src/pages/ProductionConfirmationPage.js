@@ -108,7 +108,8 @@ const LastConfirmationBadges = ({ data, productionLotId, lastConfKey, taskFinish
       const { data: res } = await axios.post(`${API}/production-confirmation/retry-wip-clearing`, {
         production_lot_id: productionLotId, site_id: siteId, actor: actorName.trim(),
       });
-      if (res.wip_clearing?.success) toast.success(`WIP Clearing Run succeeded for Lot ${productionLotId}`);
+      if (res.wip_clearing?.skipped) toast.info(res.wip_clearing.log || "Other operations on this lot are still open - WIP Clearing deferred");
+      else if (res.wip_clearing?.success) toast.success(`WIP Clearing Run succeeded for Lot ${productionLotId}`);
       else toast.error(`WIP Clearing Run failed again: ${res.wip_clearing?.log || "see SAP for details"}`);
       onRetried?.(lastConfKey || productionLotId, { wip_clearing: res.wip_clearing });
     } catch (e) {
@@ -124,8 +125,9 @@ const LastConfirmationBadges = ({ data, productionLotId, lastConfKey, taskFinish
         production_lot_id: productionLotId, site_id: siteId, main_output_product: mainOutputProduct,
         confirmed_quantity: data.confirmed_quantity, unit_code: unitCode, actor: actorName.trim(),
       });
-      if (res.fg_movement?.ok) toast.success(`Moved to ${siteId}-FG for Lot ${productionLotId}`);
-      else toast.error(`FG Movement failed again: ${res.fg_movement?.error || "see SAP for details"}`);
+      if (res.fg_movement?.skipped) toast.info(res.fg_movement.error_detail || "Other operations on this lot are still open - FG Goods Movement deferred");
+      else if (res.fg_movement?.ok) toast.success(`Moved to ${siteId}-FG for Lot ${productionLotId}`);
+      else toast.error(`FG Movement failed again: ${res.fg_movement?.error || res.fg_movement?.error_detail || "see SAP for details"}`);
       onRetried?.(lastConfKey || productionLotId, { fg_movement: res.fg_movement });
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed to retry FG Movement");
@@ -165,8 +167,10 @@ const LastConfirmationBadges = ({ data, productionLotId, lastConfKey, taskFinish
       {data.byproduct_confirmation != null && chip(!!data.byproduct_confirmation.success, "By-product")}
       {data.fg_movement != null && (
         <div className="flex items-center gap-1">
-          {chip(!!data.fg_movement.ok, "FG Moved")}
-          {!data.fg_movement.ok && siteId && mainOutputProduct && (
+          {data.fg_movement.skipped
+            ? neutralChip("FG Pending", data.fg_movement.error_detail)
+            : chip(!!data.fg_movement.ok, "FG Moved")}
+          {!data.fg_movement.skipped && !data.fg_movement.ok && siteId && mainOutputProduct && (
             <button
               type="button"
               disabled={retryingFg}

@@ -2533,13 +2533,19 @@ async def retry_fg_movement(payload: RetryFgMovementRequest):
     that lot's most recent history entry."""
     if not payload.actor.strip():
         raise HTTPException(status_code=400, detail="actor (your name) is required")
-    owner_party_id, _ = company_and_set_of_books_for_site(payload.site_id)
-    fg_movement = await asyncio.to_thread(
-        store_approval_service._trigger_goods_movement,
-        sap_goods_movement_client, owner_party_id, payload.main_output_product,
-        f"{payload.site_id}-SFG", f"{payload.site_id}-FG",
-        payload.confirmed_quantity, payload.unit_code or "EA", payload.site_id,
-    )
+    if not await asyncio.to_thread(_all_lot_operations_finished, payload.production_lot_id):
+        fg_movement = {
+            "ok": None, "attempted": False, "skipped": True,
+            "error_detail": "Other operations on this lot are still open in SAP - the FG Goods Movement will run automatically once the last operation is finished.",
+        }
+    else:
+        owner_party_id, _ = company_and_set_of_books_for_site(payload.site_id)
+        fg_movement = await asyncio.to_thread(
+            store_approval_service._trigger_goods_movement,
+            sap_goods_movement_client, owner_party_id, payload.main_output_product,
+            f"{payload.site_id}-SFG", f"{payload.site_id}-FG",
+            payload.confirmed_quantity, payload.unit_code or "EA", payload.site_id,
+        )
     updated = await asyncio.to_thread(
         production_confirmation_service.retry_fg_movement_for_lot, db, payload.production_lot_id, fg_movement,
     )
