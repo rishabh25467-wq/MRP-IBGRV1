@@ -1,0 +1,51 @@
+{
+  "summary": "Full e2e test of iteration_123 Supplier Portal features: new test@test.com login (vendor H1330), vendorCode-in-URL routing, extra PO columns (PO From/PO Date/Unit Price/Subtotal), PO search, PO detail modal with PO Total, multi-PO shopping-cart shipment creation with 2-step confirm, testing-only vendor impersonation (?as_vendor), new Shipments page with edit-until-locked flow (PUT /shipments/{code}), and internal /admin/grn-approval multi-PO regression. Backend: 17/17 pytest cases pass. Frontend: every requested flow works end-to-end and persists. Found 1 HIGH backend code bug (SAP GR posting can never succeed - KeyError 'namespace' in the SOAP envelope format call) plus a handful of medium/minor gaps (cart still enabled while impersonating, legacy shipments show blank PO Numbers, buyer-entity fallback deviates from spec).",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/admin/grn/{doc_code}/approve -> sap_gsa_write_client.post_goods_receipt", "issue": "sap_gsa_write_client.py:_ENVELOPE_TEMPLATE contains the placeholder {namespace} but .format(items=..., doc_code=...) never passes `namespace`, so every approve raises KeyError('namespace') BEFORE any HTTP call to SAP. UI shows 'SAP posting pending - namespace' and sap_gr_result.reason=\"'namespace'\". This is NOT a SAP-side/authorization problem - the real GR post is unreachable in its current form. Internal approval itself is correctly recorded (status -> Received).", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "POST/PUT /api/supplier-portal/shipments", "issue": "Both ignore the ?as_vendor testing override and always use account['vendor_code']. While impersonating another vendor the dashboard cart is fully enabled but submission fails with a confusing 400 'Item 1 was not found on Purchase Order 28663'. Either honour as_vendor in testing mode or disable the cart/checkboxes while impersonating."},
+      {"endpoint": "GET /api/supplier-portal/purchase-orders (buyer_entity_name)", "issue": "sap_po_client.buyer_entity_name() maps only {'RI','RT'} and falls back to the raw buyer_code (or '-'). Spec said 'RAY INTERNATIONAL for RI, RADISH TECHNOLOGIES otherwise' - any third/blank buyer code will render a raw code instead of the default entity name."},
+      {"endpoint": "GET /api/supplier-portal/shipments, GET /api/admin/grn/shipments", "issue": "Pre-migration shipments (F2EJT7, Q7YA7Z) created under the old top-level po_number schema have items without po_number, so the new 'PO Numbers' column renders blank on BOTH the vendor Shipments page and the internal GRN pending list. Needs a one-off data migration (copy top-level po_number into each item) or a display fallback."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "SupplierDashboardPage cart", "issue": "PO rows with remaining/open qty of 0 still render an enabled checkbox + ship-qty input; selecting one only fails at submit time with a backend 400 instead of being disabled up front", "selector": "[data-testid='supplier-po-checkbox-<po>-<item>']", "priority": "LOW"},
+      {"component": "SupplierDashboardPage / SupplierShipmentsPage", "issue": "Checking a line item (or adding one in the edit dialog) pre-fills ship qty with the FULL remaining quantity (e.g. 10000/17000). One accidental click-through creates a shipment for the entire open PO qty - suggest defaulting to blank/1", "selector": "[data-testid='supplier-po-qty-input-<po>-<item>']", "priority": "LOW"},
+      {"component": "SupplierShipmentsPage items column", "issue": "ITEMS column shows cryptic 'item_number x qty' pairs (e.g. '3 x 9, 3 x 10000') with no product description or PO context; the internal GRN detail table is much clearer", "selector": "[data-testid='supplier-shipments-table']", "priority": "LOW"}
+    ],
+    "integration_issues": [
+      {"flow": "Vendor impersonation + shipment creation", "issue": "Dashboard cart works visually while impersonating vendor B2551 but 'Yes, Generate Code' fails (400 item-not-found) because POST /shipments ignores as_vendor", "affected_selectors": ["[data-testid='supplier-vendor-search-input']", "[data-testid='supplier-confirm-generate-button']"]}
+    ],
+    "design_issues": [
+      {"screen": "Supplier dashboard (mobile 390px)", "issues": ["Company name / vendor code block in the header is hidden on small screens (only search + Shipments + Sign Out visible); vendor code is only visible in the sub-heading", "PO table needs horizontal scrolling with 10 columns - acceptable but PO From/PO Date wrap heavily"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_supplier_portal_iter123.py",
+    "/app/test_reports/pytest/iter123.xml"
+  ],
+  "action_items": [
+    "FIX HIGH: pass namespace=<GSA SOAP namespace> into _ENVELOPE_TEMPLATE.format() in /app/backend/sap_gsa_write_client.py - currently every GRN approval's SAP post dies with KeyError('namespace') before any HTTP request",
+    "Decide impersonation semantics: either honour ?as_vendor in POST/PUT /supplier-portal/shipments when SUPPLIER_PORTAL_TESTING_MODE=true, or hide the cart/checkbox column while impersonating so testers don't hit a misleading 400",
+    "Migrate (or add display fallback for) legacy shipments whose items have no po_number - PO Numbers column is blank for F2EJT7 / Q7YA7Z on the vendor Shipments page and the GRN pending list",
+    "buyer_entity_name(): default to 'RADISH TECHNOLOGIES' for unmapped/blank buyer codes as specified, instead of echoing the raw code",
+    "Optional UX: disable checkbox/qty for zero-open-qty rows, and don't pre-fill ship qty with the entire remaining PO quantity"
+  ],
+  "critical_code_review_comments": [
+    "sap_gsa_write_client._ENVELOPE_TEMPLATE.format(...) is missing the `namespace` kwarg -> guaranteed KeyError on every call; add a unit test that formats the envelope so this can't regress silently.",
+    "supplier_shipment_service.create_shipment/update_shipment_items take the full account dict but only ever use vendor_code/_id/company_name - passing an explicit vendor_code would let the testing-mode override work consistently across GET/POST/PUT.",
+    "get_cached_pos_with_remaining() runs one aggregate per cached line item (_shipped_qty_so_far in a loop) - fine at 10 rows, but O(N) round trips; consider a single $unwind aggregate keyed by (po_number,item_number) if vendors ever have hundreds of open lines.",
+    "TESTING-ONLY code (SUPPLIER_PORTAL_TESTING_MODE, _effective_vendor_code, /supplier-portal/testing/vendor-directory, the header search box) is well flagged - keep a single pre-launch checklist item to delete it."
+  ],
+  "updated_files": ["/app/backend/tests/test_supplier_portal_iter123.py"],
+  "success_rate": {"backend": "100% (17/17 pytest cases)", "frontend": "100% of requested flows functional; 4 minor UI/UX defects noted"},
+  "seed_data_creation": "Created 4 real shipments for vendor H1330 via the UI/API: LFQP9Z (28792+28833), YUDU3D (28792+28833, then APPROVED via /admin/grn-approval so it is now locked/read-only), WVHKWT and 39GA52 (28792). Small quantities (2-9 units) plus one 17000/10000-qty line consumed from open POs 28792/28833. No SAP writes succeeded (see namespace bug).",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "test@test.com / Test123 (vendor H1330, testing_mode true) and hamidi.demo@vendorportal.test / HamidiDemo123 both verified working and both land on /supplier-portal/dashboard/H1330. Internal GRN session cookie vms_session=_nNTeagpGyLWuMhFLKHF2qvr0lfmKm8P (expires 2026-08-27 10:38 UTC) verified working for /admin/grn-approval.",
+  "context_for_next_testing_agent": "Verified working: login->/dashboard/H1330 (and bare /dashboard + /shipments redirect to the vendor code), 10 PO rows with PO From=RAY INTERNATIONAL / PO Date / Unit Price / Subtotal all populated for POs 28792/28833/28897, PO search by number/product-id/description + no-match state, PO detail modal with computed PO Total (28792 = Rs 5,16,480), multi-PO cart -> floating bar -> Review dialog (editable qty + remove) -> SEPARATE 'Generate Shipment Code?' dialog -> 6-char code (no dialog skipping, no premature POST), impersonation to B2551 (URL + real different PO data), Shipments page list + Edit dialog (qty change, add via search from another PO, remove) with 'Save these changes?' confirm and verified persistence after reload, approved shipment becomes read-only (no Edit), GRN page shows multi-PO 'PO Numbers'. IMPORTANT ENV GOTCHA: uvicorn --reload watches /app/backend, so creating/editing files under /app/backend/tests restarts the backend and API calls time out for ~2 min - wait ~60-90s after writing a test file before running it (my first pytest run failed entirely for this reason). Regression suite: pytest tests/test_supplier_portal_iter123.py (pytest.ini already forces xdist loadscope, so keep per-class fixtures self-contained).",
+  "rca_of_the_issue": "SAP GR posting failure RCA: sap_gsa_write_client.py builds the SOAP envelope with _ENVELOPE_TEMPLATE.format(items=items_xml, doc_code=...) while the template also contains xmlns:n0=\"{namespace}\"; str.format raises KeyError('namespace'). approve_shipment catches all exceptions and stores sap_gr_result={'ok':False,'reason':\"'namespace'\"} with sap_sync_status='pending', which is why the GRN UI reports 'SAP posting pending - namespace' - i.e. no SAP request is ever sent. Reproduction: lookup any in_transit code on /admin/grn-approval and click 'Approve & Post to SAP'. Mitigation: supply the GSA namespace constant to .format()."
+}

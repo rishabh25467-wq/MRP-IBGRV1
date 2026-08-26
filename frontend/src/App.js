@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
 import BomExplorerPage from "@/pages/BomExplorerPage";
 import PurchasingPlanPage from "@/pages/PurchasingPlanPage";
 import ProductionPlanPage from "@/pages/ProductionPlanPage";
@@ -24,6 +24,7 @@ import SupplierSignupPage from "@/pages/supplier-portal/SupplierSignupPage";
 import SupplierLoginPage from "@/pages/supplier-portal/SupplierLoginPage";
 import SupplierPendingPage from "@/pages/supplier-portal/SupplierPendingPage";
 import SupplierDashboardPage from "@/pages/supplier-portal/SupplierDashboardPage";
+import SupplierShipmentsPage from "@/pages/supplier-portal/SupplierShipmentsPage";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { SupplierAuthProvider, useSupplierAuth } from "@/contexts/SupplierAuthContext";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
@@ -80,12 +81,19 @@ function HomeRoute() {
 // (vendors, not Azure AD identities), so it must never be wrapped by the
 // internal AuthGate below (which forces a Microsoft sign-in for anyone
 // without a `vms_session` cookie - suppliers don't have one at all).
-function SupplierPortalGate() {
+// Aug 28 2026, user's explicit ask: the URL must clearly show WHICH
+// vendor is being viewed instead of a bare "/dashboard" - redirects to
+// the account's own vendor_code the first time, then that code stays in
+// the URL (also doubles as the mechanism for the testing-only vendor
+// impersonation search - see SupplierDashboardPage.jsx).
+function SupplierPortalGate({ page }) {
   const { account, loading } = useSupplierAuth();
+  const { vendorCode } = useParams();
   if (loading) return null;
   if (!account) return <Navigate to="/supplier-portal/login" replace />;
   if (account.status !== "approved") return <SupplierPendingPage />;
-  return <SupplierDashboardPage />;
+  if (!vendorCode) return <Navigate to={`/supplier-portal/${page}/${account.vendor_code}`} replace />;
+  return page === "shipments" ? <SupplierShipmentsPage /> : <SupplierDashboardPage />;
 }
 
 function InternalApp() {
@@ -135,8 +143,11 @@ function AppShell() {
       <Routes>
         <Route path="/supplier-portal/signup" element={<SupplierSignupPage />} />
         <Route path="/supplier-portal/login" element={<SupplierLoginPage />} />
-        <Route path="/supplier-portal" element={<SupplierPortalGate />} />
-        <Route path="/supplier-portal/dashboard" element={<SupplierPortalGate />} />
+        <Route path="/supplier-portal" element={<SupplierPortalGate page="dashboard" />} />
+        <Route path="/supplier-portal/dashboard" element={<SupplierPortalGate page="dashboard" />} />
+        <Route path="/supplier-portal/dashboard/:vendorCode" element={<SupplierPortalGate page="dashboard" />} />
+        <Route path="/supplier-portal/shipments" element={<SupplierPortalGate page="shipments" />} />
+        <Route path="/supplier-portal/shipments/:vendorCode" element={<SupplierPortalGate page="shipments" />} />
       </Routes>
     );
   }

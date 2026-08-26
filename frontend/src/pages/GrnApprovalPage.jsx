@@ -141,7 +141,7 @@ export default function GrnApprovalPage() {
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-lg font-data font-bold text-[#0076CC]">{shipment._id}</div>
-                <div className="text-sm text-[#5B738B]">{shipment.company_name} ({shipment.vendor_code}) · PO {shipment.po_number}</div>
+                <div className="text-sm text-[#5B738B]">{shipment.company_name} ({shipment.vendor_code}) · {[...new Set(shipment.items.map((it) => it.po_number))].map((p) => `PO ${p}`).join(", ")}</div>
               </div>
               <Badge className={STATUS_BADGE[shipment.status].className}>{STATUS_BADGE[shipment.status].label}</Badge>
             </div>
@@ -149,6 +149,7 @@ export default function GrnApprovalPage() {
             <table className="w-full text-sm mt-4 border-collapse">
               <thead className="text-[#5B738B] text-xs uppercase">
                 <tr>
+                  <th className="text-left py-1 font-semibold">PO Number</th>
                   <th className="text-left py-1 font-semibold">Item</th>
                   <th className="text-left py-1 font-semibold">Description</th>
                   <th className="text-right py-1 font-semibold">Ship Qty</th>
@@ -158,6 +159,7 @@ export default function GrnApprovalPage() {
               <tbody>
                 {shipment.items.map((it, i) => (
                   <tr key={i} className="border-t border-[#CBD3DB]">
+                    <td className="py-1.5 font-data">{it.po_number}</td>
                     <td className="py-1.5 font-data">{it.item_number}</td>
                     <td className="py-1.5">{it.description}</td>
                     <td className="py-1.5 text-right font-data font-semibold">{it.ship_qty} {it.unit_of_measure}</td>
@@ -203,7 +205,7 @@ export default function GrnApprovalPage() {
               <tr>
                 <th className="text-left px-3 py-2 font-semibold">Code</th>
                 <th className="text-left px-3 py-2 font-semibold">Vendor</th>
-                <th className="text-left px-3 py-2 font-semibold">PO Number</th>
+                <th className="text-left px-3 py-2 font-semibold">PO Numbers</th>
                 <th className="text-left px-3 py-2 font-semibold">Created</th>
               </tr>
             </thead>
@@ -215,7 +217,7 @@ export default function GrnApprovalPage() {
                 <tr key={s._id} className="border-b border-[#CBD3DB] cursor-pointer hover:bg-[#F5F6F7] transition-colors duration-150" onClick={() => lookup(s._id)} data-testid={`grn-pending-row-${s._id}`}>
                   <td className="px-3 py-2 font-data font-bold">{s._id}</td>
                   <td className="px-3 py-2">{s.company_name}</td>
-                  <td className="px-3 py-2 font-data">{s.po_number}</td>
+                  <td className="px-3 py-2 font-data">{[...new Set(s.items.map((it) => it.po_number))].join(", ")}</td>
                   <td className="px-3 py-2 text-[#5B738B]">{new Date(s.created_at).toLocaleString()}</td>
                 </tr>
               ))}

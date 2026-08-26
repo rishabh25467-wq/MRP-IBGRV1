@@ -1,3 +1,52 @@
+## FEATURE BATCH: PO detail/search/pricing + cart-based multi-PO shipments + testing tools (2026-08-28)
+
+- **New test login**: `test@test.com` / `Test123`, vendor_code `H1330` (same real vendor as hamidi.demo).
+- **URL now shows the vendor being viewed** (user's explicit ask): `/supplier-portal/dashboard` and
+  `/supplier-portal/shipments` are now `/supplier-portal/dashboard/:vendorCode` and
+  `/supplier-portal/shipments/:vendorCode` - `SupplierPortalGate` in App.js redirects a bare path to the
+  logged-in account's own vendor_code.
+- **Testing-only vendor impersonation** (REMOVE BEFORE LAUNCH): a search box in the dashboard header
+  (only rendered when `account.testing_mode` is true) lets a tester view ANY cached vendor's PO/shipment
+  data. Gated end-to-end by a single flag: `SUPPLIER_PORTAL_TESTING_MODE=true` in backend/.env -> flip to
+  `false` (or delete `_effective_vendor_code`'s override branch in server.py + the search UI in
+  `SupplierDashboardPage.jsx`) to fully remove before going live. New `GET /supplier-portal/testing/
+  vendor-directory?q=` endpoint (404s when the flag is off) backs the search, sourced from
+  `supplier_portal_po_cache.vendor_name` (captured from SAP's `ShipFromLocation` on each PO item).
+- **PO table**: added a search box (PO #/item #/description, client-side filter over the already-cached
+  rows) and four new columns - `Unit Price`, `Subtotal` (SAP's `NetUnitPrice`/`NetAmount`), `PO Date`
+  (SAP `SystemAdministrativeData/CreationDateTime`), `PO From` (buying entity name - `PartyBuyerPartyKey/
+  PartyID` mapped via `sap_po_client.buyer_entity_name()`: `RI` -> "RAY INTERNATIONAL", else -> "RADISH
+  TECHNOLOGIES", same 2-entity mapping already used in `stock_transfer_service.py`). Clicking a PO number
+  opens a detail modal with all of that PO's line items + a computed PO Total.
+- **Shipment creation redesigned into a cart flow** (user's explicit ask): checkbox + qty per PO line
+  item builds a cart that can span MULTIPLE POs at once -> floating "Review Shipment" bar -> Review
+  dialog (editable qty/remove) -> separate "Generate Shipment Code?" confirmation dialog -> only then
+  POSTs and shows the code. Backend schema changed: `supplier_portal_shipments.items[]` now each carry
+  their OWN `po_number` (was a single top-level `po_number` covering all items) - 6 pre-existing legacy
+  shipment docs were migrated (top-level `po_number` backfilled onto each of their items).
+- **New Shipments page** (`/supplier-portal/shipments/:vendorCode`, `SupplierShipmentsPage.jsx`): lists
+  all the vendor's shipments; any still `in_transit` shows an Edit button (add items via a search against
+  open POs, remove items, change qty, behind its own "Save these changes?" confirm) via new
+  `PUT /api/supplier-portal/shipments/{doc_code}`. Locked (no Edit button) once Approved or Rejected by
+  internal staff - enforced server-side in `update_shipment_items`, not just hidden in the UI.
+  `approve_shipment` now groups items by `po_number` and posts ONE Goods Receipt call per distinct PO
+  (a shipment can span multiple POs).
+- **Bugs found + fixed by testing_agent (iteration_123), same session**:
+  - `sap_gsa_write_client.py`'s SOAP envelope template was missing the `namespace` kwarg on `.format()`,
+    so EVERY GRN approval's SAP-posting attempt threw a local `KeyError` before even reaching SAP
+    (pre-existing bug, unrelated to this session's other changes, surfaced by this feature's testing).
+    Fixed - confirmed live: the request now actually reaches SAP (got a real SAP-side 500 back, which is
+    the separately-tracked "STILL OPEN/UNVERIFIED" SAP write item, not a local error).
+  - `buyer_entity_name()` fell back to the raw buyer code instead of "RADISH TECHNOLOGIES" for any
+    unmapped/blank code - fixed.
+  - Cart/edit quantity inputs pre-filled with the FULL remaining qty by default - changed to blank, so a
+    vendor must type an intentional quantity.
+  - Testing-mode vendor impersonation only worked for `GET` endpoints - `POST /shipments` now also
+    honors `?as_vendor=` (gated the same way); `PUT /shipments/{code}` needed no change since it already
+    scopes to the shipment's own stored `vendor_code`, not the account's.
+  - Vendor code/company name were hidden on narrow screens in the dashboard header - now always visible.
+
+
 ## CRITICAL BUG FIXED #2: supplier PO fetch was serving a 2-year-old stale batch, then background-cache refactor (2026-08-28)
 
 - **User report** (persisted even after the cross-vendor leak fix below): "the pos that loaded for hamidi do not seem to be correct" / "I do not see right POs in supplier portal for the vendor Hamidi Exports."

@@ -90,6 +90,16 @@ from sap_rate_limiter import sap_semaphore
 SOAP_ACTION = ""
 FINISHED_DELIVERY_STATUS_CODE = "3"
 
+# The buying company legal entity for a PO (`PartyBuyerPartyKey/PartyID`,
+# e.g. "RI") - same 2-entity setup already used elsewhere in this app
+# (see stock_transfer_service.py's identical mapping) - added for the
+# Supplier Portal PO table's "PO From" column (Aug 28 2026, user's ask).
+BUYER_ENTITY_NAMES = {"RI": "RAY INTERNATIONAL", "RT": "RADISH TECHNOLOGIES"}
+
+
+def buyer_entity_name(buyer_code: str) -> str:
+    return BUYER_ENTITY_NAMES.get(buyer_code, "RADISH TECHNOLOGIES")
+
 WATERMARK_COLLECTION = "sap_po_watermark"
 WATERMARK_STALE_AFTER = timedelta(days=3)
 # Kept a bit under FETCH_LIMIT so one batch starting at the watermark
@@ -227,18 +237,32 @@ class SAPPurchaseOrderClient:
             vendor_code = po.findtext("PartySellerPartyKey/PartyID")
             if not vendor_code or po.findtext("DeliveryProcessingStatusCode") == FINISHED_DELIVERY_STATUS_CODE:
                 continue
+            po_date = po.findtext("SystemAdministrativeData/CreationDateTime")
+            buyer_code = po.findtext("PartyBuyerPartyKey/PartyID")
+            currency = po.findtext("CurrencyCode")
+            vendor_name = None
             for item in po.findall("PurchaseOrderItem"):
                 qty_el = item.find("Quantity")
                 due = item.findtext("DeliveryPeriod/EndDateTime")
+                unit_price_el = item.find("NetUnitPrice/Amount")
+                subtotal_el = item.find("NetAmount")
+                if vendor_name is None:
+                    vendor_name = item.findtext("ShipFromLocation/AddressSnapshot/FormattedAddress/FormattedName")
                 rows.append({
                     "po_number": po_number,
                     "item_number": item.findtext("ItemID"),
                     "vendor_code": vendor_code,
+                    "vendor_name": vendor_name,
                     "product_id": (item.findtext("ItemProduct/ProductKey/ProductID") or "").strip() or None,
                     "description": item.findtext("Description"),
                     "po_qty": float(qty_el.text) if qty_el is not None and qty_el.text else 0.0,
                     "unit_of_measure": qty_el.get("unitCode") if qty_el is not None else None,
                     "due_date": due.split("T")[0] if due else None,
+                    "po_date": po_date.split("T")[0] if po_date else None,
+                    "buyer_code": buyer_code,
+                    "currency": currency,
+                    "unit_price": float(unit_price_el.text) if unit_price_el is not None and unit_price_el.text else None,
+                    "subtotal": float(subtotal_el.text) if subtotal_el is not None and subtotal_el.text else None,
                 })
         self._advance_watermark(db, max_id_seen)
         return rows

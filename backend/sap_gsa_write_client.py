@@ -116,7 +116,7 @@ class SAPGSAWriteClient:
                 quantity=it["quantity"], po_id=escape(str(po_id)), item_id=escape(str(it["item_id"])),
             ) for it in items
         )
-        envelope = _ENVELOPE_TEMPLATE.format(items=items_xml, doc_code=escape(doc_code))
+        envelope = _ENVELOPE_TEMPLATE.format(namespace=GSA_NAMESPACE, items=items_xml, doc_code=escape(doc_code))
         headers = {"Content-Type": "text/xml; charset=utf-8", "SOAPAction": SOAP_ACTION}
         try:
             with sap_semaphore:

@@ -1,25 +1,31 @@
 """Supplier Portal Phase 3 (shipment 2-way match) + Phase 4 (internal
 GRN approval -> automated SAP Goods Receipt) - Aug 2026.
 
-Phase 3: an approved vendor picks a Purchase Order + line items from
-their cached open-PO list and submits a shipment - validated so the
-shipped quantity never exceeds what's still open on that PO item across
-ALL of that item's non-rejected shipments (the "2-way match": PO qty vs
-shipment qty). Generates an exclusive 6-char alphanumeric, case-
-insensitive doc code (stored uppercase) - the physical paperwork/box
-label reference used at the dock.
+Phase 3: an approved vendor builds a "cart" of line items (across one or
+MORE Purchase Orders - user's explicit ask, Aug 28 2026) from their
+cached open-PO list, confirms it, and gets ONE exclusive 6-char
+alphanumeric doc code (ambiguous 0/O/1/I excluded) covering the whole
+cart. Validated so the shipped quantity never exceeds what's still open
+on each PO item across ALL of that item's non-rejected shipments (the
+"2-way match": PO qty vs shipment qty). A shipment's contents can be
+freely edited (add/remove items, change qty) via `update_shipment_items`
+for as long as it stays `status="in_transit"` - the moment internal
+staff Approve or Reject it, it's locked (user's explicit ask).
 
 Phase 4: internal staff enter that code, physically match goods +
 supplier invoice, and Approve - which immediately attempts to post the
-real Goods Receipt to SAP via sap_gsa_write_client (see that module's
-docstring for the 2 SAP-side blockers still outstanding). The internal
-approval itself is NEVER blocked by SAP being unreachable/not yet
-configured - `sap_sync_status` tracks that separately so staff always
-know whether SAP has actually received the posting yet.
+real Goods Receipt to SAP via sap_gsa_write_client, ONE call PER
+distinct PO number in the shipment (a shipment can now span multiple
+POs - see above). The internal approval itself is NEVER blocked by SAP
+being unreachable/not yet configured - `sap_sync_status` tracks that
+separately so staff always know whether SAP has actually received the
+posting yet.
 """
 import secrets
 import string
 from datetime import datetime, timezone
+
+import sap_po_client
 
 PO_CACHE_COLLECTION = "supplier_portal_po_cache"
 SHIPMENTS_COLLECTION = "supplier_portal_shipments"
@@ -40,8 +46,8 @@ class ShipmentNotFoundError(ShipmentError):
 
 
 def ensure_indexes(db) -> None:
-    db[SHIPMENTS_COLLECTION].create_index("po_number")
     db[SHIPMENTS_COLLECTION].create_index("vendor_code")
+    db[SHIPMENTS_COLLECTION].create_index("items.po_number")
     db[PO_CACHE_COLLECTION].create_index("vendor_code")
 
 
@@ -93,11 +99,34 @@ def refresh_all_vendor_caches(db, rows: list) -> dict:
     return {"vendors_updated": len(grouped), "total_line_items": len(rows)}
 
 
-def _shipped_qty_so_far(db, vendor_code: str, po_number: str, item_number: str) -> float:
+def vendor_directory(db, search: str = "", limit: int = 20) -> list:
+    """TESTING-ONLY helper (see server.py's SUPPLIER_PORTAL_TESTING_MODE
+    gate) - lets a tester search cached vendor_code/vendor_name pairs to
+    impersonate on the dashboard. Remove this + its route before launch."""
+    query = {}
+    search = (search or "").strip()
+    if search:
+        query["$or"] = [
+            {"vendor_code": {"$regex": search, "$options": "i"}},
+            {"vendor_name": {"$regex": search, "$options": "i"}},
+        ]
     pipeline = [
-        {"$match": {"vendor_code": vendor_code, "po_number": po_number, "status": {"$in": ["in_transit", "approved"]}}},
+        {"$match": query},
+        {"$group": {"_id": "$vendor_code", "vendor_name": {"$first": "$vendor_name"}}},
+        {"$sort": {"_id": 1}},
+        {"$limit": limit},
+    ]
+    return [{"vendor_code": d["_id"], "vendor_name": d.get("vendor_name")} for d in db[PO_CACHE_COLLECTION].aggregate(pipeline)]
+
+
+def _shipped_qty_so_far(db, vendor_code: str, po_number: str, item_number: str, exclude_doc_code: str = None) -> float:
+    match = {"vendor_code": vendor_code, "status": {"$in": ["in_transit", "approved"]}}
+    if exclude_doc_code:
+        match["_id"] = {"$ne": exclude_doc_code}
+    pipeline = [
+        {"$match": match},
         {"$unwind": "$items"},
-        {"$match": {"items.item_number": item_number}},
+        {"$match": {"items.po_number": po_number, "items.item_number": item_number}},
         {"$group": {"_id": None, "total": {"$sum": "$items.ship_qty"}}},
     ]
     result = list(db[SHIPMENTS_COLLECTION].aggregate(pipeline))
@@ -110,6 +139,7 @@ def get_cached_pos_with_remaining(db, vendor_code: str) -> list:
         shipped = _shipped_qty_so_far(db, vendor_code, it["po_number"], it["item_number"])
         it["already_shipped_qty"] = shipped
         it["remaining_qty"] = round((it.get("po_qty") or 0) - shipped, 4)
+        it["buyer_entity_name"] = sap_po_client.buyer_entity_name(it.get("buyer_code"))
     return items
 
 
@@ -121,31 +151,35 @@ def _generate_doc_code(db) -> str:
     raise ShipmentError("Could not generate a unique shipment code - please retry")
 
 
-def create_shipment(db, account: dict, po_number: str, requested_items: list) -> dict:
+def _resolve_items(db, vendor_code: str, requested_items: list, exclude_doc_code: str = None) -> list:
+    """Shared validation for both create_shipment and
+    update_shipment_items - each requested item now carries its OWN
+    po_number (a shipment can span multiple POs, user's explicit ask).
+    `exclude_doc_code` lets an in-progress edit recompute "remaining"
+    without double-counting the shipment's own existing reservation."""
     if not requested_items:
-        raise ShipmentValidationError("Select at least one item to ship")
-    cached_by_item = {
-        d["item_number"]: d for d in db[PO_CACHE_COLLECTION].find(
-            {"vendor_code": account["vendor_code"], "po_number": po_number}
-        )
-    }
-    resolved_items = []
+        raise ShipmentValidationError("A shipment must contain at least one item")
+    resolved = []
     for req in requested_items:
+        po_number = (req.get("po_number") or "").strip()
         item_number = req.get("item_number")
+        if not po_number:
+            raise ShipmentValidationError(f"Missing PO number for item {item_number}")
         try:
             ship_qty = float(req.get("ship_qty") or 0)
         except (TypeError, ValueError):
-            raise ShipmentValidationError(f"Invalid ship quantity for item {item_number}")
-        cached = cached_by_item.get(item_number)
+            raise ShipmentValidationError(f"Invalid ship quantity for item {item_number} on PO {po_number}")
+        cached = db[PO_CACHE_COLLECTION].find_one({"vendor_code": vendor_code, "po_number": po_number, "item_number": item_number})
         if not cached:
             raise ShipmentValidationError(f"Item {item_number} was not found on Purchase Order {po_number}")
         if ship_qty <= 0:
-            raise ShipmentValidationError(f"Ship quantity for item {item_number} must be greater than 0")
-        already_shipped = _shipped_qty_so_far(db, account["vendor_code"], po_number, item_number)
+            raise ShipmentValidationError(f"Ship quantity for item {item_number} on PO {po_number} must be greater than 0")
+        already_shipped = _shipped_qty_so_far(db, vendor_code, po_number, item_number, exclude_doc_code=exclude_doc_code)
         remaining = (cached.get("po_qty") or 0) - already_shipped
         if ship_qty > remaining + 1e-6:
-            raise ShipmentValidationError(f"Item {item_number}: cannot ship {ship_qty} - only {remaining:g} still open on this PO")
-        resolved_items.append({
+            raise ShipmentValidationError(f"Item {item_number} on PO {po_number}: cannot ship {ship_qty} - only {remaining:g} still open")
+        resolved.append({
+            "po_number": po_number,
             "item_number": item_number,
             "product_id": cached.get("product_id"),
             "description": cached.get("description"),
@@ -154,20 +188,25 @@ def create_shipment(db, account: dict, po_number: str, requested_items: list) ->
             "ship_qty": ship_qty,
             "unit_of_measure": cached.get("unit_of_measure"),
         })
+    return resolved
 
+
+def create_shipment(db, account: dict, requested_items: list, vendor_code: str = None) -> dict:
+    vendor_code = vendor_code or account["vendor_code"]
+    resolved_items = _resolve_items(db, vendor_code, requested_items)
     doc_code = _generate_doc_code(db)
     now = datetime.now(timezone.utc)
     doc = {
         "_id": doc_code,
         "account_id": account["_id"],
-        "vendor_code": account["vendor_code"],
+        "vendor_code": vendor_code,
         "company_name": account["company_name"],
-        "po_number": po_number,
         "items": resolved_items,
         "status": "in_transit",
         "sap_sync_status": "not_applicable",
         "sap_gr_result": None,
         "created_at": now,
+        "updated_at": now,
         "approved_at": None,
         "approved_by": None,
         "rejected_at": None,
@@ -176,6 +215,26 @@ def create_shipment(db, account: dict, po_number: str, requested_items: list) ->
     }
     db[SHIPMENTS_COLLECTION].insert_one(doc)
     return doc
+
+
+def update_shipment_items(db, account: dict, doc_code: str, requested_items: list) -> dict:
+    """Lets a vendor add/remove/change quantities on their OWN shipment
+    for as long as it's still `in_transit` - locked the moment it's
+    Approved or Rejected (user's explicit ask, Aug 28 2026). Scoped by
+    the SHIPMENT's own vendor_code (set at creation, possibly under a
+    testing-mode impersonation - see create_shipment above), not the
+    account's own vendor_code, so editing stays consistent regardless
+    of which vendor was being viewed when it was created."""
+    doc = get_shipment_by_code(db, doc_code)
+    if doc["account_id"] != account["_id"]:
+        raise ShipmentNotFoundError("No shipment found for this code")
+    if doc["status"] != "in_transit":
+        raise ShipmentValidationError("This shipment has already been processed and can no longer be changed")
+    resolved_items = _resolve_items(db, doc["vendor_code"], requested_items, exclude_doc_code=doc_code)
+    db[SHIPMENTS_COLLECTION].update_one(
+        {"_id": doc["_id"]}, {"$set": {"items": resolved_items, "updated_at": datetime.now(timezone.utc)}},
+    )
+    return get_shipment_by_code(db, doc_code)
 
 
 def list_shipments_for_vendor(db, vendor_code: str) -> list:
@@ -213,18 +272,28 @@ def approve_shipment(db, doc_code: str, approved_by: str, gsa_write_client) -> d
     physically matched goods + invoice) - the SAP posting attempt is
     best-effort and tracked separately via sap_sync_status, so a SAP
     outage or the still-outstanding write-access blocker never stops
-    staff from doing their job in this app."""
+    staff from doing their job in this app. Posts ONE Goods Receipt call
+    PER distinct PO number in the shipment (a shipment can now span
+    multiple POs)."""
     doc = get_shipment_by_code(db, doc_code)
     if doc["status"] != "in_transit":
         raise ShipmentValidationError(f"Shipment is already {doc['status']}")
 
+    grouped_by_po = {}
+    for it in doc["items"]:
+        grouped_by_po.setdefault(it["po_number"], []).append(it)
+
     sap_sync_status = "pending"
     sap_gr_result = None
     try:
-        sap_gr_result = gsa_write_client.post_goods_receipt(
-            doc["po_number"], doc["_id"],
-            [{"item_id": it["item_number"], "quantity": it["ship_qty"], "unit_of_measure": it.get("unit_of_measure")} for it in doc["items"]],
-        )
+        per_po_results = []
+        for po_number, items in grouped_by_po.items():
+            result = gsa_write_client.post_goods_receipt(
+                po_number, doc["_id"],
+                [{"item_id": it["item_number"], "quantity": it["ship_qty"], "unit_of_measure": it.get("unit_of_measure")} for it in items],
+            )
+            per_po_results.append({"po_number": po_number, **result})
+        sap_gr_result = {"ok": True, "per_po": per_po_results}
         sap_sync_status = "posted"
     except Exception as e:
         # Deliberately broad, not just SAPGSAWriteError - the internal

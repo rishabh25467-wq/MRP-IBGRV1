@@ -5212,12 +5212,15 @@ async def post_supplier_portal_logout(response: Response):
     return {"ok": True}
 
 
+SUPPLIER_PORTAL_TESTING_MODE = os.environ.get("SUPPLIER_PORTAL_TESTING_MODE", "false").lower() == "true"
+
+
 @api_router.get("/supplier-portal/me")
 async def get_supplier_portal_me(request: Request):
     account = await asyncio.to_thread(supplier_portal_service.get_current_account, request, db)
     if not account:
         return {"authenticated": False}
-    return supplier_portal_service.account_public_view(account)
+    return {**supplier_portal_service.account_public_view(account), "testing_mode": SUPPLIER_PORTAL_TESTING_MODE}
 
 
 def _require_supplier_account(request: Request) -> dict:
@@ -5227,17 +5230,38 @@ def _require_supplier_account(request: Request) -> dict:
     return account
 
 
+def _effective_vendor_code(account: dict, as_vendor: str = None) -> str:
+    # TESTING ONLY (user's explicit ask, Aug 28 2026) - lets a logged-in
+    # tester view ANY vendor's PO/shipment data via a dashboard search,
+    # instead of being locked to their own account's vendor_code. Gated
+    # behind SUPPLIER_PORTAL_TESTING_MODE so it's a single flag to flip
+    # off before launch - REMOVE THIS OVERRIDE ENTIRELY BEFORE LAUNCH.
+    if SUPPLIER_PORTAL_TESTING_MODE and as_vendor:
+        return as_vendor.strip()
+    return account["vendor_code"]
+
+
+@api_router.get("/supplier-portal/testing/vendor-directory")
+async def get_supplier_portal_testing_vendor_directory(request: Request, q: str = Query("")):
+    # TESTING ONLY - see _effective_vendor_code above. REMOVE BEFORE LAUNCH.
+    await asyncio.to_thread(_require_supplier_account, request)
+    if not SUPPLIER_PORTAL_TESTING_MODE:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"vendors": await asyncio.to_thread(supplier_shipment_service.vendor_directory, db, q)}
+
+
 @api_router.get("/supplier-portal/purchase-orders")
-async def get_supplier_portal_purchase_orders(request: Request):
+async def get_supplier_portal_purchase_orders(request: Request, as_vendor: str = Query(None)):
     account = await asyncio.to_thread(_require_supplier_account, request)
     if account.get("status") != "approved":
         raise HTTPException(status_code=403, detail="Your account is pending admin approval")
+    vendor_code = _effective_vendor_code(account, as_vendor)
     # No live SAP call here anymore (a single fetch can take 60-100s+ and
     # was 502'ing through the ingress) - always reads the Mongo cache that
     # start_supplier_po_cache_refresh_loop keeps current in the background.
     # See sap_po_client.py's "THIRD FIX" docstring note, Aug 28 2026.
     watermark = await asyncio.to_thread(db[SAP_PO_WATERMARK_COLLECTION].find_one, {"_id": "latest"})
-    pos = await asyncio.to_thread(supplier_shipment_service.get_cached_pos_with_remaining, db, account["vendor_code"])
+    pos = await asyncio.to_thread(supplier_shipment_service.get_cached_pos_with_remaining, db, vendor_code)
     # live_sync means "the background refresh loop is actually succeeding
     # right now", not just "a watermark doc exists once" - it must go
     # false if that loop stops updating (found by testing_agent, iteration
@@ -5249,38 +5273,54 @@ async def get_supplier_portal_purchase_orders(request: Request):
         "purchase_orders": pos,
         "live_sync": is_fresh,
         "last_synced_at": watermark["updated_at"].isoformat() if watermark else None,
+        "vendor_code": vendor_code,
     }
 
 
 class ShipmentItemRequest(BaseModel):
+    po_number: str
     item_number: str
     ship_qty: float
 
 
 class ShipmentCreateRequest(BaseModel):
-    po_number: str
     items: List[ShipmentItemRequest]
 
 
 @api_router.post("/supplier-portal/shipments")
-async def post_supplier_portal_shipment(payload: ShipmentCreateRequest, request: Request):
+async def post_supplier_portal_shipment(payload: ShipmentCreateRequest, request: Request, as_vendor: str = Query(None)):
     account = await asyncio.to_thread(_require_supplier_account, request)
     if account.get("status") != "approved":
         raise HTTPException(status_code=403, detail="Your account is pending admin approval")
+    vendor_code = _effective_vendor_code(account, as_vendor)
     try:
         shipment = await asyncio.to_thread(
-            supplier_shipment_service.create_shipment, db, account, payload.po_number,
-            [i.dict() for i in payload.items],
+            supplier_shipment_service.create_shipment, db, account, [i.dict() for i in payload.items], vendor_code,
         )
     except supplier_shipment_service.ShipmentValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return shipment
 
 
-@api_router.get("/supplier-portal/shipments")
-async def get_supplier_portal_shipments(request: Request):
+@api_router.put("/supplier-portal/shipments/{doc_code}")
+async def put_supplier_portal_shipment(doc_code: str, payload: ShipmentCreateRequest, request: Request):
     account = await asyncio.to_thread(_require_supplier_account, request)
-    return {"shipments": await asyncio.to_thread(supplier_shipment_service.list_shipments_for_vendor, db, account["vendor_code"])}
+    try:
+        shipment = await asyncio.to_thread(
+            supplier_shipment_service.update_shipment_items, db, account, doc_code, [i.dict() for i in payload.items],
+        )
+    except supplier_shipment_service.ShipmentNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except supplier_shipment_service.ShipmentValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return shipment
+
+
+@api_router.get("/supplier-portal/shipments")
+async def get_supplier_portal_shipments(request: Request, as_vendor: str = Query(None)):
+    account = await asyncio.to_thread(_require_supplier_account, request)
+    vendor_code = _effective_vendor_code(account, as_vendor)
+    return {"shipments": await asyncio.to_thread(supplier_shipment_service.list_shipments_for_vendor, db, vendor_code)}
 
 
 @api_router.get("/admin/supplier-portal/accounts")
