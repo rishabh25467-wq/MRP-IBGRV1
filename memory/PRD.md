@@ -1,3 +1,17 @@
+## FEATURE BATCH #2: Bulk Cart Add + Shipment History Filters (2026-08-28)
+
+- **Bulk Cart Add**: a "Select all N items" link appears once per PO group in the dashboard table
+  (only when that PO has >1 open line), toggling all of that PO's checkboxes at once (blank qty by
+  default - kept consistent with the individual-checkbox behavior after code review flagged a full-qty
+  auto-prefill as risky). Refactored to precompute per-PO open-item groups once (`rowsWithPoGroup`)
+  instead of re-filtering on every render/click, and anchored to the first OPEN row of each group.
+- **Shipment History Filters**: Shipments page now has a Status dropdown (All/In Transit/Received/
+  Rejected) and From/To date filters above the table, with a live "N of M shipments" counter and a
+  Clear button. Added a "Created" date column so the date filter has something visible to filter against.
+- Verified via testing_agent (iteration_124, 100% pass) + a follow-up screenshot after the code-review
+  polish fixes above.
+
+
 ## FEATURE BATCH: PO detail/search/pricing + cart-based multi-PO shipments + testing tools (2026-08-28)
 
 - **New test login**: `test@test.com` / `Test123`, vendor_code `H1330` (same real vendor as hamidi.demo).

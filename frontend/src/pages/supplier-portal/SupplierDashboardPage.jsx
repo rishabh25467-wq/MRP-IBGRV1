@@ -100,6 +100,29 @@ export default function SupplierDashboardPage() {
     return pos.filter((po) => [po.po_number, po.item_number, po.description, po.product_id].some((v) => (v || "").toString().toLowerCase().includes(q)));
   }, [pos, search]);
 
+  // Bulk Cart Add - group by PO Number (open items only) so a single
+  // "select all" toggle can act on the whole group; anchored to the
+  // first OPEN row of each group (not just the first row overall) and
+  // pre-computed once here instead of re-filtering on every click/render
+  // (code review feedback, iteration_124).
+  const rowsWithPoGroup = useMemo(() => {
+    const groups = {};
+    filteredPos.forEach((po) => {
+      if (po.remaining_qty > 0) {
+        groups[po.po_number] = groups[po.po_number] || [];
+        groups[po.po_number].push(po);
+      }
+    });
+    const seenOpenPo = new Set();
+    return filteredPos.map((po) => {
+      const isOpen = po.remaining_qty > 0;
+      const isFirstOpenOfPo = isOpen && !seenOpenPo.has(po.po_number);
+      if (isOpen) seenOpenPo.add(po.po_number);
+      const openRows = groups[po.po_number] || [];
+      return { ...po, _isFirstOpenOfPo: isFirstOpenOfPo, _poOpenRows: openRows };
+    });
+  }, [filteredPos]);
+
   const detailItems = useMemo(() => pos.filter((po) => po.po_number === detailPoNumber), [pos, detailPoNumber]);
 
   const toggleCartItem = (po, checked) => {
@@ -111,6 +134,27 @@ export default function SupplierDashboardPage() {
       } else {
         delete next[key];
       }
+      return next;
+    });
+  };
+
+  const isPoFullySelected = (rows) => rows.length > 0 && rows.every((p) => !!cart[cartKey(p)]);
+
+  const toggleSelectAllForPo = (rows) => {
+    const allSelected = isPoFullySelected(rows);
+    setCart((prev) => {
+      const next = { ...prev };
+      rows.forEach((p) => {
+        const key = cartKey(p);
+        if (allSelected) {
+          delete next[key];
+        } else {
+          // Left blank, same as an individual checkbox - a full-remaining-qty
+          // prefill across every row in one click was flagged as risky
+          // (code review feedback, iteration_124).
+          next[key] = { po_number: p.po_number, item_number: p.item_number, description: p.description, unit_of_measure: p.unit_of_measure, remaining_qty: p.remaining_qty, ship_qty: "" };
+        }
+      });
       return next;
     });
   };
@@ -266,7 +310,7 @@ export default function SupplierDashboardPage() {
                 </tr>
               </thead>
               <tbody>
-                {filteredPos.map((po, i) => {
+                {rowsWithPoGroup.map((po, i) => {
                   const key = cartKey(po);
                   const inCart = !!cart[key];
                   return (
@@ -287,6 +331,15 @@ export default function SupplierDashboardPage() {
                         >
                           <Eye size={12} /> {po.po_number}
                         </button>
+                        {po._isFirstOpenOfPo && po._poOpenRows.length > 1 && (
+                          <button
+                            onClick={() => toggleSelectAllForPo(po._poOpenRows)}
+                            className="text-xs text-[#0076CC] hover:underline underline-offset-2 mt-0.5 block whitespace-nowrap"
+                            data-testid={`supplier-po-select-all-${po.po_number}`}
+                          >
+                            {isPoFullySelected(po._poOpenRows) ? "Deselect all" : `Select all ${po._poOpenRows.length} items`}
+                          </button>
+                        )}
                       </td>
                       <td className="px-3 py-2">{po.description || po.product_id}</td>
                       <td className="px-3 py-2 text-xs">{po.buyer_entity_name}</td>
@@ -319,7 +372,7 @@ export default function SupplierDashboardPage() {
 
       {cartItems.length > 0 && (
         <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-[#CBD3DB] shadow-[0_-2px_8px_0_rgba(16,24,40,0.08)] px-4 py-3 flex items-center justify-between z-20" data-testid="supplier-cart-bar">
-          <span className="text-sm text-[#111827] font-semibold">{cartItems.length} item{cartItems.length > 1 ? "s" : ""} selected</span>
+          <span className="text-sm text-[#111827] font-semibold" data-testid="supplier-cart-count">{cartItems.length} item{cartItems.length > 1 ? "s" : ""} selected</span>
           <Button onClick={() => setReviewOpen(true)} className="rounded-sm bg-[#0076CC] hover:bg-[#4DA3E0] transition-colors duration-150" data-testid="supplier-review-shipment-button">
             <Truck size={14} className="mr-1" /> Review Shipment
           </Button>

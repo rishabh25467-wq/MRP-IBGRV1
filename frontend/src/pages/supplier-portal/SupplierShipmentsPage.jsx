@@ -4,6 +4,7 @@ import { Buildings, SignOut, CheckCircle, XCircle, Clock, ArrowLeft, PencilSimpl
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { supplierApi } from "@/lib/supplierPortalApi";
 import { useSupplierAuth } from "@/contexts/SupplierAuthContext";
 
@@ -35,6 +36,10 @@ export default function SupplierShipmentsPage() {
   const [saving, setSaving] = useState(false);
   const [confirmSaveOpen, setConfirmSaveOpen] = useState(false);
 
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+
   const load = async () => {
     try {
       const params = isImpersonating ? { as_vendor: vendorCode } : {};
@@ -62,6 +67,21 @@ export default function SupplierShipmentsPage() {
     setAddSearch("");
     setSaveError("");
   };
+
+  const filteredShipments = useMemo(() => {
+    const from = dateFrom ? new Date(`${dateFrom}T00:00:00`) : null;
+    const to = dateTo ? new Date(`${dateTo}T23:59:59`) : null;
+    return shipments.filter((s) => {
+      if (statusFilter !== "all" && s.status !== statusFilter) return false;
+      const created = new Date(s.created_at);
+      if (from && created < from) return false;
+      if (to && created > to) return false;
+      return true;
+    });
+  }, [shipments, statusFilter, dateFrom, dateTo]);
+
+  const clearFilters = () => { setStatusFilter("all"); setDateFrom(""); setDateTo(""); };
+  const filtersActive = statusFilter !== "all" || !!dateFrom || !!dateTo;
 
   const addableItems = useMemo(() => {
     if (!editing) return [];
@@ -125,6 +145,34 @@ export default function SupplierShipmentsPage() {
         <h1 className="font-sans text-lg font-bold text-[#111827]">Your Shipments</h1>
         <p className="text-sm text-[#5B738B] mt-1">You can edit an "In Transit" shipment's contents anytime before it's received and posted to SAP - once approved, it's locked.</p>
 
+        <div className="mt-4 flex items-center gap-2 flex-wrap" data-testid="supplier-shipments-filters">
+          <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <SelectTrigger className="w-40 h-9 rounded-sm border-[#CBD3DB] bg-white text-sm" data-testid="supplier-shipments-status-filter">
+              <SelectValue placeholder="Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all" data-testid="supplier-shipments-status-filter-all">All Statuses</SelectItem>
+              <SelectItem value="in_transit" data-testid="supplier-shipments-status-filter-in_transit">In Transit</SelectItem>
+              <SelectItem value="approved" data-testid="supplier-shipments-status-filter-approved">Received</SelectItem>
+              <SelectItem value="rejected" data-testid="supplier-shipments-status-filter-rejected">Rejected</SelectItem>
+            </SelectContent>
+          </Select>
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-[#5B738B]">From</span>
+            <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="h-9 w-36 rounded-sm border-[#CBD3DB] text-sm" data-testid="supplier-shipments-date-from" />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-[#5B738B]">To</span>
+            <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="h-9 w-36 rounded-sm border-[#CBD3DB] text-sm" data-testid="supplier-shipments-date-to" />
+          </div>
+          {filtersActive && (
+            <Button variant="outline" size="sm" onClick={clearFilters} className="rounded-sm" data-testid="supplier-shipments-clear-filters">
+              <X size={12} className="mr-1" /> Clear
+            </Button>
+          )}
+          <span className="text-xs text-[#5B738B] ml-auto">{filteredShipments.length} of {shipments.length} shipment{shipments.length !== 1 ? "s" : ""}</span>
+        </div>
+
         {loading && <div className="mt-8 text-sm text-[#5B738B]">Loading your shipments...</div>}
 
         {!loading && (
@@ -133,6 +181,7 @@ export default function SupplierShipmentsPage() {
               <thead className="bg-[#F5F6F7] text-[#5B738B] text-xs uppercase">
                 <tr>
                   <th className="text-left px-3 py-2 font-semibold">Doc Code</th>
+                  <th className="text-left px-3 py-2 font-semibold">Created</th>
                   <th className="text-left px-3 py-2 font-semibold">PO Numbers</th>
                   <th className="text-left px-3 py-2 font-semibold">Items</th>
                   <th className="text-left px-3 py-2 font-semibold">Status</th>
@@ -140,15 +189,16 @@ export default function SupplierShipmentsPage() {
                 </tr>
               </thead>
               <tbody>
-                {shipments.length === 0 && (
-                  <tr><td colSpan={5} className="px-3 py-6 text-center text-[#5B738B]" data-testid="supplier-shipments-empty">No shipments yet.</td></tr>
+                {filteredShipments.length === 0 && (
+                  <tr><td colSpan={6} className="px-3 py-6 text-center text-[#5B738B]" data-testid="supplier-shipments-empty">{shipments.length === 0 ? "No shipments yet." : "No shipments match these filters."}</td></tr>
                 )}
-                {shipments.map((s) => {
+                {filteredShipments.map((s) => {
                   const badge = SHIPMENT_STATUS_BADGE[s.status] || SHIPMENT_STATUS_BADGE.in_transit;
                   const Icon = badge.icon;
                   return (
                     <tr key={s._id} className="border-b border-[#CBD3DB]" data-testid={`supplier-shipment-row-${s._id}`}>
                       <td className="px-3 py-2 font-data font-bold text-[#111827]">{s._id}</td>
+                      <td className="px-3 py-2 font-data text-xs text-[#5B738B]">{new Date(s.created_at).toLocaleDateString()}</td>
                       <td className="px-3 py-2 font-data text-xs">{[...new Set(s.items.map((it) => it.po_number))].join(", ")}</td>
                       <td className="px-3 py-2 text-xs text-[#5B738B] max-w-xs">
                         {s.items.map((it) => `PO ${it.po_number} · ${it.description || it.item_number} × ${it.ship_qty}${it.unit_of_measure ? ` ${it.unit_of_measure}` : ""}`).join("; ")}

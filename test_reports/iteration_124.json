@@ -1,0 +1,34 @@
+{
+  "summary": "Frontend-only test of the two new Supplier Portal follow-ups: (1) Bulk Cart Add 'Select all N items' per-PO toggle on the dashboard PO table, (2) Shipments page status + date-range filters. Logged in as test@test.com (vendor H1330). BOTH features work exactly as specified - 100% of the requested scenarios passed. Verified: link renders only once per PO group and only when >1 OPEN item (28792=3 items, 28897=4 items show the link; 28833 has only 1 open line -> no link); clicking checks all 3 rows and pre-fills each ship qty with its full remaining qty (7989 / 6396 / 7991); label flips to 'Deselect all' and a second click clears all (cart bar disappears, count 0); manual uncheck of one row drops cart 3->2 and the label reverts to 'Select all 3 items'; bulk-selecting a second PO accumulates (6 items, Review dialog shows exactly 6 rows); zero-open-qty rows stay disabled and are excluded from the count; PO search narrowing a group to a single open row correctly hides the link. Shipments filters: status In Transit 4/6, Received 2/6, Rejected 0/6 -> 'No shipments match these filters.' (distinct from 'No shipments yet.'); an excluding date range (2020-01-01..2020-01-31) also gives 0 of 6 with the filtered empty state; Clear button only appears when a filter is active and resets everything to 6 of 6; counter text ('N of M shipments') accurate in every combination including status+date combined; filters reset on reload (client-side state, expected). Regressions checked: login->dashboard routing, PO table columns/pricing, PO search + no-match state, cart -> Review dialog, Shipments nav, and the shipment Edit dialog all still work. No console errors. No backend changes involved, so no backend tests were run this iteration.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "SupplierDashboardPage bulk-select link", "issue": "'Select all N items' link is 10px in muted #5B738B on white and wraps to two lines inside the PO Number cell - very easy to miss and borderline on WCAG small-text contrast. Suggest 11-12px and the brand blue #0076CC (it already turns blue only on hover).", "selector": "[data-testid='supplier-po-select-all-28792']", "priority": "LOW"},
+      {"component": "SupplierDashboardPage bulk-select qty prefill", "issue": "Pre-existing concern amplified: bulk select pre-fills EVERY row with the entire remaining PO qty (7989+6396+7991 in one click), so one mis-click can stage a full-PO shipment. Individual checkbox selection leaves qty blank - the two paths are inconsistent (toggleCartItem sets ship_qty:'' vs toggleSelectAllForPo sets ship_qty:p.remaining_qty).", "selector": "[data-testid='supplier-po-qty-input-28792-1']", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Supplier Shipments page filter row", "issues": ["The From/To date filters use raw native browser date inputs (mm/dd/yyyy with the OS picker) instead of the shadcn Calendar/Popover used elsewhere in the app - inconsistent with the design system", "No validation/hint when From > To; the table just silently shows the 'No shipments match these filters.' state", "Filter state is not reflected in the URL, so a filtered view can't be shared/bookmarked and is lost on reload (acceptable for MVP, noting only)"]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Optional polish: make the 'Select all N items' link 11-12px / #0076CC so it is discoverable and passes small-text contrast",
+    "Decide one consistent ship-qty prefill rule (bulk select fills full remaining qty, single checkbox leaves it blank) - full-qty prefill on a 3-line bulk select is risky",
+    "Optional: replace the two native date inputs on the Shipments page with the shadcn Calendar/Popover for design-system consistency"
+  ],
+  "critical_code_review_comments": [
+    "isPoFullySelected()/toggleSelectAllForPo() each re-run filteredPos.filter() on every render/click; rowsWithPoGroup already computes per-PO groups - reuse that map to avoid the duplicate O(N) scans and keep the 'is fully selected' logic in one place.",
+    "rowsWithPoGroup marks _isFirstOfPo on the first row of the PO in list order even if that row itself has remaining_qty 0; it works today (count comes from open rows only) but the toggle can render on a disabled row - consider anchoring it to the first OPEN row of the group.",
+    "SupplierShipmentsPage filteredShipments parses new Date(s.created_at) per row per keystroke - fine at 6 rows, but sort order is whatever the API returns; a date filter without a visible Created/Date column means the vendor is filtering on a field they cannot see. Recommend adding a Created date column to the shipments table.",
+    "SupplierDashboardPage.jsx is now 490 lines with cart, search, impersonation, detail modal and 4 dialogs in one file - approaching the point where the cart/review dialogs should be extracted."
+  ],
+  "updated_files": ["/app/frontend/src/pages/supplier-portal/SupplierDashboardPage.jsx (test-only: added data-testid=\"supplier-cart-count\" to the floating cart bar's item-count span, which previously had no testid)"],
+  "success_rate": {"backend": "not tested (no backend changes this iteration)", "frontend": "100% (12/12 scenarios for the two new features + 6 regression checks passed)"},
+  "seed_data_creation": "None - no new shipments created; used the 6 existing H1330 shipments (YUDU3D/F2EJT7 Received, LFQP9Z/WVHKWT/39GA52/Q7YA7Z In Transit). No PO quantities consumed (all bulk selections were cleared before submit).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "test@test.com / Test123 (vendor H1330) verified working, lands on /supplier-portal/dashboard/H1330.",
+  "context_for_next_testing_agent": "Both iteration_124 features are functionally complete - only cosmetic items remain (link contrast/size, native date inputs, ship-qty prefill consistency). Useful data facts for H1330: PO 28792 has 3 open lines (items 1/2/3 with 7989/6396/7991 EA), PO 28897 has 4 open lines, PO 28833 has only 1 open line (item 2, 17000 EA; items 1 and 3 are fully shipped -> checkboxes correctly disabled). Shipments: 6 total, 4 in_transit + 2 approved, 0 rejected - use status 'Rejected' or a 2020 date range to hit the 'No shipments match these filters.' state. Added data-testid='supplier-cart-count' for the floating cart bar count. Known open items from iteration_123 that are still unfixed and out of scope here: sap_gsa_write_client KeyError('namespace') on GR posting, POST/PUT /shipments ignoring ?as_vendor, and legacy shipments (F2EJT7/Q7YA7Z) - note their PO Numbers column now renders correctly (28792), so that legacy blank-PO issue appears resolved.",
+  "rca_of_the_issue": "No defects to root-cause; both features behaved per spec on the public preview URL."
+}
