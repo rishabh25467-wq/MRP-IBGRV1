@@ -1,3 +1,69 @@
+## CRITICAL BUG FIXED #2: supplier PO fetch was serving a 2-year-old stale batch, then background-cache refactor (2026-08-28)
+
+- **User report** (persisted even after the cross-vendor leak fix below): "the pos that loaded for hamidi do not seem to be correct" / "I do not see right POs in supplier portal for the vendor Hamidi Exports."
+- **Root cause #1**: `QueryPurchaseOrderQueryIn` ignores any ordering/pagination hint and always returns
+  records starting from the LOWEST `PurchaseOrderID` first. With the fetch capped at `FETCH_LIMIT=500`
+  (communication-timeout constraint), every single fetch - for every vendor - only ever saw the OLDEST
+  ~500 open POs tenant-wide (confirmed live: PurchaseOrderID 3927-4426, all 2024-05 delivery dates, even
+  though it's Aug 2026). Hamidi's real current open POs (ID ~28000+) were never reachable.
+- **Fix**: confirmed live that `<SelectionByID>` (unlike `SelectionBySellerPartyID`) IS honored by this
+  tenant (`IntervalBoundaryTypeCode=8`, "greater than"). `sap_po_client.py` now queries
+  `PurchaseOrderID > watermark`, where `watermark` is a small Mongo-persisted pointer
+  (`sap_po_watermark`) kept just behind the tenant's current max PO ID. A cheap probe (binary/
+  exponential search, limit=1 each) discovers the current max ID only when the watermark is
+  missing/stale (3+ days).
+- **Root cause #2**: a single fetch (discovery probe + the 500-record batch) takes 60-100s+ - too slow
+  for a live HTTP request; it 502'd through the Kubernetes ingress when tried inline.
+- **Fix**: refactored to the SAME background-cache pattern already used by `bom_cache_service`/
+  `inventory_service`/`company_cache_service`. New `start_supplier_po_cache_refresh_loop` (server.py,
+  every 10 min) calls `sap_po_client.fetch_recent_window(db)` ONCE for ALL vendors (SAP doesn't filter
+  by seller anyway), then `supplier_shipment_service.refresh_all_vendor_caches(db, rows)` fans results
+  out into each vendor's `supplier_portal_po_cache` rows. `GET /api/supplier-portal/purchase-orders`
+  now ONLY reads Mongo (no live SAP call) - confirmed ~0.3-0.4s response, no timeout risk.
+- **Hardening from testing_agent iteration_122** (all fixed same session):
+  - Watermark is now monotonic - an empty/no-progress SAP batch no longer walks `max_po_id` backwards
+    (would have slowly regressed to the original "oldest POs" bug over repeated empty cycles).
+  - `live_sync` in the API response now reflects actual freshness (`watermark.updated_at` within 2x the
+    refresh interval), plus a new `last_synced_at` ISO field - previously it just meant "a watermark doc
+    exists once," which could stay `true` forever even if the background loop silently stopped working.
+  - Cache rows are now tagged `source="sap_live"` and only `source="sap_live"` rows are deleted during
+    a refresh - protects manually-seeded demo/test fixture rows (e.g. dummy vendor `S9999`) from being
+    wiped out by the global background refresh every 10 minutes.
+  - Blank (`" "`) `product_id` values from SAP are normalized to `None` on ingest.
+- **Verified live**: Hamidi (H1330) now correctly sees exactly 3 real CURRENT open POs (28792, 28833,
+  28897; 10 line items; Aug/Sep 2026 due dates) instead of the stale 2024 batch. Dummy vendor `S9999`
+  still shows its fixture data without being wiped by the background loop.
+- **Known pre-existing issue, unrelated to this fix** (see `Issue: Background Job Throttling` below):
+  right after a backend restart, several background refresh loops (BOM cache ~4692 products, inventory
+  cache, SAP valuation lookups against a currently-flaky `my431827.businessbydesign.cloud.sap` host)
+  can saturate Python's default asyncio thread pool (12 workers) for 2-3 minutes, causing transient
+  502s/hangs on ANY endpoint. Self-resolves; not caused by the new supplier-PO loop specifically but it
+  adds one more periodic consumer to the same pool - still P1/not started, see backlog.
+
+
+## CRITICAL BUG FIXED: cross-vendor PO data leak (2026-08-26, same day)
+
+- **User report**: "the POs loaded for Hamidi do not seem correct."
+- **Root cause**: `QueryPurchaseOrderQueryIn`'s `SelectionBySellerPartyID` filter is silently ignored by
+  this SAP tenant - EVERY vendor code (including a deliberately fake one) returned the exact same
+  unfiltered batch of open POs spanning dozens of unrelated suppliers. The Hamidi demo login was
+  actually showing "Ganesh Steel Industries" (G1287) and ~50 other suppliers' real purchase orders -
+  a genuine cross-vendor data leak, not just cosmetically wrong demo data.
+- **Fix**: `sap_po_client.py` now treats the SAP-side selection as best-effort only and enforces the
+  REAL filter client-side by comparing each returned PO's `PartySellerPartyKey/PartyID` to the
+  requested `vendor_code` before including any of its items. Verified live: H1330 (Hamidi) now
+  correctly returns only Hamidi's own 73 open line items (fasteners/hardware, consistent with their
+  business), and a deliberately fake vendor code now correctly returns 0 items.
+- **Known remaining limitation** (flagged, not silently hidden): since SAP won't filter server-side, we
+  pull a bounded batch (`FETCH_LIMIT=500`, ~60-90s per call) of the WHOLE tenant's POs and filter
+  client-side - this is a scan, not a guaranteed-complete query. If the tenant's total PO volume grows
+  well past ~500, some of a vendor's older open POs could theoretically fall outside the scanned batch.
+  Long-term fix if this becomes a real problem: switch to an Analytics OData report (same pattern
+  already used for HSN Code / On-Hand Inventory) which CAN filter + paginate server-side properly.
+- Demo login `hamidi.demo@vendorportal.test` / `HamidiDemo123` (vendor_code H1330) now shows correct,
+  real Hamidi Exports-only data.
+
+
 ## Supplier Portal Phase 3 + 4 + JDE Oracle theme + Phase 1 goes LIVE (2026-08-26, continued)
 
 - **Phase 3 (shipment 2-way match)**: vendor picks a PO line item, ships a qty validated against remaining open qty (tracked via `supplier_portal_shipments` + `_shipped_qty_so_far` aggregation, vendor-scoped), gets an exclusive 6-char alphanumeric doc code (ambiguous 0/O/1/I excluded).

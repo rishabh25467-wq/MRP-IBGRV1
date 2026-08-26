@@ -37,7 +37,7 @@ from sap_material_physical_client import (
     SAPMaterialPhysicalClient, SAPMaterialPhysicalError, PHYSICAL_FIELD_TO_SAP_PROPERTY, bulk_push_physical_to_sap,
 )
 from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplierAuthError, SAPSupplierNotConfiguredError
-from sap_po_client import SAPPurchaseOrderClient, SAPPurchaseOrderError, SAPPurchaseOrderNotConfiguredError
+from sap_po_client import SAPPurchaseOrderClient, SAPPurchaseOrderError, SAPPurchaseOrderNotConfiguredError, WATERMARK_COLLECTION as SAP_PO_WATERMARK_COLLECTION
 from sap_gsa_write_client import SAPGSAWriteClient
 from sap_price_spec_client import SAPPriceSpecClient, SAPPriceSpecError, bulk_push_erp_prices_to_sap
 from sap_supplier_invoice_client import SAPSupplierInvoiceClient, SAPSupplierInvoiceError
@@ -5232,14 +5232,24 @@ async def get_supplier_portal_purchase_orders(request: Request):
     account = await asyncio.to_thread(_require_supplier_account, request)
     if account.get("status") != "approved":
         raise HTTPException(status_code=403, detail="Your account is pending admin approval")
-    live_sync = True
-    try:
-        pos = await asyncio.to_thread(sap_po_client.get_open_pos_for_vendor, account["vendor_code"])
-        await asyncio.to_thread(supplier_shipment_service.refresh_po_cache, db, account["vendor_code"], pos)
-    except SAPPurchaseOrderError:
-        live_sync = False
+    # No live SAP call here anymore (a single fetch can take 60-100s+ and
+    # was 502'ing through the ingress) - always reads the Mongo cache that
+    # start_supplier_po_cache_refresh_loop keeps current in the background.
+    # See sap_po_client.py's "THIRD FIX" docstring note, Aug 28 2026.
+    watermark = await asyncio.to_thread(db[SAP_PO_WATERMARK_COLLECTION].find_one, {"_id": "latest"})
     pos = await asyncio.to_thread(supplier_shipment_service.get_cached_pos_with_remaining, db, account["vendor_code"])
-    return {"purchase_orders": pos, "live_sync": live_sync}
+    # live_sync means "the background refresh loop is actually succeeding
+    # right now", not just "a watermark doc exists once" - it must go
+    # false if that loop stops updating (found by testing_agent, iteration
+    # 122: the old check never turned false even after days of failures).
+    is_fresh = bool(watermark) and (
+        datetime.now(timezone.utc) - watermark["updated_at"] < timedelta(seconds=2 * SUPPLIER_PO_CACHE_REFRESH_INTERVAL_SECONDS)
+    )
+    return {
+        "purchase_orders": pos,
+        "live_sync": is_fresh,
+        "last_synced_at": watermark["updated_at"].isoformat() if watermark else None,
+    }
 
 
 class ShipmentItemRequest(BaseModel):
@@ -5412,6 +5422,33 @@ async def start_inventory_cache_refresh_loop():
             except Exception as e:
                 logger.error(f"Inventory cache background refresh failed: {e}")
             await asyncio.sleep(INVENTORY_CACHE_REFRESH_INTERVAL_SECONDS)
+
+    asyncio.create_task(loop())
+
+
+# Supplier Portal Phase 1 fix (Aug 28 2026) - a single SAP PO fetch can
+# take 60-100s+ (discovery probe + the batch itself), too slow for a
+# live request (502'd through the ingress when tried inline). Runs in
+# the background instead, fanning ONE global fetch out to every vendor's
+# cache - see sap_po_client.py's "THIRD FIX" docstring and
+# supplier_shipment_service.refresh_all_vendor_caches.
+SUPPLIER_PO_CACHE_REFRESH_INTERVAL_SECONDS = 10 * 60
+
+
+@app.on_event("startup")
+async def start_supplier_po_cache_refresh_loop():
+    async def loop():
+        await asyncio.sleep(20)
+        while True:
+            try:
+                rows = await asyncio.to_thread(sap_po_client.fetch_recent_window, db)
+                stats = await asyncio.to_thread(supplier_shipment_service.refresh_all_vendor_caches, db, rows)
+                logger.info(f"Supplier Portal PO cache background refresh complete: {stats}")
+            except SAPPurchaseOrderNotConfiguredError:
+                pass
+            except Exception as e:
+                logger.error(f"Supplier Portal PO cache background refresh failed: {e}")
+            await asyncio.sleep(SUPPLIER_PO_CACHE_REFRESH_INTERVAL_SECONDS)
 
     asyncio.create_task(loop())
 

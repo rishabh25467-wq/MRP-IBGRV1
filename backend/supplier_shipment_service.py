@@ -49,13 +49,48 @@ def refresh_po_cache(db, vendor_code: str, items: list) -> None:
     """Called every time a LIVE SAP PO fetch succeeds - keeps a durable
     local copy so the vendor's open-PO list (and shipment creation) still
     works between SAP calls, and so a vendor always sees "last known"
-    data instead of a hard error the moment SAP itself is briefly down."""
+    data instead of a hard error the moment SAP itself is briefly down.
+
+    Also DELETES any of this vendor's previously-cached rows that are no
+    longer in the fresh live fetch (PO now Finished, or fell out of
+    sap_po_client's current-window fetch) - a live fetch is the source
+    of truth, so a stale/no-longer-open row must not linger forever
+    (found by user report Aug 28 2026: the cache kept showing PO rows
+    from before the sap_po_client recency-window fix even after that
+    fix landed, since nothing had ever deleted them).
+
+    Only rows tagged `source="sap_live"` are eligible for that delete -
+    a manually-seeded demo/test fixture row (e.g. dummy vendor_code
+    S9999's fixture, which never comes from a real SAP fetch) has no
+    `source` field and is left alone, otherwise the global background
+    refresh would wipe it out every cycle (found by testing_agent,
+    iteration 122)."""
     now = datetime.now(timezone.utc)
+    fresh_keys = []
     for it in items:
         key = f"{vendor_code}::{it['po_number']}::{it['item_number']}"
+        fresh_keys.append(key)
         db[PO_CACHE_COLLECTION].update_one(
-            {"_id": key}, {"$set": {**it, "vendor_code": vendor_code, "updated_at": now}}, upsert=True,
+            {"_id": key}, {"$set": {**it, "vendor_code": vendor_code, "source": "sap_live", "updated_at": now}}, upsert=True,
         )
+    db[PO_CACHE_COLLECTION].delete_many({"vendor_code": vendor_code, "source": "sap_live", "_id": {"$nin": fresh_keys}})
+
+
+def refresh_all_vendor_caches(db, rows: list) -> dict:
+    """Fans sap_po_client.fetch_recent_window's single global batch out
+    per vendor (called from server.py's background refresh loop) - every
+    vendor_code seen in this batch gets its cache updated, AND every
+    vendor_code already in the cache gets re-checked even with an empty
+    list, so a vendor whose open POs all disappeared this cycle (now
+    Finished, or aged out of the tracked window) ends up with an empty
+    cache instead of a stale one."""
+    grouped = {}
+    for r in rows:
+        grouped.setdefault(r["vendor_code"], []).append(r)
+    already_cached_vendors = db[PO_CACHE_COLLECTION].distinct("vendor_code")
+    for vendor_code in set(grouped) | set(already_cached_vendors):
+        refresh_po_cache(db, vendor_code, grouped.get(vendor_code, []))
+    return {"vendors_updated": len(grouped), "total_line_items": len(rows)}
 
 
 def _shipped_qty_so_far(db, vendor_code: str, po_number: str, item_number: str) -> float:

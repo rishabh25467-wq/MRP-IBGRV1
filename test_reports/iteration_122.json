@@ -1,0 +1,53 @@
+{
+  "summary": "Verified the Aug 28 2026 supplier-portal PO fetch/cache refactor (watermark-bounded SAP SelectionByID query + background global fetch + cache-only read endpoint). 15 new pytest API tests all pass; 49/49 existing supplier-portal + shipment/GRN regression tests pass after updating stale assertions. UI verified end-to-end: Hamidi (H1330) sees exactly 3 CURRENT POs (28792/28833/28897, 10 line items, 2026 due dates, correct qty/UoM), no cross-vendor leak, no stale-sync banner; ship flow works (over-ship rejected with 'Only 100 still open', valid ship -> unique 6-char code HTYQJ2, remaining qty 100->93, shipment row rendered). Dummy vendor S9999 logs in and shows the graceful 'No open Purchase Orders right now' empty state (no 500/error). Admin regression OK: /admin/supplier-portal-approvals lists pending vendor, /admin/grn-approval lookup (case-insensitive) + reject with reason works. Smoke check of BOM Explorer, Purchasing Plan, Production Plan, Inventory, Supplier Master, Quota Allocation, Production Confirmation, /admin all render. No blocking defects; 3 design/robustness risks found in the new watermark/cache logic (details below).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "sap_po_client._advance_watermark / fetch_recent_window", "issue": "Watermark can REGRESS. _advance_watermark is called unconditionally with max_id_seen initialised to lower_bound, so any cycle that returns zero PurchaseOrder elements (SAP hiccup, all rows filtered, empty window) rewrites the watermark to lower_bound-450, i.e. it walks BACKWARDS 450 IDs every 10 minutes. Repeated empty cycles would drift the window toward 0 and re-introduce the original 'oldest ~500 POs' bug plus wipe/replace current cache rows. Fix: make the update monotonic (only $set when max_id_seen-LOOKBACK_IDS > stored max_po_id) and skip the update entirely when the batch is empty."},
+      {"endpoint": "GET /api/supplier-portal/purchase-orders (live_sync)", "issue": "live_sync is now just 'sap_po_watermark doc exists', with no freshness check on watermark.updated_at. It will stay true forever even if the background loop has been failing for days, so the UI's supplier-dashboard-stale-banner ('Showing the last synced data') and supplier-dashboard-not-configured panel are effectively dead code. Recommend live_sync = (now - watermark.updated_at) < ~2x refresh interval, and expose last_synced_at so vendors can see data age."},
+      {"endpoint": "supplier_shipment_service.refresh_all_vendor_caches", "issue": "The global refresh deletes every cached row for any vendor not present in the current SAP window. Consequence 1: it permanently wipes the documented S9999 (vendor1@testco.com) demo fixture PO4500012345 within 10 minutes of any re-seed, so that account can never demo a Ship flow again (Phase 3/4 regression tests had to be made self-seeding, and can still be wiped mid-run). Consequence 2: a genuinely open but older PO (outside the 450-ID window) silently disappears from a real vendor's portal, so they cannot ship against it - the known limitation in the docstring, but it is now destructive (deletes) rather than just incomplete. Consider a synthetic/pinned flag exempting non-SAP fixture rows, and surfacing the window limit to the user."},
+      {"endpoint": "background loop start_supplier_po_cache_refresh_loop", "issue": "Observed the loop occupying an asyncio thread-pool worker for ~50s per cycle (16:39:44 -> 16:40:34 in backend log) every 10 minutes on top of the existing BOM/inventory refresh jobs - adds to the known thread-pool saturation risk. Not blocking (endpoint reads are cache-only and returned in ~0.3s), just noting the added periodic load."},
+      {"endpoint": "PO cache data quality", "issue": "Two H1330 rows (PO 28897 items 3 & 4) come back from SAP with product_id = ' ' (single blank space) instead of null; the UI falls back to description so nothing is visibly broken, but the blank should be normalised to None on ingest."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Supplier Dashboard (/supplier-portal/dashboard)", "issues": ["PO 28897 shows a due date already in the past (2026-08-22 vs today 2026-08-26) with no overdue highlight - an 'overdue' badge/red date would help vendors prioritise.", "No 'last synced' timestamp shown; because live_sync is always true the vendor has no way to know how old the cached PO list is."]},
+      {"screen": "Internal pages with a restricted user", "issues": ["Header badge shows 'SAP Disconnected' for a user lacking permission on the SAP-status endpoint (403 in console) - misleading, pre-existing."]},
+      {"screen": "Router", "issues": ["No catch-all 404 route: an unknown path (e.g. /supplier-master) renders a blank white shell with no message."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_supplier_po_cache_fix.py",
+    "/app/backend/tests/test_supplier_portal.py",
+    "/app/backend/tests/test_supplier_shipment_grn.py",
+    "/app/test_reports/pytest/po_cache_fix.xml",
+    "/app/test_reports/pytest/supplier_regr.xml"
+  ],
+  "action_items": [
+    "Make the sap_po_watermark update monotonic and skip it on an empty SAP batch (prevents the watermark walking backwards 450 IDs per empty cycle and regressing to the original oldest-PO bug).",
+    "Base live_sync on watermark.updated_at freshness (and/or return last_synced_at) so the stale-data banner can actually fire when the background loop stops succeeding.",
+    "Decide how to preserve the S9999 demo fixture (pin/synthetic flag) - the global cache refresh now deletes it, so vendor1@testco.com can no longer demo the PO list / Ship flow.",
+    "Normalise blank ('  ') product_id values from SAP to null during ingest.",
+    "Optional UX: overdue-due-date highlight + 'last synced' timestamp on the supplier dashboard; add a 404 catch-all route."
+  ],
+  "critical_code_review_comments": [
+    "sap_po_client.fetch_recent_window advances the watermark even when the query returned nothing - the only piece of state that keeps this fix working can silently regress. Guard it.",
+    "server.py is still ~5600 lines; the supplier-portal/GRN routes and the 5 background loops should move into their own modules.",
+    "The endpoint's live_sync flag no longer means what its name/UI copy implies (SAP reachable) - it only means 'a watermark doc exists'."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_supplier_po_cache_fix.py (new, 15 tests)",
+    "/app/backend/tests/test_supplier_shipment_grn.py (added self-seeding S9999 PO-cache fixture; live_sync assertion updated from False to bool)",
+    "/app/backend/tests/test_supplier_portal.py (live_sync assertion updated from False to bool)"
+  ],
+  "success_rate": {"backend": "100% (15/15 new + 49/49 regression)", "frontend": "100% of tested flows"},
+  "seed_data_creation": "Shipments created during testing on H1330 POs (pytest ones removed by fixture; UI-created HTYQJ2 on PO 28897 item 3 qty 7 was rejected via the GRN page then deleted). Synthetic broad-permission internal session TESTSMOKE122SESSION000000000000A + user smoke122.test@rampgroup.co.in created for the page smoke check and DELETED afterwards. No SAP writes attempted. Mongo left clean: 447 cache rows, 10 for H1330, watermark max_po_id=28505.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "hamidi.demo@vendorportal.test / HamidiDemo123 (H1330); vendor1@testco.com / Passw0rd123 (S9999); internal admin cookie vms_session=_nNTeagpGyLWuMhFLKHF2qvr0lfmKm8P (supplier_portal_admin, expires 2026-08-27 10:38 UTC)",
+  "context_for_next_testing_agent": "New coverage for this fix: /app/backend/tests/test_supplier_po_cache_fix.py (vendor isolation, currency of PO ids/due dates, watermark sanity, empty-vendor graceful path, 2-way match on the new cache source, doc-code uniqueness). NOTE: the S9999 fixture PO4500012345 is deleted by the background loop every ~10 min, so test_supplier_shipment_grn.py now self-seeds it in a module fixture - if that suite fails with KeyError '_id'/'item missing', the loop wiped the rows mid-run; just re-run. Internal page routes are /purchasing-strategy/supplier-master and /purchasing-strategy/quota-allocation (not /supplier-master). Backend hot-reload after writing anything under /app/backend takes 1-4 min and returns 502s in between - always poll /api/supplier-portal/me for 200 first.",
+  "rca_of_the_issue": "The reported user-facing bug (wrong/stale POs for Hamidi Exports) is confirmed FIXED: the watermark-bounded SelectionByID query now returns the tenant's current PO window, the global fetch is fanned out per vendor client-side (SAP ignores SelectionBySellerPartyID), and the request path reads only Mongo (0.3s, no 502). Verified in UI: exactly H1330's 3 open POs with Sep/Aug 2026 dates and 10 line items, no other vendor's data. Residual risk is not in the query but in watermark state management: fetch_recent_window unconditionally rewrites the watermark to (max_id_seen - 450) where max_id_seen defaults to the current lower bound, so an empty response moves the window backwards, which over repeated cycles would reproduce the original oldest-first symptom and destructively refresh the cache."
+}
