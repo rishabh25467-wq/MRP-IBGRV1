@@ -196,6 +196,14 @@ def get_latest_confirmation_by_lot(db, production_lot_ids: list) -> dict:
     ]
     result = {}
     for row in db[HISTORY_COLLECTION].aggregate(pipeline):
+        # Aug 2026 fix: a doc from before reporting_point_id existed on this
+        # schema has no "rp" key in the grouped _id at all (Mongo omits a
+        # missing-field group key entirely rather than nulling it) - used to
+        # KeyError and 500 the WHOLE batch, hiding every other lot's badges
+        # too. Such a legacy doc can never match any current row's key
+        # anyway, so just skip it instead of crashing.
+        if "rp" not in row["_id"]:
+            continue
         d = row["doc"]
         key = f"{row['_id']['lot']}::{row['_id']['rp']}"
         result[key] = {
@@ -209,6 +217,9 @@ def get_latest_confirmation_by_lot(db, production_lot_ids: list) -> dict:
             # carry them here).
             "fg_movement": d.get("fg_movement"),
             "confirmed_quantity": d.get("confirmed_quantity"),
+            # Aug 25 2026, user's explicit ask: show whether that specific
+            # confirmation was Partial or Full for this Reporting Point.
+            "confirmation_finished": d.get("confirmation_finished"),
             "at": d["at"].isoformat(),
         }
     return result

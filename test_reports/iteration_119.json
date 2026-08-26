@@ -1,0 +1,43 @@
+{
+  "summary": "Tested this session's Production Confirmation changes (both backend + frontend, READ-ONLY vs live SAP - no Confirm, no order creation, no real WIP Clearing fired). Backend: 12/12 pytest cases pass in /app/backend/tests/test_pc_session19_wip_and_retrigger.py covering history/latest-batch KeyError regression (incl. a deliberately inserted legacy doc with no reporting_point_id -> still HTTP 200), retry-wip-clearing gating for Lot 70563 (returns success:null/skipped:true/'...still open...' WITHOUT calling SAP), the new force-retrigger endpoint (400 on a non-waiting job, 404 with a clear detail on an unknown job_id), plus read-only regression on open-lots, lot/70563, history and proposal-history. Frontend (synthetic vms_session cookie, super_admin): page loads clean (no console errors), 'WAITING NEXT STAGE' header renders exactly, positioned between OPEN and UOM, 517/517 rows have data-testid=stage-waiting-cell-{i}; Lot 70563 RP10/Blanking shows 10, RP20 and END show '—' (Lot 70539 also verified: RP10=5, RP20=4). Last-Confirmation column renders the neutral gray 'WIP Pending' chip with the SAP tooltip and NO Retry button next to it. In Create Production Order tab (synthetic waiting_for_order job seeded in Mongo + localStorage, no SAP call), the trigger-detail line renders 'Waiting for SAP to convert Proposal TEST-PROP-9999 into an Order - trigger attempt #3 (error)' and 'Retry Now' appears/enabled after elapsed>=120s alongside Stop (button was NOT clicked - would hit live SAP). History dialog opens. All synthetic users/sessions/jobs cleaned up from MongoDB.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/auth/me and all /api/* right after a backend restart", "issue": "For ~2-4 min after every backend restart/hot-reload the startup background cache refreshes (SAP valuation/ERP MSSQL, 30-40s blocking calls) saturate the worker/thread pool - /api/auth/me took 39s then 502'd via Cloudflare, which renders the whole SPA as a BLANK white page (no error state, no retry). Reproduced twice. Not caused by this session's changes but user-visible after any deploy."},
+      {"endpoint": "POST /production-confirmation/create-and-release-order/{job_id}/force-retrigger", "issue": "Unknown job_id returns 404 (not the 400 stated in the request) - message is clear so this is acceptable; noting only for spec alignment."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Create Production Order - Active Orders trigger detail", "issues": ["Detail line is 10px text-[#98A2B3] on white (~2.3:1 contrast) - below WCAG AA for small text; consider #667085 and 11px since this is now the primary explanation of a multi-minute wait"]},
+      {"screen": "Production Confirmation - Waiting Next Stage semantics", "issues": ["Lot 70563 SAP data is RP10=10 confirmed, RP20=0, END(Forming)=10 confirmed. The column only diffs a row against the immediately NEXT row, so RP10 shows 10 waiting even though the lot's END operation already reports 10 confirmed - the number can therefore contradict the last operation's own progress on lots where SAP populates END independently. Worth confirming the intended semantics with the user (expected value 10 requested by the user does render correctly)."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_pc_session19_wip_and_retrigger.py", "/app/test_reports/pytest/pc_s19.xml"],
+  "action_items": [
+    "Optional: raise contrast/size of active-order-trigger-detail text",
+    "Optional: align force-retrigger unknown-job_id status code (404 today) with the intended 400 if spec matters",
+    "Consider deferring/throttling startup SAP+MSSQL cache refresh so /api/auth/me isn't starved after a restart (blank page for the user)",
+    "Confirm intended 'Waiting Next Stage' semantics for lots where the END operation reports its own confirmed qty (Lot 70563)"
+  ],
+  "critical_code_review_comments": [
+    "server.py is 5312 lines and ProductionConfirmationPage.js 2352 lines - both far past the 700-line guideline; the new force-retrigger/WIP-gating logic would be safer in dedicated routers/components.",
+    "_all_lot_operations_finished() swallows SAPProductionLotError and returns True (fires WIP Clearing) - a transient SAP read failure on a genuinely multi-step lot re-introduces the exact silent no-op this session fixed. Consider returning None/skip on read failure instead of assuming finished.",
+    "New force-retrigger endpoint has no rate limit/in-flight guard - repeated clicks can fire concurrent SAP Release calls for the same proposal (UI only disables during the awaited request)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pc_session19_wip_and_retrigger.py (new)",
+    "/app/backend/tests/_seed_s19_waiting_job.py (new, seed helper)",
+    "/app/test_reports/_seed_s19_job.py (new, seed helper outside /app/backend so it doesn't trigger uvicorn reload)",
+    "/app/test_reports/_cleanup_s19.py (new, cleanup helper - already run)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Synthetic super_admin auth_users/auth_sessions (deleted), one synthetic background_jobs doc in status waiting_for_order with production_proposal_id TEST-PROP-9999 / release_trigger_count 3 (deleted), two temporary production_confirmation_history docs (legacy-shape + skipped-WIP shape, deleted by the tests). No SAP writes, no new production confirmations or orders.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "No login exists (Entra ID SSO). Used the documented synthetic-session technique from /app/memory/test_credentials.md (auth_users + auth_sessions + vms_session cookie); all synthetic docs removed after testing.",
+  "context_for_next_testing_agent": "Use /app/backend/tests/test_pc_session19_wip_and_retrigger.py as the regression suite for this session (creates + tears down its own worker-scoped synthetic session, xdist-safe). Do NOT write files under /app/backend during a UI test run: uvicorn's watchfiles reload restarts the backend, and job_store.recover_orphaned_jobs() then flips any 'waiting_for_order' job to 'failed' (this invalidated one UI run) plus the restart's SAP/MSSQL cache refresh makes the app return 502/blank for ~2-4 min. Seed helper for the Active Orders waiting_for_order scenario lives at /app/test_reports/_seed_s19_job.py; cleanup at /app/test_reports/_cleanup_s19.py. Live-SAP tenant: never click Confirm, never submit Create Production Order, never click 'Retry Now' on a real proposal.",
+  "rca_of_the_issue": "Both reported defects are fixed and verified. (1) get_latest_confirmation_by_lot's $group key omits 'rp' entirely for legacy docs lacking reporting_point_id (Mongo drops missing group keys), which used to KeyError and 500 the whole batch - now skipped; verified by inserting such a doc and still getting 200. (2) WIP Clearing is now gated on _all_lot_operations_finished(): for Lot 70563 (RP20/Bending open) retry-wip-clearing short-circuits to skipped:true without hitting SAP and the UI shows a neutral 'WIP Pending' chip with no misleading Retry action."
+}

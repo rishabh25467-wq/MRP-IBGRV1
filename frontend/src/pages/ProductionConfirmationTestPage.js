@@ -81,7 +81,7 @@ const isLocationRestricted = (loc) => isRestrictedStatus(loc?.stock_status) || !
 // carries its own inline "Retry" so a stalled step can be fixed right
 // here instead of only being visible/actionable elsewhere. Same for a
 // failed "FG Moved" chip (SFG -> FG Goods Movement retry).
-const LastConfirmationBadges = ({ data, productionLotId, lastConfKey, siteId, mainOutputProduct, unitCode, actorName, onRetried }) => {
+const LastConfirmationBadges = ({ data, productionLotId, lastConfKey, taskFinished, byproductOutput, siteId, mainOutputProduct, unitCode, actorName, onRetried }) => {
   const [retryingWip, setRetryingWip] = useState(false);
   const [retryingFg, setRetryingFg] = useState(false);
   if (!data) return <span className="text-[#98A2B3] text-xs">—</span>;
@@ -127,6 +127,19 @@ const LastConfirmationBadges = ({ data, productionLotId, lastConfKey, siteId, ma
   return (
     <div className="space-y-0.5" data-testid="last-confirmation-badges">
       {chip(!!data.success, "Posted")}
+      {data.success && data.confirmation_finished != null && (
+        <span className={`flex items-center gap-1 text-[10px] px-1 py-0.5 rounded-sm border w-fit ${
+          taskFinished ? "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]" : "bg-[#FFFAEB] text-[#B54708] border-[#FEDF89]"
+        }`} data-testid="last-confirmation-partial-full-badge">
+          {/* Aug 25 2026 fix: was reading the stale historical log's
+              confirmation_finished (frozen true even after a restart) -
+              now reads the LIVE task status, same field the Confirm
+              button itself trusts, so this can never contradict the
+              Open Quantity sitting right next to it. */}
+          {taskFinished ? <CheckCircle size={10} weight="fill" /> : <Circle size={10} weight="fill" />}
+          {taskFinished ? "Full" : "Partial"}
+        </span>
+      )}
       {data.wip_clearing != null && (
         <div className="flex items-center gap-1">
           {chip(!!data.wip_clearing.success, "WIP Cleared")}
@@ -143,7 +156,23 @@ const LastConfirmationBadges = ({ data, productionLotId, lastConfKey, siteId, ma
           )}
         </div>
       )}
-      {data.byproduct_confirmation != null && chip(!!data.byproduct_confirmation.success, "By-product")}
+      {data.byproduct_confirmation != null && (
+        <div className="flex items-center gap-1">
+          {chip(!!data.byproduct_confirmation.success, "By-product")}
+          {/* Aug 25 2026, user's explicit ask: don't show a plain green
+              tick for by-product when only a fraction of the planned
+              scrap has actually been posted - compare live confirmed vs
+              planned on the byproduct's OWN MaterialOutput line. */}
+          {data.byproduct_confirmation.success && byproductOutput?.planned_quantity != null && (
+            <span className={`flex items-center gap-1 text-[10px] px-1 py-0.5 rounded-sm border w-fit ${
+              (byproductOutput.total_confirmed_quantity || 0) >= byproductOutput.planned_quantity
+                ? "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]" : "bg-[#FFFAEB] text-[#B54708] border-[#FEDF89]"
+            }`} data-testid="byproduct-partial-full-badge">
+              {(byproductOutput.total_confirmed_quantity || 0) >= byproductOutput.planned_quantity ? "Full" : "Partial"}
+            </span>
+          )}
+        </div>
+      )}
       {data.fg_movement != null && (
         <div className="flex items-center gap-1">
           {chip(!!data.fg_movement.ok, "FG Moved")}
@@ -181,7 +210,7 @@ const STATUS_TONE = {
 };
 
 // -------------------- Confirm dialog --------------------
-const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
+const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons, maxFromPrevStep, prevStepLabel }) => {
   const [confirmedQty, setConfirmedQty] = useState(row ? (row.open_quantity ?? "") : "");
   const [confirmedScrap, setConfirmedScrap] = useState("0");
   const [hasScrap, setHasScrap] = useState(false);
@@ -216,12 +245,14 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
       setHasScrap(false);
       setScrapCalc(null);
       setReason("");
-      // Aug 25 2026 fix (real incident: lot 70539's Blanking/Bending
-      // closed at 9/18 and 4/18 because the checkbox defaulted checked
-      // regardless of quantity) - "finished" is derived from whether the
-      // default qty (full Open Quantity) is entered, and can only ever be
-      // set true by the qty effect below, never a free user toggle.
-      setFinished(row.open_quantity != null);
+      // Aug 25 2026: reverted the full-qty-only lock added earlier the
+      // same day - user's real workflow deliberately finishes a step
+      // early at a partial qty to unlock the next operation (SAP itself
+      // requires a task "Finished" before its successor can start), then
+      // reopens it later via the Reopen Task button to keep going. What
+      // actually prevents the original incident's confusion now is that
+      // Open Quantity/task_finished read LIVE state, not a frozen flag.
+      setFinished(true);
       setAvailability(null);
       setConfirmError(null);
       pollAbortRef.current = false;
@@ -282,17 +313,23 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
     ? Math.round(scrapCalc.scrap_per_unit_kg * qtyNum * 1e6) / 1e6
     : null;
 
-  // Aug 25 2026 fix: "finished" can now ONLY be true when the entered
-  // quantity covers the full remaining Open Quantity - never a free user
-  // toggle. This is what stops a partial batch (e.g. 9 of 18) from
-  // silently closing the whole task in SAP.
+  // Aug 25 2026: reverted - "finished" is a free user toggle again (see
+  // note above). Only the qty value itself updates here.
   const updateConfirmedQty = (value) => {
     setConfirmedQty(value);
-    const n = Number(value);
-    setFinished(value !== "" && !Number.isNaN(n) && row.open_quantity != null && n >= row.open_quantity);
   };
 
   const qtyExceedsOpen = confirmedQty !== "" && !Number.isNaN(qtyNum) && qtyNum > row.open_quantity;
+
+  // Aug 25 2026, user's explicit ask: "if I confirm more at Bending than
+  // what actually cleared Blanking, would it go through?" - today
+  // nothing on the SAP side stops this (each Reporting Point tracks its
+  // own quantity independently, with no material link between them), so
+  // this is a real gap without a check here. Cumulative total for THIS
+  // step, after this confirmation, cannot exceed what the PRECEDING
+  // step has actually confirmed so far.
+  const cumulativeAfterThisConfirm = (row.total_confirmed_quantity || 0) + (confirmedQty !== "" && !Number.isNaN(qtyNum) ? qtyNum : 0);
+  const exceedsPrevStep = maxFromPrevStep != null && confirmedQty !== "" && !Number.isNaN(qtyNum) && cumulativeAfterThisConfirm > maxFromPrevStep;
 
   const submit = async () => {
     const qty = confirmedQty === "" ? null : Number(confirmedQty);
@@ -303,6 +340,10 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
     }
     if (scrap !== null && (Number.isNaN(scrap) || scrap < 0)) {
       toast.error("Confirmed Scrap must be a valid, non-negative number");
+      return;
+    }
+    if (exceedsPrevStep) {
+      toast.error(`Cannot confirm ${cumulativeAfterThisConfirm} at this step - only ${maxFromPrevStep} have actually cleared ${prevStepLabel || "the previous step"} so far. Reduce the quantity or post more at ${prevStepLabel || "the previous step"} first.`);
       return;
     }
     // Aug 25 2026, user's explicit ask: scrap is meaningful data (QC
@@ -476,6 +517,9 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
           <div className="text-xs text-[#667085] bg-[#F9FAFB] border border-[#EAECF0] rounded-sm px-3 py-2">
             Planned: <strong className="text-[#1D2939]">{formatQty(row.planned_quantity)}</strong> {formatUnit(row.unit_code)} ·
             {" "}Open: <strong className="text-[#1D2939]">{formatQty(row.open_quantity)}</strong> {formatUnit(row.unit_code)}
+            {maxFromPrevStep != null && (
+              <> · Available from {prevStepLabel || "previous step"}: <strong className="text-[#1D2939]">{formatQty(maxFromPrevStep)}</strong> {formatUnit(row.unit_code)}</>
+            )}
           </div>
           <div>
             <Label className="text-xs font-bold text-[#344054]">Confirmed Output Quantity</Label>
@@ -483,6 +527,11 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
             {qtyExceedsOpen && (
               <p className="text-xs text-[#B54708] mt-1" data-testid="confirm-qty-exceeds-open-warning">
                 Note: {confirmedQty} exceeds the Open Quantity ({row.open_quantity} {formatUnit(row.unit_code)}) - double-check before posting if this isn't intentional over-production.
+              </p>
+            )}
+            {exceedsPrevStep && (
+              <p className="text-xs text-[#B42318] mt-1 font-bold" data-testid="confirm-qty-exceeds-prev-step-error">
+                Blocked: only {maxFromPrevStep} {formatUnit(row.unit_code)} have cleared {prevStepLabel || "the previous step"} so far - you cannot confirm {cumulativeAfterThisConfirm} here yet.
               </p>
             )}
           </div>
@@ -588,18 +637,19 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
             )}
           </div>
           <div className="flex items-center gap-2">
-            <Checkbox id="finished-cb" checked={finished} disabled data-testid="confirm-finished-checkbox" />
-            <Label htmlFor="finished-cb" className="text-sm text-[#344054]">
-              {finished
-                ? "This will mark the task Finished (full Open Quantity confirmed)"
-                : `This will keep the task In Process - enter ${formatQty(row.open_quantity)} to finish it now, or post less and confirm the rest later`}
-            </Label>
+            <Checkbox id="finished-cb" checked={finished} onCheckedChange={(c) => setFinished(!!c)} data-testid="confirm-finished-checkbox" />
+            <Label htmlFor="finished-cb" className="text-sm text-[#344054]">Mark this task as Finished (needed to unlock the next operation - can be reopened later via the Reopen Task button if you finish it early)</Label>
           </div>
+          {finished && confirmedQty !== "" && !Number.isNaN(qtyNum) && row.open_quantity != null && qtyNum < row.open_quantity && (
+            <p className="text-xs text-[#B54708]" data-testid="early-finish-warning">
+              Heads up: this confirms {confirmedQty} of {row.open_quantity} still open - finishing now unlocks the next operation on just this amount. Use "Reopen Task" later to add the rest.
+            </p>
+          )}
           <p className="text-[11px] text-[#98A2B3]">Component/input quantities are NOT sent - SAP's backflush auto-consumes BOM inputs from the confirmed output.</p>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose} data-testid="confirm-cancel-button">Cancel</Button>
-          <Button onClick={submit} disabled={saving || checkingAvailability || (scrapCalc?.rm_product_id && !scrapCalc?.available)} data-testid="confirm-submit-button">
+          <Button onClick={submit} disabled={saving || checkingAvailability || exceedsPrevStep || (scrapCalc?.rm_product_id && !scrapCalc?.available)} data-testid="confirm-submit-button">
             {saving ? `${CONFIRM_PHASE_LABELS[savingPhase] || "Posting to SAP"} (${savingElapsed}s)...` : checkingAvailability ? "Checking stock..." : (scrapCalc?.rm_product_id && !scrapCalc?.available) ? "Fix weight data first" : "Post Confirmation"}
           </Button>
         </DialogFooter>
@@ -2010,6 +2060,27 @@ export default function ProductionConfirmationTestPage() {
     setRows((prev) => prev.filter((r) => rowKey(r) !== rowKey(row)));
   };
 
+  const [reopeningKey, setReopeningKey] = useState(null);
+  const reopenTask = async (row) => {
+    setReopeningKey(rowKey(row));
+    try {
+      await axios.post(`${API}/production-confirmation/restart-task`, {
+        production_lot_id: row.production_lot_id,
+        production_lot_uuid: row.production_lot_uuid,
+        confirmation_group_uuid: row.confirmation_group_uuid,
+        production_task_id: row.production_task_id,
+        production_task_uuid: row.production_task_uuid,
+        actor: actorName.trim() || "Unknown",
+      });
+      toast.success(`Reopened ${row.operation_description || row.reporting_point_id} - ready for more confirmations`);
+      setRows((prev) => prev.map((r) => (rowKey(r) === rowKey(row) ? { ...r, task_finished: false } : r)));
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to reopen task in SAP");
+    } finally {
+      setReopeningKey(null);
+    }
+  };
+
   // "Show mine" compares against the same actor string this app itself
   // writes on order creation (see createProposal's `actor: actorName.trim()`
   // below) - a case-insensitive match so a slightly different casing from
@@ -2048,7 +2119,7 @@ export default function ProductionConfirmationTestPage() {
       for (let i = 1; i < group.length; i++) {
         const prev = group[i - 1];
         const awaiting = (prev.total_confirmed_quantity || 0) - (group[i].total_confirmed_quantity || 0);
-        map[rowKey(group[i])] = { awaiting, prevReportingPointId: prev.operation_description || prev.reporting_point_id };
+        map[rowKey(group[i])] = { awaiting, prevReportingPointId: prev.operation_description || prev.reporting_point_id, prevTotalConfirmed: prev.total_confirmed_quantity || 0 };
       }
     });
     return map;
@@ -2256,6 +2327,8 @@ export default function ProductionConfirmationTestPage() {
                         data={lastConf}
                         productionLotId={r.production_lot_id}
                         lastConfKey={`${r.production_lot_id}::${r.reporting_point_id}`}
+                        taskFinished={r.task_finished}
+                        byproductOutput={(r.material_outputs || []).find((mo) => mo.product_id !== r.main_output_product)}
                         siteId={r.site_id}
                         mainOutputProduct={r.main_output_product}
                         unitCode={r.unit_code}
@@ -2266,15 +2339,29 @@ export default function ProductionConfirmationTestPage() {
                       />
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
-                      <Button
-                        size="sm"
-                        disabled={loading || r.task_finished}
-                        onClick={() => setConfirmRow(r)}
-                        title={r.task_finished ? "Task genuinely Finished in SAP - re-confirmation disabled to avoid a duplicate posting" : undefined}
-                        data-testid={`confirm-button-${i}`}
-                      >
-                        Confirm
-                      </Button>
+                      <div className="flex items-center gap-1.5">
+                        <Button
+                          size="sm"
+                          disabled={loading || r.task_finished}
+                          onClick={() => setConfirmRow(r)}
+                          title={r.task_finished ? "Task genuinely Finished in SAP - re-confirmation disabled to avoid a duplicate posting" : undefined}
+                          data-testid={`confirm-button-${i}`}
+                        >
+                          Confirm
+                        </Button>
+                        {r.task_finished && (r.total_confirmed_quantity || 0) < (r.planned_quantity || 0) && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={reopeningKey === rowKey(r)}
+                            onClick={() => reopenTask(r)}
+                            title="This task finished early - reopen it in SAP to post the remaining quantity"
+                            data-testid={`reopen-task-button-${i}`}
+                          >
+                            {reopeningKey === rowKey(r) ? <CircleNotch size={14} className="animate-spin" /> : "Reopen Task"}
+                          </Button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                   );
@@ -2296,7 +2383,15 @@ export default function ProductionConfirmationTestPage() {
         </Tabs>
       </main>
 
-      <ConfirmDialog row={confirmRow} actorName={actorName} onClose={() => setConfirmRow(null)} onConfirmed={onConfirmed} reasons={reasons} />
+      <ConfirmDialog
+        row={confirmRow}
+        actorName={actorName}
+        onClose={() => setConfirmRow(null)}
+        onConfirmed={onConfirmed}
+        reasons={reasons}
+        maxFromPrevStep={confirmRow ? awaitingByRowKey[rowKey(confirmRow)]?.prevTotalConfirmed : null}
+        prevStepLabel={confirmRow ? awaitingByRowKey[rowKey(confirmRow)]?.prevReportingPointId : null}
+      />
       <ManageReasonsDialog open={showReasons} onClose={() => setShowReasons(false)} reasons={reasons} onChanged={setReasons} />
       <HistoryDialog open={showHistory} onClose={() => setShowHistory(false)} />
     </div>

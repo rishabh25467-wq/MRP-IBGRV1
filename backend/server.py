@@ -2225,6 +2225,26 @@ class ConfirmProductionRequest(BaseModel):
     actor: str
 
 
+def _all_lot_operations_finished(production_lot_id: str) -> bool:
+    """SAP's own WIP Clearing Run only produces real journal entries once
+    EVERY operation/task on the Production Lot is finished (confirmed via
+    SAP support docs + live testing, Aug 2026) - firing it right after just
+    the FIRST operation of a multi-step routing (e.g. Blanking, while
+    Bending/Forming are still open) returns WIPRunStatus=true with zero
+    journal entries, which looked like a silent no-op to the user checking
+    the Inventory Valuation work center for Lot 70563. Re-reads every
+    Reporting Point's live task_finished flag (not just the one just
+    confirmed) to decide."""
+    try:
+        rows = sap_production_lot_client.find_lot_by_id(production_lot_id)
+    except SAPProductionLotError:
+        # Unknown - default to "finished" so the overwhelming majority of
+        # lots (a single reporting point) never regress; worst case for a
+        # real multi-step lot is the same no-op SAP already does today.
+        return True
+    return bool(rows) and all(r.get("task_finished") for r in rows)
+
+
 def _clarify_confirm_error(raw_error: str, production_lot_id: str) -> str:
     """Aug 2026 - a real Cloudflare-level "invalid/incomplete response"
     error reached the user posting Lot 70222's confirmation while stock
@@ -2388,15 +2408,26 @@ async def _confirm_production_inner(job_id: str, payload: ConfirmProductionReque
 
     # Per user's explicit choice, a WIP Clearing Run auto-fires right after a
     # task is successfully marked Finished - so period-end WIP is cleared
-    # without a separate manual step.
+    # without a separate manual step. Aug 2026 fix: only once EVERY
+    # operation on the lot is finished (see _all_lot_operations_finished) -
+    # computed ONCE and shared with the FG Goods Movement block below,
+    # since the same "not really done yet" gap applies to both.
+    lot_fully_finished = None
     if payload.confirmation_finished and result.get("success") and payload.site_id:
-        try:
-            wip_result = await asyncio.to_thread(
-                sap_wip_clearing_client.run_wip_clearing, payload.production_lot_id, payload.site_id,
-            )
-            result["wip_clearing"] = wip_result
-        except SAPWipClearingError as e:
-            result["wip_clearing"] = {"success": False, "log": str(e)}
+        lot_fully_finished = await asyncio.to_thread(_all_lot_operations_finished, payload.production_lot_id)
+        if lot_fully_finished:
+            try:
+                wip_result = await asyncio.to_thread(
+                    sap_wip_clearing_client.run_wip_clearing, payload.production_lot_id, payload.site_id,
+                )
+                result["wip_clearing"] = wip_result
+            except SAPWipClearingError as e:
+                result["wip_clearing"] = {"success": False, "log": str(e)}
+        else:
+            result["wip_clearing"] = {
+                "success": None, "skipped": True,
+                "log": "Other operations on this lot are still open in SAP - WIP Clearing (and the FG Goods Movement, if applicable) will run automatically once the last operation is finished.",
+            }
 
     # Aug 27 2026, user's explicit ask: right after WIP is cleared, a
     # genuine Finished Goods item (per the same FG/Sub-Assembly rule the
@@ -2409,8 +2440,11 @@ async def _confirm_production_inner(job_id: str, payload: ConfirmProductionReque
     # falls back to skipping if bom_node_cache has no BOM at all for it
     # (genuinely can't tell). Job status updates here let the frontend
     # show the user exactly which step is running instead of one long
-    # opaque "Saving..." spinner.
-    if payload.confirmation_finished and result.get("success") and payload.site_id and payload.main_output_product and payload.confirmed_quantity:
+    # opaque "Saving..." spinner. Aug 2026 fix: also gated on
+    # lot_fully_finished - an earlier operation of a multi-step routing
+    # never really produced the main output yet, so moving stock to FG
+    # here would be premature.
+    if payload.confirmation_finished and result.get("success") and payload.site_id and payload.main_output_product and payload.confirmed_quantity and lot_fully_finished:
         job_store.update_job(db, job_id, {"status": "checking_category"})
         category, _ = await asyncio.to_thread(
             production_confirmation_service.get_or_classify_category, db, payload.main_output_product,
@@ -2458,14 +2492,20 @@ async def retry_wip_clearing(payload: RetryWipClearingRequest):
     recent history entry."""
     if not payload.actor.strip():
         raise HTTPException(status_code=400, detail="actor (your name) is required")
-    try:
-        wip_result = await asyncio.to_thread(
-            sap_wip_clearing_client.run_wip_clearing, payload.production_lot_id, payload.site_id,
-        )
-    except SAPWipClearingError as e:
-        wip_result = {"success": False, "log": str(e)}
-    except Exception as e:
-        wip_result = {"success": False, "log": f"Unexpected error: {e}"}
+    if not await asyncio.to_thread(_all_lot_operations_finished, payload.production_lot_id):
+        wip_result = {
+            "success": None, "skipped": True,
+            "log": "Other operations on this lot are still open in SAP - WIP Clearing will run automatically once the last operation is finished.",
+        }
+    else:
+        try:
+            wip_result = await asyncio.to_thread(
+                sap_wip_clearing_client.run_wip_clearing, payload.production_lot_id, payload.site_id,
+            )
+        except SAPWipClearingError as e:
+            wip_result = {"success": False, "log": str(e)}
+        except Exception as e:
+            wip_result = {"success": False, "log": f"Unexpected error: {e}"}
     updated = await asyncio.to_thread(
         production_confirmation_service.retry_wip_clearing_for_lot, db, payload.production_lot_id, wip_result,
     )
@@ -2995,14 +3035,20 @@ async def _continue_order_creation(job_id: str, payload: "CreateProductionPropos
             if last_trigger is None or elapsed - last_trigger >= CREATE_RELEASE_RETRIGGER_EVERY_SECONDS:
                 trigger_count += 1
                 trigger_ok = False
+                trigger_error = None
                 try:
                     trigger_result = await asyncio.to_thread(sap_production_proposal_release_client.release_order, proposal_id)
                     trigger_ok = bool(trigger_result.get("success"))
                 except SAPProductionOrderReleaseError as e:
+                    trigger_error = str(e)
                     logger.warning(f"create-and-release job {job_id}: Release-trigger attempt #{trigger_count} failed, will keep polling/retrying: {e}")
                 job_store.update_job(db, job_id, {
                     "last_release_trigger_at": datetime.now(timezone.utc).isoformat(),
                     "release_trigger_count": trigger_count, "last_release_trigger_ok": trigger_ok,
+                    # Aug 2026 fix (user's explicit ask): the real SAP error
+                    # text used to be discarded (only this bool was kept),
+                    # making a stuck job impossible to diagnose from the UI.
+                    "last_release_trigger_error": trigger_error,
                 })
                 last_trigger = time.monotonic() - elapsed_start
                 await asyncio.sleep(SAP_SETTLE_DELAY_SECONDS)  # give SAP a beat to act on the trigger before the very next lookup
@@ -3046,13 +3092,24 @@ async def _continue_order_creation(job_id: str, payload: "CreateProductionPropos
                     # is really OUR material+quantity before ever touching
                     # it (real incident: see get_requested_material docstring).
                     candidate_matches = False
+                    verify_error = False
                     try:
                         requested = await asyncio.to_thread(sap_production_order_release_client.get_requested_material, candidate_id)
                         candidate_matches = bool(requested) and requested["material_id"] == payload.material_id and (
                             requested["quantity"] is None or abs(requested["quantity"] - payload.quantity) < 0.001
                         )
                     except SAPProductionOrderReleaseError as e:
-                        logger.warning(f"create-and-release job {job_id}: could not verify candidate order {candidate_id}'s material, skipping it this round: {e}")
+                        # Aug 2026 fix - real incident (Order 70547, PL-0037A):
+                        # a TRANSIENT failure here (this tenant sees frequent
+                        # connect timeouts) is NOT the same as a real mismatch.
+                        # The old code advanced baseline_prep_ids regardless,
+                        # permanently forgetting this candidate even if it was
+                        # really OUR order - dooming the job to poll for the
+                        # full 20 min with no way to ever find it again. Now
+                        # baseline_prep_ids is left untouched below so it's
+                        # simply re-checked on the very next poll tick.
+                        verify_error = True
+                        logger.warning(f"create-and-release job {job_id}: could not verify candidate order {candidate_id}'s material (transient - will retry next poll, not discarding it): {e}")
                     # Claim BEFORE releasing anything - guards against a
                     # SECOND concurrent job for this same material+quantity
                     # (or a same-material job at a different site racing
@@ -3063,7 +3120,8 @@ async def _continue_order_creation(job_id: str, payload: "CreateProductionPropos
                             new_order_id = candidate_id
                             order_self_released = True
                             break
-                    baseline_prep_ids = current_prep_ids  # don't re-consider this same candidate (mismatched material, already claimed, or matched-but-not-releasable) next loop
+                    if not verify_error:
+                        baseline_prep_ids = current_prep_ids  # don't re-consider this same candidate (mismatched material, already claimed, or matched-but-not-releasable) next loop
             except SAPProductionOrderReleaseError as e:
                 logger.warning(f"create-and-release job {job_id}: In-Preparation-order poll/self-release hit a transient SAP error, will retry: {e}")
             await asyncio.sleep(CREATE_RELEASE_POLL_INTERVAL_SECONDS)
@@ -3161,6 +3219,27 @@ async def cancel_create_and_release_job(job_id: str):
         raise HTTPException(status_code=400, detail="This order run has already finished - nothing to stop")
     job_store.update_job(db, job_id, {"cancel_requested": True})
     return {"ok": True}
+
+
+@api_router.post("/production-confirmation/create-and-release-order/{job_id}/force-retrigger")
+async def force_retrigger_release(job_id: str):
+    """Manual "nudge" (Aug 2026, user's explicit ask) - lets an impatient
+    user fire the Release trigger immediately instead of waiting up to
+    CREATE_RELEASE_RETRIGGER_EVERY_SECONDS for the background job's own
+    next scheduled attempt. Purely additive/read-through - never touches
+    job_store fields the background loop itself owns, so it can never
+    race or corrupt the loop's own state."""
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    proposal_id = job.get("production_proposal_id")
+    if not proposal_id or job.get("status") != "waiting_for_order":
+        raise HTTPException(status_code=400, detail="This order isn't currently waiting on SAP to convert a Proposal into an Order")
+    try:
+        result = await asyncio.to_thread(sap_production_proposal_release_client.release_order, proposal_id)
+        return {"success": bool(result.get("success")), "error": None}
+    except SAPProductionOrderReleaseError as e:
+        return {"success": False, "error": str(e)}
 
 
 class ResumeFailedOrderRequest(BaseModel):

@@ -176,7 +176,15 @@ class SAPProductionLotClient:
                 "material_output_uuid": _first_tag(mo_block, "MaterialOutputUUID"),
                 "unit_code": _first_tag_attr(mo_block, "PlannedQuantity", "unitCode") or _first_tag_attr(mo_block, "OpenQuantity", "unitCode"),
                 "planned_quantity": _to_float(_first_tag(mo_block, "PlannedQuantity")),
-                "open_quantity": _to_float(_first_tag(mo_block, "OpenQuantity")),
+                "total_confirmed_quantity": _to_float(_first_tag(mo_block, "TotalConfirmedQuantity")),
+                # Aug 25 2026 fix: same frozen-field issue as the
+                # ReportingPoint's own OpenQuantity - recompute from
+                # planned minus confirmed rather than trusting SAP's field.
+                "open_quantity": max(
+                    (_to_float(_first_tag(mo_block, "PlannedQuantity")) or 0)
+                    - (_to_float(_first_tag(mo_block, "TotalConfirmedQuantity")) or 0),
+                    0,
+                ),
                 # Needed to CREATE a brand-new by-product line (ActionCode
                 # 01) when one wasn't planned at all - reuse the main
                 # output's own target area as a sensible default, since a
@@ -239,7 +247,17 @@ class SAPProductionLotClient:
                     "planned_quantity": _to_float(_first_tag(rp_block, "PlannedQuantity")),
                     "total_confirmed_quantity": _to_float(_first_tag(rp_block, "TotalConfirmedQuantity")),
                     "total_confirmed_scrap": _to_float(_first_tag(rp_block, "TotalConfirmedScrap")),
-                    "open_quantity": _to_float(_first_tag(rp_block, "OpenQuantity")),
+                    # Aug 25 2026 fix: SAP's own OpenQuantity field freezes at
+                    # 0 once ConfirmationFinishedIndicator was ever set true,
+                    # even after the task is restarted (lot 70539 incident) -
+                    # planned minus confirmed is always the true remaining
+                    # amount, restarted or not, so compute it directly
+                    # instead of trusting SAP's stale field.
+                    "open_quantity": max(
+                        (_to_float(_first_tag(rp_block, "PlannedQuantity")) or 0)
+                        - (_to_float(_first_tag(rp_block, "TotalConfirmedQuantity")) or 0),
+                        0,
+                    ),
                     "confirmation_finished": finished_raw == "true",
                     "material_outputs": material_outputs,
                     "material_inputs": material_inputs,
