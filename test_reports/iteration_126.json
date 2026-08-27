@@ -1,0 +1,52 @@
+{
+  "summary": "Full backend + frontend test of the new Purchase Order Creation feature. Backend: 20/20 pytest cases pass (/api/purchase-orders/sites, /suppliers/search, /products/search, /history, /create incl. auth gating 401/403, Pydantic validation, live SAP rejection with fake refs, and a monkeypatched success path proving company auto-derivation P1->RI and the Mongo history write). Frontend: page loads for a user with the 'purchase_order' permission, site dropdown loads 8 real sites, Company auto-derives (P1->RI, P2->RT) and is disabled, Bill-To offers exactly RI/RT and stays independent, supplier search (HAMIDI->H1330 HAMIDI EXPORTS) and product search (BOX->011004-090, UoM EA) both work, add/remove line items work with Remove disabled at 1 line, client-side validation blocks submit with a toast and no dialog, confirm dialog summary is correct, Cancel closes without submitting, failure result dialog + Close-resets-form work. Access Management shows the new 'Purchase Order Creation' checkbox alongside all previous permissions; nav sub-tab is hidden and the page shows 'Access Denied' for a user without the permission. ONE HIGH issue found: the SAP fault message never reaches the browser because the endpoint returns HTTP 502 and the k8s/Cloudflare edge replaces 502 bodies with its own 'Bad gateway' HTML page. NO real PO was created in the live SAP tenant (all live create attempts used supplier_code ZZZTEST999 / product ZZZNOTREAL, incl. the browser test via a request-interceptor rewrite; purchase_order_creation_history is back to 0 rows).",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/purchase-orders/create", "issue": "SAP business faults are returned as HTTP 502. The preview/production edge (Cloudflare) discards the app body for 502 and serves its own 'Bad gateway' HTML page, so the readable SAP message ('SAP rejected the Purchase Order (HTTP 500): Web service processing error; ... Transaction ID FA163E...') is LOST to the client. Verified: localhost:8001 returns the correct JSON detail, but the public URL returns CF HTML, and the UI failure dialog shows 'The origin web server returned an invalid or incomplete response to Cloudflare...'. Fix: return 400/409/422 (or 200 with {ok:false,error}) for SAP business rejections and reserve 502/503 for genuine transport failures.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "POST /api/purchase-orders/create", "issue": "db['purchase_order_creation_history'].insert_one(...) is a blocking pymongo call executed directly on the event loop (every other DB access in this feature correctly uses asyncio.to_thread)."},
+      {"endpoint": "POST /api/purchase-orders/create", "issue": "History item descriptions are resolved with next((li.description for li in payload.items if li.product_id == it['product_id'])) - with the same product_id on two lines both rows get the FIRST line's description. Zip the lists instead."},
+      {"endpoint": "POST /api/purchase-orders/create", "issue": "No validation that item delivery_date >= po_date, and po_date/delivery_date are free-form strings (no YYYY-MM-DD format validation) - a malformed date will only be caught by SAP."},
+      {"endpoint": "SAP ManagePurchaseOrderIn", "issue": "SAP answered the fake-reference create with a GENERIC 'Web service processing error; more details in the web service error log on provider side' (HTTP 500) rather than a business fault naming the unknown supplier/product. Connectivity + auth are proven, but the envelope's UNVERIFIED fields (BillToParty shape, header <Date>) are still unproven - the success path has never been exercised against SAP. Recommend the user check SAP's web-service error log for transaction ID FA163E4794691FE1A8C16C7EA357BCED before declaring the feature production-ready."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "PO create failure", "issue": "Failure dialog displays Cloudflare's gateway-error prose instead of the SAP fault message (root cause = backend 502, see backend critical issue). Also worth adding a fallback so a non-JSON error body falls back to the friendly 'Failed to create Purchase Order in SAP' text.", "affected_selectors": ["po-result-error-message"]}
+    ],
+    "design_issues": [
+      {"screen": "Create Purchase Order", "issues": ["The read-only Company (Business Residence) value renders in the disabled-input grey (opacity-50), so 'RI'/'RT' looks like placeholder text and is low-contrast - consider a non-disabled readOnly input or a badge so the derived value reads as real data.", "The Purchase Order history returned by GET /api/purchase-orders/history is not surfaced anywhere in the UI - users have no way to see previously created POs."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_purchase_order_create_iter126.py",
+    "/app/backend/tests/_seed_iter126_sessions.py",
+    "/app/test_reports/pytest/iter126_po.xml"
+  ],
+  "action_items": [
+    "HIGH: stop returning HTTP 502 for SAP business rejections in POST /api/purchase-orders/create (edge swallows the body) - use 400/409/422 or a 200 envelope so the SAP fault text reaches the result dialog.",
+    "Move the history insert_one into asyncio.to_thread.",
+    "Fix per-line description mapping in the history document (zip items instead of matching by product_id).",
+    "Add date-format / delivery_date >= po_date validation on the create payload.",
+    "Verify the MAINTAIN_BUNDLE envelope against SAP's web-service error log (transaction FA163E4794691FE1A8C16C7EA357BCED) - the generic SAP 500 means BillToParty/Date field shapes are still unproven; a real success has never happened.",
+    "Optional: expose the create history in the UI and improve the derived-Company field styling/contrast."
+  ],
+  "critical_code_review_comments": [
+    "server.py is ~6000 lines - the new PO block should live in its own router module (pre-existing violation, now growing).",
+    "RI_SITES is duplicated in frontend PurchaseOrderPage.jsx and backend sap_wip_clearing_client.SITE_TO_COMPANY; both currently agree ({P1,P8,P5,P1W,W1}) but drift is inevitable - the frontend should read the derived company from a backend endpoint instead.",
+    "sap_po_write_client interpolates numbers straight into the XML template (quantity/unit_price come from validated Pydantic floats, so it's safe today) - values are not formatted/rounded, so a float like 10.100000000000001 could reach SAP."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_purchase_order_create_iter126.py",
+    "/app/backend/tests/_seed_iter126_sessions.py"
+  ],
+  "success_rate": {"backend": "100% (20/20 pytest, with the 502-body caveat documented)", "frontend": "~92% (every flow works; only the failure-dialog message content is wrong due to the backend 502)"},
+  "seed_data_creation": "Two temporary synthetic Entra sessions (TEST_iter126_noperm@internal.test with only bom_explorer, TEST_iter126_admin@internal.test super_admin) were created for the permission/Access-Management UI checks and DELETED afterwards. purchase_order_creation_history verified back to 0 rows. No real SAP PO created.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "vms_session=DNHiw5YqmjV4wxPeFjdNi0Q0TfXzpYMkzwitivOXDgY (po.tester@rampgroup.co.in, allowed_pages=['purchase_order']) still valid. Re-seed extra sessions with /app/backend/tests/_seed_iter126_sessions.py (arg 'delete' to clean up).",
+  "context_for_next_testing_agent": "Run: cd /app/backend && python -m pytest tests/test_purchase_order_create_iter126.py -n 0 -q. NOTE 1: writing/creating any file under /app/backend/** triggers uvicorn's WatchFiles reload, which makes the public URL return real Cloudflare 502/timeouts for ~30-60s - do NOT create test files immediately before/while running HTTP tests (this caused two false failures for me). NOTE 2: NEVER POST a real supplier_code + real product_id to /api/purchase-orders/create - the SAP tenant is live production. Use ZZZTEST999/ZZZNOTREAL; in the browser use page.route to rewrite the payload (that technique is in this iteration's transcript). NOTE 3: the success path is only covered by the monkeypatched in-process test (TestPurchaseOrderCreateMocked) which calls server.create_purchase_order directly - keep it that way.",
+  "rca_of_the_issue": "Root cause of the unreadable error in the UI: create_purchase_order raises HTTPException(status_code=502) for SAPPurchaseOrderWriteError. Kubernetes ingress/Cloudflare treats an origin 502 as a gateway failure and substitutes its own HTML error page, so axios receives CF's body and `e.response.data.detail` is not the SAP message. Reproduction: POST /api/purchase-orders/create with supplier_code ZZZTEST999 -> localhost:8001 returns JSON {'detail':'SAP rejected the Purchase Order (HTTP 500): Web service processing error ... Transaction ID FA163E...'} while the public URL returns Cloudflare's '502: Bad gateway' HTML. Mitigation: map SAP business rejections to 4xx (e.g. 409/422) and keep 502/503 only for unreachable-SAP cases."
+}

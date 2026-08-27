@@ -86,6 +86,11 @@ PAGE_CATALOG = [
     # Distinct from the Supplier Portal itself, which is NOT an Entra ID
     # page at all - see EXTERNAL_PORTAL_PATH_PREFIXES below.
     {"key": "supplier_portal_admin", "label": "Supplier Portal Approvals"},
+    # Aug 2026: Purchase Order Creation automation - writes real POs into
+    # SAP ByDesign via ManagePurchaseOrderIn. Kept separate from
+    # purchasing_plan/supplier_master (planning/master-data pages, no
+    # SAP write capability) since this one directly commits live data.
+    {"key": "purchase_order", "label": "Purchase Order Creation"},
 ]
 PAGE_KEYS = {p["key"] for p in PAGE_CATALOG}
 
@@ -149,6 +154,8 @@ PAGE_ROUTE_RULES = [
     # permission - one internal team, one page.
     ("/api/admin/supplier-portal", {"supplier_portal_admin"}),
     ("/api/admin/grn", {"supplier_portal_admin"}),
+    # Aug 2026: Purchase Order Creation automation page.
+    ("/api/purchase-orders", {"purchase_order"}),
 ]
 
 # Paths the auth middleware never gates - login must stay reachable while

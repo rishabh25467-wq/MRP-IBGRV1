@@ -11,6 +11,7 @@ import DeliveryNotePage from "@/pages/DeliveryNotePage";
 import GatePassPage from "@/pages/GatePassPage";
 import SupplierMasterPage from "@/pages/SupplierMasterPage";
 import QuotaAllocationPage from "@/pages/QuotaAllocationPage";
+import PurchaseOrderPage from "@/pages/PurchaseOrderPage";
 import SapWritePage from "@/pages/SapWritePage";
 import CreateMaterialPage from "@/pages/CreateMaterialPage";
 import L1L2ReportPage from "@/pages/L1L2ReportPage";
@@ -116,6 +117,7 @@ function InternalApp() {
             <Route path="/inventory/inter-plant-transfer/:stoId/gate-pass" element={<ProtectedRoute page="stock_transfer"><GatePassPage /></ProtectedRoute>} />
             <Route path="/purchasing-strategy/supplier-master" element={<ProtectedRoute page="supplier_master"><SupplierMasterPage /></ProtectedRoute>} />
             <Route path="/purchasing-strategy/quota-allocation" element={<ProtectedRoute page="quota_allocation"><QuotaAllocationPage /></ProtectedRoute>} />
+            <Route path="/purchasing-strategy/purchase-order-create" element={<ProtectedRoute page="purchase_order"><PurchaseOrderPage /></ProtectedRoute>} />
             <Route path="/admin" element={<ProtectedRoute page="admin"><AdminPage /></ProtectedRoute>} />
             <Route path="/admin/sap-write" element={<ProtectedRoute page="admin_sap_write"><SapWritePage /></ProtectedRoute>} />
             <Route path="/admin/create-material" element={<ProtectedRoute page="admin_create_material"><CreateMaterialPage /></ProtectedRoute>} />

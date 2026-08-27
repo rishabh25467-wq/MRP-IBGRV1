@@ -41,6 +41,7 @@ export const PAGE_LABELS = {
   admin_create_material: "Create Material (Admin)",
   store_approval: "Goods Issue",
   supplier_portal_admin: "Supplier Portal Approvals",
+  purchase_order: "Purchase Order Creation",
 };
 
 const AuthContext = createContext(null);

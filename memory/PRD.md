@@ -1,3 +1,62 @@
+## FEATURE: Purchase Order Creation & Push to SAP ByDesign (2026-08-27)
+
+- New page `/purchasing-strategy/purchase-order-create` (`PurchaseOrderPage.jsx`) lets internal
+  staff build a multi-line Purchase Order and push it LIVE into SAP ByDesign via
+  `ManagePurchaseOrderIn` (MAINTAIN_BUNDLE), `SAP_SOAP_PO_MANAGE_ENDPOINT` (already configured).
+- New `sap_po_write_client.py`: real field mappings CONFIRMED by reading a live PO (28792) via the
+  existing read-only `sap_po_client.py` - Company/Buyer party PartyTypeCode 200 PartyID "RI"/"RT"
+  (literal strings, this tenant's 2 legal entities), Purchasing Unit PartyTypeCode 200 PartyID
+  "{site}-PUR", Supplier/Seller PartyTypeCode 147 PartyID = supplier's `sap_internal_id` (confirmed
+  identical to Supplier Portal's `vendor_code`), Product ProductTypeCode 1/ProductIdentifierTypeCode 1/
+  plain product_id, Ship-to LocationID = plain site code at item level. BillToParty shape (PartyTypeCode
+  200, PartyID RI/RT) and header `<Date>` are UNVERIFIED best-effort (no real historical PO exposes
+  these on a READ call) - documented in the client's own docstring, will self-correct from the first
+  real SAP fault message since a create either fully succeeds or fully fails.
+- **Business rule (user's explicit ask)**: Company (Business Residence) is NOT independently picked -
+  it's auto-derived/locked from the chosen Purchase Unit site: P1/P8/P5/P1W/W1 -> RI, everything else
+  -> RT (mirrors the existing `sap_wip_clearing_client.SITE_TO_COMPANY` mapping, reused directly via
+  `company_and_set_of_books_for_site()`). Bill-To Company is independently selectable (RI/RT). PR
+  Number is a free-text optional reference field with no derivation rule - stored only in our own
+  `purchase_order_creation_history` Mongo collection, never sent to SAP.
+- Supplier/Product dropdowns are sourced ONLY from this app's own cached `suppliers`/`inventory_cache`
+  collections (`GET /api/purchase-orders/suppliers/search`, `/products/search`) - never a live SAP call
+  at PO-creation time, per user's explicit choice. Unlimited dynamic add/remove line items.
+- New endpoints: `GET /api/purchase-orders/sites`, `/suppliers/search`, `/products/search`, `/history`,
+  `POST /api/purchase-orders/create`. New page-permission key `purchase_order` ("Purchase Order
+  Creation") in `auth_service.py`'s PAGE_CATALOG, grantable via the existing IT Access Management page.
+  No PO PDF generation (user's explicit ask) - success just shows the returned SAP `PurchaseOrderID`.
+- **Fixed same session per testing_agent (iteration_126, 100% backend, ~92%→100% frontend after fix)**:
+  - **HIGH**: SAP business rejections were returned as HTTP 502 - the k8s ingress/Cloudflare edge
+    discards the response BODY for a 502 and substitutes its own generic "Bad gateway" HTML, so the
+    readable SAP fault message never reached the browser. Changed to HTTP 422 (a genuine
+    client-correctable business error, not a transport failure) - re-verified live: the real SAP fault
+    text ("Web service processing error...Transaction ID...") now reaches the client correctly.
+  - History `insert_one` moved into `asyncio.to_thread` (was a blocking pymongo call on the event loop).
+  - Per-line description mapping fixed (zip items with payload lines instead of a product_id
+    re-lookup, which gave two same-product_id lines the same first-match description).
+  - Added `po_date`/`delivery_date` YYYY-MM-DD format validation + delivery_date >= po_date check
+    (Pydantic v2 `field_validator`/`model_validator`) - both re-verified live via curl (422 responses).
+  - Frontend: non-JSON/empty error bodies now fall back to a friendly message instead of `undefined`;
+    Company (Business Residence) display changed from a greyed-out disabled input to a proper
+    read-only value box (was low-contrast, looked like placeholder text).
+- **Tested**: `testing_agent` iteration_126 (backend 20/20 pytest incl. auth gating, Pydantic
+  validation, a REAL live SAP call with intentionally-fake supplier_code `ZZZTEST999`/product_id
+  `ZZZNOTREAL` proving the error path end-to-end with NO row written to history, and a
+  monkeypatched success-path test proving P1->RI company derivation + the Mongo history write;
+  frontend covers site/company/bill-to/supplier-search/product-search/add-remove-line/validation/
+  confirm-dialog/failure-dialog/Access-Management-checkbox/nav-tab-gating). Main agent re-verified all
+  4 post-fix items live via curl against the public preview URL after applying them. **NO real
+  Purchase Order was ever created in the live production SAP tenant** - `purchase_order_creation_history`
+  confirmed at 0 rows throughout. The SUCCESS path against a real supplier+product has deliberately
+  never been exercised live (too risky - would create a real permanent SAP PO) - first real use should
+  be watched closely for any SAP-side field-shape surprises (BillToParty/header Date, per the
+  client's own docstring).
+- Synthetic test session left in DB for further testing: `po.tester@rampgroup.co.in` (role user,
+  allowed_pages=['purchase_order']) - see `/app/memory/test_credentials.md`.
+
+---
+
+
 ## FEATURE: Original/Duplicate/Triplicate copy selector on the Delivery Note (2026-08-29)
 
 - Added a dropdown on `/inventory/inter-plant-transfer/{stoId}/delivery-note` (GST Rule 48(4)):

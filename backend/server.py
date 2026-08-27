@@ -15,7 +15,7 @@ import requests
 from dotenv import load_dotenv
 from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import PlainTextResponse, Response
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
 from starlette.middleware.cors import CORSMiddleware
@@ -39,6 +39,7 @@ from sap_material_physical_client import (
 from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplierAuthError, SAPSupplierNotConfiguredError
 from sap_po_client import SAPPurchaseOrderClient, SAPPurchaseOrderError, SAPPurchaseOrderNotConfiguredError, WATERMARK_COLLECTION as SAP_PO_WATERMARK_COLLECTION
 from sap_gsa_write_client import SAPGSAWriteClient
+from sap_po_write_client import SAPPurchaseOrderWriteClient, SAPPurchaseOrderWriteError, SAPPurchaseOrderWriteNotConfiguredError
 from sap_price_spec_client import SAPPriceSpecClient, SAPPriceSpecError, bulk_push_erp_prices_to_sap
 from sap_supplier_invoice_client import SAPSupplierInvoiceClient, SAPSupplierInvoiceError
 from sap_cost_estimate_client import SAPCostEstimateClient, SAPCostEstimateError
@@ -301,6 +302,12 @@ sap_po_client = SAPPurchaseOrderClient(
 # sap_gsa_write_client.py module docstring.
 sap_gsa_write_client = SAPGSAWriteClient(
     endpoint=os.environ.get('SAP_SOAP_GSA_WRITE_ENDPOINT'),
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
+)
+
+sap_po_write_client = SAPPurchaseOrderWriteClient(
+    endpoint=os.environ.get('SAP_SOAP_PO_MANAGE_ENDPOINT'),
     username=os.environ['SAP_SOAP_USERNAME'],
     password=os.environ['SAP_SOAP_PASSWORD'],
 )
@@ -4567,6 +4574,191 @@ async def search_products(q: str = Query(..., min_length=1), limit: int = 10):
         {"_id": 1, "description": 1},
     ).limit(limit)
     return [ProductSuggestion(product_id=d["_id"], description=d.get("description")) for d in cursor]
+
+
+# ---------------------------------------------------------------------
+# Purchase Order Creation automation (Aug 2026) - pushes a real
+# Purchase Order into SAP ByDesign via sap_po_write_client.py. Company
+# (Business Residence) is auto-derived from the chosen Purchase Unit
+# site (reuses the existing SITE_TO_COMPANY mapping - RI for P1/P8/P5/
+# P1W/W1, RT otherwise) rather than picked independently, per user's
+# explicit rule. Supplier/Product dropdowns are sourced from this app's
+# own cached `suppliers`/`inventory_cache` collections, never a live SAP
+# call at PO-creation time.
+# ---------------------------------------------------------------------
+class PurchaseOrderSupplierSuggestion(BaseModel):
+    supplier_code: str
+    name: str
+
+
+class PurchaseOrderProductSuggestion(BaseModel):
+    product_id: str
+    description: Optional[str] = None
+    unit_of_measure: Optional[str] = None
+
+
+class PurchaseOrderLineItemIn(BaseModel):
+    product_id: str
+    description: Optional[str] = None
+    quantity: float = Field(gt=0)
+    unit_of_measure: str
+    unit_price: float = Field(ge=0)
+    delivery_date: str
+
+    @field_validator("delivery_date")
+    @classmethod
+    def _valid_delivery_date(cls, v):
+        try:
+            datetime.strptime(v, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError("delivery_date must be in YYYY-MM-DD format")
+        return v
+
+
+class PurchaseOrderCreateRequest(BaseModel):
+    supplier_code: str
+    purchase_unit_site: str
+    bill_to_company: str
+    po_date: str
+    currency: str = "INR"
+    pr_number: Optional[str] = None
+    items: List[PurchaseOrderLineItemIn] = Field(min_length=1)
+
+    @field_validator("po_date")
+    @classmethod
+    def _valid_po_date(cls, v):
+        try:
+            datetime.strptime(v, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError("po_date must be in YYYY-MM-DD format")
+        return v
+
+    @model_validator(mode="after")
+    def _delivery_not_before_po_date(self):
+        for it in self.items:
+            if it.delivery_date < self.po_date:
+                raise ValueError(f"Delivery Date for {it.product_id} cannot be before PO Date")
+        return self
+
+
+@api_router.get("/purchase-orders/sites")
+async def po_list_sites():
+    sites = await asyncio.to_thread(list_known_sites, db)
+    return {"sites": sites}
+
+
+@api_router.get("/purchase-orders/suppliers/search", response_model=List[PurchaseOrderSupplierSuggestion])
+async def po_search_suppliers(q: str = Query(..., min_length=1), limit: int = 15):
+    q_escaped = re.escape(q.strip())
+
+    def _search():
+        cursor = db["suppliers"].find(
+            {
+                "sap_internal_id": {"$exists": True, "$ne": None},
+                "$or": [
+                    {"name": {"$regex": q_escaped, "$options": "i"}},
+                    {"sap_internal_id": {"$regex": f"^{q_escaped}", "$options": "i"}},
+                ],
+            },
+            {"sap_internal_id": 1, "name": 1},
+        ).limit(limit)
+        return list(cursor)
+
+    docs = await asyncio.to_thread(_search)
+    return [PurchaseOrderSupplierSuggestion(supplier_code=d["sap_internal_id"], name=d["name"]) for d in docs]
+
+
+@api_router.get("/purchase-orders/products/search", response_model=List[PurchaseOrderProductSuggestion])
+async def po_search_products(q: str = Query(..., min_length=1), limit: int = 15):
+    q_escaped = re.escape(q.strip())
+
+    def _search():
+        pipeline = [
+            {"$match": {"_id": "latest"}},
+            {"$project": {"items": {"$filter": {
+                "input": "$items", "as": "i",
+                "cond": {"$or": [
+                    {"$regexMatch": {"input": "$$i.product_id", "regex": f"^{q_escaped}", "options": "i"}},
+                    {"$regexMatch": {"input": "$$i.description", "regex": q_escaped, "options": "i"}},
+                ]},
+            }}}},
+            {"$project": {"items": {"$slice": ["$items", limit]}}},
+        ]
+        result = list(db["inventory_cache"].aggregate(pipeline))
+        return result[0]["items"] if result else []
+
+    items = await asyncio.to_thread(_search)
+    return [
+        PurchaseOrderProductSuggestion(product_id=i["product_id"], description=i.get("description"), unit_of_measure=i.get("uom"))
+        for i in items
+    ]
+
+
+@api_router.get("/purchase-orders/history")
+async def get_purchase_order_history(limit: int = 50):
+    def _fetch():
+        docs = list(db["purchase_order_creation_history"].find({}, {"raw_xml": 0}).sort("created_at", -1).limit(limit))
+        for d in docs:
+            d["_id"] = str(d["_id"])
+            if isinstance(d.get("created_at"), datetime):
+                d["created_at"] = d["created_at"].isoformat()
+        return docs
+
+    return await asyncio.to_thread(_fetch)
+
+
+@api_router.post("/purchase-orders/create")
+async def create_purchase_order(payload: PurchaseOrderCreateRequest, request: Request):
+    if payload.bill_to_company not in ("RI", "RT"):
+        raise HTTPException(status_code=400, detail="Bill-To Company must be RI or RT")
+    company_code, _ = company_and_set_of_books_for_site(payload.purchase_unit_site)
+    items = [
+        {
+            "product_id": it.product_id, "quantity": it.quantity, "unit_of_measure": it.unit_of_measure,
+            "unit_price": it.unit_price, "delivery_date": it.delivery_date, "site_id": payload.purchase_unit_site,
+        }
+        for it in payload.items
+    ]
+    try:
+        result = await asyncio.to_thread(
+            sap_po_write_client.create_purchase_order,
+            company_code, payload.purchase_unit_site, payload.supplier_code,
+            payload.bill_to_company, payload.po_date, payload.currency, items,
+        )
+    except SAPPurchaseOrderWriteNotConfiguredError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except SAPPurchaseOrderWriteError as e:
+        # Aug 2026 fix (testing_agent iteration_126): SAP business
+        # rejections must NOT be 502/503 - the k8s ingress/Cloudflare edge
+        # discards the response BODY for a 502 and substitutes its own
+        # generic "Bad gateway" HTML, so the readable SAP fault message
+        # never reached the browser. 422 is a genuine client-correctable
+        # business error (wrong supplier/product/party), not a transport
+        # failure, so the edge passes the JSON body through untouched.
+        raise HTTPException(status_code=422, detail=str(e))
+
+    user = request.state.user
+    now = datetime.now(timezone.utc)
+    # zip (not a product_id re-lookup) so two lines sharing the same
+    # product_id each keep their OWN description, not always the first's.
+    items_with_desc = [dict(it, description=li.description) for it, li in zip(items, payload.items)]
+    await asyncio.to_thread(db["purchase_order_creation_history"].insert_one, {
+        "_id": str(uuid.uuid4()),
+        "po_number": result["po_number"],
+        "po_uuid": result["po_uuid"],
+        "supplier_code": payload.supplier_code,
+        "purchase_unit_site": payload.purchase_unit_site,
+        "company_code": company_code,
+        "bill_to_company": payload.bill_to_company,
+        "po_date": payload.po_date,
+        "currency": payload.currency,
+        "pr_number": payload.pr_number,
+        "items": items_with_desc,
+        "created_by": user.get("name"),
+        "created_by_user_id": f"{user.get('tid')}:{user.get('oid')}",
+        "created_at": now,
+    })
+    return {"po_number": result["po_number"], "po_uuid": result["po_uuid"]}
 
 
 @api_router.post("/part-suppliers", response_model=PartSupplierAssignment)
