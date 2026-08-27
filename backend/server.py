@@ -2187,6 +2187,7 @@ def _attach_order_creators(rows: list, db) -> list:
     for r in rows:
         info = creators.get(r.get("production_order_id")) or {}
         r["created_by"] = info.get("name")
+        r["created_by_user_id"] = info.get("user_id")
         at = info.get("at")
         r["order_created_at"] = at.isoformat() if at else None
         r["production_model_id"] = info.get("production_model_id")
@@ -2233,10 +2234,18 @@ async def get_open_production_lots(request: Request, status: str = Query("open",
     # "Show mine" toggle's own name-matching logic, just enforced server-
     # side instead of an optional client toggle) - admin/super_admin still
     # see every order regardless of who created it.
+    # Aug 28 2026 bug fix (real incident: a user's own order invisible on
+    # their own screen): match on the creator's STABLE identity
+    # (created_by_user_id) when it's known, falling back to the old
+    # free-text name match only for orders created before this fix.
     user = request.state.user
     if user.get("role") not in ("super_admin", "admin"):
+        my_id = user.get("_id")
         my_name = (user.get("name") or "").strip().lower()
-        rows = [r for r in rows if (r.get("created_by") or "").strip().lower() == my_name]
+        rows = [r for r in rows if (
+            r["created_by_user_id"] == my_id if r.get("created_by_user_id")
+            else (r.get("created_by") or "").strip().lower() == my_name
+        )]
     return {"rows": rows}
 
 
@@ -2795,7 +2804,7 @@ async def get_source_of_supply_options(material_id: str, site_id: str = None):
 
 
 @api_router.post("/production-confirmation/create-proposal")
-async def create_production_proposal(payload: CreateProductionProposalRequest):
+async def create_production_proposal(payload: CreateProductionProposalRequest, request: Request):
     if not payload.actor.strip():
         raise HTTPException(status_code=400, detail="actor (your name) is required")
     avail_dt = None
@@ -2813,6 +2822,7 @@ async def create_production_proposal(payload: CreateProductionProposalRequest):
         raise HTTPException(status_code=502, detail=f"SAP error: {e}")
     await asyncio.to_thread(
         production_confirmation_service.log_proposal_creation, db, payload.actor, payload.dict(), result,
+        None, request.state.user.get("_id"),
     )
     return result
 
@@ -3031,9 +3041,10 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
             }})
             return
         proposal_id = await _create_proposal_for_payload(payload, avail_dt, job_id)
+        job_actor_user_id = (job_store.get_job(db, job_id) or {}).get("actor_user_id")
         await asyncio.to_thread(
             production_confirmation_service.log_proposal_creation, db, payload.actor, payload.dict(),
-            {"production_proposal_id": proposal_id}, job_id,
+            {"production_proposal_id": proposal_id}, job_id, job_actor_user_id,
         )
 
         if short_rm:
@@ -3234,6 +3245,7 @@ async def _continue_order_creation(job_id: str, payload: "CreateProductionPropos
             logger.warning(f"create-and-release job {job_id}: tagging order {new_order_id} with proposal_id {proposal_id} failed (non-fatal): {e}")
         await asyncio.to_thread(
             production_confirmation_service.log_order_release, db, payload.actor, new_order_id, {"success": released}, job_id,
+            (job_store.get_job(db, job_id) or {}).get("actor_user_id"),
         )
         job_store.update_job(db, job_id, {"status": "done", "result": {
             "production_proposal_id": proposal_id, "production_order_id": new_order_id, "released": released,
@@ -3250,7 +3262,7 @@ async def _continue_order_creation(job_id: str, payload: "CreateProductionPropos
 
 
 @api_router.post("/production-confirmation/create-and-release-order")
-async def create_and_release_production_order(payload: CreateProductionProposalRequest):
+async def create_and_release_production_order(payload: CreateProductionProposalRequest, request: Request):
     if not payload.actor.strip():
         raise HTTPException(status_code=400, detail="actor (your name) is required")
     if payload.quantity <= 0:
@@ -3266,8 +3278,14 @@ async def create_and_release_production_order(payload: CreateProductionProposalR
     # payload_snapshot is kept on the job doc (not just held in the running
     # asyncio task) so a paused "waiting_store_approval" job can be resumed
     # later from a completely fresh request (store/planner action) without
-    # needing the original in-memory task to still exist.
-    job_store.create_job(db, job_id, {"status": "running", "result": None, "error": None, "payload_snapshot": payload.dict()})
+    # needing the original in-memory task to still exist. actor_user_id
+    # (Aug 28 2026 bug fix) is the creator's STABLE Entra ID identity,
+    # read back by every downstream log_proposal_creation/log_order_release
+    # call so "mine" filtering never depends on a free-text name matching.
+    job_store.create_job(db, job_id, {
+        "status": "running", "result": None, "error": None, "payload_snapshot": payload.dict(),
+        "actor_user_id": request.state.user.get("_id"),
+    })
     asyncio.create_task(_run_create_and_release_job(job_id, payload, avail_dt))
     return {"job_id": job_id}
 
@@ -3350,7 +3368,10 @@ async def resume_failed_create_and_release_job(job_id: str, payload: ResumeFaile
         )
     resumed_payload = CreateProductionProposalRequest(**snapshot)
     new_job_id = str(uuid.uuid4())
-    job_store.create_job(db, new_job_id, {"status": "running", "result": None, "error": None, "payload_snapshot": snapshot})
+    job_store.create_job(db, new_job_id, {
+        "status": "running", "result": None, "error": None, "payload_snapshot": snapshot,
+        "actor_user_id": old_job.get("actor_user_id"),
+    })
     asyncio.create_task(_continue_order_creation(new_job_id, resumed_payload, proposal_id))
     return {"job_id": new_job_id, "production_proposal_id": proposal_id}
 
@@ -3647,7 +3668,7 @@ class ReleaseProductionOrderRequest(BaseModel):
 
 
 @api_router.post("/production-confirmation/release-order")
-async def release_production_order(payload: ReleaseProductionOrderRequest):
+async def release_production_order(payload: ReleaseProductionOrderRequest, request: Request):
     if not payload.actor.strip():
         raise HTTPException(status_code=400, detail="actor (your name) is required")
     try:
@@ -3656,6 +3677,7 @@ async def release_production_order(payload: ReleaseProductionOrderRequest):
         raise HTTPException(status_code=502, detail=f"SAP error: {e}")
     await asyncio.to_thread(
         production_confirmation_service.log_order_release, db, payload.actor, payload.production_order_id, result,
+        None, request.state.user.get("_id"),
     )
     return result
 
@@ -3670,10 +3692,21 @@ async def get_proposal_and_release_history(request: Request):
     # Aug 25 2026, user's explicit follow-up ask (same rule as the
     # open-lots table): a plain "user" account only sees entries THEY
     # created/released - admin/super_admin still see every entry.
+    # Aug 28 2026 bug fix (real incident: Mayank Jadon's own proposal
+    # invisible on his own Recent Activity table) - match on the actor's
+    # STABLE identity (actor_user_id/released_by_user_id) when known,
+    # falling back to the old free-text name match only for entries
+    # logged before this fix (which never had a user_id to store).
     user = request.state.user
     if user.get("role") not in ("super_admin", "admin"):
+        my_id = user.get("_id")
         my_name = (user.get("name") or "").strip().lower()
-        entries = [e for e in entries if (e.get("released_by") or e.get("actor") or "").strip().lower() == my_name]
+        def _is_mine(e):
+            user_id = e.get("released_by_user_id") or e.get("actor_user_id")
+            if user_id:
+                return user_id == my_id
+            return (e.get("released_by") or e.get("actor") or "").strip().lower() == my_name
+        entries = [e for e in entries if _is_mine(e)]
     return {"entries": entries}
 
 

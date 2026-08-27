@@ -312,16 +312,28 @@ def retry_fg_movement_for_lot(db, production_lot_id: str, fg_movement_result: di
 PROPOSAL_HISTORY_COLLECTION = "production_order_creation_history"
 
 
-def log_proposal_creation(db, actor: str, request_payload: dict, result: dict, job_id: str = None) -> None:
+def log_proposal_creation(db, actor: str, request_payload: dict, result: dict, job_id: str = None, actor_user_id: str = None) -> None:
     """job_id (when this came from the one-click create-and-release job, not
     the standalone create-proposal-only endpoint) is stored so a later
     log_order_release call for the SAME job can update this exact row
     in-place instead of appearing as a disconnected second row - lets the
-    history table show "Proposal 223835 -> Order 69959" together."""
+    history table show "Proposal 223835 -> Order 69959" together.
+
+    actor_user_id (Aug 28 2026 bug fix - real incident, Mayank Jadon's own
+    proposal invisible on his own Recent Activity table) - the STABLE
+    Entra ID identity (tid:oid, from request.state.user["_id"]) of
+    whoever is logged in right now, stored ALONGSIDE the free-text
+    `actor` display name. "Mine" filtering (get_proposal_and_release_history
+    below, and get_order_creators for the open-lots table) now matches on
+    THIS instead of the display name string, which can silently drift
+    (Azure AD name claim changes, trailing/internal whitespace, etc.) even
+    though it's the exact same person - `actor` itself is kept purely for
+    display, never used for access decisions anymore."""
     db[PROPOSAL_HISTORY_COLLECTION].insert_one({
         "type": "proposal_created",
         "job_id": job_id,
         "actor": actor,
+        "actor_user_id": actor_user_id,
         "material_id": request_payload.get("material_id"),
         "site_id": request_payload.get("site_id"),
         "quantity": request_payload.get("quantity"),
@@ -335,12 +347,12 @@ def log_proposal_creation(db, actor: str, request_payload: dict, result: dict, j
     })
 
 
-def log_order_release(db, actor: str, production_order_id: str, result: dict, job_id: str = None) -> None:
+def log_order_release(db, actor: str, production_order_id: str, result: dict, job_id: str = None, actor_user_id: str = None) -> None:
     """When job_id matches the same one-click job's proposal_created row,
     update that row in-place with the order outcome instead of inserting a
     disconnected second row. Falls back to a standalone insert (previous
     behavior) for the manual/standalone Release-an-existing-Order form,
-    which has no job_id."""
+    which has no job_id. actor_user_id: see log_proposal_creation above."""
     if job_id:
         updated = db[PROPOSAL_HISTORY_COLLECTION].update_one(
             {"job_id": job_id, "type": "proposal_created"},
@@ -349,6 +361,7 @@ def log_order_release(db, actor: str, production_order_id: str, result: dict, jo
                 "released": result.get("success"),
                 "released_at": datetime.now(timezone.utc),
                 "released_by": actor,
+                "released_by_user_id": actor_user_id,
             }},
         )
         if updated.matched_count:
@@ -356,6 +369,7 @@ def log_order_release(db, actor: str, production_order_id: str, result: dict, jo
     db[PROPOSAL_HISTORY_COLLECTION].insert_one({
         "type": "order_released",
         "actor": actor,
+        "actor_user_id": actor_user_id,
         "production_order_id": production_order_id,
         "success": result.get("success"),
         "at": datetime.now(timezone.utc),
@@ -368,6 +382,7 @@ def get_proposal_and_release_history(db, limit: int = 200) -> list:
         {
             "type": d.get("type"),
             "actor": d.get("actor"),
+            "actor_user_id": d.get("actor_user_id"),
             "material_id": d.get("material_id"),
             "site_id": d.get("site_id"),
             "quantity": d.get("quantity"),
@@ -377,6 +392,7 @@ def get_proposal_and_release_history(db, limit: int = 200) -> list:
             "production_model_id": d.get("production_model_id"),
             "released": d.get("released"),
             "released_by": d.get("released_by"),
+            "released_by_user_id": d.get("released_by_user_id"),
             "success": d.get("success"),
             "at": d["at"].isoformat(),
         }
@@ -385,25 +401,27 @@ def get_proposal_and_release_history(db, limit: int = 200) -> list:
 
 
 def get_order_creators(db, production_order_ids: list) -> dict:
-    """{production_order_id: {"name": actor_name, "at": datetime,
-    "production_model_id": str|None}} for the "Show mine"/"Sort by
-    latest" controls (user's explicit ask, Aug 2026) on the Production
-    Confirmation table - "mine" means orders I created/released, not
-    orders I've merely confirmed. Prefers `released_by` (the merged
-    proposal_created row, the normal one-click flow) over `actor` (the
-    standalone manual Release-an-Order form, which has no linked
-    proposal row). `at` is the order-creation timestamp, used so
-    "latest" reflects when the order was actually created rather than
-    SAP's own (unexposed) lot ordering. `production_model_id` (Aug 27
-    2026, user's explicit ask - "which Production Model did I use to
-    create this order?") is only ever known for orders created via the
-    Source of Supply picker after this fix - older orders show None,
-    the frontend renders that as "—"."""
+    """{production_order_id: {"name": actor_name, "user_id": str|None,
+    "at": datetime, "production_model_id": str|None}} for the "Show
+    mine"/"Sort by latest" controls (user's explicit ask, Aug 2026) on the
+    Production Confirmation table - "mine" means orders I created/
+    released, not orders I've merely confirmed. Prefers `released_by`
+    (the merged proposal_created row, the normal one-click flow) over
+    `actor` (the standalone manual Release-an-Order form, which has no
+    linked proposal row) - same preference applied to `user_id` (Aug 28
+    2026, see log_proposal_creation's docstring for why). `at` is the
+    order-creation timestamp, used so "latest" reflects when the order
+    was actually created rather than SAP's own (unexposed) lot ordering.
+    `production_model_id` (Aug 27 2026, user's explicit ask - "which
+    Production Model did I use to create this order?") is only ever
+    known for orders created via the Source of Supply picker after this
+    fix - older orders show None, the frontend renders that as "—"."""
     if not production_order_ids:
         return {}
     docs = db[PROPOSAL_HISTORY_COLLECTION].find(
         {"production_order_id": {"$in": production_order_ids}},
-        {"production_order_id": 1, "released_by": 1, "actor": 1, "at": 1, "released_at": 1, "production_model_id": 1},
+        {"production_order_id": 1, "released_by": 1, "actor": 1, "released_by_user_id": 1, "actor_user_id": 1,
+         "at": 1, "released_at": 1, "production_model_id": 1},
     ).sort("_id", 1)
     creators = {}
     for d in docs:
@@ -411,6 +429,7 @@ def get_order_creators(db, production_order_ids: list) -> dict:
         if order_id:
             creators[order_id] = {
                 "name": d.get("released_by") or d.get("actor"),
+                "user_id": d.get("released_by_user_id") or d.get("actor_user_id"),
                 "at": d.get("released_at") or d.get("at"),
                 "production_model_id": d.get("production_model_id"),
             }

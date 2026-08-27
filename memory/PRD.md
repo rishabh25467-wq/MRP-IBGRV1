@@ -1,4 +1,36 @@
-## FEATURE BATCH #3: GRN Site/Warehouse selection + Discrepancy flow + live 2-step SAP write (2026-08-28)
+## BUG FIX: "user" role couldn't see their OWN Recent Activity / self-created orders (2026-08-28)
+
+- **Root cause**: `get_proposal_and_release_history` and `get_open_production_lots`'s "self-created
+  only" filters matched purely on a free-text display name string (`actor`/`released_by`/`created_by`
+  vs the logged-in user's current Azure AD `name` claim) - any drift between the two (real incident:
+  Mayank Jadon's own Proposal 226253 invisible on his own screen, visible to admin) silently hides a
+  user's own data with no error.
+- **Fix**: every new proposal/order now also stores the creator's STABLE Entra ID identity
+  (`tid:oid`, `request.state.user["_id"]`) as `actor_user_id`/`released_by_user_id`/
+  `created_by_user_id` alongside the display name. Filtering now matches on that stable id first
+  (immune to name-string drift), falling back to the old name match only for entries logged before
+  this fix. Applied in `production_confirmation_service.py` (`log_proposal_creation`,
+  `log_order_release`, `get_order_creators`) and `server.py` (`create_production_proposal`,
+  `create_and_release_production_order`, `release_production_order`,
+  `resume_failed_create_and_release_job`, `get_open_production_lots`, `get_proposal_and_release_history`).
+  No frontend changes needed - identity is derived server-side from the session, never trusts the client.
+- Verified live via curl: seeded a proposal with `actor_user_id` set, then drifted the account's `name`
+  (added an internal double-space) - entry still correctly matched as "mine". A legacy entry with no
+  `actor_user_id` still matches via the old name fallback. Does NOT retroactively fix very old entries
+  that predate this change and were already affected by a name mismatch.
+
+
+## Clarification (2026-08-27) - stale "Active Orders" rows on Create Production Order page
+
+- Explained to user: Recent Activity only logs once a Proposal is actually created in SAP; rows stuck
+  at "Checking Stock" have nothing to log yet. Reproduced the specific stuck-row complaint: the 2
+  visible rows were stale `localStorage` job references with no matching backend job doc (from before
+  an environment reset) - confirmed the existing 404-detection auto-clear (Aug 2026) already handles
+  this correctly within a few seconds of an active poll; likely just browser tab timer throttling made
+  it look permanently stuck. No code change needed, self-heals on refresh.
+
+
+
 
 - **Site + Warehouse selection on GRN Approval**: `GET /admin/grn/sites` returns the internal staff
   member's own `bound_sites` (auto-locks the Site dropdown when there's exactly one - reuses the
