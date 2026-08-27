@@ -528,22 +528,37 @@ def _live_source_stock_qty(sap_inventory_client, ship_from_site_id: str, source_
 
 
 def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client, sto_id: str) -> str:
-    """One poll attempt: looks for the Outbound Delivery Request Item SAP
-    has produced from this STO's Customer Requirement (see
-    sap_outbound_delivery_client.py docstring for the safe UUID-based
-    match) and, if found and still open, live-checks the source
-    warehouse's REAL current stock before attempting the Goods Issue
-    (Aug 27 2026 addition - user's explicit ask, following a real GI
-    failure "Inventory in logistics area not available": posting blind
-    and letting SAP reject it wastes a SAP-side attempt and gives a raw
-    error; checking first lets us give a clear "waiting on stock" status
-    and keep auto-retrying every poll tick without ever hitting SAP's own
-    error log for something that's genuinely just "not here yet").
-    Returns "waiting" (SAP hasn't produced the delivery yet, OR stock is
-    still insufficient - caller should poll again later), "posted"
-    (done), or raises SAPOutboundDeliveryError on a real SAP-side
-    rejection of the Goods Issue itself. Mutates the STO doc's
-    `gi_status` fields.
+    """One poll attempt: looks for EVERY Outbound Delivery Request Item
+    SAP has produced from this STO's Customer Requirement - one per line
+    item, see sap_outbound_delivery_client.py docstring for the safe
+    UUID-based match - and, for each one still open, live-checks its OWN
+    source warehouse's REAL current stock before attempting the Goods
+    Issue (Aug 27 2026 addition - user's explicit ask, following a real
+    GI failure "Inventory in logistics area not available": posting
+    blind and letting SAP reject it wastes a SAP-side attempt and gives
+    a raw error; checking first lets us give a clear "waiting on stock"
+    status and keep auto-retrying every poll tick without ever hitting
+    SAP's own error log for something that's genuinely just "not here
+    yet").
+
+    Aug 27 2026 bug fix (real incident: STO-000011 / SAP order 30280):
+    this used to only ever look at delivery_items[0] and doc["items"][0]
+    - correct for a single-line STO, but for a multi-line one it posted
+    Goods Issue for just the FIRST line's Outbound Delivery Request Item
+    and never even attempted the rest, so SAP created a real Outbound
+    Delivery containing only that one line while the others stayed stuck
+    at the source site forever, with the app reporting "Goods Issue
+    posted" as if the whole order had shipped. Now loops over every
+    still-open line, checking/posting each against ITS OWN matched STO
+    line (by product_id) - lines whose delivery item already shows
+    OrderFulfilmentProcessingStatusCode "3" (Finished, e.g. from an
+    earlier partial poll) are skipped, not re-posted.
+
+    Returns "waiting" (SAP hasn't produced the delivery yet, OR at least
+    one line's stock is still insufficient - caller should poll again
+    later), "posted" (every line done), or raises
+    SAPOutboundDeliveryError on a real SAP-side rejection of the Goods
+    Issue itself. Mutates the STO doc's `gi_status` fields.
 
     GST fields are recorded on the Customer Requirement's own Note at
     creation time instead (see `_build_gst_note_text`/
@@ -556,46 +571,85 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client,
     if doc.get("gi_status") == "posted":
         return "posted"
 
-    delivery_item = sap_outbound_delivery_client.find_delivery_request_item(doc["sap_order_uuid"])
-    if not delivery_item:
+    delivery_items = sap_outbound_delivery_client.find_delivery_request_items(doc["sap_order_uuid"])
+    if not delivery_items:
         return "waiting"
 
+    object_ids = [d["object_id"] for d in delivery_items if d.get("object_id")]
+    # Position-aware matching (testing_agent iteration_127 hardening):
+    # a plain product_id->line dict collapses two STO lines that share
+    # the SAME product_id but different source_warehouse_id - pop each
+    # match off its own product's queue instead, so a duplicate-product
+    # multi-line STO checks/posts each line against its OWN warehouse.
+    lines_by_product = {}
+    for it in (doc.get("items") or []):
+        lines_by_product.setdefault(it["product_id"], []).append(it)
     # OrderFulfilmentProcessingStatusCode: 1=Not Started, 2=In Process,
-    # 3=Finished - only post Goods Issue on one that isn't already done
-    # (e.g. a retry after a transient error on our own earlier attempt).
-    if delivery_item.get("order_fulfilment_status") == "3":
+    # 3=Finished - only (re-)attempt lines that aren't already done (a
+    # retry after a transient error, or a line finished on an earlier
+    # poll tick while a sibling line was still short on stock).
+    pending = [d for d in delivery_items if d.get("order_fulfilment_status") != "3"]
+
+    if not pending:
         db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
             "gi_status": "posted", "gi_error": None, "gi_job_running": False,
-            "outbound_delivery_object_id": delivery_item["object_id"],
+            "outbound_delivery_object_id": object_ids[0] if object_ids else None,
+            "outbound_delivery_object_ids": object_ids,
         }})
         return "posted"
 
-    # Single-item STOs only (this app's own current scope for GI
-    # automation) - use the first (only) resolved line's source warehouse.
-    item = (doc.get("items") or [{}])[0]
-    available_qty = _live_source_stock_qty(sap_inventory_client, doc["ship_from_site_id"], item.get("source_warehouse_id"), item.get("product_id"))
-    if available_qty < (item.get("requested_qty") or 0):
-        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
-            "gi_status": "insufficient_stock",
-            "gi_error": f"Insufficient live stock in {item.get('source_warehouse_id')} for {item.get('product_id')} - "
-                        f"needed {item.get('requested_qty'):g}, currently available {available_qty:g}. "
-                        "Automatically re-checking every 20s.",
-            "outbound_delivery_object_id": delivery_item["object_id"],
-        }})
-        return "waiting"
+    insufficient_notes = []
+    failed_notes = []
+    for d in pending:
+        candidates = lines_by_product.get(d.get("product_id")) or []
+        line = candidates.pop(0) if candidates else None
+        if not line:
+            logger.warning(
+                f"Stock Transfer Order {sto_id}: Outbound Delivery Request line for product "
+                f"{d.get('product_id')!r} has no matching STO line locally - posting Goods Issue "
+                "without a local live-stock pre-check (SAP's own validation is the only safeguard here)."
+            )
+        if line:
+            available_qty = _live_source_stock_qty(sap_inventory_client, doc["ship_from_site_id"], line.get("source_warehouse_id"), d.get("product_id"))
+            if available_qty < (line.get("requested_qty") or 0):
+                insufficient_notes.append(
+                    f"{d.get('product_id')} in {line.get('source_warehouse_id')} - needed {line.get('requested_qty'):g}, "
+                    f"currently available {available_qty:g}"
+                )
+                continue
+        try:
+            sap_outbound_delivery_client.post_goods_issue(d["object_id"])
+        except SAPOutboundDeliveryError as e:
+            # Aug 27 2026 hardening (testing_agent iteration_127): don't
+            # abort the whole loop on the first SAP rejection - that
+            # would leave every remaining not-yet-attempted line unposted
+            # and stuck, the exact same "partial shipment reported as one
+            # success/failure" shape as the original STO-000011 bug, just
+            # triggered by a SAP-side rejection instead of the old
+            # first-row-only lookup. Keep trying every other line.
+            failed_notes.append(f"{d.get('product_id')}: {e}")
+            continue
 
-    try:
-        sap_outbound_delivery_client.post_goods_issue(delivery_item["object_id"])
-    except SAPOutboundDeliveryError as e:
+    if failed_notes or insufficient_notes:
+        gi_status = "failed" if failed_notes else "insufficient_stock"
+        parts = []
+        if failed_notes:
+            parts.append("SAP rejected: " + "; ".join(failed_notes))
+        if insufficient_notes:
+            parts.append("Automatically re-checking every 20s. Still waiting on live stock for: " + "; ".join(insufficient_notes))
         db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
-            "gi_status": "failed", "gi_error": str(e), "gi_job_running": False,
-            "outbound_delivery_object_id": delivery_item["object_id"],
+            "gi_status": gi_status, "gi_error": " | ".join(parts), "gi_job_running": False,
+            "outbound_delivery_object_id": object_ids[0] if object_ids else None,
+            "outbound_delivery_object_ids": object_ids,
         }})
-        raise
+        if failed_notes:
+            raise SAPOutboundDeliveryError(" | ".join(parts))
+        return "waiting"
 
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
         "gi_status": "posted", "gi_error": None, "gi_job_running": False,
-        "outbound_delivery_object_id": delivery_item["object_id"],
+        "outbound_delivery_object_id": object_ids[0] if object_ids else None,
+        "outbound_delivery_object_ids": object_ids,
     }})
     return "posted"
 

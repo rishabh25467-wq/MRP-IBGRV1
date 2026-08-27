@@ -1,0 +1,39 @@
+{
+  "summary": "Backend-only verification of the Aug 27 2026 bug-fix session (iteration 127): (1) multi-item Goods Issue fix in stock_transfer_service.try_post_goods_issue + sap_outbound_delivery_client.find_delivery_request_items, tested fully MOCKED (no live SAP call ever made - post_goods_issue was only ever invoked on stub objects); (2) company_cache_service pcode fallback for site 'P2W' against the real seeded erp_company_cache in Mongo; (3) API regression on GET /api/stock-transfer/orders and GET /api/stock-transfer/{sto_id}/delivery-note (STO-000042, STO-000045). 16/16 pytest tests pass. Additionally ran an end-to-end Delivery Note probe with a temporary synthetic P2W ship-from STO: ship_from_company now returns gstin='09AAKFR1956L1ZL', pan='AAKFR1956L' (RADISH TECHNOLOGIES, comp.Ccode 'W2', pcode 'P2W') - the reported blank GSTIN/PAN is fixed end-to-end. Temp data cleaned up.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "stock_transfer_service.try_post_goods_issue", "issue": "items_by_product = {it['product_id']: it} collapses two STO lines that share the SAME product_id but different source_warehouse_id - the live stock pre-check then uses the wrong warehouse for the duplicate line (rare but possible on a multi-line STO picking the same item from two warehouses)."},
+      {"endpoint": "stock_transfer_service.try_post_goods_issue", "issue": "A delivery item whose product_id does not match any stored STO line (e.g. blank RayItemcode_KUT) is Goods-Issue-posted with NO live stock pre-check at all (verified by test_unmatched_product_line_is_still_posted). Silent bypass of the safeguard."},
+      {"endpoint": "stock_transfer_service.try_post_goods_issue", "issue": "The per-line loop aborts on the FIRST SAPOutboundDeliveryError (re-raises), so remaining not-yet-attempted lines are left unposted and _run_goods_issue_job stops polling - same failure shape (partial shipment reported under a single header status) as the original STO-000011 bug, just triggered by a SAP rejection instead of the singular lookup. Suggest continuing the loop, collecting per-line errors, and storing a per-line gi status/error map instead of one header-level gi_status."},
+      {"endpoint": "GET /api/stock-transfer/orders", "issue": "Legacy already-posted orders have only the singular 'outbound_delivery_object_id'; the new plural 'outbound_delivery_object_ids' is absent until a new GI runs (no error, but any UI reading only the plural field must handle the fallback)."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_sto_multi_item_gi_and_company_cache.py",
+    "/app/backend/tests/_probe_p2w_delivery_note.py",
+    "/app/test_reports/pytest/iter127_results.xml"
+  ],
+  "action_items": [
+    "Optional hardening: key the STO-line lookup in try_post_goods_issue by (product_id, line) rather than product_id alone, and treat an unmatched delivery-item product as 'skip + report' instead of 'post blind'.",
+    "Optional hardening: do not abort the whole per-line GI loop on the first SAP rejection; attempt every line and record per-line results so one rejected line cannot leave sibling lines silently unshipped.",
+    "ENV NOTE (not a code bug in this fix): uvicorn runs with --reload watching /app/backend, and any file write there triggered a reload that hung for ~10 minutes because in-flight SAP background-refresh threads (sap_valuation_client / inventory cache) were blocked on 30s connect timeouts to my431827.businessbydesign.cloud.sap (currently unreachable from this container). All /api/* returned 502 during that window. `sudo supervisorctl restart backend` recovers instantly. Consider excluding tests/ from the reload watch and/or shortening SAP background timeouts."
+  ],
+  "critical_code_review_comments": [
+    "find_delivery_request_items correctly returns ALL expanded OutboundDeliveryRequestItem rows and skips __deferred stubs; pending filter on order_fulfilment_status != '3' correctly prevents re-posting finished lines (verified across two simulated poll ticks).",
+    "server.py:5320 _run_goods_issue_job calls the rewritten try_post_goods_issue with the correct 4-arg signature via asyncio.to_thread - no import/signature mismatch (backend boots clean, endpoints 200).",
+    "company_cache_service._resolve prefers the direct Ccode key over the pcode index, so pre-existing sites (P1, W1 - W1.pcode='P1W') still resolve to their own records; no double-match regression."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sto_multi_item_gi_and_company_cache.py (new)",
+    "/app/backend/tests/_probe_p2w_delivery_note.py (new, throwaway probe)"
+  ],
+  "success_rate": {"backend": "100% (16/16 pytest)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Temporary docs only, all deleted after each test: TEST_STO_* stock_transfer_orders, TEST_STO_P2W_PROBE, and a synthetic super_admin auth_users/auth_sessions pair (vms_session=TEST_iter127_sto_session) since /api/stock-transfer/* requires an Entra session cookie.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "App has no password login; /api/stock-transfer/* requires a vms_session cookie. Tests create/delete their own synthetic super_admin session (see fixture session_cookies).",
+  "context_for_next_testing_agent": "Reusable regression suite: /app/backend/tests/test_sto_multi_item_gi_and_company_cache.py - all SAP goods-issue assertions use MockOutboundClient/MockInventoryClient stubs, so it NEVER touches the live SAP tenant; keep it that way. API tests need the synthetic vms_session fixture. Beware: writing any file under /app/backend triggers a uvicorn --reload that can leave the backend 502 for several minutes while SAP background threads time out - restart backend and wait for /api/ 200 before running HTTP tests. STO-000011 does not exist in this DB (production-only).",
+  "rca_of_the_issue": "Root cause 1 confirmed fixed: the old singular find_delivery_request_item returned only the first Outbound Delivery Request Item, so a 4-line STO got exactly one post_goods_issue call. New code fetches all rows, filters out OrderFulfilmentProcessingStatusCode '3', live-checks each line's own warehouse stock and posts per line (verified: 4 posts for 4 lines; 3 posts + gi_status='insufficient_stock' naming FLAT-BK21/RM01 + 'waiting' when one line is short; next tick posts only the 4th and flips to 'posted'; single-line STO unchanged). Root cause 2 confirmed fixed: SAP site 'P2W' exists in the ERP comp table only as row W2's pcode column; the new pcode_index fallback resolves it, returning W2's gstin/pan, verified both at unit level and through the live Delivery Note API payload."
+}

@@ -1,4 +1,35 @@
-## FEATURE: Purchase Order Creation & Push to SAP ByDesign (2026-08-27)
+## BUG FIX: Multi-item Goods Issue only posted line 1 + missing GST/PAN on P2W print (2026-08-27)
+
+- **Real incident**: STO-000011 (SAP order 30280, ship-from P2W, 4 lines) showed "Goods Issue posted"
+  in the app but SAP's Outbound Delivery (P2W1-248) only had 1 of 4 lines (HRPIPE3329) - the other 3
+  never actually left the source site, silently.
+- **Root cause 1**: `sap_outbound_delivery_client.find_delivery_request_item` (singular) returned only
+  the FIRST matching Outbound Delivery Request Item for a Customer Requirement's UUID, and
+  `try_post_goods_issue` was explicitly scoped/documented as "single-item STOs only" - never enforced,
+  so a 4-line STO got exactly one `post_goods_issue` call. Fixed: renamed to plural
+  `find_delivery_request_items`, returns ALL matching rows; `try_post_goods_issue` now loops every
+  still-open line (`OrderFulfilmentProcessingStatusCode != '3'`), live-checks EACH line's own
+  warehouse stock, posts GI per-line, and only marks the whole order `posted` once every line is
+  finished. Hardened further (testing_agent iteration_127 minor findings): position-aware
+  product-to-line matching (handles two lines sharing the same product_id from different
+  warehouses) and the per-line loop no longer aborts on the first SAP rejection - it keeps
+  attempting every remaining line so one bad line can't leave siblings silently unshipped.
+- **Root cause 2**: Delivery Note print for ship-from site "P2W" had blank GSTIN/PAN. SAP's own real
+  Site ID for that warehouse is "P2W" (confirmed: inventory_cache location strings literally say
+  "RADISH TECHNOLOGIES-P2W"), but the legacy ERP's `comp` table Ccode for that same site is "W2" -
+  "P2W" only exists there as that row's `pcode` column, so the direct dict-key lookup always missed.
+  Fixed: `company_cache_service.get_cached_company_info` now falls back to a `pcode`-keyed index
+  when a direct Ccode match isn't found.
+- **Tested**: `testing_agent` iteration_127, 16/16 pytest (all Goods Issue assertions fully MOCKED -
+  never touched the live SAP tenant; company-cache fix verified against the real seeded
+  `erp_company_cache`/`stock_transfer_orders` collections). Main agent applied the 2 substantive
+  hardening suggestions post-report and re-ran the full suite - all 16 still pass.
+- STO-000011/SAP order 30280 itself (the historical incident) cannot be retroactively fixed here -
+  its 3 stuck lines need a manual SAP-side correction; this fix only prevents recurrence going forward.
+
+---
+
+
 
 - New page `/purchasing-strategy/purchase-order-create` (`PurchaseOrderPage.jsx`) lets internal
   staff build a multi-line Purchase Order and push it LIVE into SAP ByDesign via

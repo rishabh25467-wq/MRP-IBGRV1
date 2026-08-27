@@ -66,11 +66,23 @@ class SAPOutboundDeliveryClient:
         self.auth = HTTPBasicAuth(username, password)
         self.vhost = vhost
 
-    def find_delivery_request_item(self, customer_requirement_uuid: str):
-        """Returns {"object_id", "order_fulfilment_status", "product_id",
-        "description"} for the Outbound Delivery Request Item SAP
-        produced from our Customer Requirement, or None if SAP hasn't
-        converted it yet - matched on UUID alone, see module docstring."""
+    def find_delivery_request_items(self, customer_requirement_uuid: str) -> list:
+        """Returns a LIST of {"object_id", "order_fulfilment_status",
+        "product_id", "description"} - one per Outbound Delivery Request
+        ITEM SAP produced from our Customer Requirement (a multi-line STO
+        produces one row per line here, all sharing the same header
+        UUID), or [] if SAP hasn't converted it yet - matched on UUID
+        alone, see module docstring.
+
+        Aug 27 2026 bug fix: this used to be find_delivery_request_item
+        (singular) and `return`ed on the FIRST row only - fine for a
+        single-line STO, but for a multi-line one it silently posted
+        Goods Issue for just ONE line's Outbound Delivery Request Item
+        and never even looked at the rest, so SAP created a real
+        Outbound Delivery containing only that one line while the other
+        lines stayed stuck, un-posted, forever (real incident: STO-000011
+        / SAP order 30280, 4 lines, only line 1/HRPIPE3329 ever left the
+        source site)."""
         url = f"{self.endpoint}/{REFERENCE_ENTITY_SET}"
         params = {
             "$filter": f"UUID eq guid'{customer_requirement_uuid.upper()}'",
@@ -85,17 +97,18 @@ class SAPOutboundDeliveryClient:
             raise SAPOutboundDeliveryError(f"Could not reach SAP: {e}")
         if resp.status_code != 200:
             raise SAPOutboundDeliveryError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+        results = []
         for row in resp.json().get("d", {}).get("results", []):
             item = row.get("OutboundDeliveryRequestItem")
             if not isinstance(item, dict) or "__deferred" in item:
                 continue
-            return {
+            results.append({
                 "object_id": item.get("ObjectID"),
                 "order_fulfilment_status": item.get("OrderFulfilmentProcessingStatusCode"),
                 "product_id": item.get("RayItemcode_KUT"),
                 "description": item.get("RAYITEMDESCRIPTION_KUT"),
-            }
-        return None
+            })
+        return results
 
     def _fetch_csrf_token(self, session: requests.Session, entity_set: str = "OutboundDeliveryRequestCollection") -> str:
         resp = session.get(
