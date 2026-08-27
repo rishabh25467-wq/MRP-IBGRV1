@@ -1990,14 +1990,18 @@ const CreateOrderTab = ({ actorName }) => {
                       : (
                         <div className="flex items-center gap-1.5">
                           <Badge variant="outline" className="bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]">Created</Badge>
-                          <Button
-                            size="sm" variant="outline" className="h-6 px-2 text-[11px]"
-                            disabled={retryingProposalId === h.production_proposal_id}
-                            onClick={() => retryFromProposal(h)}
-                            data-testid={`proposal-history-retry-button-${i}`}
-                          >
-                            {retryingProposalId === h.production_proposal_id ? "Retrying..." : "Retry"}
-                          </Button>
+                          {h.can_retry ? (
+                            <Button
+                              size="sm" variant="outline" className="h-6 px-2 text-[11px]"
+                              disabled={retryingProposalId === h.production_proposal_id}
+                              onClick={() => retryFromProposal(h)}
+                              data-testid={`proposal-history-retry-button-${i}`}
+                            >
+                              {retryingProposalId === h.production_proposal_id ? "Retrying..." : "Retry"}
+                            </Button>
+                          ) : (
+                            <span className="text-[11px] text-[#98A2B3]" data-testid={`proposal-history-in-progress-label-${i}`}>Still in progress</span>
+                          )}
                         </div>
                       )}
                 </td>

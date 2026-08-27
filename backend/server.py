@@ -3411,6 +3411,19 @@ async def retry_from_proposal(payload: RetryFromProposalRequest, request: Reques
             status_code=400,
             detail=f"Proposal {payload.production_proposal_id} was already converted into Order {existing['production_order_id']} - nothing to retry.",
         )
+    # Server-side enforcement of the same rule the History table's
+    # can_retry flag uses (Aug 28 2026, user's explicit question before
+    # publishing) - never allow a manual Retry to race an ALREADY-active
+    # job, and never let it short-circuit a Store Approval decision that
+    # a warehouse user still needs to make for a genuine stock shortage.
+    existing_job_id = (existing or {}).get("job_id")
+    if existing_job_id:
+        existing_job = job_store.get_job(db, existing_job_id)
+        if existing_job and existing_job.get("status") in production_confirmation_service.ACTIVE_ORDER_JOB_STATUSES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"This order is already being handled (status: {existing_job['status']}) - check the Active Orders table above instead of retrying.",
+            )
     resumed_payload = CreateProductionProposalRequest(
         material_id=payload.material_id, site_id=payload.site_id, quantity=payload.quantity,
         unit_code=payload.unit_code, actor=payload.actor,

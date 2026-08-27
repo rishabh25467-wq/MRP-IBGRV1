@@ -13,9 +13,18 @@
   instead of adding a disconnected new row.
 - Frontend: small "Retry" button next to the "Created" badge, reuses the exact same Active
   Orders job-card polling as a normal Create.
-- Tested via curl (successful retry + the "already converted" 400 guard) + screenshot (button renders
-  correctly on the real 225857/225655 rows). Did not fire the live retry against those 2 real rows
-  myself - left for the user to trigger via the new button.
+- **Refinement (same day, user's follow-up question before publishing)**: a "Created"-only row does
+  NOT always mean stuck - it's also the normal look of a row still actively polling in the background,
+  OR one deliberately PAUSED on a Store Approval decision (real stock shortage). Added a server-computed
+  `can_retry` flag (checks the row's own job_id against `background_jobs` - hidden if that job is still
+  alive with an in-progress/`waiting_store_approval` status) so Retry ONLY ever shows for a row whose
+  job has genuinely stopped trying (crashed, cancelled, gave up after 20 min, or its 24h job_store
+  record already expired) - never for one still being properly handled elsewhere. Enforced server-side
+  too (`retry-from-proposal` now 400s if the row's job is still active), not just hidden client-side.
+- Tested via curl (successful retry + the "already converted" 400 guard + the new "still active" 400
+  guard, using synthetic waiting_store_approval/failed/expired job scenarios) + screenshot (button
+  renders correctly on the real 225857/225655 rows). Did not fire the live retry against those 2 real
+  rows myself - left for the user to trigger via the new button.
 
 
 

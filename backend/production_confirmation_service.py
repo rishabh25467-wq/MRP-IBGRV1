@@ -12,12 +12,28 @@
 import logging
 from datetime import datetime, timezone
 
+import job_store
+
 logger = logging.getLogger(__name__)
 
 REASON_COLLECTION = "deviation_reason_master"
 HISTORY_COLLECTION = "production_confirmation_history"
 BOO_ID_CACHE_COLLECTION = "boo_id_cache"
 BOO_DESCRIPTIONS_CACHE_COLLECTION = "boo_descriptions_cache"
+# Aug 28 2026, user's explicit question before publishing the new Retry
+# button ("if proposal created and item A short 10pcs then system created
+# a store request... this button visible on this time?"): a "Created"-
+# only History row does NOT always mean "stuck/orphaned" - it's also the
+# NORMAL, expected look of a row that's still actively being handled,
+# either quietly polling in the background or, for a real stock
+# shortage, deliberately PAUSED waiting on a human decision on the Store
+# Approval page. Retry must never be offered for either of those - only
+# for a row whose job has genuinely stopped trying (crashed/errored,
+# user-cancelled, gave up after 20 min with no Order ever appearing, or
+# its job_store record has since expired past the 24h TTL entirely).
+ACTIVE_ORDER_JOB_STATUSES = {
+    "running", "checking_stock", "creating_proposal", "waiting_for_order", "releasing_order", "waiting_store_approval",
+}
 
 
 def get_reporting_point_descriptions(db, sap_production_model_bom_client, sap_boo_client, production_model_ids: list) -> dict:
@@ -384,7 +400,18 @@ def log_order_release(db, actor: str, production_order_id: str, result: dict, jo
 
 
 def get_proposal_and_release_history(db, limit: int = 200) -> list:
-    docs = db[PROPOSAL_HISTORY_COLLECTION].find({}).sort("at", -1).limit(limit)
+    """can_retry (Aug 28 2026): only true for a "Created"-only row whose
+    job has genuinely stopped trying - see ACTIVE_ORDER_JOB_STATUSES
+    above for exactly why "still actively polling" and "paused on a
+    Store Approval decision" are both excluded, not just "job doc
+    expired". Looked up in one batched query, not per-row."""
+    docs = list(db[PROPOSAL_HISTORY_COLLECTION].find({}).sort("at", -1).limit(limit))
+    pending_job_ids = [d["job_id"] for d in docs if d.get("type") == "proposal_created" and not d.get("production_order_id") and d.get("job_id")]
+    active_job_ids = set()
+    if pending_job_ids:
+        for j in db[job_store.COLLECTION_NAME].find({"_id": {"$in": pending_job_ids}}, {"status": 1}):
+            if j.get("status") in ACTIVE_ORDER_JOB_STATUSES:
+                active_job_ids.add(j["_id"])
     return [
         {
             "type": d.get("type"),
@@ -402,6 +429,7 @@ def get_proposal_and_release_history(db, limit: int = 200) -> list:
             "released_by_user_id": d.get("released_by_user_id"),
             "success": d.get("success"),
             "at": d["at"].isoformat(),
+            "can_retry": d.get("type") == "proposal_created" and not d.get("production_order_id") and d.get("job_id") not in active_job_ids,
         }
         for d in docs
     ]
