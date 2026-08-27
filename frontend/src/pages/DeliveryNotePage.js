@@ -68,10 +68,122 @@ function CompanyBlock({ company, fallbackSiteId }) {
   );
 }
 
+// Aug 29 2026, user's explicit ask: GST Rule 48(4) requires exactly these
+// 3 labelled copies for goods in transit - printed as a small stamp on
+// the document itself, not just a filename/UI label.
+const COPY_TYPES = [
+  { value: "original", label: "Original for Recipient" },
+  { value: "duplicate", label: "Duplicate for Transporter" },
+  { value: "triplicate", label: "Triplicate for Supplier" },
+];
+
+function CopyStamp({ label }) {
+  return (
+    <p className="text-right text-xs font-bold uppercase tracking-wide text-[#475467] mb-1" data-testid="delivery-note-copy-stamp">
+      {label}
+    </p>
+  );
+}
+
+function DeliveryNoteDocument({ data, companyName, copyLabel }) {
+  return (
+    <div className="max-w-[820px] mx-auto bg-white border border-[#D0D5DD] shadow-sm p-8 text-[13px] text-[#101828] print:border-0 print:shadow-none print:p-0" style={{ fontFamily: "'DM Sans', sans-serif" }} data-testid="delivery-note-document">
+      <CopyStamp label={copyLabel} />
+      <div className="flex justify-between items-start border-b-2 border-[#101828] pb-3">
+        <div>
+          <h1 className="text-xl font-bold tracking-wide" data-testid="delivery-note-company-name">{companyName}</h1>
+          <p className="text-[#475467] font-medium">{data.ship_from_site_id}</p>
+          <CompanyBlock company={data.ship_from_company} fallbackSiteId={data.ship_from_site_id} />
+        </div>
+        <div className="text-right">
+          <h2 className="text-lg font-bold uppercase">Delivery Challan</h2>
+          <p className="text-[#667085] text-xs">(Stock Transfer / Bill of Supply)</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-6 mt-4">
+        <div>
+          <p><span className="font-bold">Serial Number:</span> <span data-testid="delivery-note-serial-number">{data.serial_number || "—"}</span></p>
+          <p><span className="font-bold">Date of Issue:</span> {formatDateDMY(data.date_of_supply) || "—"}</p>
+        </div>
+        <div className="border border-[#D0D5DD] rounded-sm p-2">
+          <p className="font-bold uppercase text-xs mb-1 text-[#475467]">Transport</p>
+          <p>Vehicle No: {data.vehicle_no || "—"}</p>
+          <p>G.R. No: {data.gr_no || "—"}</p>
+          <p>Mode: {data.transportation_mode || "—"}</p>
+          <p>Place of Supply: {data.place_of_supply || "—"}</p>
+          <p data-testid="delivery-note-freight-forwarder">Freight Forwarder: {data.freight_forwarder || "Self"}</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-6 mt-4">
+        <div className="border border-[#D0D5DD] rounded-sm p-2">
+          <p className="font-bold uppercase text-xs mb-1 text-[#475467]">Details of Receiver | Billed to</p>
+          <p className="font-bold">{data.ship_to_company?.company_name || data.ship_to_site_id}</p>
+          <p className="text-[#475467] font-medium">{data.ship_to_site_id}</p>
+          <CompanyBlock company={data.ship_to_company} fallbackSiteId={data.ship_to_site_id} />
+        </div>
+        <div className="border border-[#D0D5DD] rounded-sm p-2">
+          <p className="font-bold uppercase text-xs mb-1 text-[#475467]">Details of Consignee | Shipped to</p>
+          <p className="font-bold">{data.ship_to_company?.company_name || data.ship_to_site_id}</p>
+          <p className="text-[#475467] font-medium">{data.ship_to_site_id}</p>
+          <CompanyBlock company={data.ship_to_company} fallbackSiteId={data.ship_to_site_id} />
+        </div>
+      </div>
+
+      <table className="w-full mt-4 border-collapse text-xs" data-testid="delivery-note-items-table">
+        <thead>
+          <tr>
+            {["Sr.", "Part Code", "Description", "HSN", "Qty", "Unit", "Rate", "Amount"].map((h) => (
+              <th key={h} className="border border-[#101828] bg-[#EAECF0] p-1.5 text-left font-bold">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {data.items.map((it, idx) => (
+            <tr key={it.product_id}>
+              <td className="border border-[#D0D5DD] p-1.5">{idx + 1}</td>
+              <td className="border border-[#D0D5DD] p-1.5 font-medium">{it.product_id}</td>
+              <td className="border border-[#D0D5DD] p-1.5">{it.description || "—"}</td>
+              <td className="border border-[#D0D5DD] p-1.5" data-testid={`delivery-note-hsn-${it.product_id}`}>{it.hsn_code || "—"}</td>
+              <td className="border border-[#D0D5DD] p-1.5 text-right">{it.qty}</td>
+              <td className="border border-[#D0D5DD] p-1.5">{it.unit}</td>
+              <td className="border border-[#D0D5DD] p-1.5 text-right" data-testid={`delivery-note-rate-${it.product_id}`}>₹{it.rate.toFixed(2)}</td>
+              <td className="border border-[#D0D5DD] p-1.5 text-right font-medium">₹{it.amount.toFixed(2)}</td>
+            </tr>
+          ))}
+          <tr>
+            <td colSpan={7} className="border border-[#D0D5DD] p-1.5 text-right font-bold">Total (INR)</td>
+            <td className="border border-[#D0D5DD] p-1.5 text-right font-bold" data-testid="delivery-note-total">₹{data.total_amount.toFixed(2)}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p className="mt-3"><span className="font-bold">Total Amount (in words):</span> {amountInWords(data.total_amount)}</p>
+
+      <div className="mt-5">
+        <p className="font-bold uppercase text-xs mb-1 text-[#475467]">Terms & Condition</p>
+        <p>1) This is a Stock Transfer document issued for e-way bill / GST purposes, not a Tax Invoice.</p>
+        <p>2) Goods must be packed and inspected in good condition upon receipt.</p>
+        <p>3) All disputes are subject to Aligarh Jurisdiction only.</p>
+      </div>
+
+      <div className="flex justify-between items-end mt-10 pt-6">
+        <p className="text-xs text-[#667085]">Certified that the particulars given above are true and correct.</p>
+        <div className="text-center">
+          <p className="font-bold">For {companyName}</p>
+          <p className="mt-8 text-xs text-[#667085]">(Authorized Signatory)</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function DeliveryNotePage() {
   const { stoId } = useParams();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const [copyType, setCopyType] = useState("original");
 
   useEffect(() => {
     axios.get(`${API}/stock-transfer/${stoId}/delivery-note`)
@@ -83,10 +195,20 @@ export default function DeliveryNotePage() {
   if (!data) return <div className="p-10 flex justify-center"><CircleNotch size={24} className="animate-spin text-[#667085]" /></div>;
 
   const companyName = data.ship_from_company?.company_name || `RADISH TECHNOLOGIES-${data.ship_from_site_id}`;
+  const copiesToRender = copyType === "all" ? COPY_TYPES : COPY_TYPES.filter((c) => c.value === copyType);
 
   return (
     <div className="min-h-screen bg-[#F2F4F7] py-6 print:bg-white print:py-0" data-testid="delivery-note-page">
       <div className="max-w-[820px] mx-auto mb-4 flex justify-end gap-2 print:hidden">
+        <select
+          value={copyType}
+          onChange={(e) => setCopyType(e.target.value)}
+          className="border border-[#D0D5DD] rounded-md px-3 text-sm bg-white"
+          data-testid="delivery-note-copy-type-select"
+        >
+          {COPY_TYPES.map((c) => (<option key={c.value} value={c.value}>{c.label}</option>))}
+          <option value="all">All 3 Copies (Original + Duplicate + Triplicate)</option>
+        </select>
         <Button
           variant="outline"
           onClick={() => window.open(`/inventory/inter-plant-transfer/${stoId}/gate-pass`, "_blank")}
@@ -99,94 +221,12 @@ export default function DeliveryNotePage() {
         </Button>
       </div>
 
-      <div className="max-w-[820px] mx-auto bg-white border border-[#D0D5DD] shadow-sm p-8 text-[13px] text-[#101828] print:border-0 print:shadow-none print:p-0" style={{ fontFamily: "'DM Sans', sans-serif" }} data-testid="delivery-note-document">
-        <div className="flex justify-between items-start border-b-2 border-[#101828] pb-3">
-          <div>
-            <h1 className="text-xl font-bold tracking-wide" data-testid="delivery-note-company-name">{companyName}</h1>
-            <p className="text-[#475467] font-medium">{data.ship_from_site_id}</p>
-            <CompanyBlock company={data.ship_from_company} fallbackSiteId={data.ship_from_site_id} />
-          </div>
-          <div className="text-right">
-            <h2 className="text-lg font-bold uppercase">Delivery Challan</h2>
-            <p className="text-[#667085] text-xs">(Stock Transfer / Bill of Supply)</p>
-          </div>
+      {copiesToRender.map((c, idx) => (
+        <div key={c.value} className={idx < copiesToRender.length - 1 ? "print:break-after-page" : ""}>
+          <DeliveryNoteDocument data={data} companyName={companyName} copyLabel={c.label} />
+          {idx < copiesToRender.length - 1 && <div className="h-6 print:hidden" />}
         </div>
-
-        <div className="grid grid-cols-2 gap-6 mt-4">
-          <div>
-            <p><span className="font-bold">Serial Number:</span> <span data-testid="delivery-note-serial-number">{data.serial_number || "—"}</span></p>
-            <p><span className="font-bold">Date of Issue:</span> {formatDateDMY(data.date_of_supply) || "—"}</p>
-          </div>
-          <div className="border border-[#D0D5DD] rounded-sm p-2">
-            <p className="font-bold uppercase text-xs mb-1 text-[#475467]">Transport</p>
-            <p>Vehicle No: {data.vehicle_no || "—"}</p>
-            <p>G.R. No: {data.gr_no || "—"}</p>
-            <p>Mode: {data.transportation_mode || "—"}</p>
-            <p>Place of Supply: {data.place_of_supply || "—"}</p>
-            <p data-testid="delivery-note-freight-forwarder">Freight Forwarder: {data.freight_forwarder || "Self"}</p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-6 mt-4">
-          <div className="border border-[#D0D5DD] rounded-sm p-2">
-            <p className="font-bold uppercase text-xs mb-1 text-[#475467]">Details of Receiver | Billed to</p>
-            <p className="font-bold">{data.ship_to_company?.company_name || data.ship_to_site_id}</p>
-            <p className="text-[#475467] font-medium">{data.ship_to_site_id}</p>
-            <CompanyBlock company={data.ship_to_company} fallbackSiteId={data.ship_to_site_id} />
-          </div>
-          <div className="border border-[#D0D5DD] rounded-sm p-2">
-            <p className="font-bold uppercase text-xs mb-1 text-[#475467]">Details of Consignee | Shipped to</p>
-            <p className="font-bold">{data.ship_to_company?.company_name || data.ship_to_site_id}</p>
-            <p className="text-[#475467] font-medium">{data.ship_to_site_id}</p>
-            <CompanyBlock company={data.ship_to_company} fallbackSiteId={data.ship_to_site_id} />
-          </div>
-        </div>
-
-        <table className="w-full mt-4 border-collapse text-xs" data-testid="delivery-note-items-table">
-          <thead>
-            <tr>
-              {["Sr.", "Part Code", "Description", "HSN", "Qty", "Unit", "Rate", "Amount"].map((h) => (
-                <th key={h} className="border border-[#101828] bg-[#EAECF0] p-1.5 text-left font-bold">{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {data.items.map((it, idx) => (
-              <tr key={it.product_id}>
-                <td className="border border-[#D0D5DD] p-1.5">{idx + 1}</td>
-                <td className="border border-[#D0D5DD] p-1.5 font-medium">{it.product_id}</td>
-                <td className="border border-[#D0D5DD] p-1.5">{it.description || "—"}</td>
-                <td className="border border-[#D0D5DD] p-1.5" data-testid={`delivery-note-hsn-${it.product_id}`}>{it.hsn_code || "—"}</td>
-                <td className="border border-[#D0D5DD] p-1.5 text-right">{it.qty}</td>
-                <td className="border border-[#D0D5DD] p-1.5">{it.unit}</td>
-                <td className="border border-[#D0D5DD] p-1.5 text-right" data-testid={`delivery-note-rate-${it.product_id}`}>₹{it.rate.toFixed(2)}</td>
-                <td className="border border-[#D0D5DD] p-1.5 text-right font-medium">₹{it.amount.toFixed(2)}</td>
-              </tr>
-            ))}
-            <tr>
-              <td colSpan={7} className="border border-[#D0D5DD] p-1.5 text-right font-bold">Total (INR)</td>
-              <td className="border border-[#D0D5DD] p-1.5 text-right font-bold" data-testid="delivery-note-total">₹{data.total_amount.toFixed(2)}</td>
-            </tr>
-          </tbody>
-        </table>
-
-        <p className="mt-3"><span className="font-bold">Total Amount (in words):</span> {amountInWords(data.total_amount)}</p>
-
-        <div className="mt-5">
-          <p className="font-bold uppercase text-xs mb-1 text-[#475467]">Terms & Condition</p>
-          <p>1) This is a Stock Transfer document issued for e-way bill / GST purposes, not a Tax Invoice.</p>
-          <p>2) Goods must be packed and inspected in good condition upon receipt.</p>
-          <p>3) All disputes are subject to Aligarh Jurisdiction only.</p>
-        </div>
-
-        <div className="flex justify-between items-end mt-10 pt-6">
-          <p className="text-xs text-[#667085]">Certified that the particulars given above are true and correct.</p>
-          <div className="text-center">
-            <p className="font-bold">For {companyName}</p>
-            <p className="mt-8 text-xs text-[#667085]">(Authorized Signatory)</p>
-          </div>
-        </div>
-      </div>
+      ))}
     </div>
   );
 }

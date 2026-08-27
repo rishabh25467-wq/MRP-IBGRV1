@@ -1,4 +1,13 @@
-## BUG FIX #2: "Production P2" (shared/site-generic login) still couldn't see own order (2026-08-29)
+## FEATURE: Original/Duplicate/Triplicate copy selector on the Delivery Note (2026-08-29)
+
+- Added a dropdown on `/inventory/inter-plant-transfer/{stoId}/delivery-note` (GST Rule 48(4)):
+  "Original for Recipient", "Duplicate for Transporter", "Triplicate for Supplier", or "All 3 Copies".
+  Each copy prints/PDFs the exact same delivery note with a small uppercase stamp at the top; "All 3"
+  stacks all three with a clean print page-break between each. No backend change needed - purely a
+  frontend rendering change on the existing `/api/stock-transfer/{sto_id}/delivery-note` data.
+- Verified via screenshot (single copy + All 3 Copies views).
+
+
 
 - Reported on PRODUCTION (mrp.radishtechnologies.com) after publishing the previous fix: Order 70878
   (Proposal 226312) was visible on the admin's unfiltered history but not on "Production P2"'s own.
