@@ -2238,13 +2238,25 @@ async def get_open_production_lots(request: Request, status: str = Query("open",
     # their own screen): match on the creator's STABLE identity
     # (created_by_user_id) when it's known, falling back to the old
     # free-text name match only for orders created before this fix.
+    # Aug 29 2026 follow-up (real incident: "Production P2" - a shared,
+    # site-generic display name, not a personal one - couldn't see their
+    # OWN order on their own screen even though it WAS created under
+    # that exact name): a strict id-only match regressed the opposite
+    # real-world case - a SHARED login name can legitimately correspond
+    # to several different Entra ID accounts (different shifts/people,
+    # same site-generic display name by design). Now matches on id OR
+    # name (whichever is true) instead of preferring id and only
+    # falling back to name when id is missing - correctly covers BOTH a
+    # drifted personal name (id still matches) AND a shared name used by
+    # a different login than the one that originally created it (name
+    # still matches).
     user = request.state.user
     if user.get("role") not in ("super_admin", "admin"):
         my_id = user.get("_id")
         my_name = (user.get("name") or "").strip().lower()
         rows = [r for r in rows if (
-            r["created_by_user_id"] == my_id if r.get("created_by_user_id")
-            else (r.get("created_by") or "").strip().lower() == my_name
+            (r.get("created_by_user_id") and r["created_by_user_id"] == my_id)
+            or (r.get("created_by") or "").strip().lower() == my_name
         )]
     return {"rows": rows}
 
@@ -3754,19 +3766,22 @@ async def get_proposal_and_release_history(request: Request):
     # open-lots table): a plain "user" account only sees entries THEY
     # created/released - admin/super_admin still see every entry.
     # Aug 28 2026 bug fix (real incident: Mayank Jadon's own proposal
-    # invisible on his own Recent Activity table) - match on the actor's
-    # STABLE identity (actor_user_id/released_by_user_id) when known,
-    # falling back to the old free-text name match only for entries
-    # logged before this fix (which never had a user_id to store).
+    # invisible on his own Recent Activity table) - also match on the
+    # actor's STABLE identity (actor_user_id/released_by_user_id).
+    # Aug 29 2026 follow-up (real incident: "Production P2" - a shared,
+    # site-generic display name - still couldn't see their own order):
+    # match on id OR name (union, not id-preferred-with-name-fallback) -
+    # see get_open_production_lots' identical comment above for exactly
+    # why both a drifted personal name AND a shared name used by a
+    # different login both need to keep working.
     user = request.state.user
     if user.get("role") not in ("super_admin", "admin"):
         my_id = user.get("_id")
         my_name = (user.get("name") or "").strip().lower()
         def _is_mine(e):
             user_id = e.get("released_by_user_id") or e.get("actor_user_id")
-            if user_id:
-                return user_id == my_id
-            return (e.get("released_by") or e.get("actor") or "").strip().lower() == my_name
+            name = (e.get("released_by") or e.get("actor") or "").strip().lower()
+            return (user_id and user_id == my_id) or name == my_name
         entries = [e for e in entries if _is_mine(e)]
     return {"entries": entries}
 

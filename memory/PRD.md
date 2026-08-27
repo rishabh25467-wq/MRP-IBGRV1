@@ -1,4 +1,19 @@
-## FEATURE: "Retry" button on Created-only history rows (2026-08-28)
+## BUG FIX #2: "Production P2" (shared/site-generic login) still couldn't see own order (2026-08-29)
+
+- Reported on PRODUCTION (mrp.radishtechnologies.com) after publishing the previous fix: Order 70878
+  (Proposal 226312) was visible on the admin's unfiltered history but not on "Production P2"'s own.
+- Root cause: the previous fix (id-preferred, name-fallback-only-if-id-missing) assumed "same display
+  name = same login" - true for a personal account whose name merely drifted (Mayank's case), but WRONG
+  for a shared, site-generic login name like "Production P2" that can legitimately correspond to
+  several different Entra ID accounts (different shifts, same display name by design) - id-only
+  matching hid rows created by a DIFFERENT login sharing that same name.
+- Fix: changed both filters (open-lots `created_by`, history `actor`/`released_by`) from
+  "id-if-present-else-name" to an OR/union match - "mine" if EITHER the stable id matches OR the
+  display name matches. Covers both real incidents at once. Verified live: seeded two different
+  test accounts both named "Production P2", confirmed account B now sees a row created by account A.
+- Fix is in preview only - user must republish to push this to production.
+
+
 
 - User's exact ask: "if proposal created ex: 225857 is it possible i can retry to create production
   order of this request if yes give a button" - a "Created"-only row on the (permanent, never-expiring)
