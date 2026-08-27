@@ -46,7 +46,21 @@ Delivery. No Key User Extension Scenario exists to carry a field forward
 from Customer Requirement either (checked live). Real working fix:
 `sap_sto_client.py`'s `GST_NOTE_TYPE_CODE` writes these values as a
 standard SAP Note on the Customer Requirement, at CREATE time (zero race
-condition) - see stock_transfer_service.py's `_build_gst_note_text`."""
+condition) - see stock_transfer_service.py's `_build_gst_note_text`.
+
+Aug 27 2026, 2nd real incident (STO-000046, SAP order 30336, 3 lines):
+posting Goods Issue once PER LINE's own item-level ObjectID (the initial
+fix for the first incident above) does stop lines from being silently
+skipped, but it makes SAP create ONE SEPARATE Outbound Delivery per line
+(e.g. P8D1-185/186/187) instead of the single combined delivery the user
+expects for one Stock Transfer Order. Confirmed live: every
+OutboundDeliveryRequestItem row for the SAME Customer Requirement shares
+one common `ParentObjectID` - THAT is the actual Outbound Delivery
+Request DOCUMENT's own ObjectID. PGIInBackground must be called ONCE per
+DOCUMENT (i.e. once per distinct ParentObjectID, not once per item) so
+every one of its lines is released together into a single Outbound
+Delivery - see stock_transfer_service.py's try_post_goods_issue, which
+now groups pending lines by `parent_object_id` before posting."""
 import requests
 from requests.auth import HTTPBasicAuth
 
@@ -67,7 +81,12 @@ class SAPOutboundDeliveryClient:
         self.vhost = vhost
 
     def find_delivery_request_items(self, customer_requirement_uuid: str) -> list:
-        """Returns a LIST of {"object_id", "order_fulfilment_status",
+        """Returns a LIST of {"object_id" (item-level), "parent_object_id"
+        (the ONE Outbound Delivery Request DOCUMENT this line belongs to
+        - shared across every line SAP put on the same document), "uuid"
+        (this line's own ConfirmationItemUUID, needed afterwards to look
+        up the resulting Outbound Delivery's human-readable ID via
+        find_outbound_delivery_ids), "order_fulfilment_status",
         "product_id", "description"} - one per Outbound Delivery Request
         ITEM SAP produced from our Customer Requirement (a multi-line STO
         produces one row per line here, all sharing the same header
@@ -104,11 +123,46 @@ class SAPOutboundDeliveryClient:
                 continue
             results.append({
                 "object_id": item.get("ObjectID"),
+                "parent_object_id": item.get("ParentObjectID"),
+                "uuid": item.get("UUID"),
                 "order_fulfilment_status": item.get("OrderFulfilmentProcessingStatusCode"),
                 "product_id": item.get("RayItemcode_KUT"),
                 "description": item.get("RAYITEMDESCRIPTION_KUT"),
             })
         return results
+
+    def find_outbound_delivery_ids(self, item_uuids: list) -> list:
+        """Aug 27 2026, user's explicit ask ("please visible delivery id
+        also") - once a line's Outbound Delivery Request Item has
+        actually been turned into a real Outbound Delivery (via
+        post_goods_issue), looks up that delivery's own human-readable ID
+        (e.g. "P8D1-185") via
+        OutboundDeliveryItemBusinessTransactionDocumentReferenceOutboundDeliveryRequestC,
+        filtered on `ItemUUID` (confirmed live - NOT the collection's own
+        `UUID` field, which is unrelated here) against each of our line's
+        `uuid` (its ConfirmationItemUUID from find_delivery_request_items),
+        expanding the `OutboundDelivery` nav property for its `ID`.
+        Returns a de-duplicated list of Delivery IDs (empty if none of
+        the given items has been delivered yet)."""
+        item_uuids = [u for u in item_uuids if u]
+        if not item_uuids:
+            return []
+        url = f"{self.endpoint}/OutboundDeliveryItemBusinessTransactionDocumentReferenceOutboundDeliveryRequestC"
+        filter_clause = " or ".join(f"ItemUUID eq guid'{u.upper()}'" for u in item_uuids)
+        params = {"$filter": filter_clause, "$expand": "OutboundDelivery", "$format": "json", "sap-vhost": self.vhost}
+        try:
+            with sap_semaphore:
+                resp = requests.get(url, params=params, auth=self.auth, headers={"Accept": "application/json"}, timeout=30)
+        except requests.exceptions.RequestException as e:
+            raise SAPOutboundDeliveryError(f"Could not reach SAP: {e}")
+        if resp.status_code != 200:
+            raise SAPOutboundDeliveryError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+        ids = []
+        for row in resp.json().get("d", {}).get("results", []):
+            delivery = row.get("OutboundDelivery")
+            if isinstance(delivery, dict) and delivery.get("ID") and delivery["ID"] not in ids:
+                ids.append(delivery["ID"])
+        return ids
 
     def _fetch_csrf_token(self, session: requests.Session, entity_set: str = "OutboundDeliveryRequestCollection") -> str:
         resp = session.get(

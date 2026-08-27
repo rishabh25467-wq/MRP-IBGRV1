@@ -1,3 +1,46 @@
+## BUG FIX (follow-up): Multi-item Goods Issue created 3 separate SAP deliveries instead of 1 (2026-08-27)
+
+- **Real incident #2**: user tested a live 3-line STO (STO-000046, SAP order 30336, ship-from P8) with
+  the previous fix in place - every line now correctly left the source site, BUT SAP created 3
+  SEPARATE Outbound Deliveries (P8D1-185, 186, 187), one per line, instead of ONE combined delivery
+  for the whole order ("we create one document for one delivery, no multi delivery"). User also asked
+  to see the resulting Delivery's own human-readable ID(s) on the app, not just an internal SAP ID.
+- **Root cause**: `try_post_goods_issue` (previous fix) called `post_goods_issue` once per LINE's own
+  item-level ObjectID - correct for "every line ships" but wrong for "one document, one delivery",
+  since SAP creates one new Outbound Delivery per `PGIInBackground` call. Confirmed live: every line
+  of the SAME Outbound Delivery Request DOCUMENT shares one common `ParentObjectID` (the document's
+  own header ObjectID) even though each line has its own distinct item-level `ObjectID`.
+- **Fix**: `find_delivery_request_items` now also returns each line's `parent_object_id` and its own
+  `uuid`. `try_post_goods_issue` groups all still-open lines by `parent_object_id` and calls
+  `post_goods_issue` ONCE PER GROUP/DOCUMENT (not once per line) - a 3-line STO with one shared
+  document now produces exactly one combined Outbound Delivery. If even one line in a group lacks
+  stock, the WHOLE group is held back (no partial post, matches `AllowSplitIndicator=false`); other
+  groups still post independently.
+- **Delivery ID visibility**: new `find_outbound_delivery_ids(item_uuids)` queries
+  `OutboundDeliveryItemBusinessTransactionDocumentReferenceOutboundDeliveryRequestC` filtered by
+  `ItemUUID` (confirmed live, not that collection's own `UUID` field) + `$expand=OutboundDelivery`,
+  returning de-duplicated human-readable Delivery IDs (e.g. "P8D1-185"). Stored on the STO doc's new
+  `outbound_delivery_ids` (plural) field, accumulating across poll ticks; also backfilled in the
+  "already all Finished" branch so an order that completes between ticks still gets its IDs. A lookup
+  failure never fails the underlying Goods Issue (cosmetic-only, `except Exception`, next tick retries).
+  `StockTransferPage.js`'s detail modal now shows this plural list first, falling back to the old
+  singular internal object-id display for pre-fix orders that never got the new field.
+- **Tested**: `testing_agent` iteration_128, 29/29 pytest (existing iteration_127 suite updated in
+  place for the new per-document grouping, all SAP interaction mocked) + live frontend check (3/3
+  detail-modal cases). Main agent applied the 1 real actionable gap found (already-Finished branch
+  wasn't backfilling `outbound_delivery_ids`) and re-ran the full 29-test suite - still 100% passing.
+  Manually backfilled `outbound_delivery_ids=['P8D1-185','P8D1-186','P8D1-187']` on the real
+  STO-000046 doc (read-only SAP confirmation + local Mongo write only, no new SAP call) so the user
+  can see it immediately without needing a brand new live test.
+- Known minor/low-priority items not fixed (deferred, cosmetic/rare): a single `gi_status` still
+  represents the whole STO even when one of several groups posts while another is short on stock
+  (order is genuinely half-shipped but shows one status); an unmatched delivery line (no local STO
+  line match) still posts without a local stock pre-check (SAP's own validation is the real
+  safeguard there); pre-existing STO detail dialog panel transparency (unrelated to this fix).
+
+---
+
+
 ## BUG FIX: Multi-item Goods Issue only posted line 1 + missing GST/PAN on P2W print (2026-08-27)
 
 - **Real incident**: STO-000011 (SAP order 30280, ship-from P2W, 4 lines) showed "Goods Issue posted"

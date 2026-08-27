@@ -1272,8 +1272,12 @@ export default function StockTransferPage() {
                         : "Goods Issue: waiting for SAP to schedule the delivery..."}
                     </p>
                     {(selectedOrder.gi_status === "failed" || selectedOrder.gi_status === "insufficient_stock") && <p className="mt-0.5">{parseGiError(selectedOrder.gi_error) || "See logs."}</p>}
-                    {selectedOrder.outbound_delivery_object_id && (selectedOrder.gi_status === "posted" || selectedOrder.gi_status === "failed") && (
-                      <p className="mt-0.5 text-xs opacity-80">Outbound Delivery Request: {selectedOrder.outbound_delivery_object_id}</p>
+                    {selectedOrder.outbound_delivery_ids?.length > 0 && (selectedOrder.gi_status === "posted" || selectedOrder.gi_status === "failed") ? (
+                      <p className="mt-0.5 text-xs opacity-80" data-testid="stock-transfer-detail-delivery-ids">
+                        Outbound Delivery: {selectedOrder.outbound_delivery_ids.join(", ")}
+                      </p>
+                    ) : selectedOrder.outbound_delivery_object_id && (selectedOrder.gi_status === "posted" || selectedOrder.gi_status === "failed") && (
+                      <p className="mt-0.5 text-xs opacity-80" data-testid="stock-transfer-detail-legacy-object-id">Outbound Delivery Request: {selectedOrder.outbound_delivery_object_id}</p>
                     )}
                     {(selectedOrder.gi_status === "failed" || selectedOrder.gi_status === "not_found_timeout") && (
                       <Button

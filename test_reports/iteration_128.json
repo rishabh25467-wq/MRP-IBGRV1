@@ -1,0 +1,49 @@
+{
+  "summary": "Iteration 128 (both backend + frontend) verification of the 2nd Goods-Issue follow-up fix: (1) try_post_goods_issue now groups still-open Outbound Delivery Request lines by parent_object_id and posts PGIInBackground ONCE per document; (2) new find_outbound_delivery_ids -> STO.outbound_delivery_ids (human-readable 'P8D1-185'); (3) StockTransferPage detail modal prefers the new plural list and falls back to the legacy singular object id. Updated (did NOT duplicate) the existing iteration_127 suite /app/backend/tests/test_sto_multi_item_gi_and_company_cache.py for the new per-DOCUMENT design: 29/29 pytest pass. All SAP interaction fully mocked - post_goods_issue was NEVER invoked against the live tenant (verified: every call in the suite goes to MockOutboundClient or a monkeypatched requests.get; no live SAP read either). Frontend verified live in the browser with a synthetic super_admin session: a seeded posted order with outbound_delivery_ids=['P8D1-185','P8D1-186'] renders 'Outbound Delivery: P8D1-185, P8D1-186' under data-testid=stock-transfer-detail-delivery-ids and does NOT show the legacy id; real pre-fix posted orders STO-000042 and STO-000045 gracefully fall back to 'Outbound Delivery Request: FA163E88...' with no blank/error. All temp data cleaned up.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "stock_transfer_service.try_post_goods_issue", "issue": "No backfill for already-posted orders: gi_status=='posted' short-circuits at the top, and the 'all lines already Finished' early-return branch neither calls find_outbound_delivery_ids nor sets outbound_delivery_ids. Verified in Mongo that the very order the user complained about, STO-000046 (the real 3-line P8 order, deliveries P8D1-185/186/187), has outbound_delivery_object_ids populated but NO outbound_delivery_ids - so the user still will not see the human-readable Delivery IDs on that order (nor STO-000042/45). A one-off backfill (find_outbound_delivery_ids over the stored line UUIDs) or attempting the lookup in the all-Finished branch is needed for the fix to be visible on the orders that triggered it."},
+      {"endpoint": "stock_transfer_service.try_post_goods_issue", "issue": "Insufficient-stock and delivery-ID-lookup handling is per-group, but the header still carries a single gi_status: when group A posts successfully and group B is short, gi_status becomes 'insufficient_stock' for the whole STO even though half the order has physically shipped (test_one_short_line_blocks_its_whole_group / test_finished_group_not_reposted_next_tick_and_ids_accumulate document this). Cosmetically confusing on the UI; consider a per-document status list."},
+      {"endpoint": "stock_transfer_service.try_post_goods_issue", "issue": "A delivery item whose product_id matches no stored STO line is still posted with NO live stock pre-check (test_unmatched_product_line_does_not_block_group) - unchanged carry-over from iteration_127."},
+      {"endpoint": "sap_outbound_delivery_client.find_outbound_delivery_ids", "issue": "item_uuids are interpolated into the $filter without .upper() normalisation (find_delivery_request_items does upper-case its UUID) and without any chunking - a very wide STO would build one long 'or' filter. Not a defect today (SAP returned the expected rows for the real 3-line order per main agent's live check) but worth normalising/chunking."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "StockTransferPage detail modal - legacy fallback line", "issue": "The fallback <p> ('Outbound Delivery Request: <object id>') has NO data-testid, unlike the new plural branch, so the legacy path can only be asserted via text matching.", "selector": "[data-testid=\"stock-transfer-detail-gi-status\"] p:last-of-type", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Inter-Plant Stock Transfer - order detail dialog", "issues": ["The DialogContent panel is translucent: the form behind it (labels like 'Ship-to Site*', 'Place Of Supply*', the recent-orders table rows) visibly bleeds through the modal body and its own item table, making the detail text harder to read. Pre-existing, not caused by this fix, but worth an opaque bg-white on DialogContent."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_sto_multi_item_gi_and_company_cache.py",
+    "/app/test_reports/pytest/iter128_results.xml",
+    "/app/tests/_seed_iter128_ui.py"
+  ],
+  "action_items": [
+    "Backfill outbound_delivery_ids for the already-posted real orders (at minimum STO-000046, whose 3 line ItemUUIDs FA163E88-19FA-1FD1-A8C3-09E96C13D093/...C13F093/...C141093 resolve to P8D1-185/186/187) - otherwise the user's 'show me the delivery id' ask is invisible on exactly the order they reported. Consider also running find_outbound_delivery_ids in the 'all lines already Finished' branch so an order that completes between poll ticks still records its IDs.",
+    "Add a data-testid to the legacy singular 'Outbound Delivery Request:' fallback paragraph in StockTransferPage.js (~line 1280).",
+    "Optional: make the STO detail dialog panel fully opaque (background content currently shows through)."
+  ],
+  "critical_code_review_comments": [
+    "Grouping logic is correct and defensive: groups.setdefault(d.get('parent_object_id') or d.get('object_id')) degrades to per-line posting rather than crashing if SAP ever omits ParentObjectID (covered by test_missing_parent_object_id_degrades_to_per_line).",
+    "A short line correctly blocks its ENTIRE document (no partial post) while a sibling document with full stock still posts - matches AllowSplitIndicator=false semantics and prevents recreating the multi-delivery bug.",
+    "find_outbound_delivery_ids failure is caught as SAPOutboundDeliveryError only and logged as a warning; gi_status stays 'posted' and outbound_delivery_ids stays [] so the next tick can retry (verified). Note: a non-SAP exception (e.g. AttributeError/ValueError) from that lookup would still bubble up and fail the whole job - a bare `except Exception` there would be safer for a purely cosmetic call.",
+    "Delivery IDs accumulate correctly across poll ticks (existing_delivery_ids | fresh_ids, sorted) - a second group's post does not wipe the first group's ID.",
+    "stock_transfer_service.py is 1007 lines and sap_outbound_delivery_client.py carries ~60 lines of incident narrative in its docstring; consider splitting the Goods-Issue polling logic into its own module."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sto_multi_item_gi_and_company_cache.py (rewrote the GI assertions for per-document grouping; added TestSingleCombinedDeliveryGrouping, TestDeliveryIdLookupIsolation, TestFindOutboundDeliveryIdsClient, TestFindDeliveryRequestItemsParentId; API regression now hits GET /api/stock-transfer/orders/{sto_id} - the old test used a non-existent /api/stock-transfer/{sto_id} path)",
+    "/app/tests/_seed_iter128_ui.py (new throwaway seed/cleanup script for the UI check)"
+  ],
+  "success_rate": {"backend": "100% (29/29 pytest)", "frontend": "100% (3/3 detail-modal cases: new plural display, STO-000045 legacy fallback, STO-000042 legacy fallback)"},
+  "seed_data_creation": "Temporary only, all deleted: TEST_STO_* docs from the pytest fixture, TEST-STO-IDS-128 (posted, outbound_delivery_ids=['P8D1-185','P8D1-186'], legacy outbound_delivery_object_id='OLD-OBJ-ID-XYZ') and synthetic super_admin sessions TEST_iter127_sto_session / TEST_iter128_sto_ui_session. Verified zero leftovers.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "App has no password login. /api/stock-transfer/* and the UI need a vms_session cookie; tests create+delete their own synthetic super_admin session (see /app/tests/_seed_iter128_ui.py and the session_cookies fixture).",
+  "context_for_next_testing_agent": "Regression suite: /app/backend/tests/test_sto_multi_item_gi_and_company_cache.py (29 tests, fully mocked SAP - NEVER let it reach the live tenant; post_goods_issue only ever hits MockOutboundClient, and the client-level tests monkeypatch sap_outbound_delivery_client.requests.get). Correct app route for the UI is /inventory/inter-plant-transfer (NOT /stock-transfer). Correct single-order API path is /api/stock-transfer/orders/{sto_id}. Writing any file under /app/backend triggers a uvicorn --reload that can leave /api/* at 502 for a while - `sudo supervisorctl restart backend` and poll /api/ until 200 before running HTTP tests (hit this again this iteration). Open item: real posted orders STO-000042/45/46 still have no outbound_delivery_ids (no backfill path).",
+  "rca_of_the_issue": "Root cause of the user's 3-separate-deliveries report: PGIInBackground was called once per Outbound Delivery Request ITEM ObjectID, and SAP creates one Outbound Delivery per call. Fix verified: pending lines are grouped by their shared ParentObjectID (the Outbound Delivery Request DOCUMENT) and PGIInBackground is called exactly once per distinct parent (3 lines/1 parent -> 1 call with the parent id; 2 parents -> exactly 2 calls, each scoped to its own group; a short line suppresses its whole group only; a group already Finished ('3') is not re-posted on a later tick). Fix 2 verified: find_outbound_delivery_ids filters OutboundDeliveryItemBusinessTransactionDocumentReferenceOutboundDeliveryRequestC on ItemUUID (not UUID) with $expand=OutboundDelivery and returns de-duplicated .ID values; the service merges them into outbound_delivery_ids without losing earlier groups', and a lookup failure leaves gi_status='posted'. Remaining gap: no backfill for orders posted before the fix, so STO-000046 still shows no Delivery ID in the UI."
+}
