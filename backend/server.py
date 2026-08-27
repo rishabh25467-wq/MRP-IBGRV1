@@ -3245,7 +3245,7 @@ async def _continue_order_creation(job_id: str, payload: "CreateProductionPropos
             logger.warning(f"create-and-release job {job_id}: tagging order {new_order_id} with proposal_id {proposal_id} failed (non-fatal): {e}")
         await asyncio.to_thread(
             production_confirmation_service.log_order_release, db, payload.actor, new_order_id, {"success": released}, job_id,
-            (job_store.get_job(db, job_id) or {}).get("actor_user_id"),
+            (job_store.get_job(db, job_id) or {}).get("actor_user_id"), proposal_id,
         )
         job_store.update_job(db, job_id, {"status": "done", "result": {
             "production_proposal_id": proposal_id, "production_order_id": new_order_id, "released": released,
@@ -3374,6 +3374,54 @@ async def resume_failed_create_and_release_job(job_id: str, payload: ResumeFaile
     })
     asyncio.create_task(_continue_order_creation(new_job_id, resumed_payload, proposal_id))
     return {"job_id": new_job_id, "production_proposal_id": proposal_id}
+
+
+class RetryFromProposalRequest(BaseModel):
+    production_proposal_id: str
+    material_id: str
+    site_id: str
+    quantity: float
+    unit_code: str
+    actor: str
+
+
+@api_router.post("/production-confirmation/retry-from-proposal")
+async def retry_from_proposal(payload: RetryFromProposalRequest, request: Request):
+    """Aug 28 2026, user's explicit ask ("if proposal created ex: 225857 is
+    it possible i can retry to create production order of this request").
+    A "Created"-only row on the permanent Proposal/Release History table
+    (a Proposal that was made in SAP but never got converted into an
+    Order+Released) usually means its ORIGINAL job crashed/got orphaned
+    by a backend restart - the existing "Resume" button on the Active
+    Orders card only works while that original job doc is still alive,
+    which it stops being after `job_store`'s 24h TTL (job_store.py) even
+    though the History row itself never expires. This is the same
+    Proposal -> Order -> Release pipeline as Resume, just re-entered
+    straight from the History row's own saved fields (no live job_id
+    required) under a brand new job_id - log_order_release's
+    match_proposal_id fallback (see its docstring) still finds and
+    updates this SAME History row in-place once it completes."""
+    if not payload.actor.strip():
+        raise HTTPException(status_code=400, detail="actor (your name) is required")
+    existing = db[production_confirmation_service.PROPOSAL_HISTORY_COLLECTION].find_one(
+        {"production_proposal_id": payload.production_proposal_id, "type": "proposal_created"},
+    )
+    if existing and existing.get("production_order_id"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Proposal {payload.production_proposal_id} was already converted into Order {existing['production_order_id']} - nothing to retry.",
+        )
+    resumed_payload = CreateProductionProposalRequest(
+        material_id=payload.material_id, site_id=payload.site_id, quantity=payload.quantity,
+        unit_code=payload.unit_code, actor=payload.actor,
+    )
+    new_job_id = str(uuid.uuid4())
+    job_store.create_job(db, new_job_id, {
+        "status": "running", "result": None, "error": None, "payload_snapshot": resumed_payload.dict(),
+        "actor_user_id": request.state.user.get("_id"),
+    })
+    asyncio.create_task(_continue_order_creation(new_job_id, resumed_payload, payload.production_proposal_id))
+    return {"job_id": new_job_id, "production_proposal_id": payload.production_proposal_id}
 
 
 @api_router.post("/production-confirmation/refresh-live-sfg-stock")

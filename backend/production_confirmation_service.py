@@ -347,15 +347,22 @@ def log_proposal_creation(db, actor: str, request_payload: dict, result: dict, j
     })
 
 
-def log_order_release(db, actor: str, production_order_id: str, result: dict, job_id: str = None, actor_user_id: str = None) -> None:
+def log_order_release(db, actor: str, production_order_id: str, result: dict, job_id: str = None, actor_user_id: str = None, match_proposal_id: str = None) -> None:
     """When job_id matches the same one-click job's proposal_created row,
     update that row in-place with the order outcome instead of inserting a
     disconnected second row. Falls back to a standalone insert (previous
     behavior) for the manual/standalone Release-an-existing-Order form,
-    which has no job_id. actor_user_id: see log_proposal_creation above."""
-    if job_id:
+    which has no job_id. actor_user_id: see log_proposal_creation above.
+    match_proposal_id (Aug 28 2026, "Retry" from an old Created-only
+    History row - see retry_from_proposal below): a fresh retry runs
+    under a BRAND NEW job_id (the original job doc has long since expired
+    from job_store's 24h TTL, or might even still be alive as a DIFFERENT
+    unrelated job) - matching by the Proposal ID itself instead still
+    finds and updates the SAME original row in-place."""
+    if job_id or match_proposal_id:
+        query = {"job_id": job_id, "type": "proposal_created"} if job_id else {"production_proposal_id": match_proposal_id, "type": "proposal_created"}
         updated = db[PROPOSAL_HISTORY_COLLECTION].update_one(
-            {"job_id": job_id, "type": "proposal_created"},
+            query,
             {"$set": {
                 "production_order_id": production_order_id,
                 "released": result.get("success"),

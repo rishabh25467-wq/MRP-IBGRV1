@@ -866,6 +866,7 @@ const CreateOrderTab = ({ actorName }) => {
   const suggestionRequestRef = useRef(null);
   const pollingJobIdsRef = useRef(new Set());
   const [resumingJobId, setResumingJobId] = useState(null);
+  const [retryingProposalId, setRetryingProposalId] = useState(null);
 
   const COMMON_UOM_CODES = ["EA", "KGM", "MTR", "LTR", "PC", "SET", "BOX", "TO"];
 
@@ -1087,6 +1088,34 @@ const CreateOrderTab = ({ actorName }) => {
       toast.error(e.response?.data?.detail || "Failed to resume order creation");
     } finally {
       setResumingJobId(null);
+    }
+  };
+
+  // "Retry" (Aug 28 2026, user's explicit ask - "if proposal created ex:
+  // 225857 is it possible i can retry to create production order of this
+  // request") on a "Created"-only row in the permanent History table
+  // below (a Proposal made in SAP that never became an Order) - unlike
+  // Resume above, this works even long after the original job doc has
+  // expired (job_store's 24h TTL) since it's sourced straight from the
+  // History row's own saved fields, not a live job.
+  const retryFromProposal = async (h) => {
+    setRetryingProposalId(h.production_proposal_id);
+    try {
+      const { data } = await axios.post(`${API}/production-confirmation/retry-from-proposal`, {
+        production_proposal_id: h.production_proposal_id, material_id: h.material_id, site_id: h.site_id,
+        quantity: h.quantity, unit_code: h.unit_code || "EA", actor: actorName.trim(),
+      });
+      setActiveJobs((prev) => [...prev, {
+        job_id: data.job_id, material_id: h.material_id, site_id: h.site_id,
+        quantity: h.quantity, unit_code: h.unit_code || "EA", status: "waiting_for_order",
+        startedAt: Date.now(), elapsedSeconds: 0,
+      }]);
+      pollJob(data.job_id);
+      toast.success(`Retrying from Proposal ${data.production_proposal_id} - track it in Active Orders above`);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to retry order creation");
+    } finally {
+      setRetryingProposalId(null);
     }
   };
 
@@ -1958,7 +1987,19 @@ const CreateOrderTab = ({ actorName }) => {
                     ? h.success ? <Badge variant="outline" className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Released</Badge> : <Badge variant="outline" className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>
                     : h.production_order_id
                       ? h.released ? <Badge variant="outline" className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Released</Badge> : <Badge variant="outline" className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Release Failed</Badge>
-                      : <Badge variant="outline" className="bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]">Created</Badge>}
+                      : (
+                        <div className="flex items-center gap-1.5">
+                          <Badge variant="outline" className="bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]">Created</Badge>
+                          <Button
+                            size="sm" variant="outline" className="h-6 px-2 text-[11px]"
+                            disabled={retryingProposalId === h.production_proposal_id}
+                            onClick={() => retryFromProposal(h)}
+                            data-testid={`proposal-history-retry-button-${i}`}
+                          >
+                            {retryingProposalId === h.production_proposal_id ? "Retrying..." : "Retry"}
+                          </Button>
+                        </div>
+                      )}
                 </td>
               </tr>
             ))}

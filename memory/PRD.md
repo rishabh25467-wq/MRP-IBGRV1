@@ -1,4 +1,23 @@
-## BUG FIX: "user" role couldn't see their OWN Recent Activity / self-created orders (2026-08-28)
+## FEATURE: "Retry" button on Created-only history rows (2026-08-28)
+
+- User's exact ask: "if proposal created ex: 225857 is it possible i can retry to create production
+  order of this request if yes give a button" - a "Created"-only row on the (permanent, never-expiring)
+  Proposal/Release History table means its Proposal was made in SAP but the order-conversion+release
+  never completed - usually because the ORIGINAL job doc expired (`job_store`'s 24h TTL) before it
+  finished, so the existing "Resume" button (which needs that live job doc) is no longer available.
+- New `POST /api/production-confirmation/retry-from-proposal` re-enters the same Proposal -> Order ->
+  Release pipeline (`_continue_order_creation`) straight from the History row's own saved fields under
+  a brand new job_id - works no matter how old the row is. Guards against retrying an already-converted
+  Proposal (checks `production_order_id` first). `log_order_release` gained a `match_proposal_id`
+  fallback so completion still updates the SAME original row in-place (flips Created -> Released)
+  instead of adding a disconnected new row.
+- Frontend: small "Retry" button next to the "Created" badge, reuses the exact same Active
+  Orders job-card polling as a normal Create.
+- Tested via curl (successful retry + the "already converted" 400 guard) + screenshot (button renders
+  correctly on the real 225857/225655 rows). Did not fire the live retry against those 2 real rows
+  myself - left for the user to trigger via the new button.
+
+
 
 - **Root cause**: `get_proposal_and_release_history` and `get_open_production_lots`'s "self-created
   only" filters matched purely on a free-text display name string (`actor`/`released_by`/`created_by`
