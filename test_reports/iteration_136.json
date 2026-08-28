@@ -1,0 +1,39 @@
+{
+  "summary": "Frontend-only testing of the Stock Transfer (STO) page refactor: shared OrderDetailBody used by both the Recent Orders detail modal and the create-flow confirm dialog, plus the new gi_posted_at 'Posted at:' line. (1) Detail-modal regression on real order STO-000070 (live data): every pre-existing section still renders (Created in SAP box, ERP Portal box, Goods Issue posted box, GST/Transport box, ship-from/to/GST detail grid, items table with 9 columns incl. Ship Status, Print Delivery Note button) with no layout breakage and 0 console errors. (2) gi_posted_at line: no existing order in Mongo has gi_posted_at (all 62 orders predate the change, expected), so it was verified by (a) code inspection of stock_transfer_service.py - all 3 'gi_status':'posted' $set blocks (lines 702, 821, 918) now also set 'gi_posted_at': datetime.now(timezone.utc) - and (b) a route-level response injection in Playwright: with gi_posted_at present the line data-testid=stock-transfer-detail-gi-posted-at renders as 'Posted at: 28 Aug, 06:12:34 pm' in BOTH dialogs. (3) MAIN NEW BEHAVIOR: full create flow driven end-to-end through the real UI (real product search / warehouse / ship-to / GST fields) with only the SAP-write POST + job-status + single-order poll mocked (deliberately NO real SAP write, per instruction to avoid unnecessary live writes). Once the checklist reached 'Create in SAP' done, the confirm dialog rendered the FULL shared body live: success box, ERP box, GI box WITH the new 'Posted at:' line, GST box, detail grid, items table with Ship Status, and the Print Delivery Note button - a line-by-line text diff against the detail modal's body for the same order doc showed ZERO missing lines (identical content). No need to close/reopen the detail modal anymore. (4) Regression: confirm dialog closed cleanly via stock-transfer-confirm-close-button at any time. Backend logs: NO new 'Executable doesn't exist' Playwright errors (latest occurrence 17:29, predates the fix; STO-000070 posted successfully at 17:58 afterwards).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "STO confirm dialog (after Create in SAP completes)",
+        "issues": [
+          "Cosmetic/duplication: the checklist result box still shows the stale sapSubmitMessage 'Created in SAP as 30451. Now posting Goods Issue...' directly above the shared body's own 'Created in SAP.' box and the 'Goods Issue posted - delivery released.' box - so once GI actually posts the top line contradicts the box below it. Consider clearing/updating sapSubmitMessage once createdOrderLive is rendered.",
+          "React a11y console warning (both dialogs): 'Missing `Description` or `aria-describedby={undefined}` for {DialogContent}' - detail modal has no DialogDescription. Warning-only, no functional impact."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Optional (cosmetic): suppress or update the confirm dialog's sapSubmitMessage ('Now posting Goods Issue...') once the shared OrderDetailBody with the live GI status is rendered, to avoid contradictory duplicated status text.",
+    "Optional: add a DialogDescription (or aria-describedby) to the detail modal's DialogContent to clear the Radix a11y warning.",
+    "Pending only: a live end-to-end confirmation that gi_posted_at is actually written by SAP-driven GI on a brand-new real STO (no real SAP write was made in this test by design). Rendering path + all 3 backend $set blocks verified."
+  ],
+  "critical_code_review_comments": [
+    "OrderDetailBody is a clean single source of truth for both dialogs - verified textually identical output for the same order doc. Good.",
+    "pollGiStatus stops only the client-side poll (giPollStopRef) on dialog close; the server-side GI job is independent, so closing the dialog does not abort progress (verified by code; existing iteration_133-135 coverage for the job itself).",
+    "StockTransferPage.js is 1387 lines - consider extracting OrderDetailBody (and the create form) into separate files per the >700-line guideline."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (frontend-only request)", "frontend": "100% (all 4 requested scenarios passed)"},
+  "seed_data_creation": "None. No STO was created in SAP or Mongo; the create flow was exercised with the POST /api/stock-transfer/orders response mocked at the browser network layer (order id 'STO-QA-TEST' never reached the backend).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "vms_session cookie d03966d2f366b13718f5cb3c914ac03b930792998e786be6 worked for the stock_transfer page (no user login flow in this app).",
+  "context_for_next_testing_agent": "STO detail modal + confirm dialog now share OrderDetailBody - both verified identical. All existing orders have gi_posted_at=null (pre-change), so to see the 'Posted at:' line live you must either create a real STO or inject gi_posted_at via Playwright route interception on GET https://<base>/api/stock-transfer/orders (NOTE: the list fetch has NO query string, so the route pattern must be the exact URL, not 'orders?**'). Mock recipe used: POST /api/stock-transfer/orders -> {sto_id, sap_job_id}; GET /orders/sap-status/* -> {status:'done', sto_id, result:{sap_order_id}}; GET /orders/{sto_id} -> real STO-000070 doc with gi_posted_at patched in.",
+  "rca_of_the_issue": "No defect found. First 'FAIL' seen for the gi_posted_at line was a test-side issue: the Playwright route glob '**/api/stock-transfer/orders?**' never matched because loadRecentOrders() calls the endpoint without a query string; after correcting the pattern the line rendered correctly."
+}

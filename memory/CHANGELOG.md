@@ -1,3 +1,21 @@
+## Unified STO create-dialog + detail-modal, added gi_posted_at (2026-08-28)
+
+- **gi_posted_at**: all 3 `"gi_status": "posted"` `$set` blocks in `stock_transfer_service.py` now also
+  stamp `gi_posted_at` (UTC). Detail view shows "Posted at: <date/time>" when present. Existing orders
+  (pre-dating this change) show no stamp - not backfilled, by design.
+- **OrderDetailBody** (new shared component in `StockTransferPage.js`): the create-flow confirm dialog
+  and the Recent Orders detail modal now render through ONE component instead of two hand-written
+  copies that had drifted apart (confirm dialog was missing the GST box, detail grid, items table, and
+  Print Delivery Note button). User's explicit ask: "the dialog that opens when I create the sto should
+  be same as the detail dialog." Verified via testing_agent iteration_136: line-by-line identical output
+  for the same order doc in both dialogs, 0 console errors, no regression on existing orders.
+- Fixed 2 cosmetic follow-ups from that test: the confirm dialog's top "Now posting Goods Issue..."
+  banner no longer lingers/contradicts once the live OrderDetailBody takes over; added a
+  `DialogDescription` to the detail modal to clear a Radix a11y warning.
+
+---
+
+
 ## Hardening: Playwright self-heal + Supplier PO cache soft-delete (2026-08-28)
 
 - **Playwright self-heal** (`playwright_concurrency.py`'s new `launch_chromium()`): if a Chromium

@@ -29,6 +29,7 @@ const API = `${BACKEND_URL}/api`;
 const formatQty = (v) => (v == null ? "—" : Number(v).toLocaleString("en-IN", { maximumFractionDigits: 3 }));
 const formatSapId = (id) => (id ? id.replace(/^0+(?=\d)/, "") : id);
 const cleanSapMessage = (msg) => (msg ? msg.replace(/\s{2,}/g, " ").trim() : msg);
+const formatDateTime = (iso) => (iso ? new Date(iso).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", second: "2-digit" }) : null);
 
 // Per-line Ship Status (Aug 2026, user's explicit ask - header badge on
 // the list view intentionally stays one combined status, this only backs
@@ -96,6 +97,207 @@ const emptyLine = (product) => ({
   suggestion: null,
   error: null,
 });
+// Shared body for BOTH the create-flow confirm dialog (once the order
+// exists in SAP) and the Recent Orders detail modal (user's explicit
+// ask, Aug 2026: "the dialog that opens when I create the sto should be
+// same as the detail dialog") - one single source of truth for what an
+// order's live status looks like, so the two views can never drift
+// apart again.
+export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingErpStoId, onRetryErpSync, retryingGiStoId, onRetryGoodsIssue }) => {
+  if (!order) return null;
+  return (
+    <>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs text-[#667085]">Created {new Date(order.created_at).toLocaleString("en-IN")} by {order.created_by}</p>
+        <Button
+          size="sm" variant="outline" className="text-xs h-7 shrink-0"
+          onClick={() => window.open(`/inventory/inter-plant-transfer/${order.sto_id}/delivery-note`, "_blank")}
+          data-testid="stock-transfer-print-delivery-note-btn"
+        >
+          <Printer size={13} className="mr-1" /> Print Delivery Note
+        </Button>
+      </div>
+
+      {order.error_message ? (
+        <div className="bg-[#FEF3F2] border border-[#FDA29B] rounded-sm p-3 text-sm text-[#912018] flex items-start gap-2" data-testid="stock-transfer-detail-error">
+          <WarningCircle size={16} className="mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <p className="font-bold">SAP rejected this order:</p>
+            <p className="mt-0.5">{cleanSapMessage(order.error_message)}</p>
+            <Button
+              size="sm" variant="outline" className="mt-2"
+              onClick={() => onRetryOrder(order.sto_id)}
+              disabled={retryingStoId === order.sto_id}
+              data-testid="stock-transfer-detail-retry-button"
+            >
+              {retryingStoId === order.sto_id ? <CircleNotch size={14} className="animate-spin mr-1" /> : null}
+              Retry this order
+            </Button>
+          </div>
+        </div>
+      ) : order.status === "created_in_sap" ? (
+        <div className="bg-[#ECFDF3] border border-[#ABEFC6] rounded-sm p-3 text-sm text-[#027A48] flex items-start gap-2" data-testid="stock-transfer-detail-success">
+          <CheckCircle size={16} className="mt-0.5 shrink-0" />
+          <div>
+            <p className="font-bold">Created in SAP.</p>
+            <p className="mt-0.5">SAP Order ID: {formatSapId(order.sap_order_id) || "—"}{order.sap_order_uuid ? ` (UUID: ${order.sap_order_uuid})` : ""}</p>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-[#FEF0C7] border border-[#FEDF89] rounded-sm p-3 text-sm text-[#93370D]" data-testid="stock-transfer-detail-no-error">
+          Submitting to SAP now - refresh in a few seconds if this doesn't update.
+        </div>
+      )}
+
+      {order.status === "created_in_sap" && (
+        <div
+          className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
+            order.erp_portal_status === "synced" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
+            : order.erp_portal_status === "failed" ? "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
+            : "bg-[#FEF0C7] border border-[#FEDF89] text-[#93370D]"
+          }`}
+          data-testid="stock-transfer-detail-erp-status"
+        >
+          {order.erp_portal_status === "synced" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : order.erp_portal_status === "failed" ? <WarningCircle size={16} className="mt-0.5 shrink-0" /> : <CircleNotch size={16} className="mt-0.5 shrink-0 animate-spin" />}
+          <div>
+            <p className="font-bold">
+              {order.erp_portal_status === "synced" ? "Synced to ERP Portal."
+                : order.erp_portal_status === "failed" ? "ERP Portal sync failed:"
+                : "ERP Portal: syncing..."}
+            </p>
+            {order.erp_portal_status === "failed" && <p className="mt-0.5">{order.erp_portal_error || "See logs."}</p>}
+            {order.erp_portal_status === "failed" && (
+              <>
+                <p className="mt-1 text-xs opacity-80">No legal Delivery Challan can be printed until this syncs - Serial Number comes from the ERP portal.</p>
+                <Button
+                  size="sm" variant="outline" className="mt-2"
+                  onClick={() => onRetryErpSync(order.sto_id)}
+                  disabled={retryingErpStoId === order.sto_id}
+                  data-testid="stock-transfer-retry-erp-sync-btn"
+                >
+                  {retryingErpStoId === order.sto_id ? <CircleNotch size={14} className="animate-spin mr-1.5" /> : null}
+                  Retry ERP Sync
+                </Button>
+              </>
+            )}
+            {order.erp_portal_status === "synced" && (
+              <p className="mt-0.5 text-xs opacity-80">Portal Sale No: {order.erp_sale_no} / {order.erp_sale_noc}</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {order.status === "created_in_sap" && (
+        <div
+          className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
+            order.gi_status === "posted" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
+            : order.gi_status === "failed" || order.gi_status === "not_found_timeout" ? "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
+            : "bg-[#FEF0C7] border border-[#FEDF89] text-[#93370D]"
+          }`}
+          data-testid="stock-transfer-detail-gi-status"
+        >
+          {order.gi_status === "posted" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : <WarningCircle size={16} className="mt-0.5 shrink-0" />}
+          <div className="flex-1">
+            <p className="font-bold">
+              {order.gi_status === "posted" ? "Goods Issue posted - delivery released."
+                : order.gi_status === "failed" ? "Goods Issue failed:"
+                : order.gi_status === "not_found_timeout" ? "Goods Issue still pending after 20 min - the order itself is unaffected."
+                : order.gi_status === "insufficient_stock" ? "Goods Issue: insufficient live stock at the source warehouse."
+                : "Goods Issue: waiting for SAP to schedule the delivery..."}
+            </p>
+            {order.gi_status === "posted" && formatDateTime(order.gi_posted_at) && (
+              <p className="mt-0.5 text-xs opacity-80" data-testid="stock-transfer-detail-gi-posted-at">Posted at: {formatDateTime(order.gi_posted_at)}</p>
+            )}
+            {(order.gi_status === "failed" || order.gi_status === "insufficient_stock") && <p className="mt-0.5">{parseGiError(order.gi_error) || "See logs."}</p>}
+            {order.outbound_delivery_ids?.length > 0 && (order.gi_status === "posted" || order.gi_status === "failed") ? (
+              <p className="mt-0.5 text-xs opacity-80" data-testid="stock-transfer-detail-delivery-ids">
+                Outbound Delivery: {order.outbound_delivery_ids.join(", ")}
+              </p>
+            ) : order.outbound_delivery_object_id && (order.gi_status === "posted" || order.gi_status === "failed") && (
+              <p className="mt-0.5 text-xs opacity-80" data-testid="stock-transfer-detail-legacy-object-id">Outbound Delivery Request: {order.outbound_delivery_object_id}</p>
+            )}
+            {(order.gi_status === "failed" || order.gi_status === "not_found_timeout") && (
+              <Button
+                size="sm" variant="outline" className="mt-2"
+                onClick={() => onRetryGoodsIssue(order.sto_id)}
+                disabled={retryingGiStoId === order.sto_id}
+                data-testid="stock-transfer-detail-retry-gi-button"
+              >
+                {retryingGiStoId === order.sto_id ? <CircleNotch size={14} className="animate-spin mr-1" /> : null}
+                Retry Goods Issue
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {order.gst_note_pushed && (
+        <div
+          className="rounded-sm p-3 text-sm flex items-start gap-2 bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
+          data-testid="stock-transfer-detail-gst-status"
+        >
+          <CheckCircle size={16} className="mt-0.5 shrink-0" />
+          <p className="font-bold">GST / Transport details recorded on the SAP Customer Requirement note.</p>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
+        <div><Label className="text-xs font-bold text-[#344054]">Ship-from Site</Label><p data-testid="stock-transfer-detail-ship-from">{order.ship_from_site_id}</p></div>
+        <div><Label className="text-xs font-bold text-[#344054]">Ship-to Site</Label><p data-testid="stock-transfer-detail-ship-to">{order.ship_to_site_id}</p></div>
+        <div><Label className="text-xs font-bold text-[#344054]">Ship-to Location</Label><p data-testid="stock-transfer-detail-ship-to-location">{order.ship_to_location_name || order.ship_to_location_id}</p></div>
+        <div><Label className="text-xs font-bold text-[#344054]">Delivery Priority</Label><p>{order.delivery_priority}</p></div>
+        <div><Label className="text-xs font-bold text-[#344054]">Requested Delivery Date</Label><p>{order.requested_delivery_date}</p></div>
+        <div><Label className="text-xs font-bold text-[#344054]">Transportation Mode</Label><p>{order.transportation_mode || "—"}</p></div>
+        <div><Label className="text-xs font-bold text-[#344054]">Vehicle No.</Label><p>{order.vehicle_no || "—"}</p></div>
+        <div><Label className="text-xs font-bold text-[#344054]">Place Of Supply</Label><p>{order.place_of_supply || "—"}</p></div>
+        <div><Label className="text-xs font-bold text-[#344054]">G.R No.</Label><p>{order.gr_no || "—"}</p></div>
+        <div><Label className="text-xs font-bold text-[#344054]">Date Of Supply</Label><p>{order.date_of_supply || "—"}</p></div>
+        <div><Label className="text-xs font-bold text-[#344054]">Freight Forwarder</Label><p data-testid="stock-transfer-detail-freight-forwarder">{order.freight_forwarder || "—"}</p></div>
+      </div>
+
+      <div className="border border-[#EAECF0] rounded-sm overflow-auto">
+        <table className="w-full text-xs border-collapse" data-testid="stock-transfer-detail-items-table">
+          <thead>
+            <tr>
+              {["Line", "Product", "Description", "HSN Code", "Source Warehouse", "Available Qty", "Requested Qty", "Stock Status", "Ship Status"].map((h) => (
+                <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-[11px] font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {(order.items || []).map((it, idx) => {
+              const ship = lineShipStatus(order, it);
+              const shipStyle = SHIP_STATUS_STYLE[ship.status] || SHIP_STATUS_STYLE.pending;
+              return (
+              <tr key={it.line_no ?? idx} data-testid={`stock-transfer-detail-item-${it.product_id}`}>
+                <td className="border border-[#D0D5DD] px-2 py-1.5">{it.line_no}</td>
+                <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium">{it.product_id}</td>
+                <td className="border border-[#D0D5DD] px-2 py-1.5">{it.description || "—"}</td>
+                <td className="border border-[#D0D5DD] px-2 py-1.5" data-testid={`stock-transfer-detail-hsn-${it.product_id}`}>{it.hsn_code || "—"}</td>
+                <td className="border border-[#D0D5DD] px-2 py-1.5">{it.source_warehouse_name || it.source_warehouse_id}</td>
+                <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(it.available_qty)} {it.unit_of_measure}</td>
+                <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(it.requested_qty)} {it.unit_of_measure}</td>
+                <td className="border border-[#D0D5DD] px-2 py-1.5">{it.availability_status}</td>
+                <td className="border border-[#D0D5DD] px-2 py-1.5">
+                  <span
+                    className={`text-[11px] font-medium px-1.5 py-0.5 rounded-full ${shipStyle.cls}`}
+                    title={ship.note || ""}
+                    data-testid={`stock-transfer-detail-ship-status-${it.line_no ?? idx}`}
+                  >
+                    {shipStyle.label}
+                  </span>
+                </td>
+              </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+};
+
+
 
 export default function StockTransferPage() {
   const [items, setItems] = useState([]);
@@ -456,8 +658,15 @@ export default function StockTransferPage() {
   // status line until posted/failed/timed-out, but never blocks the
   // dialog from being closed - the actual retry loop runs server-side
   // regardless of whether this tab is open.
-  const [giLiveStatus, setGiLiveStatus] = useState(null); // {status, error} | null
-  const [erpLiveStatus, setErpLiveStatus] = useState(null); // {status, error} | null
+  //
+  // `createdOrderLive` holds the FULL order doc (not just gi_status/
+  // erp_portal_status) so this dialog can render the exact same
+  // <OrderDetailBody> the detail modal uses (user's explicit ask, Aug
+  // 2026: "the dialog that opens when I create the sto should be same
+  // as the detail dialog") - one shared source of truth for what an
+  // order's live status looks like, instead of two hand-written copies
+  // that can drift apart.
+  const [createdOrderLive, setCreatedOrderLive] = useState(null);
   const giPollStopRef = useRef(false);
   const pollGiStatus = (stoId) => {
     giPollStopRef.current = false;
@@ -465,8 +674,7 @@ export default function StockTransferPage() {
       if (giPollStopRef.current) return;
       try {
         const { data } = await axios.get(`${API}/stock-transfer/orders/${stoId}`);
-        setGiLiveStatus({ status: data.gi_status, error: data.gi_error });
-        setErpLiveStatus({ status: data.erp_portal_status, error: data.erp_portal_error });
+        setCreatedOrderLive(data);
         setStepStatuses((prev) => ({
           ...prev,
           erp_sync: data.erp_portal_status === "synced" ? "done" : data.erp_portal_status === "failed" ? "failed" : "active",
@@ -524,8 +732,7 @@ export default function StockTransferPage() {
     setSapSubmitPhase("submitting");
     setSapSubmitMessage(null);
     setStepStatuses({ validate: "active", check: "pending", create: "pending", erp_sync: "pending", post_goods_issue: "pending" });
-    setGiLiveStatus(null);
-    setErpLiveStatus(null);
+    setCreatedOrderLive(null);
     try {
       const payload = {
         ship_to_site_id: shipToSiteId,
@@ -1054,8 +1261,8 @@ export default function StockTransferPage() {
           write (user's explicit ask, Aug 2026) - clicking "Review &
           Create" above only opens this summary; nothing is submitted to
           SAP until "Confirm & Submit to SAP" is explicitly clicked here. */}
-      <Dialog open={showConfirmDialog} onOpenChange={(open) => { if (!submitting) { setShowConfirmDialog(open); if (!open) { giPollStopRef.current = true; setSapSubmitPhase(null); setSapSubmitMessage(null); setStepStatuses({}); setGiLiveStatus(null); setErpLiveStatus(null); } } }}>
-        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto" data-testid="stock-transfer-confirm-dialog">
+      <Dialog open={showConfirmDialog} onOpenChange={(open) => { if (!submitting) { setShowConfirmDialog(open); if (!open) { giPollStopRef.current = true; setSapSubmitPhase(null); setSapSubmitMessage(null); setStepStatuses({}); setCreatedOrderLive(null); } } }}>
+        <DialogContent className="max-w-5xl max-h-[85vh] overflow-y-auto" data-testid="stock-transfer-confirm-dialog">
           <DialogHeader>
             <DialogTitle>Confirm Stock Transfer Order</DialogTitle>
             <DialogDescription>
@@ -1079,7 +1286,7 @@ export default function StockTransferPage() {
                   );
                 })}
               </ol>
-              {sapSubmitPhase !== "submitting" && (
+              {(sapSubmitPhase === "failed" || (sapSubmitPhase === "done" && !createdOrderLive)) && (
                 <div
                   className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
                     sapSubmitPhase === "done" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
@@ -1091,41 +1298,13 @@ export default function StockTransferPage() {
                   <p>{sapSubmitMessage}</p>
                 </div>
               )}
-              {sapSubmitPhase === "done" && erpLiveStatus && (
-                <div
-                  className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
-                    erpLiveStatus.status === "synced" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
-                    : erpLiveStatus.status === "failed" ? "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
-                    : "bg-[#FEF0C7] border border-[#FEDF89] text-[#93370D]"
-                  }`}
-                  data-testid="stock-transfer-dialog-erp-status"
-                >
-                  {erpLiveStatus.status === "synced" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : erpLiveStatus.status === "failed" ? <WarningCircle size={16} className="mt-0.5 shrink-0" /> : <CircleNotch size={16} className="mt-0.5 shrink-0 animate-spin" />}
-                  <p>
-                    {erpLiveStatus.status === "synced" ? "Synced to ERP Portal (Delivery Challan created)."
-                      : erpLiveStatus.status === "failed" ? `ERP Portal sync failed: ${erpLiveStatus.error || "see logs"}.`
-                      : "Syncing to ERP Portal..."}
-                  </p>
-                </div>
-              )}
-              {sapSubmitPhase === "done" && giLiveStatus && (
-                <div
-                  className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
-                    giLiveStatus.status === "posted" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
-                    : giLiveStatus.status === "failed" || giLiveStatus.status === "not_found_timeout" ? "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
-                    : "bg-[#FEF0C7] border border-[#FEDF89] text-[#93370D]"
-                  }`}
-                  data-testid="stock-transfer-dialog-gi-status"
-                >
-                  {giLiveStatus.status === "posted" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : <CircleNotch size={16} className={`mt-0.5 shrink-0 ${giLiveStatus.status !== "posted" ? "animate-spin" : ""}`} />}
-                  <p>
-                    {giLiveStatus.status === "posted" ? "Goods Issue posted - delivery released."
-                      : giLiveStatus.status === "insufficient_stock" ? parseGiError(giLiveStatus.error) || "Insufficient stock at source warehouse - auto-checking every 20s."
-                      : giLiveStatus.status === "failed" ? (parseGiError(giLiveStatus.error) || "Goods Issue failed - see the order's detail view to retry.")
-                      : giLiveStatus.status === "not_found_timeout" ? "Still waiting after 20 minutes - you can retry from the order's detail view any time."
-                      : "Waiting for SAP to schedule the delivery... you can safely close this dialog, this keeps running in the background."}
-                  </p>
-                </div>
+              {sapSubmitPhase === "done" && createdOrderLive && (
+                <OrderDetailBody
+                  order={createdOrderLive}
+                  retryingStoId={retryingStoId} onRetryOrder={handleRetryOrder}
+                  retryingErpStoId={retryingErpStoId} onRetryErpSync={handleRetryErpSync}
+                  retryingGiStoId={retryingGiStoId} onRetryGoodsIssue={handleRetryGoodsIssue}
+                />
               )}
             </div>
 
@@ -1175,7 +1354,7 @@ export default function StockTransferPage() {
 
           {sapSubmitPhase && sapSubmitPhase !== "submitting" && (
             <div className="flex justify-end pt-1">
-              <Button type="button" onClick={() => { giPollStopRef.current = true; setShowConfirmDialog(false); setSapSubmitPhase(null); setSapSubmitMessage(null); setStepStatuses({}); setGiLiveStatus(null); setErpLiveStatus(null); }} data-testid="stock-transfer-confirm-close-button">Close</Button>
+              <Button type="button" onClick={() => { giPollStopRef.current = true; setShowConfirmDialog(false); setSapSubmitPhase(null); setSapSubmitMessage(null); setStepStatuses({}); setCreatedOrderLive(null); }} data-testid="stock-transfer-confirm-close-button">Close</Button>
             </div>
           )}
         </DialogContent>
@@ -1190,193 +1369,15 @@ export default function StockTransferPage() {
           {selectedOrder && (
             <>
               <DialogHeader>
-                <div className="flex items-center justify-between gap-3 pr-6">
-                  <DialogTitle>{selectedOrder.sto_id}</DialogTitle>
-                  <Button
-                    size="sm" variant="outline" className="text-xs h-7"
-                    onClick={() => window.open(`/inventory/inter-plant-transfer/${selectedOrder.sto_id}/delivery-note`, "_blank")}
-                    data-testid="stock-transfer-print-delivery-note-btn"
-                  >
-                    <Printer size={13} className="mr-1" /> Print Delivery Note
-                  </Button>
-                </div>
-                <DialogDescription>
-                  Created {new Date(selectedOrder.created_at).toLocaleString("en-IN")} by {selectedOrder.created_by}
-                </DialogDescription>
+                <DialogTitle>{selectedOrder.sto_id}</DialogTitle>
+                <DialogDescription>Stock Transfer Order details and live SAP status</DialogDescription>
               </DialogHeader>
-
-              {selectedOrder.error_message ? (
-                <div className="bg-[#FEF3F2] border border-[#FDA29B] rounded-sm p-3 text-sm text-[#912018] flex items-start gap-2" data-testid="stock-transfer-detail-error">
-                  <WarningCircle size={16} className="mt-0.5 shrink-0" />
-                  <div className="flex-1">
-                    <p className="font-bold">SAP rejected this order:</p>
-                    <p className="mt-0.5">{cleanSapMessage(selectedOrder.error_message)}</p>
-                    <Button
-                      size="sm" variant="outline" className="mt-2"
-                      onClick={() => handleRetryOrder(selectedOrder.sto_id)}
-                      disabled={retryingStoId === selectedOrder.sto_id}
-                      data-testid="stock-transfer-detail-retry-button"
-                    >
-                      {retryingStoId === selectedOrder.sto_id ? <CircleNotch size={14} className="animate-spin mr-1" /> : null}
-                      Retry this order
-                    </Button>
-                  </div>
-                </div>
-              ) : selectedOrder.status === "created_in_sap" ? (
-                <div className="bg-[#ECFDF3] border border-[#ABEFC6] rounded-sm p-3 text-sm text-[#027A48] flex items-start gap-2" data-testid="stock-transfer-detail-success">
-                  <CheckCircle size={16} className="mt-0.5 shrink-0" />
-                  <div>
-                    <p className="font-bold">Created in SAP.</p>
-                    <p className="mt-0.5">SAP Order ID: {formatSapId(selectedOrder.sap_order_id) || "—"}{selectedOrder.sap_order_uuid ? ` (UUID: ${selectedOrder.sap_order_uuid})` : ""}</p>
-                  </div>
-                </div>
-              ) : (
-                <div className="bg-[#FEF0C7] border border-[#FEDF89] rounded-sm p-3 text-sm text-[#93370D]" data-testid="stock-transfer-detail-no-error">
-                  Submitting to SAP now - refresh in a few seconds if this doesn't update.
-                </div>
-              )}
-
-              {selectedOrder.status === "created_in_sap" && (
-                <div
-                  className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
-                    selectedOrder.erp_portal_status === "synced" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
-                    : selectedOrder.erp_portal_status === "failed" ? "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
-                    : "bg-[#FEF0C7] border border-[#FEDF89] text-[#93370D]"
-                  }`}
-                  data-testid="stock-transfer-detail-erp-status"
-                >
-                  {selectedOrder.erp_portal_status === "synced" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : <WarningCircle size={16} className="mt-0.5 shrink-0" />}
-                  <div>
-                    <p className="font-bold">
-                      {selectedOrder.erp_portal_status === "synced" ? "Synced to ERP Portal."
-                        : selectedOrder.erp_portal_status === "failed" ? "ERP Portal sync failed:"
-                        : "ERP Portal: syncing..."}
-                    </p>
-                    {selectedOrder.erp_portal_status === "failed" && <p className="mt-0.5">{selectedOrder.erp_portal_error || "See logs."}</p>}
-                    {selectedOrder.erp_portal_status === "failed" && (
-                      <>
-                        <p className="mt-1 text-xs opacity-80">No legal Delivery Challan can be printed until this syncs - Serial Number comes from the ERP portal.</p>
-                        <Button
-                          size="sm" variant="outline" className="mt-2"
-                          onClick={() => handleRetryErpSync(selectedOrder.sto_id)}
-                          disabled={retryingErpStoId === selectedOrder.sto_id}
-                          data-testid="stock-transfer-retry-erp-sync-btn"
-                        >
-                          {retryingErpStoId === selectedOrder.sto_id ? <CircleNotch size={14} className="animate-spin mr-1.5" /> : null}
-                          Retry ERP Sync
-                        </Button>
-                      </>
-                    )}
-                    {selectedOrder.erp_portal_status === "synced" && (
-                      <p className="mt-0.5 text-xs opacity-80">Portal Sale No: {selectedOrder.erp_sale_no} / {selectedOrder.erp_sale_noc}</p>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {selectedOrder.status === "created_in_sap" && (
-                <div
-                  className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
-                    selectedOrder.gi_status === "posted" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
-                    : selectedOrder.gi_status === "failed" || selectedOrder.gi_status === "not_found_timeout" ? "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
-                    : "bg-[#FEF0C7] border border-[#FEDF89] text-[#93370D]"
-                  }`}
-                  data-testid="stock-transfer-detail-gi-status"
-                >
-                  {selectedOrder.gi_status === "posted" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : <WarningCircle size={16} className="mt-0.5 shrink-0" />}
-                  <div className="flex-1">
-                    <p className="font-bold">
-                      {selectedOrder.gi_status === "posted" ? "Goods Issue posted - delivery released."
-                        : selectedOrder.gi_status === "failed" ? "Goods Issue failed:"
-                        : selectedOrder.gi_status === "not_found_timeout" ? "Goods Issue still pending after 20 min - the order itself is unaffected."
-                        : selectedOrder.gi_status === "insufficient_stock" ? "Goods Issue: insufficient live stock at the source warehouse."
-                        : "Goods Issue: waiting for SAP to schedule the delivery..."}
-                    </p>
-                    {(selectedOrder.gi_status === "failed" || selectedOrder.gi_status === "insufficient_stock") && <p className="mt-0.5">{parseGiError(selectedOrder.gi_error) || "See logs."}</p>}
-                    {selectedOrder.outbound_delivery_ids?.length > 0 && (selectedOrder.gi_status === "posted" || selectedOrder.gi_status === "failed") ? (
-                      <p className="mt-0.5 text-xs opacity-80" data-testid="stock-transfer-detail-delivery-ids">
-                        Outbound Delivery: {selectedOrder.outbound_delivery_ids.join(", ")}
-                      </p>
-                    ) : selectedOrder.outbound_delivery_object_id && (selectedOrder.gi_status === "posted" || selectedOrder.gi_status === "failed") && (
-                      <p className="mt-0.5 text-xs opacity-80" data-testid="stock-transfer-detail-legacy-object-id">Outbound Delivery Request: {selectedOrder.outbound_delivery_object_id}</p>
-                    )}
-                    {(selectedOrder.gi_status === "failed" || selectedOrder.gi_status === "not_found_timeout") && (
-                      <Button
-                        size="sm" variant="outline" className="mt-2"
-                        onClick={() => handleRetryGoodsIssue(selectedOrder.sto_id)}
-                        disabled={retryingGiStoId === selectedOrder.sto_id}
-                        data-testid="stock-transfer-detail-retry-gi-button"
-                      >
-                        {retryingGiStoId === selectedOrder.sto_id ? <CircleNotch size={14} className="animate-spin mr-1" /> : null}
-                        Retry Goods Issue
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {selectedOrder.gst_note_pushed && (
-                <div
-                  className="rounded-sm p-3 text-sm flex items-start gap-2 bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
-                  data-testid="stock-transfer-detail-gst-status"
-                >
-                  <CheckCircle size={16} className="mt-0.5 shrink-0" />
-                  <p className="font-bold">GST / Transport details recorded on the SAP Customer Requirement note.</p>
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
-                <div><Label className="text-xs font-bold text-[#344054]">Ship-from Site</Label><p data-testid="stock-transfer-detail-ship-from">{selectedOrder.ship_from_site_id}</p></div>
-                <div><Label className="text-xs font-bold text-[#344054]">Ship-to Site</Label><p data-testid="stock-transfer-detail-ship-to">{selectedOrder.ship_to_site_id}</p></div>
-                <div><Label className="text-xs font-bold text-[#344054]">Ship-to Location</Label><p data-testid="stock-transfer-detail-ship-to-location">{selectedOrder.ship_to_location_name || selectedOrder.ship_to_location_id}</p></div>
-                <div><Label className="text-xs font-bold text-[#344054]">Delivery Priority</Label><p>{selectedOrder.delivery_priority}</p></div>
-                <div><Label className="text-xs font-bold text-[#344054]">Requested Delivery Date</Label><p>{selectedOrder.requested_delivery_date}</p></div>
-                <div><Label className="text-xs font-bold text-[#344054]">Transportation Mode</Label><p>{selectedOrder.transportation_mode || "—"}</p></div>
-                <div><Label className="text-xs font-bold text-[#344054]">Vehicle No.</Label><p>{selectedOrder.vehicle_no || "—"}</p></div>
-                <div><Label className="text-xs font-bold text-[#344054]">Place Of Supply</Label><p>{selectedOrder.place_of_supply || "—"}</p></div>
-                <div><Label className="text-xs font-bold text-[#344054]">G.R No.</Label><p>{selectedOrder.gr_no || "—"}</p></div>
-                <div><Label className="text-xs font-bold text-[#344054]">Date Of Supply</Label><p>{selectedOrder.date_of_supply || "—"}</p></div>
-                <div><Label className="text-xs font-bold text-[#344054]">Freight Forwarder</Label><p data-testid="stock-transfer-detail-freight-forwarder">{selectedOrder.freight_forwarder || "—"}</p></div>
-              </div>
-
-              <div className="border border-[#EAECF0] rounded-sm overflow-auto">
-                <table className="w-full text-xs border-collapse" data-testid="stock-transfer-detail-items-table">
-                  <thead>
-                    <tr>
-                      {["Line", "Product", "Description", "HSN Code", "Source Warehouse", "Available Qty", "Requested Qty", "Stock Status", "Ship Status"].map((h) => (
-                        <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-[11px] font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(selectedOrder.items || []).map((it, idx) => {
-                      const ship = lineShipStatus(selectedOrder, it);
-                      const shipStyle = SHIP_STATUS_STYLE[ship.status] || SHIP_STATUS_STYLE.pending;
-                      return (
-                      <tr key={it.line_no ?? idx} data-testid={`stock-transfer-detail-item-${it.product_id}`}>
-                        <td className="border border-[#D0D5DD] px-2 py-1.5">{it.line_no}</td>
-                        <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium">{it.product_id}</td>
-                        <td className="border border-[#D0D5DD] px-2 py-1.5">{it.description || "—"}</td>
-                        <td className="border border-[#D0D5DD] px-2 py-1.5" data-testid={`stock-transfer-detail-hsn-${it.product_id}`}>{it.hsn_code || "—"}</td>
-                        <td className="border border-[#D0D5DD] px-2 py-1.5">{it.source_warehouse_name || it.source_warehouse_id}</td>
-                        <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(it.available_qty)} {it.unit_of_measure}</td>
-                        <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(it.requested_qty)} {it.unit_of_measure}</td>
-                        <td className="border border-[#D0D5DD] px-2 py-1.5">{it.availability_status}</td>
-                        <td className="border border-[#D0D5DD] px-2 py-1.5">
-                          <span
-                            className={`text-[11px] font-medium px-1.5 py-0.5 rounded-full ${shipStyle.cls}`}
-                            title={ship.note || ""}
-                            data-testid={`stock-transfer-detail-ship-status-${it.line_no ?? idx}`}
-                          >
-                            {shipStyle.label}
-                          </span>
-                        </td>
-                      </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              <OrderDetailBody
+                order={selectedOrder}
+                retryingStoId={retryingStoId} onRetryOrder={handleRetryOrder}
+                retryingErpStoId={retryingErpStoId} onRetryErpSync={handleRetryErpSync}
+                retryingGiStoId={retryingGiStoId} onRetryGoodsIssue={handleRetryGoodsIssue}
+              />
             </>
           )}
         </DialogContent>

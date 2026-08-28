@@ -699,6 +699,7 @@ def _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_invent
         logger.warning(f"Stock Transfer Order {sto_id}: expected 1 combined delivery, SAP shows {len(delivery_ids)}: {delivery_ids} - needs manual SAP review")
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
         "gi_status": "posted",
+        "gi_posted_at": datetime.now(timezone.utc),
         "gi_error": None if len(delivery_ids) == 1 else f"Combined into {len(delivery_ids)} deliveries instead of 1 - please verify in SAP",
         "gi_job_running": False,
         "outbound_delivery_object_id": object_ids[0] if object_ids else None,
@@ -817,7 +818,7 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client,
             db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_release_attempts": release_attempts, "outbound_delivery_ids": delivery_ids}})
             return "waiting"
         db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
-            "gi_status": "posted", "gi_error": None, "gi_job_running": False,
+            "gi_status": "posted", "gi_posted_at": datetime.now(timezone.utc), "gi_error": None, "gi_job_running": False,
             "outbound_delivery_object_id": object_ids[0] if object_ids else None,
             "outbound_delivery_object_ids": object_ids,
             "outbound_delivery_ids": delivery_ids,
@@ -914,7 +915,7 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client,
         return "waiting"
 
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
-        "gi_status": "posted", "gi_error": None, "gi_job_running": False,
+        "gi_status": "posted", "gi_posted_at": datetime.now(timezone.utc), "gi_error": None, "gi_job_running": False,
         "outbound_delivery_object_id": object_ids[0] if object_ids else None,
         "outbound_delivery_object_ids": object_ids,
         "outbound_delivery_ids": delivery_ids,
