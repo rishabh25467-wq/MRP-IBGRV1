@@ -5499,6 +5499,16 @@ async def get_inbound_receipts_pending(site_id: Optional[str] = None):
     return {"orders": await asyncio.to_thread(inbound_receipt_service.list_pending_receipts, db, sap_outbound_delivery_client, site_id)}
 
 
+@api_router.get("/inbound-receipts/completed")
+async def get_inbound_receipts_completed(site_id: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None):
+    try:
+        parsed_from = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc) if date_from else None
+        parsed_to = (datetime.fromisoformat(date_to) + timedelta(days=1)).replace(tzinfo=timezone.utc) if date_to else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date_from/date_to must be YYYY-MM-DD")
+    return {"orders": await asyncio.to_thread(inbound_receipt_service.list_completed_receipts, db, site_id, parsed_from, parsed_to)}
+
+
 @api_router.post("/inbound-receipts/{sto_id}/receive")
 async def post_inbound_receipt(sto_id: str, payload: InboundReceiptRequest, request: Request):
     user = await asyncio.to_thread(auth_service.get_current_user, request, db)
@@ -5522,6 +5532,8 @@ async def post_inbound_receipt(sto_id: str, payload: InboundReceiptRequest, requ
 
     job_id = str(uuid.uuid4())
     total_deliveries = len(doc.get("outbound_delivery_ids") or []) or 1
+    receipt_started_at = datetime.now(timezone.utc)
+    await asyncio.to_thread(db[stock_transfer_service.STO_COLLECTION].update_one, {"_id": sto_id}, {"$set": {"receipt_started_at": receipt_started_at}})
     await asyncio.to_thread(job_store.create_job, db, job_id, {
         "sto_id": sto_id, "kind": "inbound_receipt", "status": "running", "phase": "queued",
         "progress_current": 0, "progress_total": total_deliveries, "result": None, "error": None,

@@ -1,0 +1,53 @@
+{
+  "summary": "Verification pass on the Inbound STO Receipt page (/inventory/inbound-receipts) with its new 'Completed Receipts' tab. Backend: created /app/backend/tests/test_inbound_receipts_completed_iter137.py (10 tests, 8 passed, 1 skipped, 1 failed) covering /api/inbound-receipts/completed (shape, sort, site filter, date range, empty cases) plus pending/sites regression. Frontend: full Playwright pass with the synthetic vms_session cookie - page loads clean (no console errors, no error overlay), both tabs switch correctly, Pending tab (34 rows) expand/collapse, receive dialog with editable + validated quantities, checkbox select / select-all / bulk bar / bulk confirm dialog all work (no SAP-writing confirm was ever clicked), Completed tab renders 18 real rows with status badges, site filter (P1 -> 7 rows) and Clear-dates work, tab switching preserves filter state. TWO REAL DEFECTS FOUND: (1) the date-range filter returns ZERO rows for any date because receipt_completed_at is null on all 18 existing records, and (2) the 'Time Taken' column is '—' on 100% of rows - i.e. the two headline features of the new tab are non-functional against existing data.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "GET /api/inbound-receipts/completed?date_from=YYYY-MM-DD", "issue": "Date filter queries on `receipt_completed_at`, which is null/absent on ALL 18 existing completed STOs (only newly-finalized receipts get it). Repro: date_from=2020-01-01 -> orders=[] although the unfiltered call returns 18 rows. Any date filter the user sets therefore always yields an empty table. Fix: filter on `receipt_completed_at` with a fallback to `received_at`/`receipt_started_at` (e.g. $or on both fields), or backfill receipt_completed_at from received_at.", "priority": "HIGH"},
+      {"endpoint": "GET /api/inbound-receipts/completed", "issue": "`receipt_duration_seconds` is null for 18/18 rows, so the 'Time Taken to complete receipt in SAP' column (the user's explicit ask for this tab) shows '—' everywhere. Code that stamps it (inbound_receipt_service.finalize_receipt) is correct, but nothing is backfilled and no completed record in the DB has it. Consider deriving from receipt_started_at/received_at where available, or seeding a live receipt so the column is demonstrably populated.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "GET /api/inbound-receipts/completed?date_from=not-a-date", "issue": "Returns HTTP 500 (unhandled datetime.fromisoformat ValueError at server.py ~5504). Should be 400/422."},
+      {"endpoint": "GET /api/inbound-receipts/completed", "issue": "Sorted by receipt_completed_at which is null on every row, so ordering is effectively arbitrary (currently ascending STO id: STO-000018 first) - 'newest receipt first' is not achieved."},
+      {"endpoint": "GET /api/inbound-receipts/completed and /pending", "issue": "No auth/session check in the endpoint handlers (unlike /receive which resolves the user); data is readable with any/no session. Only the frontend route is protected."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Completed tab - Time Taken column", "issue": "All 18 rows show '—' (backend data gap above); the column adds no value today", "selector": "[data-testid^='inbound-receipts-completed-duration-']", "priority": "HIGH"},
+      {"component": "Completed tab - Received At column", "issue": "Shows '—' for every partial/failed row (8/18) because it only falls back received_at -> receipt_completed_at, both null for those. Users can't tell when the attempt happened.", "selector": "[data-testid^='inbound-receipts-completed-row-']", "priority": "MEDIUM"},
+      {"component": "Completed tab - error text", "issue": "Raw SAP OData JSON leaks to the UI for legacy rows, e.g. STO-000018: 'P8D1-173: HTTP 500: {\"error\":{\"code\":\"ERROR\",\"message\":...'. _humanize_sap_error only runs at finalize time, so stored legacy receipt_error strings render verbatim (same class of issue reported in iteration_134). Humanize on read in list_completed_receipts.", "selector": "[data-testid='inbound-receipts-completed-row-STO-000018']", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [
+      {"flow": "Completed tab date-range filter", "issue": "Setting From=2020-01-01 (a range that covers everything) empties the table and shows the empty state, instead of listing all 18 receipts. API call fired correctly (?date_from=2020-01-01) - server returns []. User-visible break of the new filter.", "affected_selectors": ["[data-testid='inbound-receipts-date-from']", "[data-testid='inbound-receipts-completed-empty']"]}
+    ],
+    "design_issues": [
+      {"screen": "Completed tab filters", "issues": ["From/To use the native browser date input (mm/dd/yyyy with browser picker) instead of the shadcn Calendar/Popover used elsewhere - inconsistent with the app's design system", "Date inputs are US-format while all dates in the tables render as en-IN (28 Aug 2026) - mixed formats"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_inbound_receipts_completed_iter137.py",
+    "/app/test_reports/pytest/iter137_results.xml"
+  ],
+  "action_items": [
+    "Make the Completed tab date filter work on existing data: filter on receipt_completed_at OR received_at (or backfill receipt_completed_at from received_at). Currently every date filter returns zero rows.",
+    "Populate/derive receipt_duration_seconds (and a completed timestamp) for existing records so the 'Time Taken' column is not '—' on 100% of rows.",
+    "Show a timestamp for partial/failed rows in 'Received At' (fall back to receipt_started_at).",
+    "Run _humanize_sap_error when reading completed receipts so legacy raw JSON SAP faults don't render in the table.",
+    "Return 400/422 instead of 500 for malformed date_from/date_to on /api/inbound-receipts/completed.",
+    "Optionally replace native date inputs with the shadcn Calendar for design consistency."
+  ],
+  "critical_code_review_comments": [
+    "inbound_receipt_service.list_completed_receipts: querying/sorting on a field (receipt_completed_at) that no historical document has silently breaks the filter; add a $or fallback on received_at.",
+    "server.py ~5502: datetime.fromisoformat(date_from) is unguarded -> 500 on bad input; wrap in try/except and raise HTTPException(400). Also prefer FastAPI date type params.",
+    "/api/inbound-receipts/completed & /pending do not resolve the session user at all - inconsistent with /receive which does; consider requiring auth server-side.",
+    "server.py is very large (>5500 lines) - the inbound-receipt routes would be better in their own router module."
+  ],
+  "updated_files": ["/app/backend/tests/test_inbound_receipts_completed_iter137.py"],
+  "success_rate": {"backend": "80% (8/10 pytest, 1 skipped due to missing receipt_completed_at data)", "frontend": "85% (all interactions pass; date filter + Time Taken column non-functional)"},
+  "seed_data_creation": "None - read-only testing only; no receive/PGR was submitted to the live SAP system (final Confirm buttons verified present/enabled but never clicked).",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "vms_session=KGABHXazt4DGxMLppFGLi9bbLu25Z9m9 (inbound.tester@rampgroup.co.in, super_admin) - worked for both API and Playwright (cookie domain sap-data-sync.preview.emergentagent.com).",
+  "context_for_next_testing_agent": "Page/UI mechanics of /inventory/inbound-receipts are fully verified working (tabs, expand, receive dialog + qty validation, select-all, bulk dialog, site filter, clear dates, repeated tab switching, zero console errors). The remaining open items are data/filter-level: (a) date-range filter returns 0 rows because receipt_completed_at is null on all completed STOs, (b) Time Taken column all '—', (c) Received At '—' for partial/failed, (d) raw SAP JSON in receipt_error for legacy rows, (e) 500 on invalid date param. After a fix, re-run /app/backend/tests/test_inbound_receipts_completed_iter137.py (test_completed_date_range_filter currently SKIPs when no receipt_completed_at exists - it should PASS once data is backfilled). Do NOT click inbound-receipt-confirm-btn / inbound-receipt-bulk-confirm-btn (live SAP writes).",
+  "rca_of_the_issue": "The new Completed tab was built around two new fields (receipt_completed_at, receipt_duration_seconds) that are only written by finalize_receipt going forward. No existing STO document has them, and the Mongo query `{'receipt_completed_at': {'$gte': ...}}` excludes documents where the field is absent - so any date filter matches nothing and the sort is a no-op. Repro: open /inventory/inbound-receipts -> Completed (18 rows, all Time Taken '—') -> set From=2020-01-01 -> table empties to 'No completed receipts found for this filter.'"
+}

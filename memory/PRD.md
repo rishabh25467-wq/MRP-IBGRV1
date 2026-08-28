@@ -54,10 +54,17 @@ Extend a SAP BOM viewer application into a full production-planning suite for Ra
 ## Current backlog
 
 ### P0
-- Wire Supplier Portal GRN (external, stock items) to the same Playwright PGR automation - blocked on
-  finding/creating the IDN for a PO-sourced stock item (none exist yet in this tenant; needs
-  investigation into what SAP process step should create one, or whether GSA is genuinely the only
-  path for external supplier receipts and a different fix is needed there).
+- Wire Supplier Portal GRN (external, stock items) to a Playwright automation - investigation IN
+  PROGRESS (2026-08-28 session, see CHANGELOG): confirmed no IDN or GSA path exists for real stock PO
+  items, BUT found a promising new lead - "Inbound Logistics -> Purchase Orders" work center has a
+  real, enabled "Post Goods Receipt" button directly at the PO level for released POs (no IDN needed).
+  User explicitly paused further investigation ("I'll tell u exact windows to follow later") - resume
+  by picking a genuinely "Ordered"/"In Process" PO with real un-received stock and read-only inspecting
+  that Post Goods Receipt screen's fields, per user's next instructions. Do NOT click Post Goods
+  Receipt on a real PO without the user's exact steps.
+- Possible data-integrity gap flagged (not yet investigated further, user said to leave it for now):
+  Supplier Portal PO cache may be showing external vendors POs that are still "In Preparation"
+  (unreleased draft) in SAP as if they were open orders to fulfil - PO 28792 was found in this state.
 - Phase 5: External QMS feed - secured API/data feed (API key) for external QMS app to pull
   pending-QC items.
 

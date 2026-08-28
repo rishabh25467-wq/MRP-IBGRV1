@@ -136,6 +136,45 @@ def list_ship_to_sites_with_pending_receipts(db) -> list:
     return sorted(s for s in db[STO_COLLECTION].distinct("ship_to_site_id", _PENDING_QUERY) if s)
 
 
+def list_completed_receipts(db, site_id: str = None, date_from: datetime = None, date_to: datetime = None) -> list:
+    """Every STO that's had a receive attempt actioned (received,
+    partially received, or failed) - backs the page's new "Completed"
+    tab (user's explicit ask, Aug 2026: "a filter to be able to see
+    receipts also in a table with the time taken to complete receipt in
+    SAP"). Filtered by ship-to site and a `receipt_completed_at` date
+    range. `receipt_completed_at` was one-time backfilled (Aug 28 2026,
+    see /app/memory/CHANGELOG.md) for every STO that predates this
+    field, so the date filter matches historical receipts too.
+    `receipt_duration_seconds` stays None for any of those pre-existing
+    STOs (no `receipt_started_at` was ever recorded for them) - only
+    receipts actioned from Aug 28 2026 onward get a real duration."""
+    query = {"receipt_status": {"$in": ["received", "partial", "failed"]}}
+    if site_id:
+        query["ship_to_site_id"] = site_id
+    if date_from or date_to:
+        date_range = {}
+        if date_from:
+            date_range["$gte"] = date_from
+        if date_to:
+            date_range["$lte"] = date_to
+        query["receipt_completed_at"] = date_range
+    docs = list(db[STO_COLLECTION].find(query).sort("receipt_completed_at", -1).limit(300))
+    return [{
+        "sto_id": doc["_id"],
+        "sap_order_id": (doc.get("sap_order_id") or "").lstrip("0") or doc.get("sap_order_id"),
+        "ship_from_site_id": doc.get("ship_from_site_id"),
+        "ship_to_site_id": doc.get("ship_to_site_id"),
+        "ship_to_location_name": doc.get("ship_to_location_name"),
+        "receipt_status": doc.get("receipt_status"),
+        "receipt_error": _humanize_sap_error(doc.get("receipt_error")),
+        "received_at": doc.get("received_at"),
+        "received_by": doc.get("received_by"),
+        "receipt_completed_at": doc.get("receipt_completed_at"),
+        "receipt_duration_seconds": doc.get("receipt_duration_seconds"),
+        "items_count": len(doc.get("items") or []),
+    } for doc in docs]
+
+
 def prepare_receipt(db, sto_id: str) -> dict:
     """Validates the order is receivable and returns its doc - raises
     ValueError (400 to the caller) for any invalid state."""
@@ -166,17 +205,30 @@ def build_line_overrides(doc: dict, quantity_overrides: dict) -> dict:
 
 def finalize_receipt(db, sto_id: str, results: list, actor: str, had_overrides: bool = False) -> dict:
     """Persists the final receipt outcome after the Playwright PGR run -
-    same status rollup this feature has always used."""
+    same status rollup this feature has always used. Also stamps
+    `receipt_completed_at` and, when `receipt_started_at` was recorded
+    (set right when the job was created - see post_inbound_receipt),
+    `receipt_duration_seconds` - how long the automation itself took for
+    THIS attempt (user's explicit ask, Aug 2026: "time taken to complete
+    receipt in SAP"). Recomputed fresh on every attempt (including
+    retries after a failure), so a retry's duration reflects just that
+    retry's run, not cumulative time since the very first attempt."""
     doc = db[STO_COLLECTION].find_one({"_id": sto_id}) or {}
     any_failed = any(r["status"] != "received" for r in results)
     overall = "failed" if all(r["status"] != "received" for r in results) else ("partial" if any_failed else "received")
     error_summary = " | ".join(f"{r['delivery_id']}: {_humanize_sap_error(r.get('error'))}" for r in results if r.get("error")) or None
+    now = datetime.now(timezone.utc)
+    started_at = doc.get("receipt_started_at")
+    if started_at and started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
         "receipt_status": overall,
         "receipt_results": results,
         "receipt_error": error_summary,
-        "received_at": datetime.now(timezone.utc) if overall == "received" else doc.get("received_at"),
+        "received_at": now if overall == "received" else doc.get("received_at"),
         "received_by": actor,
+        "receipt_completed_at": now,
+        "receipt_duration_seconds": round((now - started_at).total_seconds()) if started_at else None,
     }})
     return {"status": overall, "results": results, "had_overrides": had_overrides, "error": error_summary}
 

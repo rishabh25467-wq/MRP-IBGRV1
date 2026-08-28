@@ -1,3 +1,53 @@
+## Inbound Receipts "Completed" tab fixed + Supplier PO GRN investigation (2026-08-28, this session)
+
+- **Fixed 3 real bugs found by testing_agent (iteration_137)** in the new Inbound STO Receipt
+  "Completed" tab (backend `inbound_receipt_service.list_completed_receipts`, `server.py`
+  `/api/inbound-receipts/completed`):
+  1. Date-range filter returned ZERO rows for every query because `receipt_completed_at` was null on
+     all 18 pre-existing completed STOs (only newly-finalized receipts got it going forward). One-time
+     backfilled `receipt_completed_at` from `received_at` (or `created_at` as last resort for
+     failed/partial rows with no `received_at`) for all 18 legacy docs - date filter now correctly
+     returns them.
+  2. Raw SAP OData JSON leaking into the UI for legacy `receipt_error` rows (e.g. STO-000018) - now
+     runs `_humanize_sap_error` on read in `list_completed_receipts`, not just at finalize time.
+  3. Malformed `date_from`/`date_to` caused an unhandled 500 - now wrapped, returns 400.
+  - `receipt_duration_seconds` stays `None`/"—" for all 18 legacy rows (no `receipt_started_at` was
+    ever recorded for them) - honest gap, not backfilled (can't fabricate a real duration). New
+    receives from this point on get a real duration.
+  - Verified via curl post-fix: `date_from=2020-01-01` now returns all 18 orders; bad date returns 400;
+    STO-000018's error now reads "Action InboundDeliveryPGRBackground not possible; action is disabled"
+    instead of raw JSON.
+  - Frontend UI mechanics (tabs, filters, dialogs, bulk select) were already fully verified working by
+    the same testing_agent pass - no frontend code changes needed this session (the "broken JSX" state
+    described in the prior handoff had already self-resolved/hot-reloaded before this fork started).
+
+- **Supplier Portal GRN investigation started** (P0 backlog item) - live, read-only Playwright
+  exploration of SAP ByDesign UI (`/app/backend/investigate_supplier_grn.py`, one-off script, screenshots
+  in `/app/backend/playwright_debug/grn_investigation/`), using PO 28792 (HAMIDI EXPORTS/H1330) as the
+  test sample:
+  - Ruled out: PO 28792 has ZERO hits in Inbound Delivery Notifications (searched by PO#, both product
+    IDs, vendor code) and ZERO hits in Goods and Services Receipts -> Purchase Orders to Be Delivered.
+  - **ROOT CAUSE FOUND for why PO 28792 specifically is invisible everywhere**: its SAP Purchase Order
+    Status is **"In Preparation"** - it was never actually released/ordered in SAP, even though the
+    Supplier Portal PO cache shows it as an open PO the vendor should ship against. SAP correctly
+    excludes non-released POs from every receiving screen - this is not a structural limitation, PO
+    28792 was just a bad test pick. **Flagged as a possible data-integrity gap**: the Supplier Portal
+    may be surfacing "In Preparation" (draft, unreleased) POs to external vendors as if they were open or ders
+    to fulfil - needs a separate check (not yet investigated further - user said "leave it for now").
+  - **Promising new lead for the real P0 fix**: "Inbound Logistics -> Purchase Orders" work center view
+    (found via user's hint) has a real **"Post Goods Receipt"** and **"Post Goods Receipts as Planned"**
+    toolbar button directly at the PO level (confirmed ENABLED, not greyed, on a real released 2025 PO
+    "11484", status "In Process", 5 real stock line items, Ship-to Location + Delivered Quantity
+    columns visible). This suggests SAP may be able to receive a stock PO directly, without ever needing
+    an Inbound Delivery Notification - a different, more direct path than the STO/PGR flow uses. **NOT
+    YET fully investigated** (what fields the Post Goods Receipt screen actually asks for, whether it
+    works the same way for a genuinely open/un-received PO) - user explicitly paused this
+    ("I'll tell u exact windows to follow later") before going further; do NOT click Post Goods Receipt
+    on a real PO until the user gives the exact screens/steps to follow.
+
+---
+
+
 ## Unified STO create-dialog + detail-modal, added gi_posted_at (2026-08-28)
 
 - **gi_posted_at**: all 3 `"gi_status": "posted"` `$set` blocks in `stock_transfer_service.py` now also

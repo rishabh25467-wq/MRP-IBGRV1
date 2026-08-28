@@ -24,6 +24,19 @@ const AVG_SECONDS_PER_DELIVERY = 65;
 
 const formatQty = (v) => (v == null ? "—" : Number(v).toLocaleString("en-IN", { maximumFractionDigits: 3 }));
 const formatDate = (iso) => (iso ? new Date(iso).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—");
+const formatDuration = (seconds) => {
+  if (seconds == null) return "—";
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m ${s}s`;
+};
+
+const COMPLETED_STATUS_STYLE = {
+  received: { label: "Received", cls: "bg-[#ECFDF3] text-[#027A48]" },
+  partial: { label: "Partially Received", cls: "bg-[#FEF3C7] text-[#92400E]" },
+  failed: { label: "Receipt Failed", cls: "bg-[#FEE4E2] text-[#B42318]" },
+};
 
 const STATUS_STYLE = {
   pending: { label: "Pending Receipt", cls: "bg-[#FEF3C7] text-[#92400E]" },
@@ -90,6 +103,11 @@ export default function InboundReceiptsPage() {
   const activeJobsRef = useRef(activeJobs);
   activeJobsRef.current = activeJobs;
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [activeTab, setActiveTab] = useState("pending"); // "pending" | "completed"
+  const [completedOrders, setCompletedOrders] = useState([]);
+  const [completedLoading, setCompletedLoading] = useState(false);
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
 
   useEffect(() => {
     axios.get(`${API}/inbound-receipts/sites`).then(({ data }) => {
@@ -99,6 +117,26 @@ export default function InboundReceiptsPage() {
     }).catch(() => toast.error("Could not load receiving sites."));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const loadCompletedOrders = useCallback(async () => {
+    setCompletedLoading(true);
+    try {
+      const params = {};
+      if (siteFilter !== "all") params.site_id = siteFilter;
+      if (dateFrom) params.date_from = dateFrom;
+      if (dateTo) params.date_to = dateTo;
+      const { data } = await axios.get(`${API}/inbound-receipts/completed`, { params });
+      setCompletedOrders(data.orders || []);
+    } catch {
+      toast.error("Could not load completed receipts.");
+    } finally {
+      setCompletedLoading(false);
+    }
+  }, [siteFilter, dateFrom, dateTo]);
+
+  useEffect(() => {
+    if (activeTab === "completed") loadCompletedOrders();
+  }, [activeTab, loadCompletedOrders]);
 
   const loadOrders = useCallback(async () => {
     setLoading(true);
@@ -325,6 +363,43 @@ export default function InboundReceiptsPage() {
           </div>
         </div>
 
+        <div className="flex items-center gap-1 mb-5 bg-[#EEF2F1] p-1 rounded-lg w-fit" data-testid="inbound-receipts-tabs">
+          <button
+            className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${activeTab === "pending" ? "bg-white text-[#0B6B74] shadow-sm" : "text-[#667085] hover:text-[#344054]"}`}
+            onClick={() => setActiveTab("pending")}
+            data-testid="inbound-receipts-tab-pending"
+          >
+            Pending
+          </button>
+          <button
+            className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${activeTab === "completed" ? "bg-white text-[#0B6B74] shadow-sm" : "text-[#667085] hover:text-[#344054]"}`}
+            onClick={() => setActiveTab("completed")}
+            data-testid="inbound-receipts-tab-completed"
+          >
+            Completed
+          </button>
+        </div>
+
+        {activeTab === "completed" && (
+          <div className="flex items-end gap-3 flex-wrap mb-5" data-testid="inbound-receipts-completed-filters">
+            <div>
+              <label className="text-xs font-medium text-[#667085] block mb-1">From</label>
+              <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-40" data-testid="inbound-receipts-date-from" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-[#667085] block mb-1">To</label>
+              <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-40" data-testid="inbound-receipts-date-to" />
+            </div>
+            {(dateFrom || dateTo) && (
+              <Button variant="outline" size="sm" onClick={() => { setDateFrom(""); setDateTo(""); }} data-testid="inbound-receipts-date-clear-btn">
+                Clear dates
+              </Button>
+            )}
+          </div>
+        )}
+
+        {activeTab === "pending" && (
+        <Fragment>
         {selectedIds.size > 0 && (
           <div className="flex items-center justify-between bg-[#F0F9FA] border border-[#B4E4E8] rounded-lg px-4 py-2.5 mb-4" data-testid="inbound-receipts-bulk-bar">
             <span className="text-sm font-medium text-[#0B6B74]">{selectedIds.size} order{selectedIds.size === 1 ? "" : "s"} selected</span>
@@ -462,6 +537,66 @@ export default function InboundReceiptsPage() {
               </TableBody>
             </Table>
           </div>
+        )}
+        </Fragment>
+        )}
+
+        {activeTab === "completed" && (
+          completedLoading ? (
+            <div className="flex items-center justify-center py-24 text-[#667085]" data-testid="inbound-receipts-completed-loading">
+              <CircleNotch size={24} className="animate-spin mr-2" /> Loading completed receipts…
+            </div>
+          ) : completedOrders.length === 0 ? (
+            <div className="text-center py-24 text-[#667085] bg-white rounded-xl border border-[#EAECF0]" data-testid="inbound-receipts-completed-empty">
+              No completed receipts found for this filter.
+            </div>
+          ) : (
+            <div className="bg-white rounded-xl border border-[#EAECF0] overflow-x-auto" data-testid="inbound-receipts-completed-list">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>STO</TableHead>
+                    <TableHead>Route</TableHead>
+                    <TableHead>Ship To</TableHead>
+                    <TableHead>Received At</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead className="text-right">Time Taken</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {completedOrders.map((order) => {
+                    const status = COMPLETED_STATUS_STYLE[order.receipt_status] || COMPLETED_STATUS_STYLE.received;
+                    return (
+                      <TableRow key={order.sto_id} data-testid={`inbound-receipts-completed-row-${order.sto_id}`}>
+                        <TableCell>
+                          <span className="font-semibold text-[#101828]">{order.sto_id}</span>
+                          <div className="text-xs text-[#667085]">SAP #{order.sap_order_id}</div>
+                        </TableCell>
+                        <TableCell>
+                          <span className="inline-flex items-center gap-1 text-sm text-[#344054]">
+                            {order.ship_from_site_id} <ArrowRight size={12} /> {order.ship_to_site_id}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-sm text-[#344054]">{order.ship_to_location_name || "—"}</TableCell>
+                        <TableCell className="text-sm text-[#344054]">{formatDate(order.received_at || order.receipt_completed_at)}</TableCell>
+                        <TableCell>
+                          <span className={`text-xs font-medium px-2 py-1 rounded-full ${status.cls}`} data-testid={`inbound-receipts-completed-status-${order.sto_id}`}>
+                            {status.label}
+                          </span>
+                          {order.receipt_error && (
+                            <div className="text-xs text-[#B42318] mt-1 max-w-xs truncate" title={order.receipt_error}>{order.receipt_error}</div>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-sm text-[#344054]" data-testid={`inbound-receipts-completed-duration-${order.sto_id}`}>
+                          {formatDuration(order.receipt_duration_seconds)}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          )
         )}
       </div>
 
