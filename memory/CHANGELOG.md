@@ -1,3 +1,28 @@
+## ENV FIX: Playwright Chromium binary missing after fork - Goods Issue stuck in "awaiting_delivery" (2026-08-28)
+
+- **User report**: STO-000069 (SAP order 30430, 3 lines) sat in `gi_status="awaiting_delivery"` for
+  15+ minutes ("earlier it used to get done in 1 min or so").
+- **Root cause**: this forked container's `/pw-browsers` only had Chromium revision `1208` cached, but
+  the installed `playwright` pip package (1.62.0) requires revision `1234` - every single Playwright
+  Goods Issue attempt (`sap_playwright_outbound_gi_service.py`) failed instantly with
+  `BrowserType.launch: Executable doesn't exist at /pw-browsers/chromium_headless_shell-1234/...` and
+  silently retried every ~20-40s (caught as a generic transient error by design, so it never surfaced
+  as a visible `gi_error` - by design for real transient hiccups, but it hid this persistent one for
+  the full retry window). Same applies to `sap_playwright_pgr_service.py` (Inbound Receipt) - same
+  `/pw-browsers` path, same risk, just not hit yet this session.
+- **Fix**: ran `python3 -m playwright install chromium` to download revision 1234. Confirmed working
+  immediately: STO-000069's very next automatic poll succeeded, `gi_status="posted"`,
+  `outbound_delivery_ids=["P1D1-486"]`.
+- **Lesson for future forks**: if ANY Playwright-backed flow (Outbound GI combine, Inbound PGR) looks
+  "stuck"/slow after a fresh fork, check `/var/log/supervisor/backend.err.log` for
+  `BrowserType.launch: Executable doesn't exist` FIRST before assuming a code regression - a forked
+  container's `/pw-browsers` cache can silently be out of sync with the pinned `playwright` pip version.
+  Quick check: `python3 -m playwright install chromium --dry-run` shows the revision the installed
+  package actually wants vs `ls /pw-browsers/`.
+
+---
+
+
 ## Outbound multi-line STO: combined delivery + structured GST fields via Playwright (2026-08-28)
 
 - **Bug**: a multi-line STO (2+ items) always produced one SEPARATE Outbound Delivery per line in
