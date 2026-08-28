@@ -450,3 +450,49 @@ def retry_goods_movement(db, doc_code: str, goods_movement_client, owner_party_i
         {"$set": {"sap_movement_status": sap_movement_status, "sap_movement_result": sap_movement_result}},
     )
     return get_shipment_by_code(db, doc_code)
+
+
+def retry_goods_receipt(db, doc_code: str, gsa_write_client, goods_movement_client, owner_party_id: str) -> dict:
+    """Retries step 1 (the Goods Receipt/GSA call) for a shipment that's
+    already `approved` locally but whose SAP write failed (Aug 28 2026 -
+    transient "Web service processing error" on SAP's own side, distinct
+    from the STO Inbound Receipt "action is disabled" issue). Mirrors
+    retry_goods_movement above - approve_shipment itself can't be
+    re-called since it's gated on status not yet being "approved"."""
+    doc = get_shipment_by_code(db, doc_code)
+    if doc["status"] != "approved":
+        raise ShipmentValidationError("This shipment has not been approved yet")
+    if doc.get("sap_sync_status") == "posted":
+        raise ShipmentValidationError("The Goods Receipt has already posted to SAP - nothing to retry")
+
+    grouped_by_po = {}
+    for it in doc["items"]:
+        grouped_by_po.setdefault(it["po_number"], []).append(it)
+    try:
+        per_po_results = []
+        for po_number, items in grouped_by_po.items():
+            result = gsa_write_client.post_goods_receipt(
+                po_number, doc["_id"],
+                [{"item_id": it["item_number"], "quantity": it["ship_qty"], "unit_of_measure": it.get("unit_of_measure")} for it in items],
+            )
+            per_po_results.append({"po_number": po_number, **result})
+        sap_gr_result = {"ok": True, "per_po": per_po_results}
+        sap_sync_status = "posted"
+    except Exception as e:
+        sap_gr_result = {"ok": False, "reason": str(e)}
+        sap_sync_status = "pending"
+
+    sap_movement_status = doc.get("sap_movement_status") or "not_applicable"
+    sap_movement_result = doc.get("sap_movement_result")
+    if sap_sync_status == "posted" and doc.get("site_id") and doc.get("warehouse_id"):
+        sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, owner_party_id, doc["site_id"], doc["warehouse_id"])
+        sap_movement_status = "posted" if sap_movement_result.get("ok") else "pending"
+
+    db[SHIPMENTS_COLLECTION].update_one(
+        {"_id": doc["_id"]},
+        {"$set": {
+            "sap_sync_status": sap_sync_status, "sap_gr_result": sap_gr_result,
+            "sap_movement_status": sap_movement_status, "sap_movement_result": sap_movement_result,
+        }},
+    )
+    return get_shipment_by_code(db, doc_code)

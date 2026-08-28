@@ -111,10 +111,36 @@ class SAPInboundDeliveryClient:
         if resp.status_code >= 400:
             raise SAPInboundDeliveryError(f"HTTP {resp.status_code}: {resp.text[:500]}")
 
+    def release_delivery(self, delivery_object_id: str) -> None:
+        """InboundDeliveryRelease (Function Import) - PGRBackground errors
+        with "action is disabled" until the Notification has been
+        Released first (confirmed live, Aug 28 2026 - SAP's own action
+        model gates PGRBackground on release status, same as the
+        outbound side's Delivery needing an explicit release before its
+        own PGI). `TaskBasedIndicator=false` releases it directly instead
+        of forwarding it to a Warehouse Task - we want the Goods Receipt
+        to post immediately, not go through warehouse execution."""
+        session = requests.Session()
+        try:
+            with sap_semaphore:
+                token = self._fetch_csrf_token(session, "InboundDeliveryCollection")
+                resp = session.post(
+                    f"{self.endpoint}/InboundDeliveryRelease",
+                    params={"ObjectID": f"'{delivery_object_id}'", "TaskBasedIndicator": "false", "sap-vhost": self.vhost},
+                    auth=self.auth,
+                    headers={"Accept": "application/json", "X-CSRF-Token": token},
+                    timeout=45,
+                )
+        except requests.exceptions.RequestException as e:
+            raise SAPInboundDeliveryError(f"Could not reach SAP: {e}")
+        if resp.status_code >= 400:
+            raise SAPInboundDeliveryError(f"HTTP {resp.status_code}: {resp.text[:500]}")
+
     def post_goods_receipt(self, delivery_object_id: str) -> dict:
         """InboundDeliveryPGRBackground (Function Import, see module
         docstring) - posts the Goods Receipt for every item currently on
-        this Inbound Delivery Notification."""
+        this Inbound Delivery Notification. Must be Released first (see
+        release_delivery) or SAP returns "action is disabled"."""
         session = requests.Session()
         try:
             with sap_semaphore:

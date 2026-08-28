@@ -5792,6 +5792,22 @@ async def post_admin_grn_retry_movement(doc_code: str, request: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@api_router.post("/admin/grn/{doc_code}/retry-goods-receipt")
+async def post_admin_grn_retry_goods_receipt(doc_code: str, request: Request):
+    doc = await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
+    if doc.get("site_id") and not _has_site_access(request.state.user, doc["site_id"]):
+        raise HTTPException(status_code=403, detail="You are not bound to this site")
+    owner_party_id, _ = company_and_set_of_books_for_site(doc.get("site_id"))
+    try:
+        return await asyncio.to_thread(
+            supplier_shipment_service.retry_goods_receipt, db, doc_code, sap_gsa_write_client, sap_goods_movement_client, owner_party_id,
+        )
+    except supplier_shipment_service.ShipmentNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except supplier_shipment_service.ShipmentValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @api_router.post("/admin/grn/{doc_code}/discrepancy")
 async def post_admin_grn_discrepancy(doc_code: str, payload: GrnDiscrepancyRequest, request: Request):
     marker = (request.state.user.get("name") or request.state.user.get("email") or "Unknown").strip()

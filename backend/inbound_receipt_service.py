@@ -28,7 +28,9 @@ sitting in SAP, it just never recorded which delivery ID(s) resulted.
 `_backfill_missing_delivery_ids` below re-derives and persists them
 on-the-fly the first time list_pending_receipts is asked for such an
 order, using the exact same SAP lookup try_post_goods_issue's own
-release step already relies on - read-only, no SAP write."""
+release step already relies on - read-only, no SAP write.
+
+Confirmed live (Aug 28 2026): calling `release_delivery` before `PGRBackground` was the WRONG sequence and appears to have permanently broken P8D1-192/193 into a stuck "action is disabled" state on BOTH actions. The native SAP "Post Goods Receipt" screen (a fresh, never-Released Notification, e.g. P8D1-172) succeeds by calling PGR Ground DIRECTLY - no Release step - and creates a real Confirmed Inbound Delivery + posts real stock. `receive_stock_transfer_order` below therefore calls `post_goods_receipt` directly, with no Release call, matching the native UI's own path."""
 import logging
 from datetime import datetime, timezone
 

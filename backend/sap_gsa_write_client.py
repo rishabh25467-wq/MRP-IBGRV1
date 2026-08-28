@@ -48,10 +48,17 @@ from requests.auth import HTTPBasicAuth
 
 from sap_rate_limiter import sap_semaphore
 
-# Namespace confirmed via SAP help docs (help.sap.com PSM_ISI_R_II_SRM_GSA_MBO):
-# GSA services live under http://sap.com/xi/A1S/Global, NOT the
-# SAPGlobal20 namespace used by the Purchase Order query service.
-GSA_NAMESPACE = "http://sap.com/xi/A1S/Global"
+# Namespace confirmed via SAP's OFFICIAL published examples
+# (help.sap.com PSM_ISI_R_II_SRM_GSA_MBO "Maintain goods and service
+# acknowledgement" operation) - CORRECTED Aug 28 2026. The earlier
+# "confirmed via SAP help docs" note above was wrong: GSA lives under
+# SAPGlobal20, NOT A1S/Global (that's the namespace for the read-only
+# QueryGoodsAndServiceAcknowledgementInbound service used elsewhere in
+# this app, a genuinely different endpoint/namespace pairing). Using
+# the wrong namespace reproduced the exact same generic "Web service
+# processing error" seen live (SAP parses the envelope fine but can't
+# route it to the right ABSL handler).
+GSA_NAMESPACE = "http://sap.com/xi/SAPGlobal20/Global"
 # TODO: confirm the exact SOAPAction string against the real WSDL if the
 # live tenant rejects an empty SOAPAction (every other client in this
 # app that has been live-tested so far - PO query - accepts "").
