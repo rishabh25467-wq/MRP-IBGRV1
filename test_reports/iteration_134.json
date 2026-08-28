@@ -1,0 +1,47 @@
+{
+  "summary": "Iteration 134 - retest of iteration_133's 8 fixes on Inbound STO Receipt (batch receiving, concurrency cap, per-line Ship Status). Backend: 14 pytest passed / 2 skipped / 0 failed (/app/backend/tests/test_batch_receive_iter134.py). FIX 2/3/4/5/6/7/8 all VERIFIED (FIX 4 verified functionally by seeding a synthetic orphaned running inbound_receipt job, restarting the backend, and confirming the STO doc got a receipt_error which then rendered as red text on the row - artifact cleaned up afterwards). FIX 1 STILL BROKEN: the 'Processing - est. Xs remaining' badge renders ROTATED/DIAGONALLY across 3-4 rows below it because `badge.cls` (which contains `animate-spin` for the processing state) is applied to the OUTER badge DIV (InboundReceiptsPage.js:414), not just the icon - whitespace-nowrap/truncate/min-w-[220px] did not address the real root cause (it was never text wrapping; it is a CSS spin animation on the whole badge). Live batch receive of 2 real orders (STO-000066/67) ran end-to-end: non-blocking dialog closed in 1.1s, badges went Queued->Processing, the ETA visibly ticked down (2 min -> 59s -> 57s -> 53s), and after a hard refresh both badges rehydrated (47s remaining, Receive button + checkbox disabled) and kept ticking. Both real SAP posts ultimately FAILED at the SAP side (one 'SAP login did not reach the launchpad', one 'Actual quantity for Delivery Item ID 20 missing') - SAP endpoints were intermittently timing out during this session, unrelated to the fixes.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/inbound-receipts/{sto_id}/receive (run())", "issue": "A job whose every delivery FAILED at SAP is still marked status='done'/phase='done' (job f634c601, result.status='failed', results[0].status='failed'), so the row badge shows a green 'Done' check while the same row's status pill says 'Receipt Failed'. Set the job to failed (or add a 'partial/failed' badge state) when result.status != 'received'."},
+      {"endpoint": "backend startup / WatchFiles reload", "issue": "Creating a file under /app/backend/tests/ triggered a uvicorn WatchFiles reload while NO Playwright job was running, and the old worker still hung for >8 minutes (whole app 502 / localhost:8001 timing out) because blocking SAP background-refresh threads (sap_valuation_client, 30s connect timeouts) never finish shutting down; needed a manual supervisorctl restart. iteration_133 blamed Playwright jobs, but plain SAP background refresh threads reproduce it too - consider timeout_graceful_shutdown, daemon threads, and excluding tests/ from the reload watch."},
+      {"endpoint": "GET /api/inbound-receipts/pending", "issue": "receipt_error is surfaced verbatim, so raw upstream payloads leak to end users (STO-000057 row shows: 'P8D1-192: HTTP 500: {\"error\":{\"code\":\"ERROR\",\"messag...'). Sanitize to a business-level message."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "InboundReceiptsPage row job badge", "issue": "FIX 1 NOT FIXED. jobBadge() returns cls='text-[#0B6B74] animate-spin' for the processing state and that cls is applied to the badge CONTAINER div (line 414), so the entire badge (icon + 'Processing - est. Xs remaining' text) continuously ROTATES and paints diagonally over 3-4 rows beneath it (measured badge height 49px vs 20px expected; visible in screenshots). Fix: keep only the colour class on the container and move `animate-spin` onto <badge.icon> (e.g. add a separate badge.iconCls, like the dialog panel already does at line 544).", "selector": "[data-testid^='inbound-receipt-job-badge-']", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Inbound STO Receipt", "issues": ["Rotating/diagonal Processing badge (see ui_bugs) - the only visual defect left", "Badge/tooltip wording stayed clean: no SAP/login/browser/navigate/Playwright leakage in badge text or title ('Processing - est. 53s remaining', tooltip 'est. 2 min remaining')"]},
+      {"screen": "Stock Transfer detail modal", "issues": ["max-w-5xl now fits the 9-column items table exactly (table scrollWidth 972 = wrapper clientWidth 972, no horizontal scroll); Ship Status column fully visible for 3 different orders; zero console errors/warnings"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_batch_receive_iter134.py",
+    "/app/test_reports/pytest/iter134.xml"
+  ],
+  "action_items": [
+    "HIGH: move `animate-spin` from the badge container div to the badge icon in InboundReceiptsPage.js jobBadge()/line 414 - the badge currently spins as a whole and smears diagonally over neighbouring rows (this, not text wrapping, was iteration_133's 'vertical text' bug)",
+    "Mark an inbound_receipt job failed (not 'done') when result.status != 'received' so the badge doesn't show a green Done next to a 'Receipt Failed' pill",
+    "Sanitize receipt_error before surfacing it (raw 'HTTP 500: {json}' visible on STO-000057)",
+    "Optional hardening: uvicorn timeout_graceful_shutdown + non-blocking/daemon SAP background refresh threads - a reload with only SAP refresh threads in flight still hung the backend ~8 min this session"
+  ],
+  "critical_code_review_comments": [
+    "InboundReceiptsPage.js:60 - jobBadge() mixes a colour class and an animation class into one `cls` string that is spread onto a flex container; any animation returned there will always transform the text too. Split into cls (container) and iconCls (icon).",
+    "FIX 5/6 wiring is correct: playwright_concurrency has a dedicated 64-worker ThreadPoolExecutor, both Playwright services use await acquire()/release() (no asyncio.to_thread(sap_ui_semaphore.acquire) left) and register/unregister the browser immediately around launch; server.py has @app.on_event('shutdown') -> close_all_browsers().",
+    "inbound_receipt_service.list_pending_receipts issues a second background_jobs query per page load - fine at 200 orders, but it is a sync pymongo call inside the to_thread path, keep an index on {sto_id, kind, status}."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_batch_receive_iter134.py (new)",
+    "/app/test_reports/pytest/iter134.xml (new)"
+  ],
+  "success_rate": {"backend": "100% (14 passed / 2 skipped - the 2 skips only needed a job running at collection time)", "frontend": "88% - FIX 2/3/7/8 + batch regression all pass live; FIX 1 (badge rotation) still fails"},
+  "seed_data_creation": "Synthetic orphaned job doc TEST-ORPHAN-134-* on STO-000065 to exercise the startup orphan-recovery path - DELETED and the STO's receipt_error unset afterwards. Real SAP writes attempted: batch receive of STO-000066 (SAP rejected: 'Actual quantity for Delivery Item ID 20 missing', receipt_status='failed') and STO-000067 (SAP login did not reach the launchpad). Both remain pending/failed - SAP-side state not re-verified.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "vms_session=d03966d2f366b13718f5cb3c914ac03b930792998e786be6 (inbound.tester@radishtechnologies.com) - works on /inventory/inbound-receipts and /inventory/inter-plant-transfer",
+  "context_for_next_testing_agent": "Do NOT create/edit any file under /app/backend/** during a test run: even with no Playwright job in flight, the WatchFiles reload hung uvicorn for >8 min this session (SAP background threads) and needed 'sudo supervisorctl restart backend'. Put probe scripts in /tmp (see /tmp/probe134.py, /tmp/fix4_probe.py). The pytest file /app/backend/tests/test_batch_receive_iter134.py already exists - just run it (pytest tests/test_batch_receive_iter134.py). Verified live this iteration: ETA ticking (badge + rehydrated after refresh), active_job on /pending, orphan-recovery receipt_error end-to-end, Ship Status per-line testids + modal width, non-blocking bulk dialog. NOT re-run this iteration: the 3-concurrent-processing cap (unchanged code, proven in iteration_133) and the single-receive dialog's own countdown (same nowMs ticker + etaText, code-verified only). SAP endpoints were intermittently timing out today, so real Goods Receipt posts fail for external reasons - don't attribute those to the UI fixes.",
+  "rca_of_the_issue": "FIX 1 root cause misdiagnosis: iteration_133 read the badge as 'text wrapping to 1 char per line'. In fact jobBadge() returns cls='text-[#0B6B74] animate-spin' for the processing phase and InboundReceiptsPage.js:414 applies that whole string to the badge's flex container, so Tailwind's spin keyframes rotate the entire badge (icon + label) 360deg once per second; at any non-zero angle the 320px-wide nowrap label sweeps diagonally across the rows below. whitespace-nowrap + truncate + min-w-[220px] cannot help. Moving animate-spin onto the icon element only will fix it."
+}

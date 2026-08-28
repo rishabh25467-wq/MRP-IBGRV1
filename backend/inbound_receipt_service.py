@@ -52,6 +52,8 @@ import logging
 import re
 from datetime import datetime, timezone
 
+import job_store
+
 logger = logging.getLogger(__name__)
 
 STO_COLLECTION = "stock_transfer_orders"
@@ -79,7 +81,13 @@ def _backfill_missing_delivery_ids(db, sap_outbound_delivery_client, doc: dict) 
 def list_pending_receipts(db, sap_outbound_delivery_client, site_id: str = None) -> list:
     """Every STO whose Goods Issue has posted (so an Outbound
     Delivery/Inbound Notification genuinely exists in SAP) and that
-    hasn't been fully received on the app side yet."""
+    hasn't been fully received on the app side yet. Each result also
+    carries its own currently-running receive job (if any) as
+    `active_job` (Aug 2026, user's explicit ask - "show a symbol on
+    each STO clearly so users know job is ON") so a page refresh (or a
+    second tab/device) still shows the live badge instead of losing it
+    the moment client-side state resets (testing_agent iteration_133
+    finding)."""
     query = dict(_PENDING_QUERY)
     if site_id:
         query["ship_to_site_id"] = site_id
@@ -113,6 +121,12 @@ def list_pending_receipts(db, sap_outbound_delivery_client, site_id: str = None)
                 for it in (doc.get("items") or [])
             ],
         })
+    active_jobs = {
+        j["sto_id"]: {"job_id": j["_id"], "phase": j.get("phase"), "progress_current": j.get("progress_current"), "progress_total": j.get("progress_total"), "processing_started_at": j.get("processing_started_at")}
+        for j in db[job_store.COLLECTION_NAME].find({"sto_id": {"$in": [r["sto_id"] for r in results]}, "kind": "inbound_receipt", "status": "running"})
+    }
+    for r in results:
+        r["active_job"] = active_jobs.get(r["sto_id"])
     return results
 
 
@@ -156,21 +170,28 @@ def finalize_receipt(db, sto_id: str, results: list, actor: str, had_overrides: 
     doc = db[STO_COLLECTION].find_one({"_id": sto_id}) or {}
     any_failed = any(r["status"] != "received" for r in results)
     overall = "failed" if all(r["status"] != "received" for r in results) else ("partial" if any_failed else "received")
+    error_summary = " | ".join(f"{r['delivery_id']}: {_humanize_sap_error(r.get('error'))}" for r in results if r.get("error")) or None
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
         "receipt_status": overall,
         "receipt_results": results,
-        "receipt_error": " | ".join(f"{r['delivery_id']}: {_humanize_sap_error(r.get('error'))}" for r in results if r.get("error")) or None,
+        "receipt_error": error_summary,
         "received_at": datetime.now(timezone.utc) if overall == "received" else doc.get("received_at"),
         "received_by": actor,
     }})
-    return {"status": overall, "results": results, "had_overrides": had_overrides}
+    return {"status": overall, "results": results, "had_overrides": had_overrides, "error": error_summary}
 
 
 def _humanize_sap_error(raw: str) -> str:
     """SAP's raw OData fault is a JSON blob (e.g. from an older
     receipt_results entry) - pull out just the message text for display;
-    Playwright-sourced errors are already plain text and pass through."""
+    Playwright-sourced errors are already plain text and pass through.
+    Anything unrecognized (a raw HTTP/connection error, an untruncated
+    JSON/HTML payload) is capped short rather than dumped verbatim to the
+    end user (testing_agent iteration_134: a full '{"error":{"code":...'
+    blob was leaking through for STO-000057)."""
     if not raw:
         return raw
-    match = re.search(r'"value"\s*:\s*"([^"]+)"', raw)
-    return match.group(1) if match else raw
+    match = re.search(r'"value"\s*:\s*"([^"]+)"', raw) or re.search(r'"message"\s*:\s*"([^"]+)"', raw)
+    if match:
+        return match.group(1)
+    return raw[:120] + ("…" if len(raw) > 120 else "")

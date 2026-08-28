@@ -71,6 +71,7 @@ import mrp_plan_store
 import autosave_store
 import job_store
 import sap_playwright_pgr_service
+import playwright_concurrency
 import supplier_service
 import stock_transfer_service
 import inbound_receipt_service
@@ -158,6 +159,16 @@ async def configure_default_executor():
     loop = asyncio.get_running_loop()
     loop.set_default_executor(ThreadPoolExecutor(max_workers=128))
 
+
+@app.on_event("shutdown")
+async def close_playwright_browsers():
+    """Explicitly close any headless Chromium instance still open from an
+    in-flight Playwright PGR/Goods-Issue job (testing_agent iteration_133:
+    a hot-reload with 3 jobs running left 18 orphaned chrome processes
+    that had to be pkill-ed manually)."""
+    await playwright_concurrency.close_all_browsers()
+
+
 mongo_client = MongoClient(os.environ['MONGO_URL'], tz_aware=True)
 db = mongo_client[os.environ['DB_NAME']]
 job_store.ensure_indexes(db)
@@ -170,7 +181,17 @@ _recovered_jobs = job_store.recover_orphaned_jobs(
     db, "Interrupted by a backend restart/deploy while this step was running - please retry this action."
 )
 if _recovered_jobs:
-    logger.warning(f"Startup: recovered {_recovered_jobs} orphaned background job(s) stuck in an in-process-only status from before this restart.")
+    logger.warning(f"Startup: recovered {len(_recovered_jobs)} orphaned background job(s) stuck in an in-process-only status from before this restart.")
+    for _job in _recovered_jobs:
+        if _job.get("kind") == "inbound_receipt" and _job.get("sto_id"):
+            # Mirrors the run() exception path in post_inbound_receipt below -
+            # without this, an interrupted batch job leaves its STO row
+            # showing plain "Pending Receipt" with no hint anything ran
+            # (testing_agent iteration_133 finding).
+            db[stock_transfer_service.STO_COLLECTION].update_one(
+                {"_id": _job["sto_id"]},
+                {"$set": {"receipt_error": "Interrupted by a backend restart/deploy while this order's receipt was running - please retry."}},
+            )
 
 _recovered_issues = store_approval_service.recover_orphaned_issues(
     db, "Reverted to pending after a backend restart interrupted the stock issue before any SAP movement fired."
@@ -5500,21 +5521,36 @@ async def post_inbound_receipt(sto_id: str, payload: InboundReceiptRequest, requ
             raise HTTPException(status_code=400, detail=f"Received Qty for line {it.line_no} must be between 0 and the shipped quantity ({sto_line['requested_qty']}).")
 
     job_id = str(uuid.uuid4())
-    await asyncio.to_thread(job_store.create_job, db, job_id, {"sto_id": sto_id, "kind": "inbound_receipt", "status": "running", "progress": "Starting...", "result": None, "error": None})
+    total_deliveries = len(doc.get("outbound_delivery_ids") or []) or 1
+    await asyncio.to_thread(job_store.create_job, db, job_id, {
+        "sto_id": sto_id, "kind": "inbound_receipt", "status": "running", "phase": "queued",
+        "progress_current": 0, "progress_total": total_deliveries, "result": None, "error": None,
+    })
     line_overrides = await asyncio.to_thread(inbound_receipt_service.build_line_overrides, doc, overrides)
 
     async def run():
+        first_processing_seen = False
+        def on_progress(phase: str, current: int, total: int):
+            nonlocal first_processing_seen
+            update = {"phase": phase, "progress_current": current, "progress_total": total}
+            if phase == "processing" and not first_processing_seen:
+                # Set once, on the very first "processing" signal - backs a
+                # real ticking countdown on the frontend (elapsed-time based,
+                # not just a static "X of Y" snapshot between polls).
+                first_processing_seen = True
+                update["processing_started_at"] = datetime.now(timezone.utc).isoformat()
+            asyncio.create_task(asyncio.to_thread(job_store.update_job, db, job_id, update))
         try:
             pgr_result = await sap_playwright_pgr_service.post_goods_receipts_via_ui(
                 os.environ["SAP_USERNAME"], os.environ["SAP_PASSWORD"], doc.get("outbound_delivery_ids") or [],
-                line_overrides=line_overrides,
-                progress_cb=lambda step: asyncio.create_task(asyncio.to_thread(job_store.update_job, db, job_id, {"progress": step})),
+                line_overrides=line_overrides, progress_cb=on_progress,
             )
             final = await asyncio.to_thread(inbound_receipt_service.finalize_receipt, db, sto_id, pgr_result["results"], actor, bool(line_overrides))
-            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "result": final, "error": None})
+            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
         except Exception as e:
             logger.error(f"Inbound receipt job {job_id} ({sto_id}) failed: {e}")
-            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "result": None, "error": str(e)})
+            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": str(e)})
+            await asyncio.to_thread(db[stock_transfer_service.STO_COLLECTION].update_one, {"_id": sto_id}, {"$set": {"receipt_error": str(e)}})
 
     asyncio.create_task(run())
     return {"job_id": job_id}

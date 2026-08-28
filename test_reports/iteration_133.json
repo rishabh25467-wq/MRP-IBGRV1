@@ -1,0 +1,53 @@
+{
+  "summary": "Iteration 133 - tested the 3 new features: (1) Batch Inbound Receiving with per-row job badges, (2) Playwright concurrency cap of 3 (queued/processing phases), (3) per-line Ship Status column in the Stock Transfer detail modal. Backend: 17 pytest tests passed / 2 skipped (no STO carries gi_line_status yet - every existing order predates the field), 0 failed. Frontend: bulk select/select-all/clear/count, non-blocking confirm dialog (closed in 1.1s), Queued->Processing->Done badge lifecycle, disabled checkbox+Receive for running rows, generic wording in badges/tooltips, and the new Ship Status column all verified live. Concurrency cap PROVEN live: batch of 4 real orders -> exactly 3 badges showed 'Processing' and the 4th stayed 'Queued' (confirmed in both UI and background_jobs docs: 3x phase='processing', 1x phase='queued'). One real end-to-end SAP Goods Receipt completed (STO-000068: job status=done, phase=done, progress 1/1, result.status='received', order removed from /pending, receipt_status='received' persisted).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "job_store.recover_orphaned_jobs (startup)", "issue": "Orphaned inbound_receipt jobs are correctly marked failed with a generic 'Interrupted by a backend restart/deploy - please retry' message, but the message is NOT persisted onto the STO doc's receipt_error (unlike the run() exception path in server.py:5524). After the user refreshes, those rows (STO-000065/66/67 right now) show plain 'Pending Receipt' with no hint that their batch was interrupted."},
+      {"endpoint": "sap_playwright_pgr_service / outbound_gi_service", "issue": "Headless Chromium child processes are NOT reaped when the app shuts down/reloads: after a hot-reload with 3 jobs in flight, 18 chrome processes stayed alive and had to be pkill-ed manually (memory leak risk in the 3-slot container)."},
+      {"endpoint": "POST /api/inbound-receipts/{sto_id}/receive", "issue": "progress_current is only incremented per delivery note, so a single-delivery order sits at 0/1 for the whole 40-90s run and the ETA text never counts down ('est. 2 min remaining' the entire time). Also 65s -> Math.ceil(65/60) renders as '2 min' which overstates a ~1 min job."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "InboundReceiptsPage - job badge cell", "issue": "HIGH VISUAL BUG: the 'Processing - est. 2 min remaining' badge has no whitespace-nowrap and the Status column has no min-width, so the text collapses to ~1 character per line and renders VERTICALLY, overflowing/overlapping several rows below it (clearly visible in the batch screenshot). 'Queued'/'Done' are short enough to render fine. Fix: add whitespace-nowrap to the badge div (InboundReceiptsPage.js:381) and/or a min-w on the Status TableCell.", "selector": "[data-testid^='inbound-receipt-job-badge-']", "priority": "HIGH"},
+      {"component": "StockTransferPage detail modal items table", "issue": "With the new 9th column the items table is wider than the max-w-3xl modal; the last column ('Ship Status') is clipped at the right edge until the user horizontally scrolls the inner div. Consider widening the modal (max-w-5xl) or dropping/merging a low-value column.", "selector": "[data-testid='stock-transfer-detail-items-table']", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [
+      {"flow": "Batch receiving + page refresh", "issue": "activeJobs is client-only state and is never rehydrated from the backend. After an F5 (or opening the page on another device/tab) while jobs are still running, the badges disappear entirely and the Receive button/checkbox become enabled again - the user has NO indication a job is ON, which is exactly the visibility the user asked for. (Duplicate posting is still safe: the POST correctly returns the existing running job_id - verified.) Fix: expose the active job (phase/progress/error) on GET /api/inbound-receipts/pending, or add a GET .../active-jobs the page seeds activeJobs from on mount.", "affected_selectors": ["[data-testid^='inbound-receipt-job-badge-']", "[data-testid^='inbound-receipt-receive-btn-']"]},
+      {"flow": "Backend restart while Playwright jobs run", "issue": "A hot-reload/restart while 3 receive jobs were in flight left uvicorn permanently hung (localhost:8001 and the public URL returned no response / 502 for ~10 min, whole app blank) until a manual 'supervisorctl restart backend'. Root cause: in-flight asyncio Playwright tasks + threads blocked on the threading.Semaphore prevent the graceful shutdown from completing, and the orphaned Chromium processes survive. Recommend timeout_graceful_shutdown, cancelling/awaiting the job tasks in a shutdown handler, and killing spawned browsers there.", "affected_selectors": []}
+    ],
+    "design_issues": [
+      {"screen": "Inbound STO Receipt", "issues": ["Vertical/overflowing Processing badge text (see ui_bugs)", "Page copy still says 'closes every SAP delivery line', 'SAP #', 'SAP Delivery Notif', dialog 'closed in SAP' and toast 'received in full - closed in SAP' (76 'SAP' occurrences). These are pre-existing business-level SAP references, NOT automation leakage - the new badges/tooltips/progress panel are fully generic ('Queued', 'Waiting for an available processing slot', 'Processing - est. Xs remaining'). Flagging only so the user can confirm the business-level 'SAP' wording is intentional."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_batch_receive_iter133.py",
+    "/app/test_reports/pytest/iter133.xml"
+  ],
+  "action_items": [
+    "Add whitespace-nowrap / column min-width to the inbound receipt job badge so 'Processing - est. X remaining' stops rendering vertically over other rows (HIGH)",
+    "Rehydrate activeJobs from the backend on page mount (expose active job phase/progress on /api/inbound-receipts/pending) so badges survive a refresh",
+    "Persist the orphan-recovery message onto the STO doc's receipt_error in job_store.recover_orphaned_jobs so interrupted rows explain themselves after a refresh",
+    "Kill/await spawned Chromium browsers on app shutdown and add timeout_graceful_shutdown so a restart during a receive doesn't hang the backend and leak chrome processes",
+    "Widen the Stock Transfer detail modal (max-w-5xl) so the new Ship Status column isn't clipped",
+    "Increment progress_current per SAP step (not only per delivery) so the ETA actually counts down on single-delivery orders"
+  ],
+  "critical_code_review_comments": [
+    "playwright_concurrency: queued jobs block a default-executor thread via `await asyncio.to_thread(semaphore.acquire)`. The default loop executor has only ~20 threads (16 CPUs) while the UI happily lets a user 'Select all' 34 pending STOs - 30+ jobs parked in acquire() would exhaust the executor and stall every other asyncio.to_thread DB/SAP call app-wide. Recommend a dedicated small ThreadPoolExecutor for the semaphore wait, or an app-level asyncio queue of pending jobs instead of parking threads.",
+    "StockTransferPage lineShipStatus() matches gi_line_status by product_id only, ignoring line_no. An STO with the same product on two lines will show line 1's status on both rows, and both rows get the SAME data-testid (stock-transfer-detail-ship-status-<product_id>). Match on line_no first, fall back to product_id.",
+    "server.py:5523 - the failure path sets status='failed' but never sets phase, leaving phase='processing' on a failed job doc (UI happens to check status first, so cosmetic only, but the doc is inconsistent).",
+    "InboundReceiptsPage.js is 544 lines with the poller, badge helpers and 2 dialogs inline; consider extracting the job poller into a hook (useReceiveJobs) before it grows further."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_batch_receive_iter133.py (new)",
+    "/app/test_reports/pytest/iter133.xml (new)"
+  ],
+  "success_rate": {"backend": "100% (17 passed / 2 skipped / 0 failed)", "frontend": "90% - all new batch/badge/ship-status mechanics work; badge text overflow + no badge rehydration after refresh are the two defects"},
+  "seed_data_creation": "None fabricated. Used the 34 real pending inbound STOs already in the tenant. Real SAP writes made: batch of 4 (STO-000068/67/66/65) started - only STO-000068 fully completed a real Goods Receipt (now receipt_status='received'); the other 3 were interrupted by a backend hot-reload and are back to 'Pending Receipt' with failed job docs. Their SAP-side state was NOT re-verified - the main agent/user should confirm STO-000065/66/67 in SAP before retrying them (a partially-posted receipt is possible).",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "vms_session=d03966d2f366b13718f5cb3c914ac03b930792998e786be6 (inbound.tester@radishtechnologies.com, allowed_pages=['stock_transfer']) - works for BOTH /inventory/inbound-receipts (anyUser route) and /inventory/inter-plant-transfer.",
+  "context_for_next_testing_agent": "Correct routes are /inventory/inbound-receipts and /inventory/inter-plant-transfer (NOT /inbound-receipts - that hits the 'No Pages Granted Yet' fallback). NEVER create/edit files under /app/backend/** while a Playwright job is running: WatchFiles reloads uvicorn, which HANGS the backend with in-flight browser jobs (had to pkill chrome + supervisorctl restart backend). Put probe scripts in /tmp. Verified this iteration: concurrency cap of 3 (live), Queued->Processing->Done badges, non-blocking dialog, duplicate-POST dedup returning the same job_id, over-shipment/zero-qty 400s, orphan-job recovery on startup, Ship Status column fallback ('Shipped' for legacy gi_status='posted' orders). NOT verified: a freshly-posted STO actually writing the gi_line_status array (no order transitioned during testing - all 59 existing orders have gi_line_status=None); _build_line_status is unit-tested instead. Run: pytest /app/backend/tests/test_batch_receive_iter133.py",
+  "rca_of_the_issue": "Badge overflow: the badge container (InboundReceiptsPage.js:381) uses flex without whitespace-nowrap inside an auto-width table cell, so the long 'Processing - est. 2 min remaining' string wraps at ~1 char per line and paints over adjacent rows. Backend hang: uvicorn's file-watch reload fired while 3 asyncio Playwright tasks held browsers and a 4th thread was blocked in threading.Semaphore.acquire(); the old worker never finished shutting down, the new one never bound to 8001, so every request returned 502 for ~10 minutes and the 18 Chromium processes were left orphaned. Startup recovery (job_store.recover_orphaned_jobs) then correctly marked the 4 jobs failed with a user-safe message."
+}

@@ -588,7 +588,37 @@ def _release_ready_deliveries(db, sap_outbound_delivery_client, sto_id: str, doc
     return covered, delivery_ids
 
 
-def _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_inventory_client, sto_id: str, doc: dict, pending: list, lines_by_product: dict, object_ids: list, existing_delivery_ids: list) -> str:
+def _build_line_status(doc: dict, delivery_items: list, insufficient_products: dict = None, failed_products: dict = None, force_shipped: set = None) -> list:
+    """Per-line shipping status (Aug 2026, user's explicit ask) - backs
+    ONLY the STO detail view's expanded items table; the list view's
+    own header badge deliberately stays a single combined status per
+    the user's own call ("one combined header is better on the transfer
+    screen, click to see detail"). SAP's own item-level
+    OrderFulfilmentProcessingStatusCode ("3"=Finished) is the only real
+    per-line signal that exists for the multi-line/Playwright-combined
+    path - every line in that path shares one Goods Issue outcome, so
+    `force_shipped`/`failed_products` let the caller stamp every line in
+    that shared batch with the one outcome it actually got."""
+    insufficient_products = insufficient_products or {}
+    failed_products = failed_products or {}
+    force_shipped = force_shipped or set()
+    shipped_products = force_shipped | {d["product_id"] for d in delivery_items if d.get("product_id") and d.get("order_fulfilment_status") == "3"}
+    result = []
+    for it in (doc.get("items") or []):
+        pid = it["product_id"]
+        if pid in failed_products:
+            status, note = "failed", failed_products[pid]
+        elif pid in insufficient_products:
+            status, note = "insufficient_stock", insufficient_products[pid]
+        elif pid in shipped_products:
+            status, note = "shipped", None
+        else:
+            status, note = "pending", None
+        result.append({"line_no": it.get("line_no"), "product_id": pid, "status": status, "note": note})
+    return result
+
+
+def _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_inventory_client, sto_id: str, doc: dict, pending: list, lines_by_product: dict, object_ids: list, existing_delivery_ids: list, delivery_items: list) -> str:
     """Multi-line path (Aug 28 2026) - see try_post_goods_issue's own
     docstring for why this can't use the per-line API loop. Same
     per-line live-stock pre-check as the single-line path (own copy,
@@ -596,6 +626,7 @@ def _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_invent
     order to sap_playwright_outbound_gi_service in ONE call covering
     every line at once."""
     insufficient_notes = []
+    insufficient_products = {}
     for d in pending:
         candidates = lines_by_product.get(d.get("product_id")) or []
         line = candidates.pop(0) if candidates else None
@@ -603,10 +634,9 @@ def _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_invent
             continue
         available_qty = _live_source_stock_qty(sap_inventory_client, doc["ship_from_site_id"], line.get("source_warehouse_id"), d.get("product_id"))
         if available_qty < (line.get("requested_qty") or 0):
-            insufficient_notes.append(
-                f"{d.get('product_id')} in {line.get('source_warehouse_id')} - needed {line.get('requested_qty'):g}, "
-                f"currently available {available_qty:g}"
-            )
+            note = f"needed {line.get('requested_qty'):g} in {line.get('source_warehouse_id')}, currently available {available_qty:g}"
+            insufficient_notes.append(f"{d.get('product_id')} - {note}")
+            insufficient_products[d.get("product_id")] = note
     if insufficient_notes:
         db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
             "gi_status": "insufficient_stock",
@@ -615,6 +645,7 @@ def _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_invent
             "outbound_delivery_object_id": object_ids[0] if object_ids else None,
             "outbound_delivery_object_ids": object_ids,
             "outbound_delivery_ids": existing_delivery_ids,
+            "gi_line_status": _build_line_status(doc, delivery_items, insufficient_products=insufficient_products),
         }})
         return "waiting"
 
@@ -645,11 +676,17 @@ def _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_invent
     if ui_result["status"] == "waiting":
         return "waiting"
     if ui_result["status"] == "failed":
+        # All-or-nothing for this shared batch - a single Playwright
+        # combine+Release call covers every `pending` line at once, so
+        # every one of them shares this same failure (see
+        # _build_line_status's own docstring).
+        failed_products = {d.get("product_id"): ui_result["error"] for d in pending}
         db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
             "gi_status": "failed", "gi_error": ui_result["error"], "gi_job_running": False,
             "outbound_delivery_object_id": object_ids[0] if object_ids else None,
             "outbound_delivery_object_ids": object_ids,
             "outbound_delivery_ids": existing_delivery_ids,
+            "gi_line_status": _build_line_status(doc, delivery_items, failed_products=failed_products),
         }})
         raise SAPOutboundDeliveryError(ui_result["error"])
 
@@ -667,6 +704,7 @@ def _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_invent
         "outbound_delivery_object_id": object_ids[0] if object_ids else None,
         "outbound_delivery_object_ids": object_ids,
         "outbound_delivery_ids": delivery_ids,
+        "gi_line_status": _build_line_status(doc, delivery_items, force_shipped={d.get("product_id") for d in pending}),
     }})
     return "posted"
 
@@ -783,6 +821,7 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client,
             "outbound_delivery_object_id": object_ids[0] if object_ids else None,
             "outbound_delivery_object_ids": object_ids,
             "outbound_delivery_ids": delivery_ids,
+            "gi_line_status": _build_line_status(doc, delivery_items),
         }})
         return "posted"
 
@@ -803,10 +842,12 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client,
     # per-line loop; a single-line order has nothing to combine, so it
     # keeps using the fast, already-working API path unchanged.
     if len(doc.get("items") or []) > 1:
-        return _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_inventory_client, sto_id, doc, pending, lines_by_product, object_ids, existing_delivery_ids)
+        return _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_inventory_client, sto_id, doc, pending, lines_by_product, object_ids, existing_delivery_ids, delivery_items)
 
     insufficient_notes = []
+    insufficient_products = {}
     failed_notes = []
+    failed_products = {}
     newly_posted_item_uuids = []
     for d in pending:
         candidates = lines_by_product.get(d.get("product_id")) or []
@@ -820,10 +861,9 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client,
         if line:
             available_qty = _live_source_stock_qty(sap_inventory_client, doc["ship_from_site_id"], line.get("source_warehouse_id"), d.get("product_id"))
             if available_qty < (line.get("requested_qty") or 0):
-                insufficient_notes.append(
-                    f"{d.get('product_id')} in {line.get('source_warehouse_id')} - needed {line.get('requested_qty'):g}, "
-                    f"currently available {available_qty:g}"
-                )
+                note = f"needed {line.get('requested_qty'):g} in {line.get('source_warehouse_id')}, currently available {available_qty:g}"
+                insufficient_notes.append(f"{d.get('product_id')} - {note}")
+                insufficient_products[d.get("product_id")] = note
                 continue
         try:
             sap_outbound_delivery_client.post_goods_issue(d["object_id"], auto_release=False)
@@ -837,6 +877,7 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client,
             # triggered by a SAP-side rejection instead of the old
             # first-row-only lookup. Keep trying every other line.
             failed_notes.append(f"{d.get('product_id')}: {e}")
+            failed_products[d.get("product_id")] = str(e)
             continue
 
     delivery_ids = existing_delivery_ids
@@ -862,6 +903,7 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client,
             "outbound_delivery_object_id": object_ids[0] if object_ids else None,
             "outbound_delivery_object_ids": object_ids,
             "outbound_delivery_ids": delivery_ids,
+            "gi_line_status": _build_line_status(doc, delivery_items, insufficient_products=insufficient_products, failed_products=failed_products, force_shipped={d.get("product_id") for d in pending if d.get("uuid") in newly_posted_item_uuids}),
         }})
         if failed_notes:
             raise SAPOutboundDeliveryError(" | ".join(parts))
@@ -876,6 +918,7 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client,
         "outbound_delivery_object_id": object_ids[0] if object_ids else None,
         "outbound_delivery_object_ids": object_ids,
         "outbound_delivery_ids": delivery_ids,
+        "gi_line_status": _build_line_status(doc, delivery_items, force_shipped={d.get("product_id") for d in pending}),
     }})
     return "posted"
 

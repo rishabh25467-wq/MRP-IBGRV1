@@ -29,6 +29,27 @@ const API = `${BACKEND_URL}/api`;
 const formatQty = (v) => (v == null ? "—" : Number(v).toLocaleString("en-IN", { maximumFractionDigits: 3 }));
 const formatSapId = (id) => (id ? id.replace(/^0+(?=\d)/, "") : id);
 const cleanSapMessage = (msg) => (msg ? msg.replace(/\s{2,}/g, " ").trim() : msg);
+
+// Per-line Ship Status (Aug 2026, user's explicit ask - header badge on
+// the list view intentionally stays one combined status, this only backs
+// the detail modal's "click to see detail" items table).
+const SHIP_STATUS_STYLE = {
+  shipped: { label: "Shipped", cls: "bg-[#ECFDF3] text-[#027A48]" },
+  failed: { label: "Failed", cls: "bg-[#FEE4E2] text-[#B42318]" },
+  insufficient_stock: { label: "Insufficient Stock", cls: "bg-[#FEF0C7] text-[#93370D]" },
+  pending: { label: "Pending", cls: "bg-[#F2F4F7] text-[#475467]" },
+};
+const lineShipStatus = (order, item) => {
+  const list = order.gi_line_status || [];
+  const found = list.find((l) => l.line_no != null && l.line_no === item.line_no) || list.find((l) => l.product_id === item.product_id);
+  if (found) return found;
+  // Older orders posted before gi_line_status existed - fall back to
+  // the order's own combined status rather than showing nothing.
+  if (order.gi_status === "posted") return { status: "shipped", note: null };
+  if (order.gi_status === "failed") return { status: "failed", note: null };
+  if (order.gi_status === "insufficient_stock") return { status: "insufficient_stock", note: null };
+  return { status: "pending", note: null };
+};
 const parseGiError = (raw) => {
   if (!raw) return null;
   const jsonMatch = raw.match(/\{.*\}/s);
@@ -1165,7 +1186,7 @@ export default function StockTransferPage() {
           error_message is surfaced here verbatim, human-readable, never a
           raw stack trace. */}
       <Dialog open={!!selectedOrder} onOpenChange={(open) => !open && setSelectedOrder(null)}>
-        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto" data-testid="stock-transfer-detail-modal">
+        <DialogContent className="max-w-5xl max-h-[85vh] overflow-y-auto" data-testid="stock-transfer-detail-modal">
           {selectedOrder && (
             <>
               <DialogHeader>
@@ -1322,13 +1343,16 @@ export default function StockTransferPage() {
                 <table className="w-full text-xs border-collapse" data-testid="stock-transfer-detail-items-table">
                   <thead>
                     <tr>
-                      {["Line", "Product", "Description", "HSN Code", "Source Warehouse", "Available Qty", "Requested Qty", "Stock Status"].map((h) => (
+                      {["Line", "Product", "Description", "HSN Code", "Source Warehouse", "Available Qty", "Requested Qty", "Stock Status", "Ship Status"].map((h) => (
                         <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-[11px] font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {(selectedOrder.items || []).map((it, idx) => (
+                    {(selectedOrder.items || []).map((it, idx) => {
+                      const ship = lineShipStatus(selectedOrder, it);
+                      const shipStyle = SHIP_STATUS_STYLE[ship.status] || SHIP_STATUS_STYLE.pending;
+                      return (
                       <tr key={it.line_no ?? idx} data-testid={`stock-transfer-detail-item-${it.product_id}`}>
                         <td className="border border-[#D0D5DD] px-2 py-1.5">{it.line_no}</td>
                         <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium">{it.product_id}</td>
@@ -1338,8 +1362,18 @@ export default function StockTransferPage() {
                         <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(it.available_qty)} {it.unit_of_measure}</td>
                         <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(it.requested_qty)} {it.unit_of_measure}</td>
                         <td className="border border-[#D0D5DD] px-2 py-1.5">{it.availability_status}</td>
+                        <td className="border border-[#D0D5DD] px-2 py-1.5">
+                          <span
+                            className={`text-[11px] font-medium px-1.5 py-0.5 rounded-full ${shipStyle.cls}`}
+                            title={ship.note || ""}
+                            data-testid={`stock-transfer-detail-ship-status-${it.line_no ?? idx}`}
+                          >
+                            {shipStyle.label}
+                          </span>
+                        </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

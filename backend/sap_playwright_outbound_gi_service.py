@@ -206,101 +206,108 @@ async def combine_and_post_goods_issue_via_ui(username: str, password: str, sap_
     live), or {"status": "failed", "error": "..."} on a real SAP-side
     rejection."""
     from playwright.async_api import async_playwright
+    import playwright_concurrency
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        try:
-            page = await browser.new_page(viewport={"width": 1600, "height": 900})
-            await _login(page, username, password)
-            await _open_work_center_item(page, "Outbound Logistics", "Delivery Proposals")
-            row_count = await _filter_by_reference(page, "Reference ID", sap_order_id)
-            if row_count == 0:
-                return {"status": "waiting"}
-
-            rows = await page.query_selector_all('tr[id^="__table"]')
-            await rows[0].click(force=True)
-            await page.wait_for_timeout(500)
-            for row in rows[1:]:
-                await page.keyboard.down("Control")
-                await row.click(force=True)
-                await page.keyboard.up("Control")
-                await page.wait_for_timeout(300)
-
-            create_click = await _click_button(page, "Create Outbound Delivery")
-            if create_click == "disabled":
-                return {"status": "failed", "error": "'Create Outbound Delivery' is disabled for this order in SAP - needs manual SAP review"}
-            if create_click == "not_found":
-                return {"status": "failed", "error": "'Create Outbound Delivery' button not found on the Delivery Proposals screen"}
-            await page.wait_for_timeout(2000)
-            without_release = page.locator("text=Without Release").first
-            if await without_release.count() == 0:
-                await _save_debug_screenshot(page, sap_order_id)
-                return {"status": "failed", "error": "'Without Release' option not found after clicking 'Create Outbound Delivery'"}
-            await without_release.click(force=True)
-            await page.wait_for_timeout(15000)
-
-            delivery_ids = []
-            for _ in range(4):
-                try:
-                    objects = sap_outbound_delivery_client.find_outbound_delivery_objects(item_uuids)
-                except Exception as e:
-                    logger.warning(f"Order {sap_order_id}: delivery ID lookup after 'Create Outbound Delivery' failed, retrying: {e}")
-                    objects = []
-                found_uuids = {o.get("item_uuid") for o in objects if o.get("item_uuid")}
-                if set(item_uuids).issubset(found_uuids):
-                    delivery_ids = sorted({o["id"] for o in objects if o.get("id")})
-                    break
-                await page.wait_for_timeout(8000)
-            if not delivery_ids:
-                await _save_debug_screenshot(page, sap_order_id)
-                return {"status": "failed", "error": "Outbound Delivery was created but its ID could not be found via SAP OData afterward - will retry"}
-            if len(delivery_ids) != 1:
-                logger.warning(f"Order {sap_order_id}: expected 1 combined delivery, SAP OData shows {len(delivery_ids)}: {delivery_ids}")
-
+    await playwright_concurrency.acquire()
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            playwright_concurrency.register_browser(browser)
             try:
-                await _open_work_center_item(page, "Outbound Logistics", "Outbound Deliveries")
-                dcount = await _filter_by_reference(page, "Delivery ID", delivery_ids[0])
-                if dcount >= 1:
-                    link = None
-                    for l in await page.locator("a.sapMLnk, span.sapMLnk").all():
-                        if await l.is_visible() and delivery_ids[0] in (await l.inner_text()):
-                            link = l
-                            break
-                    if link:
-                        await link.click(force=True)
-                        await page.wait_for_timeout(6000)
-                        await _fill_delivery_metadata(page, metadata)
-            except Exception as e:
-                # Metadata is best-effort - a failure here must not block
-                # Goods Issue itself (see module/function docstring).
-                logger.warning(f"Order {sap_order_id}: filling delivery metadata failed, proceeding to Release anyway: {e}")
+                page = await browser.new_page(viewport={"width": 1600, "height": 900})
+                await _login(page, username, password)
+                await _open_work_center_item(page, "Outbound Logistics", "Delivery Proposals")
+                row_count = await _filter_by_reference(page, "Reference ID", sap_order_id)
+                if row_count == 0:
+                    return {"status": "waiting"}
 
-            release_click = await _click_button(page, "Release")
-            if release_click == "not_found":
-                for b in await page.query_selector_all(".sapMBtnBase"):
-                    if await b.is_visible() and (await b.inner_text()).strip() == "Edit":
-                        await b.click(force=True)
-                        await page.wait_for_timeout(4000)
-                        release_click = await _click_button(page, "Release")
+                rows = await page.query_selector_all('tr[id^="__table"]')
+                await rows[0].click(force=True)
+                await page.wait_for_timeout(500)
+                for row in rows[1:]:
+                    await page.keyboard.down("Control")
+                    await row.click(force=True)
+                    await page.keyboard.up("Control")
+                    await page.wait_for_timeout(300)
+
+                create_click = await _click_button(page, "Create Outbound Delivery")
+                if create_click == "disabled":
+                    return {"status": "failed", "error": "'Create Outbound Delivery' is disabled for this order in SAP - needs manual SAP review"}
+                if create_click == "not_found":
+                    return {"status": "failed", "error": "'Create Outbound Delivery' button not found on the Delivery Proposals screen"}
+                await page.wait_for_timeout(2000)
+                without_release = page.locator("text=Without Release").first
+                if await without_release.count() == 0:
+                    await _save_debug_screenshot(page, sap_order_id)
+                    return {"status": "failed", "error": "'Without Release' option not found after clicking 'Create Outbound Delivery'"}
+                await without_release.click(force=True)
+                await page.wait_for_timeout(15000)
+
+                delivery_ids = []
+                for _ in range(4):
+                    try:
+                        objects = sap_outbound_delivery_client.find_outbound_delivery_objects(item_uuids)
+                    except Exception as e:
+                        logger.warning(f"Order {sap_order_id}: delivery ID lookup after 'Create Outbound Delivery' failed, retrying: {e}")
+                        objects = []
+                    found_uuids = {o.get("item_uuid") for o in objects if o.get("item_uuid")}
+                    if set(item_uuids).issubset(found_uuids):
+                        delivery_ids = sorted({o["id"] for o in objects if o.get("id")})
                         break
-            if release_click == "disabled":
-                # A disabled Release button means SAP's own Consistency
-                # Status check failed (e.g. a bad field value) - this is
-                # an unrecoverable SAP-side rejection, not a transient
-                # timing issue, so it must not be retried for the full
-                # 20-min poll window.
-                await _save_debug_screenshot(page, sap_order_id)
-                return {"status": "failed", "error": f"Delivery {delivery_ids[0]}'s 'Release' button is disabled - SAP Consistency Status check failed, needs manual SAP review"}
-            await page.wait_for_timeout(15000)
+                    await page.wait_for_timeout(8000)
+                if not delivery_ids:
+                    await _save_debug_screenshot(page, sap_order_id)
+                    return {"status": "failed", "error": "Outbound Delivery was created but its ID could not be found via SAP OData afterward - will retry"}
+                if len(delivery_ids) != 1:
+                    logger.warning(f"Order {sap_order_id}: expected 1 combined delivery, SAP OData shows {len(delivery_ids)}: {delivery_ids}")
 
-            error_text = await _extract_error_text(page)
-            release_status = page.locator("text=Released").first
-            if await release_status.count() > 0:
-                return {"status": "posted", "delivery_ids": delivery_ids}
-            if error_text:
+                try:
+                    await _open_work_center_item(page, "Outbound Logistics", "Outbound Deliveries")
+                    dcount = await _filter_by_reference(page, "Delivery ID", delivery_ids[0])
+                    if dcount >= 1:
+                        link = None
+                        for l in await page.locator("a.sapMLnk, span.sapMLnk").all():
+                            if await l.is_visible() and delivery_ids[0] in (await l.inner_text()):
+                                link = l
+                                break
+                        if link:
+                            await link.click(force=True)
+                            await page.wait_for_timeout(6000)
+                            await _fill_delivery_metadata(page, metadata)
+                except Exception as e:
+                    # Metadata is best-effort - a failure here must not block
+                    # Goods Issue itself (see module/function docstring).
+                    logger.warning(f"Order {sap_order_id}: filling delivery metadata failed, proceeding to Release anyway: {e}")
+
+                release_click = await _click_button(page, "Release")
+                if release_click == "not_found":
+                    for b in await page.query_selector_all(".sapMBtnBase"):
+                        if await b.is_visible() and (await b.inner_text()).strip() == "Edit":
+                            await b.click(force=True)
+                            await page.wait_for_timeout(4000)
+                            release_click = await _click_button(page, "Release")
+                            break
+                if release_click == "disabled":
+                    # A disabled Release button means SAP's own Consistency
+                    # Status check failed (e.g. a bad field value) - this is
+                    # an unrecoverable SAP-side rejection, not a transient
+                    # timing issue, so it must not be retried for the full
+                    # 20-min poll window.
+                    await _save_debug_screenshot(page, sap_order_id)
+                    return {"status": "failed", "error": f"Delivery {delivery_ids[0]}'s 'Release' button is disabled - SAP Consistency Status check failed, needs manual SAP review"}
+                await page.wait_for_timeout(15000)
+
+                error_text = await _extract_error_text(page)
+                release_status = page.locator("text=Released").first
+                if await release_status.count() > 0:
+                    return {"status": "posted", "delivery_ids": delivery_ids}
+                if error_text:
+                    await _save_debug_screenshot(page, sap_order_id)
+                    return {"status": "failed", "error": _humanize_error(error_text)}
                 await _save_debug_screenshot(page, sap_order_id)
-                return {"status": "failed", "error": _humanize_error(error_text)}
-            await _save_debug_screenshot(page, sap_order_id)
-            return {"status": "failed", "error": f"Delivery {delivery_ids[0]} was created but could not be confirmed Released - will retry"}
-        finally:
-            await browser.close()
+                return {"status": "failed", "error": f"Delivery {delivery_ids[0]} was created but could not be confirmed Released - will retry"}
+            finally:
+                await browser.close()
+                playwright_concurrency.unregister_browser(browser)
+    finally:
+        playwright_concurrency.release()

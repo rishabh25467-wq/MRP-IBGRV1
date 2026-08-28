@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback, Fragment } from "react";
+import { useState, useEffect, useCallback, useRef, Fragment } from "react";
 import "@/App.css";
 import axios from "axios";
-import { Truck, Shield, CircleNotch, CaretDown, CaretUp, CheckCircle, ArrowRight } from "@phosphor-icons/react";
+import { Truck, Shield, CircleNotch, CaretDown, CaretUp, CheckCircle, ArrowRight, WarningCircle, Clock } from "@phosphor-icons/react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
@@ -15,6 +16,12 @@ import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
+// Rough average time SAP's own receipt screen takes per delivery
+// (documented range 40-90s) - purely to render a reassuring, generic
+// countdown; never shown to the user as anything more specific than
+// "processing" - no SAP/browser wording ever reaches this page, by design.
+const AVG_SECONDS_PER_DELIVERY = 65;
+
 const formatQty = (v) => (v == null ? "—" : Number(v).toLocaleString("en-IN", { maximumFractionDigits: 3 }));
 const formatDate = (iso) => (iso ? new Date(iso).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—");
 
@@ -24,10 +31,47 @@ const STATUS_STYLE = {
   failed: { label: "Receipt Failed", cls: "bg-[#FEE4E2] text-[#B42318]" },
 };
 
+const etaText = (job, nowMs) => {
+  const total = job?.progress_total || 1;
+  const totalEstimateSeconds = total * AVG_SECONDS_PER_DELIVERY;
+  let remaining;
+  if (job?.processing_started_at) {
+    const elapsed = (nowMs - new Date(job.processing_started_at).getTime()) / 1000;
+    remaining = Math.max(0, Math.round(totalEstimateSeconds - elapsed));
+  } else {
+    remaining = Math.max(0, (total - (job?.progress_current || 0)) * AVG_SECONDS_PER_DELIVERY);
+  }
+  if (remaining <= 0) return "finishing up…";
+  if (remaining < 60) return `est. ${remaining}s remaining`;
+  return `est. ${Math.ceil(remaining / 60)} min remaining`;
+};
+
+const jobBadge = (job, nowMs) => {
+  if (!job) return null;
+  // A job can finish executing cleanly (status="done") yet the receipt
+  // itself was rejected/partially rejected by SAP (result.status !=
+  // "received") - the badge must reflect the receipt outcome, not just
+  // whether the background job crashed (testing_agent iteration_134).
+  const receiptFailed = job.status === "failed" || (job.status === "done" && job.result && job.result.status !== "received");
+  if (receiptFailed) {
+    return { icon: WarningCircle, cls: "text-[#B42318]", iconCls: "", label: "Failed", detail: job.error || job.result?.error };
+  }
+  if (job.status === "done") {
+    return { icon: CheckCircle, cls: "text-[#027A48]", iconCls: "", label: "Done", detail: null };
+  }
+  if (job.phase === "queued") {
+    return { icon: Clock, cls: "text-[#92400E]", iconCls: "", label: "Queued", detail: "Waiting for an available processing slot" };
+  }
+  return { icon: CircleNotch, cls: "text-[#0B6B74]", iconCls: "animate-spin", label: "Processing", detail: etaText(job, nowMs) };
+};
+
 // Inbound STO Receipt (Aug 28 2026) - lets any logged-in user receive a
 // multi-line STO in one click instead of the SAP UI showing one row per
 // line. See server.py's /api/inbound-receipts/* and
 // inbound_receipt_service.py for the backend logic this drives.
+// Batch receiving + per-row job badges + reverse-counter progress added
+// Aug 2026 (user's explicit ask) - wording never reveals SAP/browser
+// automation is happening underneath.
 export default function InboundReceiptsPage() {
   const { user } = useAuth();
   const [sites, setSites] = useState([]);
@@ -38,7 +82,14 @@ export default function InboundReceiptsPage() {
   const [receiveTarget, setReceiveTarget] = useState(null);
   const [qtyEdits, setQtyEdits] = useState({});
   const [submitting, setSubmitting] = useState(false);
-  const [progressStep, setProgressStep] = useState(null);
+  const [progressJob, setProgressJob] = useState(null);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
+  const [bulkSubmitting, setBulkSubmitting] = useState(false);
+  const [activeJobs, setActiveJobs] = useState({}); // { sto_id: {job_id, status, phase, progress_current, progress_total, processing_started_at, error} }
+  const activeJobsRef = useRef(activeJobs);
+  activeJobsRef.current = activeJobs;
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   useEffect(() => {
     axios.get(`${API}/inbound-receipts/sites`).then(({ data }) => {
@@ -56,6 +107,19 @@ export default function InboundReceiptsPage() {
         params: siteFilter === "all" ? {} : { site_id: siteFilter },
       });
       setOrders(data.orders || []);
+      // Rehydrate any job the backend still shows as running that this
+      // tab doesn't know about yet (page refresh, or started from
+      // another tab/device) - so the badge never silently disappears
+      // while the job is genuinely still on (user's explicit ask).
+      setActiveJobs((prev) => {
+        const next = { ...prev };
+        (data.orders || []).forEach((o) => {
+          if (o.active_job?.job_id && !next[o.sto_id]) {
+            next[o.sto_id] = { job_id: o.active_job.job_id, status: "running", phase: o.active_job.phase, progress_current: o.active_job.progress_current, progress_total: o.active_job.progress_total, processing_started_at: o.active_job.processing_started_at };
+          }
+        });
+        return next;
+      });
     } catch {
       toast.error("Could not load pending receipts.");
     } finally {
@@ -64,6 +128,60 @@ export default function InboundReceiptsPage() {
   }, [siteFilter]);
 
   useEffect(() => { loadOrders(); }, [loadOrders]);
+
+  // Ticks every second while any job is actively processing, purely so
+  // the "est. Xs remaining" countdown visibly counts down instead of
+  // only updating on the 2.5s poll cadence (the "reverse counter" ask).
+  useEffect(() => {
+    const hasProcessing = submitting && progressJob?.phase === "processing";
+    const anyRowProcessing = Object.values(activeJobs).some((j) => j.status === "running" && j.phase === "processing");
+    if (!hasProcessing && !anyRowProcessing) return;
+    const tick = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(tick);
+  }, [activeJobs, submitting, progressJob]);
+
+  // Background poller for every batch/single job tracked in activeJobs -
+  // keeps running independently of any dialog being open, so closing the
+  // batch confirm dialog right after submitting never loses progress.
+  useEffect(() => {
+    const hasLive = Object.values(activeJobs).some((j) => j.status === "running");
+    if (!hasLive) return;
+    const interval = setInterval(async () => {
+      const current = activeJobsRef.current;
+      const liveEntries = Object.entries(current).filter(([, j]) => j.status === "running");
+      if (liveEntries.length === 0) return;
+      const updates = await Promise.all(liveEntries.map(async ([stoId, job]) => {
+        try {
+          const { data } = await axios.get(`${API}/inbound-receipts/receive-status/${job.job_id}`);
+          return [stoId, { ...job, status: data.status, phase: data.phase, progress_current: data.progress_current, progress_total: data.progress_total, processing_started_at: data.processing_started_at || job.processing_started_at, error: data.error, result: data.result }];
+        } catch {
+          return [stoId, job];
+        }
+      }));
+      let anyFinished = false;
+      setActiveJobs((prev) => {
+        const next = { ...prev };
+        updates.forEach(([stoId, job]) => {
+          next[stoId] = job;
+          if (job.status === "done" || job.status === "failed") anyFinished = true;
+        });
+        return next;
+      });
+      if (anyFinished) {
+        loadOrders();
+        setTimeout(() => {
+          setActiveJobs((prev) => {
+            const next = {};
+            Object.entries(prev).forEach(([stoId, job]) => {
+              if (job.status === "running") next[stoId] = job;
+            });
+            return next;
+          });
+        }, 6000);
+      }
+    }, 2500);
+    return () => clearInterval(interval);
+  }, [activeJobs, loadOrders]);
 
   const openReceive = (order) => {
     setReceiveTarget(order);
@@ -75,7 +193,7 @@ export default function InboundReceiptsPage() {
   const submitReceive = async () => {
     if (!receiveTarget) return;
     setSubmitting(true);
-    setProgressStep("Starting...");
+    setProgressJob({ phase: "queued", progress_current: 0, progress_total: 1 });
     try {
       const items = receiveTarget.items.map((it) => ({ line_no: it.line_no, received_qty: Number(qtyEdits[it.line_no] ?? it.requested_qty) }));
       const anyPartial = items.some((it) => {
@@ -102,7 +220,7 @@ export default function InboundReceiptsPage() {
       toast.error(e?.response?.data?.detail || e?.message || "Could not post the Goods Receipt.");
     } finally {
       setSubmitting(false);
-      setProgressStep(null);
+      setProgressJob(null);
     }
   };
 
@@ -110,12 +228,58 @@ export default function InboundReceiptsPage() {
     const deadline = Date.now() + 6 * 60 * 1000; // multi-line receipts take 40-90s per delivery
     while (Date.now() < deadline) {
       const { data: job } = await axios.get(`${API}/inbound-receipts/receive-status/${jobId}`);
-      if (job.progress) setProgressStep(job.progress);
+      setProgressJob(job);
       if (job.status === "done") return job.result;
       if (job.status === "failed") throw new Error(job.error || "Receipt failed");
       await new Promise((r) => setTimeout(r, 2500));
     }
     throw new Error("This is taking longer than expected — check back shortly, the receipt may still complete in the background.");
+  };
+
+  const toggleSelected = (stoId, checked) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(stoId); else next.delete(stoId);
+      return next;
+    });
+  };
+
+  const selectableOrders = orders.filter((o) => !activeJobs[o.sto_id] || activeJobs[o.sto_id].status !== "running");
+  const allSelected = selectableOrders.length > 0 && selectableOrders.every((o) => selectedIds.has(o.sto_id));
+  const toggleSelectAll = (checked) => {
+    setSelectedIds(checked ? new Set(selectableOrders.map((o) => o.sto_id)) : new Set());
+  };
+
+  const submitBulkReceive = async () => {
+    const targets = orders.filter((o) => selectedIds.has(o.sto_id));
+    setBulkSubmitting(true);
+    try {
+      const results = await Promise.all(targets.map(async (order) => {
+        const items = order.items.map((it) => ({ line_no: it.line_no, received_qty: it.requested_qty }));
+        try {
+          const { data } = await axios.post(`${API}/inbound-receipts/${order.sto_id}/receive`, { items });
+          return { stoId: order.sto_id, jobId: data.job_id, alreadyReceived: data.already_received };
+        } catch (e) {
+          return { stoId: order.sto_id, error: e?.response?.data?.detail || "Could not start" };
+        }
+      }));
+      setActiveJobs((prev) => {
+        const next = { ...prev };
+        results.forEach((r) => {
+          if (r.alreadyReceived) return;
+          next[r.stoId] = r.jobId
+            ? { job_id: r.jobId, status: "running", phase: "queued", progress_current: 0, progress_total: 1 }
+            : { status: "failed", error: r.error };
+        });
+        return next;
+      });
+      const started = results.filter((r) => r.jobId).length;
+      toast.success(`Started receiving ${started} order${started === 1 ? "" : "s"} — you can keep working, progress shows on each row.`);
+      setSelectedIds(new Set());
+    } finally {
+      setBulkSubmitting(false);
+      setBulkConfirmOpen(false);
+    }
   };
 
   return (
@@ -161,6 +325,18 @@ export default function InboundReceiptsPage() {
           </div>
         </div>
 
+        {selectedIds.size > 0 && (
+          <div className="flex items-center justify-between bg-[#F0F9FA] border border-[#B4E4E8] rounded-lg px-4 py-2.5 mb-4" data-testid="inbound-receipts-bulk-bar">
+            <span className="text-sm font-medium text-[#0B6B74]">{selectedIds.size} order{selectedIds.size === 1 ? "" : "s"} selected</span>
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" onClick={() => setSelectedIds(new Set())} data-testid="inbound-receipts-bulk-clear-btn">Clear</Button>
+              <Button size="sm" onClick={() => setBulkConfirmOpen(true)} data-testid="inbound-receipts-bulk-receive-btn">
+                Receive Selected ({selectedIds.size})
+              </Button>
+            </div>
+          </div>
+        )}
+
         {loading ? (
           <div className="flex items-center justify-center py-24 text-[#667085]" data-testid="inbound-receipts-loading">
             <CircleNotch size={24} className="animate-spin mr-2" /> Loading pending receipts…
@@ -174,12 +350,19 @@ export default function InboundReceiptsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-10">
+                    <Checkbox
+                      checked={allSelected}
+                      onCheckedChange={(v) => toggleSelectAll(!!v)}
+                      data-testid="inbound-receipt-select-all"
+                    />
+                  </TableHead>
                   <TableHead>STO</TableHead>
                   <TableHead>Route</TableHead>
                   <TableHead>Ship To</TableHead>
                   <TableHead>Shipped On</TableHead>
                   <TableHead>Lines</TableHead>
-                  <TableHead>Status</TableHead>
+                  <TableHead className="min-w-[220px]">Status</TableHead>
                   <TableHead className="text-right">Action</TableHead>
                 </TableRow>
               </TableHeader>
@@ -187,9 +370,20 @@ export default function InboundReceiptsPage() {
                 {orders.map((order) => {
                   const expanded = expandedId === order.sto_id;
                   const status = STATUS_STYLE[order.receipt_status] || STATUS_STYLE.pending;
+                  const job = activeJobs[order.sto_id];
+                  const badge = jobBadge(job, nowMs);
+                  const rowBusy = job && job.status === "running";
                   return (
                     <Fragment key={order.sto_id}>
                       <TableRow data-testid={`inbound-receipt-row-${order.sto_id}`}>
+                        <TableCell>
+                          <Checkbox
+                            checked={selectedIds.has(order.sto_id)}
+                            onCheckedChange={(v) => toggleSelected(order.sto_id, !!v)}
+                            disabled={rowBusy}
+                            data-testid={`inbound-receipt-select-${order.sto_id}`}
+                          />
+                        </TableCell>
                         <TableCell>
                           <button
                             className="flex items-center gap-1 font-semibold text-[#101828] hover:text-[#0B6B74]"
@@ -221,16 +415,22 @@ export default function InboundReceiptsPage() {
                           {order.receipt_error && (
                             <div className="text-xs text-[#B42318] mt-1 max-w-xs truncate" title={order.receipt_error}>{order.receipt_error}</div>
                           )}
+                          {badge && (
+                            <div className={`flex items-center gap-1 text-xs font-medium mt-1 whitespace-nowrap ${badge.cls}`} title={badge.detail || ""} data-testid={`inbound-receipt-job-badge-${order.sto_id}`}>
+                              <badge.icon size={13} className={`shrink-0 ${badge.iconCls}`} />
+                              <span className="truncate">{badge.label}{badge.label === "Processing" && badge.detail ? ` — ${badge.detail}` : ""}</span>
+                            </div>
+                          )}
                         </TableCell>
                         <TableCell className="text-right">
-                          <Button size="sm" onClick={() => openReceive(order)} data-testid={`inbound-receipt-receive-btn-${order.sto_id}`}>
+                          <Button size="sm" onClick={() => openReceive(order)} disabled={rowBusy} data-testid={`inbound-receipt-receive-btn-${order.sto_id}`}>
                             Receive
                           </Button>
                         </TableCell>
                       </TableRow>
                       {expanded && (
                         <TableRow key={`${order.sto_id}-detail`}>
-                          <TableCell colSpan={7} className="bg-[#F9FAFB]">
+                          <TableCell colSpan={8} className="bg-[#F9FAFB]">
                             <div className="py-2">
                               <table className="w-full text-sm">
                                 <thead>
@@ -264,6 +464,26 @@ export default function InboundReceiptsPage() {
           </div>
         )}
       </div>
+
+      <Dialog open={bulkConfirmOpen} onOpenChange={(open) => !bulkSubmitting && setBulkConfirmOpen(open)}>
+        <DialogContent className="max-w-md" data-testid="inbound-receipt-bulk-dialog">
+          <DialogHeader>
+            <DialogTitle>Receive {selectedIds.size} order{selectedIds.size === 1 ? "" : "s"}?</DialogTitle>
+            <DialogDescription>
+              Each order will be received at its full shipped quantity and closed in SAP. This runs in the
+              background — you can keep working, progress shows on each row.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkConfirmOpen(false)} disabled={bulkSubmitting} data-testid="inbound-receipt-bulk-cancel-btn">
+              Cancel
+            </Button>
+            <Button onClick={submitBulkReceive} disabled={bulkSubmitting} data-testid="inbound-receipt-bulk-confirm-btn">
+              {bulkSubmitting ? <><CircleNotch size={16} className="animate-spin mr-2" /> Starting…</> : "Confirm"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!receiveTarget} onOpenChange={(open) => !open && !submitting && setReceiveTarget(null)}>
         <DialogContent className="max-w-2xl" data-testid="inbound-receipt-dialog">
@@ -327,13 +547,15 @@ export default function InboundReceiptsPage() {
             <div className="bg-[#F0F9FA] border border-[#B4E4E8] rounded-lg px-4 py-3" data-testid="inbound-receipt-progress">
               <div className="flex items-center gap-2 text-sm font-medium text-[#0B6B74]">
                 <CircleNotch size={16} className="animate-spin shrink-0" />
-                <span data-testid="inbound-receipt-progress-step">{progressStep || "Working on it..."}</span>
+                <span data-testid="inbound-receipt-progress-step">
+                  {progressJob?.phase === "queued" ? "Queued — waiting for an available processing slot…" : `Processing… ${etaText(progressJob, nowMs)}`}
+                </span>
               </div>
               <div className="w-full h-1.5 bg-[#D6EEF0] rounded-full mt-2 overflow-hidden">
                 <div className="h-full w-1/3 bg-[#0B6B74] rounded-full animate-[pulse_1.5s_ease-in-out_infinite]" />
               </div>
               <p className="text-xs text-[#0B6B74]/70 mt-2">
-                Posting this directly in SAP's own screen can take up to a couple of minutes — please keep this open.
+                This can take up to a couple of minutes — feel free to close this and check back, it'll keep running.
               </p>
             </div>
           )}

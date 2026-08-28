@@ -281,51 +281,67 @@ async def post_goods_receipts_via_ui(username: str, password: str, delivery_ids:
     `line_overrides`: optional {product_id: qty} for any line the user
     edited away from the full shipped quantity (applied wherever that
     product_id turns up, across whichever delivery actually has it - see
-    inbound_receipt_service.build_line_overrides). progress_cb(step: str)
-    is called before each major step so the caller can persist progress
-    for a polling UI. Returns {"results": [{"delivery_id",
+    inbound_receipt_service.build_line_overrides).
+
+    progress_cb(phase: str, current: int, total: int) is called before
+    each major step so the caller can persist progress for a polling
+    UI - phase is one of "queued" (waiting for a free concurrency slot,
+    see playwright_concurrency.py), "processing" (`current` deliveries
+    done out of `total` so far), "done". Deliberately reports only
+    plain numbers, never a step description - the caller-facing UI must
+    never learn this is a SAP browser session underneath (user's
+    explicit ask), so no wording decision belongs in this module at
+    all. Returns {"results": [{"delivery_id",
     "status": "received"|"failed", "error"?}]}."""
     from playwright.async_api import async_playwright
+    import playwright_concurrency
 
     total = len(delivery_ids)
     results = []
 
-    def _progress(step: str) -> None:
+    def _progress(phase: str, current: int = 0) -> None:
         if progress_cb:
             try:
-                progress_cb(step)
+                progress_cb(phase, current, total)
             except Exception:
                 pass
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        try:
-            page = await browser.new_page(viewport={"width": 1600, "height": 900})
-            _progress("Logging into SAP...")
-            await _login(page, username, password)
-            for idx, delivery_id in enumerate(delivery_ids, start=1):
-                _progress(f"Posting Goods Receipt for {delivery_id} ({idx}/{total})...")
-                try:
-                    result = await _post_one_delivery(page, delivery_id, line_overrides)
-                except Exception as e:
-                    logger.error(f"Playwright PGR failed for {delivery_id}: {e}")
-                    await _save_debug_screenshot(page, delivery_id)
-                    result = {"delivery_id": delivery_id, "status": "failed", "error": "Could not reach SAP's receipt screen - please retry"}
-                results.append(result)
-                # A failure can leave SAP in an unknown state (a stuck
-                # dialog/lock the work-center nav can't recover from) -
-                # a fresh page + re-login guarantees every remaining
-                # delivery in this batch starts clean, instead of every
-                # one of them cascading into a false nav-timeout failure.
-                if result["status"] == "failed" and idx < total:
+    _progress("queued")
+    await playwright_concurrency.acquire()
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            playwright_concurrency.register_browser(browser)
+            try:
+                page = await browser.new_page(viewport={"width": 1600, "height": 900})
+                _progress("processing", 0)
+                await _login(page, username, password)
+                for idx, delivery_id in enumerate(delivery_ids, start=1):
+                    _progress("processing", idx - 1)
                     try:
-                        await page.close()
-                    except Exception:
-                        pass
-                    page = await browser.new_page(viewport={"width": 1600, "height": 900})
-                    await _login(page, username, password)
-        finally:
-            await browser.close()
+                        result = await _post_one_delivery(page, delivery_id, line_overrides)
+                    except Exception as e:
+                        logger.error(f"Playwright PGR failed for {delivery_id}: {e}")
+                        await _save_debug_screenshot(page, delivery_id)
+                        result = {"delivery_id": delivery_id, "status": "failed", "error": "Could not reach SAP's receipt screen - please retry"}
+                    results.append(result)
+                    # A failure can leave SAP in an unknown state (a stuck
+                    # dialog/lock the work-center nav can't recover from) -
+                    # a fresh page + re-login guarantees every remaining
+                    # delivery in this batch starts clean, instead of every
+                    # one of them cascading into a false nav-timeout failure.
+                    if result["status"] == "failed" and idx < total:
+                        try:
+                            await page.close()
+                        except Exception:
+                            pass
+                        page = await browser.new_page(viewport={"width": 1600, "height": 900})
+                        await _login(page, username, password)
+            finally:
+                await browser.close()
+                playwright_concurrency.unregister_browser(browser)
+    finally:
+        playwright_concurrency.release()
 
-    _progress("Done")
+    _progress("done", total)
     return {"results": results, "completed_at": datetime.now(timezone.utc).isoformat()}

@@ -58,11 +58,13 @@ def get_job(db, job_id: str):
 ORPHANABLE_JOB_STATUSES = {"running", "checking_stock", "creating_proposal", "waiting_for_order", "releasing_order"}
 
 
-def recover_orphaned_jobs(db, message: str) -> int:
+def recover_orphaned_jobs(db, message: str) -> list:
     """Call once at process startup, before any new job can be created -
     marks every job still sitting in an ORPHANABLE_JOB_STATUSES status as
     failed with `message`, so the UI never keeps polling a job that will
-    never resolve on its own. Returns how many were recovered.
+    never resolve on its own. Returns the orphaned job docs (so the
+    caller can react per `kind`, e.g. persisting a receipt_error onto an
+    inbound_receipt job's own STO doc - see server.py's startup block).
 
     Aug 2026 fix (real incident: Proposal 225857 for PL-0037A) - `result`
     used to stay untouched (null, since these jobs never got a chance to
@@ -74,15 +76,15 @@ def recover_orphaned_jobs(db, message: str) -> int:
     into `result`, in the same shape a normal failure uses."""
     orphaned = list(db[COLLECTION_NAME].find(
         {"status": {"$in": list(ORPHANABLE_JOB_STATUSES)}},
-        {"production_proposal_id": 1, "production_order_id": 1},
+        {"production_proposal_id": 1, "production_order_id": 1, "kind": 1, "sto_id": 1},
     ))
     for job in orphaned:
         db[COLLECTION_NAME].update_one({"_id": job["_id"]}, {"$set": {
-            "status": "failed", "error": message,
+            "status": "failed", "phase": "failed", "error": message,
             "result": {
                 "reason": "pipeline_error",
                 "production_proposal_id": job.get("production_proposal_id"),
                 "production_order_id": job.get("production_order_id"),
             },
         }})
-    return len(orphaned)
+    return orphaned
