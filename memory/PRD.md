@@ -40,6 +40,16 @@ Extend a SAP BOM viewer application into a full production-planning suite for Ra
 - No Inbound Delivery Notification is created at all for PO-sourced (external supplier) stock items in
   this tenant - only Stock-Transfer-sourced ones exist. Root cause of why Supplier Portal GRN used GSA
   as a (broken, for stock items) workaround.
+- A multi-line STO producing ONE combined Outbound Delivery (instead of one per line) is NOT possible
+  via any SAP API - 8 documented dead-end attempts (PGIInBackground, SLRequestDeliveryExecution,
+  OutboundDeliveryRequestAllocate, SLPGIInBackground, PartialDeliveryControlCode="3") - this tenant's
+  Ship-to Party Account Master Data silently forces per-line deliveries regardless of payload. Fixed
+  via a second Playwright UI automation (`sap_playwright_outbound_gi_service.py`, Aug 28 2026) - see
+  CHANGELOG. Vehicle No./Transportation Mode/Place Of Supply/G.R No./Date Of Supply/G.R Date are real
+  SAP extension fields (`_KUT` suffix) but reject direct API writes once SAP's scheduler picks up the
+  document - only writable via the SAP UI, which this same Playwright script now also does for
+  multi-line orders. "Freight Forwarder" needs a real SAP Business Partner lookup (breaks Consistency
+  Status as free text) - stays Note-only, deliberately not attempted via UI.
 
 ## Current backlog
 
@@ -61,6 +71,13 @@ Extend a SAP BOM viewer application into a full production-planning suite for Ra
 - Auto-Retry ERP Sync - automatically retry a failed ERP sync a few times in the background.
 - Goods Movement "RESTRICTED Quality Inspection" stock status - rejected by SAP tenant currently;
   GRN step 2 does a plain move only (see test_credentials.md for the live-tested finding).
+- Non-blocking background "Receive" dialog + multi-select bulk STO Inbound Receipt posting (frontend
+  UX only - lets user close the Inbound Receipt modal while the Playwright PGR job runs, and select
+  several STOs to receive at once). Independent of the Outbound combine fix (Aug 28 2026).
+- Observability gaps flagged by testing agent (iteration 132, not bugs, no regression found): (1)
+  single-line STOs still don't get the 5 SAP `_KUT` metadata fields (only multi-line/Playwright path
+  writes them) - decide if single-line should also route through Playwright just for metadata; (2) a
+  silently-failed metadata fill inside `_fill_delivery_metadata` doesn't get flagged on the STO doc.
 
 ### P2
 - Fix stuck historical SAP orders (30280/30336/30385) - blocked on user + SAP consultant.

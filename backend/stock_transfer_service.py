@@ -35,8 +35,10 @@ which finish in seconds; this can take much longer since it's waiting on
 SAP's own scheduling), purely reflected via the STO doc's own
 `gi_status`/`gi_error`/`outbound_delivery_object_id` fields, same as any
 other field the detail modal already reads."""
+import asyncio
 import json
 import logging
+import os
 import re
 import uuid
 from datetime import datetime, timezone, date
@@ -51,6 +53,7 @@ from sap_outbound_delivery_client import SAPOutboundDeliveryError
 import hsn_cache_service
 import company_cache_service
 import job_store
+import sap_playwright_outbound_gi_service
 
 logger = logging.getLogger(__name__)
 
@@ -562,18 +565,20 @@ def _release_ready_deliveries(db, sap_outbound_delivery_client, sto_id: str, doc
     newly_released = []
     for obj in objects:
         object_id = obj.get("object_id")
+        if obj.get("id") and obj["id"] not in delivery_ids:
+            delivery_ids.append(obj["id"])
         if not object_id or object_id in already_released or object_id in newly_released:
-            if object_id and object_id in newly_released and obj.get("id") and obj["id"] not in delivery_ids:
-                delivery_ids.append(obj["id"])
             continue
         try:
             sap_outbound_delivery_client.release_outbound_delivery(object_id)
         except SAPOutboundDeliveryError as e:
-            logger.warning(f"Stock Transfer Order {sto_id}: could not release Outbound Delivery {obj.get('id') or object_id}: {e}")
+            # Aug 28 2026: a delivery combined+released via the Playwright
+            # UI flow (sap_playwright_outbound_gi_service.py) will always
+            # fail this API release call ("already released") - the ID
+            # is still recorded above regardless, so this is cosmetic.
+            logger.warning(f"Stock Transfer Order {sto_id}: could not release Outbound Delivery {obj.get('id') or object_id} (may already be released elsewhere): {e}")
             continue
         newly_released.append(object_id)
-        if obj.get("id") and obj["id"] not in delivery_ids:
-            delivery_ids.append(obj["id"])
 
     if newly_released:
         db[STO_COLLECTION].update_one({"_id": sto_id}, {"$addToSet": {"released_delivery_object_ids": {"$each": newly_released}}})
@@ -581,6 +586,89 @@ def _release_ready_deliveries(db, sap_outbound_delivery_client, sto_id: str, doc
     found_uuids = {o.get("item_uuid") for o in objects if o.get("item_uuid")}
     covered = set(item_uuids).issubset(found_uuids)
     return covered, delivery_ids
+
+
+def _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_inventory_client, sto_id: str, doc: dict, pending: list, lines_by_product: dict, object_ids: list, existing_delivery_ids: list) -> str:
+    """Multi-line path (Aug 28 2026) - see try_post_goods_issue's own
+    docstring for why this can't use the per-line API loop. Same
+    per-line live-stock pre-check as the single-line path (own copy,
+    since it pops from `lines_by_product` too), then hands the whole
+    order to sap_playwright_outbound_gi_service in ONE call covering
+    every line at once."""
+    insufficient_notes = []
+    for d in pending:
+        candidates = lines_by_product.get(d.get("product_id")) or []
+        line = candidates.pop(0) if candidates else None
+        if not line:
+            continue
+        available_qty = _live_source_stock_qty(sap_inventory_client, doc["ship_from_site_id"], line.get("source_warehouse_id"), d.get("product_id"))
+        if available_qty < (line.get("requested_qty") or 0):
+            insufficient_notes.append(
+                f"{d.get('product_id')} in {line.get('source_warehouse_id')} - needed {line.get('requested_qty'):g}, "
+                f"currently available {available_qty:g}"
+            )
+    if insufficient_notes:
+        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
+            "gi_status": "insufficient_stock",
+            "gi_error": "Automatically re-checking every 20s. Still waiting on live stock for: " + "; ".join(insufficient_notes),
+            "gi_job_running": False,
+            "outbound_delivery_object_id": object_ids[0] if object_ids else None,
+            "outbound_delivery_object_ids": object_ids,
+            "outbound_delivery_ids": existing_delivery_ids,
+        }})
+        return "waiting"
+
+    sap_order_id = (doc.get("sap_order_id") or "").lstrip("0") or doc.get("sap_order_id")
+    all_uuids = [d.get("uuid") for d in pending if d.get("uuid")]
+    metadata = {
+        "vehicle_no": doc.get("vehicle_no"),
+        "transportation_mode": doc.get("transportation_mode"),
+        "place_of_supply": doc.get("place_of_supply"),
+        "gr_no": doc.get("gr_no"),
+        "date_of_supply": doc.get("date_of_supply"),
+    }
+    try:
+        ui_result = asyncio.run(sap_playwright_outbound_gi_service.combine_and_post_goods_issue_via_ui(
+            os.environ["SAP_USERNAME"], os.environ["SAP_PASSWORD"], sap_order_id, metadata, sap_outbound_delivery_client, all_uuids,
+        ))
+    except Exception as e:
+        # A Playwright/infra hiccup (click timeout, browser crash, nav
+        # failure) is NOT a SAP business rejection - raising
+        # SAPOutboundDeliveryError here would stop the 20-min poll loop
+        # for good (see server.py's _run_goods_issue_job), exactly the
+        # same trap the outer poll loop's own generic `except Exception`
+        # already avoids. Log and let the next poll tick retry with a
+        # fresh browser session instead.
+        logger.warning(f"Stock Transfer Order {sto_id}: Playwright combine+GI attempt hit a transient error, will retry: {e}")
+        return "waiting"
+
+    if ui_result["status"] == "waiting":
+        return "waiting"
+    if ui_result["status"] == "failed":
+        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
+            "gi_status": "failed", "gi_error": ui_result["error"], "gi_job_running": False,
+            "outbound_delivery_object_id": object_ids[0] if object_ids else None,
+            "outbound_delivery_object_ids": object_ids,
+            "outbound_delivery_ids": existing_delivery_ids,
+        }})
+        raise SAPOutboundDeliveryError(ui_result["error"])
+
+    # ui_result["status"] == "posted" - Playwright's own "Release" click
+    # already released the combined delivery AND posted its Goods Issue
+    # (confirmed live) - delivery_ids came straight from the SAP OData
+    # lookup it already did, no separate release call needed here.
+    delivery_ids = ui_result["delivery_ids"]
+    if len(delivery_ids) != 1:
+        logger.warning(f"Stock Transfer Order {sto_id}: expected 1 combined delivery, SAP shows {len(delivery_ids)}: {delivery_ids} - needs manual SAP review")
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
+        "gi_status": "posted",
+        "gi_error": None if len(delivery_ids) == 1 else f"Combined into {len(delivery_ids)} deliveries instead of 1 - please verify in SAP",
+        "gi_job_running": False,
+        "outbound_delivery_object_id": object_ids[0] if object_ids else None,
+        "outbound_delivery_object_ids": object_ids,
+        "outbound_delivery_ids": delivery_ids,
+    }})
+    return "posted"
 
 
 def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client, sto_id: str) -> str:
@@ -703,11 +791,19 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client,
     # SLRequestDeliveryExecution needs a pre-existing "Site Logistics
     # Request" this app has no service to create; #7 SLPGIInBackground
     # (schedule-line-scoped GI) posts fine but still produces one
-    # Delivery per line, identical to the loop below. NOT invoked here -
-    # doubling live SAP calls on every multi-line order for zero combining
-    # benefit isn't worth the latency. The client methods themselves are
-    # kept (tested) for reference in case SAP Basis later exposes a way
-    # to create/reference a Site Logistics Request.
+    # Delivery per line, identical to the loop below. #8 (Aug 28 2026):
+    # SAP's own documented PartialDeliveryControlCode "3" (paired with
+    # CompleteDeliveryRequestedIndicator=true) also CONFIRMED DEAD live
+    # (order 30433) - identical 2-deliveries-for-2-lines result, this
+    # tenant's Ship-to Party Account Master Data silently overrides it.
+    # THE REAL FIX (Aug 28 2026): none of these API layers can combine a
+    # multi-line order's Deliveries - only SAP's own UI can (see
+    # sap_playwright_outbound_gi_service.py module docstring for the live
+    # proof). Multi-line orders below go through that instead of the
+    # per-line loop; a single-line order has nothing to combine, so it
+    # keeps using the fast, already-working API path unchanged.
+    if len(doc.get("items") or []) > 1:
+        return _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_inventory_client, sto_id, doc, pending, lines_by_product, object_ids, existing_delivery_ids)
 
     insufficient_notes = []
     failed_notes = []
@@ -849,7 +945,6 @@ async def parse_natural_language_transfer_request(text: str, known_sites: list) 
     """Free-text box like "transfer 500 of ITEM-001 to P2" parsed into form
     fields for the user to REVIEW - this NEVER creates or submits an STO by
     itself, the frontend always requires an explicit Create click after."""
-    import os
     from emergentintegrations.llm.chat import LlmChat, UserMessage
 
     api_key = os.environ["EMERGENT_LLM_KEY"]

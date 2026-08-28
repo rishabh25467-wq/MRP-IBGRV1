@@ -23,7 +23,7 @@ else:
         {"_id": USER_ID},
         {"_id": USER_ID, "tid": "testtid", "oid": f"testoid-sto-{WORKER}",
          "email": "qa.sto@example.test", "name": "QA STO",
-         "role": "user", "allowed_pages": ["inventory"],
+         "role": "user", "allowed_pages": ["inventory", "stock_transfer"],
          "created_at": datetime.now(timezone.utc), "last_login_at": datetime.now(timezone.utc)},
         upsert=True,
     )

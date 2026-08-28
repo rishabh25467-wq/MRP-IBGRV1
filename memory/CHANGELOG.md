@@ -1,3 +1,57 @@
+## Outbound multi-line STO: combined delivery + structured GST fields via Playwright (2026-08-28)
+
+- **Bug**: a multi-line STO (2+ items) always produced one SEPARATE Outbound Delivery per line in
+  SAP (e.g. 2 lines -> 2 delivery IDs), massively slowing the downstream Inbound Receipt Playwright
+  automation (one full run per delivery ID, ~90s each, vs ~90s total if combined).
+- **8 API-level dead ends confirmed live** (see `sap_outbound_delivery_client.py` and
+  `sap_sto_client.py` docstrings for attempts #1-8): `PGIInBackground` (item-scoped only, can't
+  combine), `SLRequestDeliveryExecution` (needs a pre-existing Site Logistics Request this tenant's
+  API can't create), `OutboundDeliveryRequestAllocate`, `SLPGIInBackground`, and - newly tested this
+  session - SAP's own documented `PartialDeliveryControlCode="3"` (paired with
+  `CompleteDeliveryRequestedIndicator=true`, SAP's official combo for "combined, full-quantity
+  delivery") - order 30433, still produced 2 separate deliveries. This tenant's Ship-to Party Account
+  Master Data silently overrides all of these; reverted the code change (`PARTIAL_DELIVERY_SINGLE_
+  FULL_QTY` stayed `"9"`).
+- **Real fix**: new `sap_playwright_outbound_gi_service.py` (mirrors `sap_playwright_pgr_service.py`'s
+  login/helpers). For multi-line orders only (single-line unchanged, still fast API path):
+  1. Outbound Logistics > Delivery Proposals - the header Delivery Request already combines every
+     line into ONE row (confirmed live) - select it, click "Create Outbound Delivery" > "Without
+     Release". Always produces exactly 1 combined delivery (verified live 6+ times: orders
+     30434/30435/30441/30431/30433/30416-adjacent test orders).
+  2. Look up the new delivery's ID via the existing OData client (`find_outbound_delivery_objects`).
+  3. Outbound Logistics > Outbound Deliveries > open it > Edit > "View All" - exposes Vehicle No.,
+     Transportation Mode (ComboBox), Place Of Supply, G.R No., Date Of Supply, G.R Date as real
+     editable `_KUT` extension fields (previously only written as a text Note, since a direct API
+     write to these was already tested live and rejected once SAP's scheduler owns the document -
+     see `sap_sto_client.py`'s `_build_gst_note_text`). Fill all 5, Save. **Skip "Freight Forwarder"**
+     - it needs a real SAP Business Partner lookup; typing free text broke Consistency Status and
+     disabled Release entirely (confirmed live, had to clear it and re-save to recover).
+  4. Click "Release" - this ALSO posts Goods Issue in the same action (confirmed live -
+     `order_fulfilment_status` flips to "3" Finished for every line right after, stock decreases).
+- **Wiring**: `stock_transfer_service.try_post_goods_issue()` branches to new
+  `_try_post_goods_issue_multiline()` when `len(doc["items"]) > 1`, calling the Playwright function
+  via `asyncio.run(...)` (safe - runs inside the existing `asyncio.to_thread` worker thread). A
+  Playwright/infra error (click timeout etc.) returns `"waiting"` (retried next poll tick, NOT raised
+  as `SAPOutboundDeliveryError` - that would permanently kill the 20-min poll loop for a transient
+  hiccup, confirmed as a real bug during testing on order 30435/STO-000064). A disabled "Release"
+  button (real SAP Consistency Status rejection) IS raised as permanent failure.
+- **Bug fixed in `_release_ready_deliveries`**: previously skipped adding a delivery's ID to
+  `outbound_delivery_ids` whenever the API `release_outbound_delivery` call failed (e.g. "already
+  released" - which is EXACTLY what happens on a retry after the new Playwright flow already
+  released it via UI). Now always records the ID regardless of the release call's own outcome.
+- **Live-verified**: 8 real test STOs (STO-000059 through STO-000066, tiny 1 EA G12LW/G12FW P8->P1
+  transfers), including one **fully automatic end-to-end run with zero manual intervention**
+  (STO-000066: created via the real API, background job completed in ~200s, `gi_status="posted"`,
+  `outbound_delivery_ids=["P8D1-204"]`, all 5 metadata fields confirmed written as real SAP fields
+  via a live OData query - `VehicleNo_KUT`, `TransportationMode_KUT`, `PlaceOfSupply_KUT`,
+  `GRNo1_KUT`, `DateOfSupply_KUT`/`GRDate_KUT`).
+- **Tested**: `testing_agent` iteration 132 - 100% pass, single-line regression confirmed unaffected,
+  frontend STO list/detail correctly shows combined delivery + posted status, no console errors.
+- **Files**: `sap_playwright_outbound_gi_service.py` (new), `stock_transfer_service.py`
+  (`_try_post_goods_issue_multiline`, `_release_ready_deliveries` fix), `sap_sto_client.py` (comment
+  only, value reverted to `"9"`).
+
+
 ## Inbound STO Receipt: Playwright SAP automation built + live-verified (2026-08-28)
 
 - **Context**: SAP OData action `PGRBackground` (posts Goods Receipt for Inbound Delivery

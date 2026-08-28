@@ -35,6 +35,27 @@ DELIVERY_PRIORITY_IMMEDIATE = "1"
 # SAP's PartialDeliveryControlCode runtime code list - "9" = Single
 # delivery, full quantity only (user's explicit pick, Aug 2026, over "1"
 # Multiple delivery).
+#
+# Attempt #8 (Aug 28 2026, "one delivery per multi-line order"
+# investigation continued - see sap_outbound_delivery_client.py's
+# exhaustive docstring for attempts #1-7): the live SAP UI's Delivery
+# Request screen shows each line's own "Delivery Rule" as "Single
+# Delivery" - and SAP's own PSM_ISI_R_II_MANAGE_CUST_REQ_IN help doc
+# pairs CompleteDeliveryRequestedIndicator=true with
+# PartialDeliveryControlCode "3" ("Single delivery - full quantity", a
+# document-level qualifier) rather than this app's "9" ("Single
+# delivery", no document qualifier) - hypothesized "9" was the real
+# root cause forcing each LINE to insist on its own delivery. CONFIRMED
+# LIVE DEAD END (order 30433, 2 lines, code temporarily changed to "3"):
+# still produced 2 separate Deliveries (P8D1-196/197) after Goods Issue,
+# identical to "9". Per SAP KBA 3342620 (a related precedence note for
+# Service Orders), this is very likely because the Ship-To Party's own
+# Account Master Data "Complete Delivery" setting takes precedence over
+# whatever this payload sends - a genuine SAP-side master-data lock, not
+# fixable from the ExternalRequestItem payload. Reverted to "9" (the
+# known-safe original value) - see sap_playwright_pgr_service.py-style
+# Playwright automation as the only remaining path for the Outbound
+# side too.
 PARTIAL_DELIVERY_SINGLE_FULL_QTY = "9"
 
 # GST/e-way-bill fields (Aug 2026): confirmed live these 5 custom fields

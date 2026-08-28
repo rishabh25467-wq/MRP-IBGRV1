@@ -1,0 +1,49 @@
+{
+  "summary": "Independently re-verified the multi-line STO 'ONE combined Outbound Delivery' fix (Playwright SAP UI automation) end-to-end against the LIVE SAP tenant, plus single-line regression, plus the STO frontend. Created exactly 2 new live STOs (as requested): STO-000067 (single-line, G12LW 1 EA) -> gi_status='posted', outbound_delivery_ids=['P8D1-205'] in ~2 min via the unchanged fast API path; STO-000068 (multi-line, G12LW + G12FW 1 EA each) -> gi_status='posted', outbound_delivery_ids=['P8D1-206'] (EXACTLY ONE combined delivery for 2 lines) in ~4 min via the new Playwright combine+GI path. Independently queried SAP OData OutboundDeliveryCollection: P8D1-206 carries all 5 structured fields (VehicleNo_KUT=UP81AA0099, TransportationMode_KUT='By Road', PlaceOfSupply_KUT=Aligarh, GRNo1_KUT=9001, DateOfSupply_KUT + GRDate_KUT = 2026-08-30). 13/13 fast backend pytest tests pass (auth guard, read endpoints, create-payload validation, historical regression on STO-000062..66 all 1 delivery id). Frontend: STO page loads, both new orders show 'GI Posted', multi-line detail modal shows a single 'Outbound Delivery: P8D1-206', full 2-line creation form + confirm dialog works with zero console errors (cancelled before live submit). Downstream/unrelated flows verified untouched: /api/inbound-receipts/pending now lists STO-000068 correctly, delivery-note endpoint 200, supplier-portal login 200.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "SAP OData OutboundDeliveryCollection (single-line path)", "issue": "Only MULTI-line deliveries get the 5 structured SAP fields. Verified live: P8D1-206 (multi) has VehicleNo_KUT/TransportationMode_KUT/PlaceOfSupply_KUT/GRNo1_KUT/DateOfSupply_KUT populated, while P8D1-205 (single-line, API path) has them all blank (only the text Note). If the user expects vehicle/GR/place-of-supply on every delivery for GST/E-way-bill purposes, single-line orders are now inconsistent with multi-line ones."},
+      {"endpoint": "backend (SAP tenant health)", "issue": "backend.err.log shows repeated 'Connection to my431827.businessbydesign.cloud.sap timed out (connect timeout=30)' warnings from the sap_valuation_client background Standard-Costs refresh during the test window. Did not affect STO/GI flows, but the tenant is intermittently slow - Playwright GI runs could occasionally time out for the same reason."},
+      {"endpoint": "/app/backend/tests/*", "issue": "Writing any file into /app/backend/tests triggers uvicorn's WatchFiles reload, which restarted the backend mid-run and produced spurious 502s/read-timeouts on the first pytest execution. Re-run after the reload settled was 13/13 green. Consider excluding tests/ from the reload watch dirs."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Inter-Plant Stock Transfer form", "issues": ["Requested Delivery Date / Date Of Supply use the native browser <input type=\"date\"> picker rather than the shadcn Calendar component (pre-existing app-wide pattern, cosmetic only)"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_sto_outbound_gi_iter132.py",
+    "/app/test_reports/pytest/iter132_fast.xml",
+    "/app/tests/live_sto_iter132.py",
+    "/app/tests/verify_delivery_fields_iter132.py"
+  ],
+  "action_items": [
+    "Decide whether single-line STO deliveries should also get the 5 structured SAP _KUT fields (today only multi-line orders do, since only the Playwright UI path can write them) - currently a functional asymmetry, not a regression.",
+    "Multi-line path swallows a failed metadata fill silently: sap_playwright_outbound_gi_service catches the whole _fill_delivery_metadata block and proceeds to Release, and _fill_by_label/_select_combo_box return values are ignored - the STO can end up gi_status='posted' with none of the 5 SAP fields actually written and nothing recorded on the doc. Persist a per-field 'metadata_written' / warning flag so the UI can surface it.",
+    "combine_and_post_goods_issue_via_ui only handles release_click == 'not_found'; a 'disabled' Release button falls through to the generic 'could not be confirmed Released - will retry' message. Handle 'disabled' explicitly (it means SAP consistency broke, e.g. a bad field value) so the 20-min retry loop isn't spent on an unrecoverable state.",
+    "When SAP OData still reports >1 delivery for a multi-line order, the code only logs a warning and still marks gi_status='posted' with multiple outbound_delivery_ids - consider surfacing this on the STO doc so the regression cannot go unnoticed in production."
+  ],
+  "critical_code_review_comments": [
+    "stock_transfer_service.py is 1184 lines and server.py is very large - the STO/GI logic is a good candidate for extraction into its own module per the >700-line guideline.",
+    "asyncio.run() inside _try_post_goods_issue_multiline is safe ONLY because try_post_goods_issue is always invoked via asyncio.to_thread from _run_goods_issue_job; if any future caller invokes it from the event loop it will raise 'asyncio.run() cannot be called from a running event loop'. Worth a guard/comment or switching to a dedicated loop runner.",
+    "The generic `except Exception -> return 'waiting'` in the multiline path means a permanent Playwright/browser failure is only visible after the full 20-minute poll timeout (as 'not_found_timeout'), with the real error only in backend logs. Consider storing the last Playwright error text on the STO doc for operator visibility.",
+    "Freight Forwarder deliberately stays Note-only (needs a real Business Partner lookup) - fine, but the confirm dialog/detail modal do not tell the user that this one field is not mirrored into SAP's delivery fields."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sto_outbound_gi_iter132.py (new)",
+    "/app/backend/tests/_setup_sto_session.py (allowed_pages now includes 'stock_transfer' - the old value caused 403 on every /api/stock-transfer call)",
+    "/app/tests/live_sto_iter132.py (new)",
+    "/app/tests/verify_delivery_fields_iter132.py (new)"
+  ],
+  "success_rate": {"backend": "100% (13/13 fast tests + 2/2 live STO end-to-end runs)", "frontend": "100% (all STO page + form + detail-modal checks passed, 0 console errors)"},
+  "seed_data_creation": "2 REAL live STOs created on the production SAP tenant (1 EA each, per instructions): STO-000067 (single-line, SAP order 30442, delivery P8D1-205) and STO-000068 (multi-line, SAP order 30443, delivery P8D1-206). Both fully completed (GI posted, ERP portal synced) - nothing left in a bad state. STO-000068 is now sitting in /api/inbound-receipts/pending for site P1 (expected; inbound receipt is a separate manual step, not performed).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "App uses Entra ID SSO; used the synthetic session from /app/backend/tests/_setup_sto_session.py -> cookie vms_session=TEST_sto_session_token_solo (user qa.sto@example.test, allowed_pages inventory+stock_transfer, expires 1 day). Recreate/cleanup with `python /app/backend/tests/_setup_sto_session.py [--cleanup]`.",
+  "context_for_next_testing_agent": "The multi-line combine fix is CONFIRMED WORKING live and independently (STO-000068 -> single delivery P8D1-206 with all 5 _KUT fields set; single-line STO-000067 unchanged -> P8D1-205). Timings observed: order create HTTP 200 instantly, sap_order_id within ~30s, single-line gi_status posted in ~2 min, multi-line (Playwright) posted in ~4 min. Do NOT create more live STOs unless testing a new change - reuse the historical assertions in /app/backend/tests/test_sto_outbound_gi_iter132.py::TestCombinedDeliveryRegression (STO-000062..68) instead. Use /app/tests/verify_delivery_fields_iter132.py <DELIVERY_ID> to check SAP-side _KUT fields. Note: writing files into /app/backend/tests reloads the backend - wait ~30s before running requests-based tests.",
+  "rca_of_the_issue": "No new defect found. The fix works as designed: try_post_goods_issue branches on len(doc['items'])>1 into _try_post_goods_issue_multiline, which runs sap_playwright_outbound_gi_service.combine_and_post_goods_issue_via_ui (in a worker thread, so its internal asyncio.run is safe), producing ONE combined delivery via SAP's own Delivery Proposals UI and writing the 5 GST/logistics fields as real SAP fields before Release (which also posts the Goods Issue). Only gaps are observability ones (silent metadata-fill failure, 'disabled' Release not distinguished, >1-delivery only logged) and the single-line vs multi-line structured-field asymmetry."
+}
