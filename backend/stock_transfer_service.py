@@ -527,6 +527,62 @@ def _live_source_stock_qty(sap_inventory_client, ship_from_site_id: str, source_
     )
 
 
+# Aug 27 2026, "one combined delivery" attempt #5 (see
+# sap_outbound_delivery_client.py module docstring) - how many extra
+# 20s poll ticks (GOODS_ISSUE_POLL_INTERVAL_SECONDS in server.py) to
+# keep retrying the Delivery lookup+release for once every line's GI has
+# posted, before giving up and marking "posted" anyway with whatever
+# Delivery ID(s) were found so far (same permissive, never-block fallback
+# this already had for the plain ID lookup).
+MAX_RELEASE_POLL_ATTEMPTS = 5
+
+
+def _release_ready_deliveries(db, sap_outbound_delivery_client, sto_id: str, doc: dict, item_uuids: list, existing_delivery_ids: list) -> tuple:
+    """Looks up whatever real Outbound Delivery object(s) SAP has
+    produced so far from `item_uuids` and explicitly releases any not
+    already released (tracked via the doc's own
+    `released_delivery_object_ids`, so a Delivery released on an earlier
+    poll tick is never released twice). Returns (covered, delivery_ids) -
+    `covered` is True only once EVERY given uuid has resolved to some
+    Delivery (SAP's own OData link can take longer to become queryable
+    than the GI post itself - confirmed live, order 30411, still empty
+    immediately after posting, present ~30s later - an empty/partial
+    result here just means "not indexed yet", not a failure)."""
+    item_uuids = [u for u in item_uuids if u]
+    if not item_uuids:
+        return True, existing_delivery_ids
+    try:
+        objects = sap_outbound_delivery_client.find_outbound_delivery_objects(item_uuids)
+    except Exception as e:
+        logger.warning(f"Stock Transfer Order {sto_id}: could not look up Outbound Delivery object(s) yet: {e}")
+        return False, existing_delivery_ids
+
+    already_released = set(doc.get("released_delivery_object_ids") or [])
+    delivery_ids = list(existing_delivery_ids)
+    newly_released = []
+    for obj in objects:
+        object_id = obj.get("object_id")
+        if not object_id or object_id in already_released or object_id in newly_released:
+            if object_id and object_id in newly_released and obj.get("id") and obj["id"] not in delivery_ids:
+                delivery_ids.append(obj["id"])
+            continue
+        try:
+            sap_outbound_delivery_client.release_outbound_delivery(object_id)
+        except SAPOutboundDeliveryError as e:
+            logger.warning(f"Stock Transfer Order {sto_id}: could not release Outbound Delivery {obj.get('id') or object_id}: {e}")
+            continue
+        newly_released.append(object_id)
+        if obj.get("id") and obj["id"] not in delivery_ids:
+            delivery_ids.append(obj["id"])
+
+    if newly_released:
+        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$addToSet": {"released_delivery_object_ids": {"$each": newly_released}}})
+
+    found_uuids = {o.get("item_uuid") for o in objects if o.get("item_uuid")}
+    covered = set(item_uuids).issubset(found_uuids)
+    return covered, delivery_ids
+
+
 def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client, sto_id: str) -> str:
     """One poll attempt: looks for EVERY Outbound Delivery Request Item
     SAP has produced from this STO's Customer Requirement - one per line
@@ -550,20 +606,39 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client,
     at the source site forever, with the app reporting "Goods Issue
     posted" as if the whole order had shipped.
 
-    Aug 27 2026, 2nd bug fix (real incident: STO-000046 / SAP order
-    30336): the FIRST fix above posted Goods Issue once per LINE's own
-    item-level object_id, which does get every line shipped, but makes
-    SAP create one SEPARATE Outbound Delivery per line (e.g.
-    P8D1-185/186/187) instead of the single combined delivery a user
-    expects for one Stock Transfer Order. Fixed by grouping every
-    still-open line by its shared `parent_object_id` (the ONE Outbound
-    Delivery Request DOCUMENT SAP created for this STO) and calling
-    post_goods_issue ONCE per document/group, only once every line in
-    that group has sufficient stock - so a 3-line STO now produces
-    exactly one Outbound Delivery containing all 3 lines. Also looks up
-    and records each resulting Outbound Delivery's own human-readable ID
-    (e.g. "P8D1-185", user's explicit ask) via
-    sap_outbound_delivery_client.find_outbound_delivery_ids.
+    Aug 27 2026, "one delivery per order" investigation (real incident:
+    STO-000046/order 30336 - user reported 3 separate deliveries for 3
+    lines instead of one; 2 further live attempts followed, all at THIS
+    (Goods Issue) layer - grouping by `parent_object_id`
+    (PGIInBackground rejected it: "object does not exist", confirmed via
+    $metadata it's item-scoped only), then `OutboundDeliveryRequestAllocate`
+    (header-scoped, but rejected: "Project outbound delivery request
+    reference missing or not valid" - likely built for a different SAP
+    scenario entirely). THE REAL FIX WAS AT A DIFFERENT LAYER: the SAP
+    admin (this tenant's own user) showed that a Stock Transfer Order's
+    own "Delivery Rule" field (Multiple Deliveries vs Complete Delivery)
+    - set at ORDER CREATE time, not at Goods Issue time - is what
+    actually decides this. Fixed in sap_sto_client.py by setting
+    `CompleteDeliveryRequestedIndicator=true` there instead - no change
+    needed here at all; kept posting once per line below since that's
+    still simply how PGIInBackground works, but SAP itself will now
+    combine every line's resulting delivery for a NEW order into one,
+    since the header-level rule tells it to hold everything together
+    from creation onward.
+
+    Aug 27 2026, attempt #5 (real incident: SAP order 30411, 2 lines -
+    the STO-creation fix above DID combine them into one shared Outbound
+    Delivery Request document, confirmed live, but they still ended up
+    as 2 separate Deliveries - PGIInBackground is genuinely item-scoped,
+    confirmed via $metadata, no batch parameter exists on it at all).
+    Every line below now posts its Goods Issue with `auto_release=False`
+    (see sap_outbound_delivery_client.py) instead of relying on that
+    call's own inline auto-release, and `_release_ready_deliveries`
+    explicitly releases whatever Delivery object(s) result only once
+    it's checked what every line in this order actually resolved to -
+    UNVERIFIED whether this actually gets SAP to combine them, but safe
+    either way since every Delivery still always gets explicitly
+    released, nothing is left stuck "open".
 
     Returns "waiting" (SAP hasn't produced the delivery yet, OR at least
     one line's stock is still insufficient - caller should poll again
@@ -603,19 +678,18 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client,
     existing_delivery_ids = doc.get("outbound_delivery_ids") or []
 
     if not pending:
-        delivery_ids = existing_delivery_ids
-        if not delivery_ids:
-            # Aug 27 2026 fix (testing_agent iteration_128 gap): this
-            # branch fires whenever every line was ALREADY Finished by
-            # the time we look (e.g. it all completed between two poll
-            # ticks) - the human-readable Delivery ID lookup was only
-            # ever attempted in the posting branch below, so an order
-            # that finished this way never got its outbound_delivery_ids
-            # filled in even though the real SAP Delivery(ies) exist.
-            try:
-                delivery_ids = sap_outbound_delivery_client.find_outbound_delivery_ids([d.get("uuid") for d in delivery_items])
-            except Exception as e:
-                logger.warning(f"Stock Transfer Order {sto_id}: could not look up Outbound Delivery ID(s): {e}")
+        release_attempts = (doc.get("gi_release_attempts") or 0) + 1
+        all_uuids = [d.get("uuid") for d in delivery_items]
+        covered, delivery_ids = _release_ready_deliveries(db, sap_outbound_delivery_client, sto_id, doc, all_uuids, existing_delivery_ids)
+        if not covered and release_attempts < MAX_RELEASE_POLL_ATTEMPTS:
+            # Aug 27 2026 (attempt #5): every line is Finished, but SAP
+            # hasn't yet made every Delivery object queryable via OData -
+            # keep polling (bounded, see MAX_RELEASE_POLL_ATTEMPTS) rather
+            # than marking "posted" (which would stop the poll loop in
+            # server.py's _run_goods_issue_job for good) before we've had
+            # a real chance to release everything.
+            db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_release_attempts": release_attempts, "outbound_delivery_ids": delivery_ids}})
+            return "waiting"
         db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
             "gi_status": "posted", "gi_error": None, "gi_job_running": False,
             "outbound_delivery_object_id": object_ids[0] if object_ids else None,
@@ -624,68 +698,61 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client,
         }})
         return "posted"
 
-    # Group by the shared DOCUMENT id ("parent_object_id" - falls back to
-    # each line's own object_id if that's somehow missing, so it degrades
-    # to the old one-call-per-line behavior rather than crashing).
-    groups = {}
-    for d in pending:
-        groups.setdefault(d.get("parent_object_id") or d.get("object_id"), []).append(d)
+    # Aug 27 2026, attempts #6/#7 tried and CONFIRMED DEAD ENDS live (see
+    # sap_outbound_delivery_client.py module docstring): #6
+    # SLRequestDeliveryExecution needs a pre-existing "Site Logistics
+    # Request" this app has no service to create; #7 SLPGIInBackground
+    # (schedule-line-scoped GI) posts fine but still produces one
+    # Delivery per line, identical to the loop below. NOT invoked here -
+    # doubling live SAP calls on every multi-line order for zero combining
+    # benefit isn't worth the latency. The client methods themselves are
+    # kept (tested) for reference in case SAP Basis later exposes a way
+    # to create/reference a Site Logistics Request.
 
     insufficient_notes = []
     failed_notes = []
     newly_posted_item_uuids = []
-    for parent_id, group_items in groups.items():
-        group_insufficient = []
-        for d in group_items:
-            candidates = lines_by_product.get(d.get("product_id")) or []
-            line = candidates.pop(0) if candidates else None
-            if not line:
-                logger.warning(
-                    f"Stock Transfer Order {sto_id}: Outbound Delivery Request line for product "
-                    f"{d.get('product_id')!r} has no matching STO line locally - posting Goods Issue "
-                    "without a local live-stock pre-check (SAP's own validation is the only safeguard here)."
-                )
-                continue
+    for d in pending:
+        candidates = lines_by_product.get(d.get("product_id")) or []
+        line = candidates.pop(0) if candidates else None
+        if not line:
+            logger.warning(
+                f"Stock Transfer Order {sto_id}: Outbound Delivery Request line for product "
+                f"{d.get('product_id')!r} has no matching STO line locally - posting Goods Issue "
+                "without a local live-stock pre-check (SAP's own validation is the only safeguard here)."
+            )
+        if line:
             available_qty = _live_source_stock_qty(sap_inventory_client, doc["ship_from_site_id"], line.get("source_warehouse_id"), d.get("product_id"))
             if available_qty < (line.get("requested_qty") or 0):
-                group_insufficient.append(
+                insufficient_notes.append(
                     f"{d.get('product_id')} in {line.get('source_warehouse_id')} - needed {line.get('requested_qty'):g}, "
                     f"currently available {available_qty:g}"
                 )
-        if group_insufficient:
-            # Don't post this DOCUMENT yet - AllowSplitIndicator=false
-            # means a partial post isn't possible anyway, and posting
-            # only the ready lines here would just recreate the very
-            # "one delivery per line" problem this grouping fixes.
-            insufficient_notes.extend(group_insufficient)
-            continue
+                continue
         try:
-            sap_outbound_delivery_client.post_goods_issue(parent_id)
-            newly_posted_item_uuids.extend([d.get("uuid") for d in group_items])
+            sap_outbound_delivery_client.post_goods_issue(d["object_id"], auto_release=False)
+            newly_posted_item_uuids.append(d.get("uuid"))
         except SAPOutboundDeliveryError as e:
             # Aug 27 2026 hardening (testing_agent iteration_127): don't
             # abort the whole loop on the first SAP rejection - that
-            # would leave every remaining not-yet-attempted document
-            # unposted and stuck, the exact same "partial shipment
-            # reported as one success/failure" shape as the original
-            # STO-000011 bug, just triggered by a SAP-side rejection
-            # instead of the old first-row-only lookup. Keep trying every
-            # other document/group.
-            failed_notes.append(f"{', '.join(d.get('product_id') for d in group_items)}: {e}")
+            # would leave every remaining not-yet-attempted line unposted
+            # and stuck, the exact same "partial shipment reported as one
+            # success/failure" shape as the original STO-000011 bug, just
+            # triggered by a SAP-side rejection instead of the old
+            # first-row-only lookup. Keep trying every other line.
+            failed_notes.append(f"{d.get('product_id')}: {e}")
             continue
 
     delivery_ids = existing_delivery_ids
+    covered = True
     if newly_posted_item_uuids:
-        try:
-            fresh_ids = sap_outbound_delivery_client.find_outbound_delivery_ids(newly_posted_item_uuids)
-            delivery_ids = sorted(set(existing_delivery_ids) | set(fresh_ids))
-        except Exception as e:
-            # Cosmetic-only lookup (the GI itself already succeeded) -
-            # never fail the whole job just because SAP's own delivery-ID
-            # lookup hiccuped (any exception, not just SAPOutboundDeliveryError
-            # - testing_agent iteration_128 review comment); the next poll
-            # tick will retry it.
-            logger.warning(f"Stock Transfer Order {sto_id}: could not look up the new Outbound Delivery ID(s) yet: {e}")
+        # Aug 27 2026 (attempt #5): release is now separate from the GI
+        # post itself (see _release_ready_deliveries / module docstring)
+        # - a lookup/release hiccup here is still cosmetic-only for the
+        # gi_status itself (the GI already succeeded for these lines),
+        # it only delays how soon this returns "posted" (see `covered`
+        # below), never fails the whole job.
+        covered, delivery_ids = _release_ready_deliveries(db, sap_outbound_delivery_client, sto_id, doc, newly_posted_item_uuids, existing_delivery_ids)
 
     if failed_notes or insufficient_notes:
         gi_status = "failed" if failed_notes else "insufficient_stock"
@@ -702,6 +769,10 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client,
         }})
         if failed_notes:
             raise SAPOutboundDeliveryError(" | ".join(parts))
+        return "waiting"
+
+    if not covered:
+        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_release_attempts": 1, "outbound_delivery_ids": delivery_ids}})
         return "waiting"
 
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {

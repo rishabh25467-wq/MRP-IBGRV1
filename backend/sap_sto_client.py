@@ -43,6 +43,20 @@ PARTIAL_DELIVERY_SINGLE_FULL_QTY = "9"
 # picks it up (before we can ever reach it), and no Extension Scenario
 # exists to carry a field from Customer Requirement forward without
 # Cloud Applications Studio (see PRD.md for the full investigation).
+
+# Aug 27 2026, real fix (after 4 failed attempts at the WRONG layer -
+# trying to force multiple lines into one delivery at Goods Issue time,
+# via sap_outbound_delivery_client.py): the SAP admin (this tenant's own
+# user) showed a live screenshot of a normal multi-line Stock Transfer
+# Order's own "Edit ... Logistics Details" screen with a header field
+# called "Delivery Rule" set to "Multiple Deliveries" - this maps
+# DIRECTLY to this Customer Requirement's own
+# CompleteDeliveryRequestedIndicator, which this app was hardcoding to
+# "false" below. The decision of "one combined delivery vs one per line"
+# is made HERE, at STO CREATE time, NOT at the later Goods Issue step -
+# no amount of clever action-calling in sap_outbound_delivery_client.py
+# could ever retroactively combine deliveries SAP had already decided,
+# at creation time, to split apart.
 # WORKING alternative found live: this SAME `ManageCustomerRequirementIn`
 # call already supports a standard `TextCollection` note - written here,
 # at CREATE time, with zero race condition. TypeCode "10011" ("Internal
@@ -134,7 +148,7 @@ def _build_envelope(root_tag: str, ship_from_site_id: str, ship_to_site_id: str,
         <ShipFromSiteID>{escape(ship_from_site_id)}</ShipFromSiteID>
         <ShipToSiteID>{escape(ship_to_site_id)}</ShipToSiteID>
         <ShipToLocationID>{escape(ship_to_location_id)}</ShipToLocationID>
-        <CompleteDeliveryRequestedIndicator>false</CompleteDeliveryRequestedIndicator>
+        <CompleteDeliveryRequestedIndicator>true</CompleteDeliveryRequestedIndicator>
         <DeliveryPriorityCode>{DELIVERY_PRIORITY_IMMEDIATE}</DeliveryPriorityCode>{text_collection_xml}{items_xml}
       </CustomerRequirement>
     </n0:{root_tag}>

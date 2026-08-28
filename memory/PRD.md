@@ -1,3 +1,28 @@
+## ATTEMPT #3 (in progress): try SLRequestDeliveryExecution to combine multi-line GI into 1 delivery (2026-08-27)
+
+- User rejected attempt #2's outcome (per-line PGIInBackground - every line ships, but as N separate
+  Outbound Deliveries) with a real example: STO created via app -> P1D1-475/476/477, one line each.
+  Explicitly wants ONE combined delivery for a multi-line STO.
+- Researched SAP's own official pattern for this (community.sap.com): collect every line's
+  `ItemScheduleLine` into one set, call `.RequestDeliveryExecution()` ONCE on the whole set (not once
+  per line). Confirmed via this tenant's own `$metadata` that a matching action IS exposed:
+  `SLRequestDeliveryExecution`, bound to `OutboundDeliveryRequestItemScheduleLineCollection`.
+- Implemented `sap_outbound_delivery_client.request_delivery_execution(schedule_line_object_ids)` -
+  passes every pending line's own `ItemScheduleLine` ObjectID (fetched via a deeper `$expand` in
+  `find_delivery_request_items`) as one comma-joined string in the `ObjectID` param (best-effort; the
+  metadata only declares a single Edm.String param, no array type - this exact call has NEVER been
+  verified live). `try_post_goods_issue` tries this ONCE (only when 2+ lines are pending and ALL
+  already have sufficient stock) as a best-effort combine attempt BEFORE its existing, proven
+  per-line `post_goods_issue` loop - any failure here is caught, logged, and the per-line loop still
+  runs on whatever's left pending, so an order can never get stuck on this attempt (unit-tested with
+  a forced failure: falls back to per-line posting and still reaches `gi_status=posted`).
+- **Status: awaiting a real live test** - user is creating a new multi-line STO now to verify whether
+  `SLRequestDeliveryExecution` actually produces one combined delivery or whether the safe fallback
+  kicks in (both outcomes leave the order correctly shipped either way; only the "is it ONE delivery"
+  question is still open). Update this entry with the real result before considering this fix done.
+
+---
+
 ## BUG FIX (follow-up): Multi-item Goods Issue created 3 separate SAP deliveries instead of 1 (2026-08-27)
 
 - **Real incident #2**: user tested a live 3-line STO (STO-000046, SAP order 30336, ship-from P8) with
