@@ -69,6 +69,10 @@ Extend a SAP BOM viewer application into a full production-planning suite for Ra
   pending-QC items.
 
 ### P1
+- Multiple SAP business users for Playwright concurrency (2-3, possibly split by warehouse) - would
+  fix a real risk where concurrent jobs sharing one SAP login can force-kick each other via "Delete
+  all sessions?" on login. User said "I'll decide, revisit later" (2026-08-28) - needs 2-3 new SAP
+  UI-capable business user credentials from the user before implementing.
 - e-Way Bill and e-Invoice integration via Sandbox.co.in - blocked on user providing API credentials.
 - Per-Line Ship Status - STO detail screen should show each line's own shipped/pending status, not one
   combined status.

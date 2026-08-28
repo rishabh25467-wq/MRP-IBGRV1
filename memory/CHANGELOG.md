@@ -1,3 +1,23 @@
+## Global concurrency badge (2026-08-28, this session)
+
+- **Backend**: `playwright_concurrency.py` now tracks `_active_count`/`_queued_count` alongside the
+  existing `Semaphore(3)` (approximate, status-display-only, not used for gating). New
+  `GET /api/system/job-concurrency` -> `{"active", "queued", "max"}`. Verified via curl with a real
+  session cookie: `{"active":0,"queued":0,"max":3}`.
+- **Frontend**: new `ConcurrencyBadge.jsx`, mounted globally in `App.js` (inside `InternalApp`,
+  alongside `Footer`) - small fixed bottom-right pill, polls every 4s, only renders when
+  active>0 or queued>0 (hidden the rest of the time, matches the app's "don't clutter" pattern).
+  Wording is deliberately generic ("Background tasks: X/3 running") - never mentions SAP/Playwright/
+  browser, same rule every other user-facing string in this app follows.
+- User asked (separately) whether 2-3 SAP business users split by warehouse would help reliability -
+  confirmed a REAL latent risk exists (all Playwright jobs share ONE SAP login; that login's "Delete
+  all sessions?" step can force-kick a different concurrently-running job using the same user) - user
+  said "I'll decide, revisit later" - not implemented, needs 2-3 new SAP UI-capable business user
+  credentials from the user if/when they proceed.
+
+---
+
+
 ## Inbound Receipts "Completed" tab fixed + Supplier PO GRN investigation (2026-08-28, this session)
 
 - **Fixed 3 real bugs found by testing_agent (iteration_137)** in the new Inbound STO Receipt

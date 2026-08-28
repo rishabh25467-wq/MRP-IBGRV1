@@ -122,6 +122,15 @@ async def get_build_version():
     return BUILD_VERSION
 
 
+# Global concurrency badge (user's explicit ask, Aug 2026) - lets every
+# page show how many background automation slots are busy/queued without
+# ever naming SAP/Playwright/browser in the response (frontend wording
+# must stay generic - see playwright_concurrency.py module docstring).
+@api_router.get("/system/job-concurrency")
+async def get_job_concurrency():
+    return playwright_concurrency.get_concurrency_status()
+
+
 @api_router.get("/docs/sap-integrations")
 async def get_sap_integrations_doc():
     """Serves the SAP integration reference doc (read-only, plain text)."""

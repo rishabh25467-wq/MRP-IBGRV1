@@ -37,6 +37,14 @@ sap_ui_semaphore = threading.Semaphore(MAX_CONCURRENT_SAP_UI_SESSIONS)
 
 _QUEUE_WAIT_EXECUTOR = ThreadPoolExecutor(max_workers=64, thread_name_prefix="sap-ui-queue-wait")
 
+# Plain counters (not derivable from a threading.Semaphore itself) backing
+# the frontend's global concurrency badge (user's explicit ask, Aug 2026) -
+# approximate-but-good-enough for a status display, not used for any
+# actual gating logic.
+_status_lock = threading.Lock()
+_active_count = 0
+_queued_count = 0
+
 # Every headless browser launched while holding the semaphore registers
 # itself here so a backend shutdown can close them explicitly instead of
 # leaving orphaned Chromium processes behind (testing_agent iteration_133:
@@ -48,11 +56,30 @@ _chromium_verify_lock = threading.Lock()
 
 
 async def acquire() -> None:
-    await asyncio.get_running_loop().run_in_executor(_QUEUE_WAIT_EXECUTOR, sap_ui_semaphore.acquire)
+    global _queued_count, _active_count
+    with _status_lock:
+        _queued_count += 1
+    try:
+        await asyncio.get_running_loop().run_in_executor(_QUEUE_WAIT_EXECUTOR, sap_ui_semaphore.acquire)
+    except Exception:
+        with _status_lock:
+            _queued_count -= 1
+        raise
+    with _status_lock:
+        _queued_count -= 1
+        _active_count += 1
 
 
 def release() -> None:
+    global _active_count
     sap_ui_semaphore.release()
+    with _status_lock:
+        _active_count = max(0, _active_count - 1)
+
+
+def get_concurrency_status() -> dict:
+    with _status_lock:
+        return {"active": _active_count, "queued": _queued_count, "max": MAX_CONCURRENT_SAP_UI_SESSIONS}
 
 
 def register_browser(browser) -> None:

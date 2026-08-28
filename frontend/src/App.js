@@ -31,6 +31,7 @@ import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { SupplierAuthProvider, useSupplierAuth } from "@/contexts/SupplierAuthContext";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { Footer } from "@/components/Footer";
+import { ConcurrencyBadge } from "@/components/ConcurrencyBadge";
 
 // Aug 2026: Store Approval now requires Entra ID login like every other
 // page (was previously exempted here) - user's explicit ask, now that
@@ -136,6 +137,7 @@ function InternalApp() {
           </Routes>
         </div>
         <Footer />
+        <ConcurrencyBadge />
       </div>
     </AuthGate>
   );
