@@ -30,11 +30,27 @@ on-the-fly the first time list_pending_receipts is asked for such an
 order, using the exact same SAP lookup try_post_goods_issue's own
 release step already relies on - read-only, no SAP write.
 
-Confirmed live (Aug 28 2026): calling `release_delivery` before `PGRBackground` was the WRONG sequence and appears to have permanently broken P8D1-192/193 into a stuck "action is disabled" state on BOTH actions. The native SAP "Post Goods Receipt" screen (a fresh, never-Released Notification, e.g. P8D1-172) succeeds by calling PGR Ground DIRECTLY - no Release step - and creates a real Confirmed Inbound Delivery + posts real stock. `receive_stock_transfer_order` below therefore calls `post_goods_receipt` directly, with no Release call, matching the native UI's own path."""
+Confirmed live (Aug 28 2026), re-tested with a clean never-touched delivery:
+`PGRBackground` is genuinely disabled by SAP for this tenant's inbound
+deliveries via the OData API - officially documented by SAP itself (KBA
+3583076: "Inability to Post Goods Receipt with Actual Quantities via OData
+API in Inbound Delivery Processing" - Actual Quantity belongs to the
+Confirmed Inbound Delivery, not the Notification, and there is no
+web service/API to create one). See sap_playwright_pgr_service.py's module
+docstring for the full investigation (including why Site Logistics Task and
+the SAP-sample "kh*" custom OData services don't help either).
+`receive_stock_transfer_order_job` (server.py) therefore drives the real SAP
+browser UI headlessly (Playwright) to click "Post Goods Receipt" instead -
+this is unavoidably slow (SAP's own UI takes ~40-90s per delivery), so it
+always runs as a background job polled by the frontend, never a synchronous
+request. A quantity override is typed directly into the Playwright screen's
+own "Actual Quantity" grid cell (the OData `InboundDeliveryItemQuantity`
+PATCH this used to rely on is ALSO blocked tenant-wide: SAP returns
+"Changing data not possible; data is read-only" - see
+build_line_overrides below)."""
 import logging
+import re
 from datetime import datetime, timezone
-
-from sap_inbound_delivery_client import SAPInboundDeliveryError
 
 logger = logging.getLogger(__name__)
 
@@ -106,57 +122,55 @@ def list_ship_to_sites_with_pending_receipts(db) -> list:
     return sorted(s for s in db[STO_COLLECTION].distinct("ship_to_site_id", _PENDING_QUERY) if s)
 
 
-def receive_stock_transfer_order(db, sap_inbound_delivery_client, sto_id: str, actor: str, quantity_overrides: dict = None) -> dict:
-    """`quantity_overrides`: optional {str(line_no): received_qty} for
-    any line the user edited away from the default full quantity. Every
-    line not present here receives in full, exactly as SAP's own Inbound
-    Delivery Notification already shows.
-
-    Best-effort per delivery: one failed line's SAP error doesn't stop
-    the others from being received - matches this app's existing Goods
-    Issue pattern. Returns {status: "received"|"partial"|"failed",
-    results: [...]}."""
+def prepare_receipt(db, sto_id: str) -> dict:
+    """Validates the order is receivable and returns its doc - raises
+    ValueError (400 to the caller) for any invalid state."""
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:
         raise ValueError(f"Stock Transfer Order {sto_id} not found.")
     if doc.get("gi_status") != "posted":
         raise ValueError("This order's Goods Issue hasn't posted in SAP yet - nothing to receive.")
-    if doc.get("receipt_status") == "received":
-        return {"status": "received", "results": doc.get("receipt_results") or []}
+    return doc
 
+
+def build_line_overrides(doc: dict, quantity_overrides: dict) -> dict:
+    """`quantity_overrides`: optional {str(line_no): received_qty} for any
+    line the user edited away from the default full quantity. Returns
+    {product_id: qty} for only the lines that genuinely differ from the
+    full shipped amount - Playwright types these straight into SAP's own
+    "Actual Quantity" grid cell (see sap_playwright_pgr_service.py); every
+    other line is left to "Propose Quantities" default to its full
+    Planned Quantity."""
     quantity_overrides = quantity_overrides or {}
-    lines_by_product = {}
+    result = {}
     for it in (doc.get("items") or []):
-        lines_by_product.setdefault(it["product_id"], []).append(it)
+        override = quantity_overrides.get(str(it["line_no"]))
+        if override is not None and abs(float(override) - float(it["requested_qty"])) > 1e-6:
+            result[it["product_id"]] = float(override)
+    return result
 
-    results = []
-    any_failed = False
-    for delivery_id in (doc.get("outbound_delivery_ids") or []):
-        try:
-            delivery = sap_inbound_delivery_client.find_delivery_by_id(delivery_id)
-            if not delivery:
-                results.append({"delivery_id": delivery_id, "status": "waiting", "error": "Inbound Delivery Notification not yet visible in SAP - try again shortly."})
-                any_failed = True
-                continue
-            for item in delivery["items"]:
-                sto_lines = lines_by_product.get(item["product_id"]) or []
-                sto_line = sto_lines.pop(0) if sto_lines else None
-                override = quantity_overrides.get(str(sto_line["line_no"])) if sto_line else None
-                if override is not None and abs(float(override) - item["quantity"]) > 1e-6:
-                    sap_inbound_delivery_client.update_item_quantity(item["quantity_object_id"], float(override))
-            sap_inbound_delivery_client.post_goods_receipt(delivery["object_id"])
-            results.append({"delivery_id": delivery_id, "status": "received"})
-        except SAPInboundDeliveryError as e:
-            logger.error(f"Inbound receipt failed for {sto_id} / delivery {delivery_id}: {e}")
-            results.append({"delivery_id": delivery_id, "status": "failed", "error": str(e)})
-            any_failed = True
 
+def finalize_receipt(db, sto_id: str, results: list, actor: str, had_overrides: bool = False) -> dict:
+    """Persists the final receipt outcome after the Playwright PGR run -
+    same status rollup this feature has always used."""
+    doc = db[STO_COLLECTION].find_one({"_id": sto_id}) or {}
+    any_failed = any(r["status"] != "received" for r in results)
     overall = "failed" if all(r["status"] != "received" for r in results) else ("partial" if any_failed else "received")
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
         "receipt_status": overall,
         "receipt_results": results,
-        "receipt_error": " | ".join(f"{r['delivery_id']}: {r.get('error')}" for r in results if r.get("error")) or None,
+        "receipt_error": " | ".join(f"{r['delivery_id']}: {_humanize_sap_error(r.get('error'))}" for r in results if r.get("error")) or None,
         "received_at": datetime.now(timezone.utc) if overall == "received" else doc.get("received_at"),
         "received_by": actor,
     }})
-    return {"status": overall, "results": results}
+    return {"status": overall, "results": results, "had_overrides": had_overrides}
+
+
+def _humanize_sap_error(raw: str) -> str:
+    """SAP's raw OData fault is a JSON blob (e.g. from an older
+    receipt_results entry) - pull out just the message text for display;
+    Playwright-sourced errors are already plain text and pass through."""
+    if not raw:
+        return raw
+    match = re.search(r'"value"\s*:\s*"([^"]+)"', raw)
+    return match.group(1) if match else raw

@@ -38,6 +38,7 @@ export default function InboundReceiptsPage() {
   const [receiveTarget, setReceiveTarget] = useState(null);
   const [qtyEdits, setQtyEdits] = useState({});
   const [submitting, setSubmitting] = useState(false);
+  const [progressStep, setProgressStep] = useState(null);
 
   useEffect(() => {
     axios.get(`${API}/inbound-receipts/sites`).then(({ data }) => {
@@ -74,12 +75,23 @@ export default function InboundReceiptsPage() {
   const submitReceive = async () => {
     if (!receiveTarget) return;
     setSubmitting(true);
+    setProgressStep("Starting...");
     try {
       const items = receiveTarget.items.map((it) => ({ line_no: it.line_no, received_qty: Number(qtyEdits[it.line_no] ?? it.requested_qty) }));
-      const { data } = await axios.post(`${API}/inbound-receipts/${receiveTarget.sto_id}/receive`, { items });
-      if (data.status === "received") {
-        toast.success(`${receiveTarget.sto_id} received in full — closed in SAP.`);
-      } else if (data.status === "partial") {
+      const anyPartial = items.some((it) => {
+        const line = receiveTarget.items.find((x) => x.line_no === it.line_no);
+        return line && Math.abs(it.received_qty - line.requested_qty) > 1e-6;
+      });
+      const { data: startData } = await axios.post(`${API}/inbound-receipts/${receiveTarget.sto_id}/receive`, { items });
+      let result;
+      if (startData.already_received) {
+        result = startData.result;
+      } else {
+        result = await pollReceiveJob(startData.job_id);
+      }
+      if (result.status === "received") {
+        toast.success(anyPartial ? `${receiveTarget.sto_id} received as entered — closed in SAP.` : `${receiveTarget.sto_id} received in full — closed in SAP.`);
+      } else if (result.status === "partial") {
         toast.warning(`${receiveTarget.sto_id}: some lines received, others failed — check the row for details.`);
       } else {
         toast.error(`${receiveTarget.sto_id}: receipt failed — check the row for details.`);
@@ -87,10 +99,23 @@ export default function InboundReceiptsPage() {
       setReceiveTarget(null);
       loadOrders();
     } catch (e) {
-      toast.error(e?.response?.data?.detail || "Could not post the Goods Receipt.");
+      toast.error(e?.response?.data?.detail || e?.message || "Could not post the Goods Receipt.");
     } finally {
       setSubmitting(false);
+      setProgressStep(null);
     }
+  };
+
+  const pollReceiveJob = async (jobId) => {
+    const deadline = Date.now() + 6 * 60 * 1000; // multi-line receipts take 40-90s per delivery
+    while (Date.now() < deadline) {
+      const { data: job } = await axios.get(`${API}/inbound-receipts/receive-status/${jobId}`);
+      if (job.progress) setProgressStep(job.progress);
+      if (job.status === "done") return job.result;
+      if (job.status === "failed") throw new Error(job.error || "Receipt failed");
+      await new Promise((r) => setTimeout(r, 2500));
+    }
+    throw new Error("This is taking longer than expected — check back shortly, the receipt may still complete in the background.");
   };
 
   return (
@@ -145,7 +170,7 @@ export default function InboundReceiptsPage() {
             Nothing pending — every shipped STO for this site has been received.
           </div>
         ) : (
-          <div className="bg-white rounded-xl border border-[#EAECF0] overflow-hidden" data-testid="inbound-receipts-list">
+          <div className="bg-white rounded-xl border border-[#EAECF0] overflow-x-auto" data-testid="inbound-receipts-list">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -176,7 +201,7 @@ export default function InboundReceiptsPage() {
                           </button>
                           <div className="text-xs text-[#667085]">SAP #{order.sap_order_id}</div>
                           {order.outbound_delivery_ids.length > 0 && (
-                            <div className="text-[11px] text-[#98A2B3] font-mono mt-0.5" data-testid={`inbound-receipt-delivery-ids-${order.sto_id}`}>
+                            <div className="text-[11px] text-[#667085] font-mono mt-0.5" data-testid={`inbound-receipt-delivery-ids-${order.sto_id}`}>
                               SAP Delivery Notif: {order.outbound_delivery_ids.join(", ")}
                             </div>
                           )}
@@ -240,7 +265,7 @@ export default function InboundReceiptsPage() {
         )}
       </div>
 
-      <Dialog open={!!receiveTarget} onOpenChange={(open) => !open && setReceiveTarget(null)}>
+      <Dialog open={!!receiveTarget} onOpenChange={(open) => !open && !submitting && setReceiveTarget(null)}>
         <DialogContent className="max-w-2xl" data-testid="inbound-receipt-dialog">
           <DialogHeader>
             <DialogTitle>Receive {receiveTarget?.sto_id}</DialogTitle>
@@ -277,25 +302,53 @@ export default function InboundReceiptsPage() {
                         <Input
                           type="number"
                           min="0.01"
+                          max={it.requested_qty}
                           step="0.01"
                           className="w-24 text-right"
                           value={qtyEdits[it.line_no] ?? it.requested_qty}
                           onChange={(e) => setQtyEdits((prev) => ({ ...prev, [it.line_no]: e.target.value }))}
+                          disabled={submitting}
                           data-testid={`inbound-receipt-qty-input-${it.line_no}`}
                         />
                         <span className="text-xs text-[#667085] w-8">{it.unit_of_measure}</span>
                       </div>
+                      {Number(qtyEdits[it.line_no] ?? it.requested_qty) > it.requested_qty && (
+                        <div className="text-xs text-[#B42318] text-right mt-1" data-testid={`inbound-receipt-qty-error-${it.line_no}`}>
+                          Can't exceed shipped qty ({formatQty(it.requested_qty)})
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          {submitting && (
+            <div className="bg-[#F0F9FA] border border-[#B4E4E8] rounded-lg px-4 py-3" data-testid="inbound-receipt-progress">
+              <div className="flex items-center gap-2 text-sm font-medium text-[#0B6B74]">
+                <CircleNotch size={16} className="animate-spin shrink-0" />
+                <span data-testid="inbound-receipt-progress-step">{progressStep || "Working on it..."}</span>
+              </div>
+              <div className="w-full h-1.5 bg-[#D6EEF0] rounded-full mt-2 overflow-hidden">
+                <div className="h-full w-1/3 bg-[#0B6B74] rounded-full animate-[pulse_1.5s_ease-in-out_infinite]" />
+              </div>
+              <p className="text-xs text-[#0B6B74]/70 mt-2">
+                Posting this directly in SAP's own screen can take up to a couple of minutes — please keep this open.
+              </p>
+            </div>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setReceiveTarget(null)} disabled={submitting} data-testid="inbound-receipt-cancel-btn">
               Cancel
             </Button>
-            <Button onClick={submitReceive} disabled={submitting || receiveTarget?.items.some((it) => !(Number(qtyEdits[it.line_no] ?? it.requested_qty) > 0))} data-testid="inbound-receipt-confirm-btn">
+            <Button
+              onClick={submitReceive}
+              disabled={submitting || receiveTarget?.items.some((it) => {
+                const qty = Number(qtyEdits[it.line_no] ?? it.requested_qty);
+                return !(qty > 0) || qty > it.requested_qty + 1e-6;
+              })}
+              data-testid="inbound-receipt-confirm-btn"
+            >
               {submitting ? <><CircleNotch size={16} className="animate-spin mr-2" /> Receiving…</> : <><CheckCircle size={16} className="mr-2" /> Confirm Receipt</>}
             </Button>
           </DialogFooter>

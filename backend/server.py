@@ -28,7 +28,6 @@ from sap_wip_clearing_client import SAPWipClearingClient, SAPWipClearingError, c
 from sap_production_proposal_client import SAPProductionProposalClient, SAPProductionProposalError
 from sap_sto_client import SAPSTOClient
 from sap_outbound_delivery_client import SAPOutboundDeliveryClient, SAPOutboundDeliveryError
-from sap_inbound_delivery_client import SAPInboundDeliveryClient, SAPInboundDeliveryError
 from erp_portal_client import ERPPortalClient
 from sap_production_model_client import SAPProductionModelClient, SAPProductionModelError, SAPProductionModelBomClient
 from sap_boo_client import SAPBooClient, SAPBooError
@@ -71,6 +70,7 @@ import store_approval_service
 import mrp_plan_store
 import autosave_store
 import job_store
+import sap_playwright_pgr_service
 import supplier_service
 import stock_transfer_service
 import inbound_receipt_service
@@ -241,12 +241,6 @@ sap_outbound_delivery_client = SAPOutboundDeliveryClient(
     vhost=os.environ['BYD_ODATA_VHOST'],
 )
 
-sap_inbound_delivery_client = SAPInboundDeliveryClient(
-    endpoint=os.environ['SAP_ODATA_INBOUND_BASE_URL'],
-    username=os.environ['SAP_ODATA_USERNAME'],
-    password=os.environ['SAP_ODATA_PASSWORD'],
-    vhost=os.environ['BYD_ODATA_VHOST'],
-)
 
 sap_production_order_release_client = SAPProductionOrderReleaseClient(
     base_url=os.environ['SAP_ODATA_PRODUCTION_ORDER_RELEASE_BASE_URL'],
@@ -5490,11 +5484,48 @@ async def post_inbound_receipt(sto_id: str, payload: InboundReceiptRequest, requ
     actor = (user or {}).get("name") or (user or {}).get("email") or "unknown"
     overrides = {str(i.line_no): i.received_qty for i in payload.items}
     try:
-        return await asyncio.to_thread(
-            inbound_receipt_service.receive_stock_transfer_order, db, sap_inbound_delivery_client, sto_id, actor, overrides
-        )
+        doc = await asyncio.to_thread(inbound_receipt_service.prepare_receipt, db, sto_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    if doc.get("receipt_status") == "received":
+        return {"already_received": True, "result": {"status": "received", "results": doc.get("receipt_results") or []}}
+
+    existing_job = await asyncio.to_thread(db[job_store.COLLECTION_NAME].find_one, {"sto_id": sto_id, "status": "running", "kind": "inbound_receipt"})
+    if existing_job:
+        return {"job_id": existing_job["_id"]}
+
+    for it in payload.items:
+        sto_line = next((x for x in doc.get("items") or [] if x["line_no"] == it.line_no), None)
+        if sto_line and (it.received_qty <= 0 or it.received_qty > sto_line["requested_qty"] + 1e-6):
+            raise HTTPException(status_code=400, detail=f"Received Qty for line {it.line_no} must be between 0 and the shipped quantity ({sto_line['requested_qty']}).")
+
+    job_id = str(uuid.uuid4())
+    await asyncio.to_thread(job_store.create_job, db, job_id, {"sto_id": sto_id, "kind": "inbound_receipt", "status": "running", "progress": "Starting...", "result": None, "error": None})
+    line_overrides = await asyncio.to_thread(inbound_receipt_service.build_line_overrides, doc, overrides)
+
+    async def run():
+        try:
+            pgr_result = await sap_playwright_pgr_service.post_goods_receipts_via_ui(
+                os.environ["SAP_USERNAME"], os.environ["SAP_PASSWORD"], doc.get("outbound_delivery_ids") or [],
+                line_overrides=line_overrides,
+                progress_cb=lambda step: asyncio.create_task(asyncio.to_thread(job_store.update_job, db, job_id, {"progress": step})),
+            )
+            final = await asyncio.to_thread(inbound_receipt_service.finalize_receipt, db, sto_id, pgr_result["results"], actor, bool(line_overrides))
+            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "result": final, "error": None})
+        except Exception as e:
+            logger.error(f"Inbound receipt job {job_id} ({sto_id}) failed: {e}")
+            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "result": None, "error": str(e)})
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+@api_router.get("/inbound-receipts/receive-status/{job_id}")
+async def get_inbound_receipt_job_status(job_id: str):
+    job = await asyncio.to_thread(job_store.get_job, db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return job
 
 
 # ==================== Supplier Portal (external vendors, Aug 2026) ====================
