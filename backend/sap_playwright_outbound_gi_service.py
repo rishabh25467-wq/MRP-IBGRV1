@@ -211,7 +211,7 @@ async def combine_and_post_goods_issue_via_ui(username: str, password: str, sap_
     await playwright_concurrency.acquire()
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await playwright_concurrency.launch_chromium(p)
             playwright_concurrency.register_browser(browser)
             try:
                 page = await browser.new_page(viewport={"width": 1600, "height": 900})

@@ -1,3 +1,24 @@
+## Hardening: Playwright self-heal + Supplier PO cache soft-delete (2026-08-28)
+
+- **Playwright self-heal** (`playwright_concurrency.py`'s new `launch_chromium()`): if a Chromium
+  launch ever fails with "Executable doesn't exist" (the exact bug above), it now automatically runs
+  `playwright install chromium` ONCE (process-wide latch, so a genuinely broken install fails fast
+  after 1 attempt instead of a ~180s reinstall every launch) and retries immediately - both
+  `sap_playwright_pgr_service.py` and `sap_playwright_outbound_gi_service.py` now launch through this
+  instead of `p.chromium.launch()` directly. Makes this whole class of bug impossible to silently hang
+  on for 20 minutes again, in preview or production, regardless of what's pre-cached in `/pw-browsers`.
+- **Supplier PO cache destructive delete fixed** (deployment-scan-flagged BLOCKER):
+  `supplier_shipment_service.refresh_po_cache()` used to hard-`delete_many` any cached row not present
+  in that cycle's live SAP fetch - a single fetch-window/timing hiccup could permanently wipe a PO
+  that's still genuinely open in SAP. Now soft-marks a missing row with `missing_since` on its first
+  miss (cleared automatically if it reappears) and only actually deletes it after
+  `STALE_CYCLES_BEFORE_DELETE=3` consecutive misses (~30 min at the 10-min refresh cadence). Verified
+  via a synthetic 2-row/1-disappearing test: the missing row got `missing_since` set, not deleted; the
+  still-present row stayed `None`.
+
+---
+
+
 ## ENV FIX: Playwright Chromium binary missing after fork - Goods Issue stuck in "awaiting_delivery" (2026-08-28)
 
 - **User report**: STO-000069 (SAP order 30430, 3 lines) sat in `gi_status="awaiting_delivery"` for

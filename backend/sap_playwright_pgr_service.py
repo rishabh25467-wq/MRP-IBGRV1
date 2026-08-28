@@ -310,7 +310,7 @@ async def post_goods_receipts_via_ui(username: str, password: str, delivery_ids:
     await playwright_concurrency.acquire()
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await playwright_concurrency.launch_chromium(p)
             playwright_concurrency.register_browser(browser)
             try:
                 page = await browser.new_page(viewport={"width": 1600, "height": 900})

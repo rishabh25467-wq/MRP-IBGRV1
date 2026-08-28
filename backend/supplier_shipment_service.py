@@ -41,7 +41,7 @@ if they decide to override rather than wait for an edit.
 """
 import secrets
 import string
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import sap_po_client
 
@@ -49,6 +49,14 @@ PO_CACHE_COLLECTION = "supplier_portal_po_cache"
 SHIPMENTS_COLLECTION = "supplier_portal_shipments"
 DOC_CODE_ALPHABET = "".join(c for c in string.ascii_uppercase + string.digits if c not in "0O1I")
 DOC_CODE_LENGTH = 6
+
+# Background refresh runs every 10 min (server.py's
+# start_supplier_po_cache_refresh_loop) - a row must survive 3
+# consecutive misses (~30 min) before it's actually deleted, so a
+# single fetch cycle's own window/timing gap can never be mistaken for
+# "PO closed" (deployment-scan-flagged data-loss risk, fixed 2026-08-28).
+STALE_CYCLES_BEFORE_DELETE = 3
+REFRESH_INTERVAL_MINUTES = 10
 
 
 class ShipmentError(Exception):
@@ -75,7 +83,7 @@ def refresh_po_cache(db, vendor_code: str, items: list) -> None:
     works between SAP calls, and so a vendor always sees "last known"
     data instead of a hard error the moment SAP itself is briefly down.
 
-    Also DELETES any of this vendor's previously-cached rows that are no
+    Also EXPIRES any of this vendor's previously-cached rows that are no
     longer in the fresh live fetch (PO now Finished, or fell out of
     sap_po_client's current-window fetch) - a live fetch is the source
     of truth, so a stale/no-longer-open row must not linger forever
@@ -83,7 +91,16 @@ def refresh_po_cache(db, vendor_code: str, items: list) -> None:
     from before the sap_po_client recency-window fix even after that
     fix landed, since nothing had ever deleted them).
 
-    Only rows tagged `source="sap_live"` are eligible for that delete -
+    A missing row is only MARKED (`missing_since`) on its first miss,
+    and only actually deleted once it's been missing for
+    STALE_CYCLES_BEFORE_DELETE consecutive refreshes - protects against
+    a single fetch cycle's own window/timing hiccup being mistaken for
+    "PO closed" and permanently wiping a still-open PO (real data-loss
+    risk flagged by a deployment scan, fixed 2026-08-28: this used to
+    hard-delete on the very first miss). A row that reappears in a later
+    fetch has `missing_since` cleared automatically via the `$set` below.
+
+    Only rows tagged `source="sap_live"` are eligible for this at all -
     a manually-seeded demo/test fixture row (e.g. dummy vendor_code
     S9999's fixture, which never comes from a real SAP fetch) has no
     `source` field and is left alone, otherwise the global background
@@ -95,9 +112,14 @@ def refresh_po_cache(db, vendor_code: str, items: list) -> None:
         key = f"{vendor_code}::{it['po_number']}::{it['item_number']}"
         fresh_keys.append(key)
         db[PO_CACHE_COLLECTION].update_one(
-            {"_id": key}, {"$set": {**it, "vendor_code": vendor_code, "source": "sap_live", "updated_at": now}}, upsert=True,
+            {"_id": key},
+            {"$set": {**it, "vendor_code": vendor_code, "source": "sap_live", "updated_at": now, "missing_since": None}},
+            upsert=True,
         )
-    db[PO_CACHE_COLLECTION].delete_many({"vendor_code": vendor_code, "source": "sap_live", "_id": {"$nin": fresh_keys}})
+    missing_query = {"vendor_code": vendor_code, "source": "sap_live", "_id": {"$nin": fresh_keys}}
+    db[PO_CACHE_COLLECTION].update_many({**missing_query, "missing_since": None}, {"$set": {"missing_since": now}})
+    stale_cutoff = now - timedelta(minutes=STALE_CYCLES_BEFORE_DELETE * REFRESH_INTERVAL_MINUTES)
+    db[PO_CACHE_COLLECTION].delete_many({**missing_query, "missing_since": {"$lte": stale_cutoff}})
 
 
 def refresh_all_vendor_caches(db, rows: list) -> dict:

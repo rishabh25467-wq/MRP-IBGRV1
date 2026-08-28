@@ -24,8 +24,13 @@ many pending STOs at once (each queuing a job that blocks a thread
 until its semaphore turn) could otherwise exhaust it and stall
 unrelated requests app-wide."""
 import asyncio
+import logging
+import subprocess
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+
+logger = logging.getLogger(__name__)
 
 MAX_CONCURRENT_SAP_UI_SESSIONS = 3
 sap_ui_semaphore = threading.Semaphore(MAX_CONCURRENT_SAP_UI_SESSIONS)
@@ -37,6 +42,9 @@ _QUEUE_WAIT_EXECUTOR = ThreadPoolExecutor(max_workers=64, thread_name_prefix="sa
 # leaving orphaned Chromium processes behind (testing_agent iteration_133:
 # 18 stray chrome processes survived a hot-reload with 3 jobs in flight).
 _active_browsers = set()
+
+_chromium_verified = False
+_chromium_verify_lock = threading.Lock()
 
 
 async def acquire() -> None:
@@ -62,3 +70,36 @@ async def close_all_browsers() -> None:
         except Exception:
             pass
         _active_browsers.discard(browser)
+
+
+async def launch_chromium(playwright):
+    """Use instead of `playwright.chromium.launch(headless=True)` directly
+    - self-heals ONCE if the on-disk browser cache is missing/mismatched
+    against the pinned `playwright` pip version (real incident, Aug 28
+    2026: a forked pod's /pw-browsers still had an older Chromium
+    revision than playwright==1.62.0 expects, so every Goods Issue
+    attempt failed instantly and silently retried for the full 20-min
+    poll window before anyone noticed - `pip install playwright` only
+    installs the Python wrapper, never the browser binaries themselves).
+    `_chromium_verified` is a process-wide latch so a genuinely broken
+    install (e.g. no disk space, no network) fails fast on every launch
+    after the first attempt instead of eating a ~180s reinstall timeout
+    every single time."""
+    global _chromium_verified
+    try:
+        return await playwright.chromium.launch(headless=True)
+    except Exception as e:
+        if _chromium_verified or "Executable doesn't exist" not in str(e):
+            raise
+        with _chromium_verify_lock:
+            if _chromium_verified:
+                return await playwright.chromium.launch(headless=True)
+            logger.warning(f"Chromium launch failed ({e}) - attempting a one-time self-heal via `playwright install chromium`")
+            result = await asyncio.to_thread(
+                subprocess.run, [sys.executable, "-m", "playwright", "install", "chromium"],
+                capture_output=True, text=True, timeout=180,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"playwright install chromium failed: {result.stderr[-500:]}") from e
+            _chromium_verified = True
+        return await playwright.chromium.launch(headless=True)
