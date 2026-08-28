@@ -1,0 +1,35 @@
+{
+  "summary": "Frontend-only, read-only verification of the new Inbound STO Receipt page (/inventory/inbound-receipts) using the synthetic super_admin vms_session cookie. Verified page load, 11 real pending STOs rendered with all columns + Pending Receipt badge + Receive button, site filter (All/P1/P2/P8 - P1 correctly narrowed to 3 rows all routed P8->P1, back to All restored 11), row expand/collapse showing line items, Receive dialog contents (title 'Receive STO-000056', 3 qty inputs pre-filled with full requested qty of 1, unit labels, Cancel + Confirm Receipt buttons), qty edit updating state (1 -> 7.5), Cancel closing dialog. Network trace confirmed ONLY GET /api/inbound-receipts/sites and /pending fired - ZERO POST .../receive calls, so no live SAP Goods Receipt was posted. NavTabs 'Inventory Management' dropdown shows 'Inbound STO Receipt' for this user with empty allowed_pages and navigates correctly. Mobile 390px viewport also renders all 11 rows (horizontal scroll table).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "InboundReceiptsPage", "issue": "NavTabs is rendered bare (line 97: `<NavTabs />` directly on the #F9FAFB page background) instead of inside the teal branded `<header>` wrapper every other page uses (see StockTransferPage.js line ~590-601). Result: nav tab labels use `text-white/85` on a near-white background so they are effectively invisible/unreadable (only the active 'Inventory Management' teal item is legible), and the page is missing the app logo/branding and <SapConnectionStatus />, breaking visual consistency.", "selector": "[data-testid=\"inbound-receipts-page\"] > header area / [data-testid=\"nav-inventory\"]", "priority": "HIGH"},
+      {"component": "InboundReceiptsPage", "issue": "React console error: 'Each child in a list should have a unique key prop. Check the render method of InboundReceiptsPage.' Cause: the `orders.map()` at line 152 returns a bare fragment `<>` with keys on the inner TableRows instead of on the fragment. Fix: use `<Fragment key={order.sto_id}>` (import Fragment from react).", "selector": "console", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/inventory/inbound-receipts (desktop 1920)", "issues": ["Top nav strip effectively unreadable (white text on light grey) due to missing teal header wrapper", "No app logo / page-title chip / SAP connection status indicator unlike sibling inventory pages"]},
+      {"screen": "/inventory/inbound-receipts (mobile 390)", "issues": ["Table requires horizontal scroll (acceptable) but Status/Action columns are off-screen with no visual scroll affordance - user must discover the swipe to reach the Receive button"]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Wrap <NavTabs /> in the standard teal branded header (copy the pattern from StockTransferPage.js lines ~585-601, including SapConnectionStatus) so nav labels are readable.",
+    "Fix the React missing-key warning by keying the fragment in the orders.map (use <Fragment key={order.sto_id}>).",
+    "Optional: add a mobile scroll affordance or a card layout for the STO table below sm breakpoint.",
+    "Also unused import `WarningCircle` in InboundReceiptsPage.js (line 4) - remove."
+  ],
+  "critical_code_review_comments": [
+    "InboundReceiptsPage: the initial GET /inbound-receipts/sites promise has no .catch() - a failed sites call yields an unhandled promise rejection and a silently empty filter dropdown; add error handling/toast like loadOrders has.",
+    "Confirm Receipt has no confirmation/typed acknowledgement step even though it triggers an irreversible production SAP Goods Receipt; consider a second-step confirm or disabling when qty <= 0 (currently an empty/0/negative qty input is submittable - no client-side validation on inbound-receipt-qty-input-*).",
+    "Fragment-in-map missing key (React warning) - see frontend_issues."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (per request)", "frontend": "100% of requested read-only flows passed functionally; 2 UI/code defects found"},
+  "seed_data_creation": "none - used existing real pending STOs and the provided synthetic session",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "vms_session=jlGgQkaVgmGB7rmnjW9CX2tKb1wFTPtx (synthetic super_admin, allowed_pages=[]) - verified working on the preview host",
+  "context_for_next_testing_agent": "Confirm Receipt (POST /api/inbound-receipts/{sto_id}/receive) was deliberately NEVER clicked - it posts a live irreversible SAP Goods Receipt. Requires explicit user go-ahead on a specific STO before testing. Also note: with this session (empty allowed_pages) other pages like /bom-explorer render blank/redirect to login screen - expected, only the anyUser-gated inbound page is accessible.",
+  "rca_of_the_issue": "Header/nav contrast bug: InboundReceiptsPage renders <NavTabs /> outside the shared teal <header> container that supplies the dark background NavTabs' white text is designed for. React key warning: the map callback returns an unkeyed fragment."
+}

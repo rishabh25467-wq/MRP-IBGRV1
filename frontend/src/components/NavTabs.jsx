@@ -39,6 +39,11 @@ const INVENTORY_SUBTABS = [
   // Aug 27 2026, user's explicit ask: own grantable right, separate from
   // Stock Overview above.
   { to: "/inventory/inter-plant-transfer", label: "Inter Plant Stock Transfer", testId: "nav-inventory-stock-transfer", page: "stock_transfer" },
+  // Aug 28 2026 - Inbound STO Receipt: no `page` key at all - visible to
+  // ANY logged-in user (see visibleInventorySubtabs filter below), per
+  // the user's explicit ask when pivoting away from combining outbound
+  // deliveries.
+  { to: "/inventory/inbound-receipts", label: "Inbound STO Receipt", testId: "nav-inventory-inbound-receipts" },
   // Aug 2026, user's explicit ask: links out to the existing Store
   // Approval screen (public/unauthenticated route, unchanged) - just a
   // shortcut into it from the main nav, no backend permission change.
@@ -66,11 +71,11 @@ export const NavTabs = () => {
   const { user, hasPageAccess, logout } = useAuth();
   const visibleTabs = TABS.filter((t) => hasPageAccess(t.page));
   const visiblePurchasingStrategySubtabs = PURCHASING_STRATEGY_SUBTABS.filter((t) => hasPageAccess(t.page));
-  const visibleInventorySubtabs = INVENTORY_SUBTABS.filter((t) => hasPageAccess(t.page));
+  const visibleInventorySubtabs = INVENTORY_SUBTABS.filter((t) => !t.page || hasPageAccess(t.page));
   const visibleAdminSubtabs = ADMIN_SUBTABS.filter((t) => hasPageAccess(t.page));
   const adminActive = ADMIN_SUBTABS.some((t) => t.to === pathname);
   const purchasingStrategyActive = PURCHASING_STRATEGY_SUBTABS.some((t) => t.to === pathname);
-  const inventoryActive = pathname === "/inventory" || pathname === "/inventory/inter-plant-transfer" || pathname.startsWith("/storeapproval");
+  const inventoryActive = pathname === "/inventory" || pathname === "/inventory/inter-plant-transfer" || pathname === "/inventory/inbound-receipts" || pathname.startsWith("/storeapproval");
   return (
     <>
       {/* Desktop / large tablet nav - unchanged pill tabs */}

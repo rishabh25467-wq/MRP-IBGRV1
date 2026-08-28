@@ -6,13 +6,16 @@ import { useAuth } from "@/contexts/AuthContext";
 // only needs to check ONE page-specific permission - kept separate from
 // that gate so a super_admin-only page (Access Management) can be
 // protected the same way as a regular page.
-export const ProtectedRoute = ({ page, superAdminOnly = false, children }) => {
+export const ProtectedRoute = ({ page, superAdminOnly = false, anyUser = false, children }) => {
   const { user, hasPageAccess } = useAuth();
   // Aug 2026: "admin" is a new tier alongside super_admin that can also
   // access Access Management (user's explicit ask) - kept the existing
   // `superAdminOnly` prop name (single usage site) rather than renaming
   // it everywhere for what both roles are now allowed to see.
-  const allowed = superAdminOnly ? (user?.role === "super_admin" || user?.role === "admin") : hasPageAccess(page);
+  // Aug 28 2026: `anyUser` - no specific page permission needed, just a
+  // valid signed-in session (Inbound STO Receipt, user's explicit ask:
+  // "Anyone logged into the app; to start with").
+  const allowed = superAdminOnly ? (user?.role === "super_admin" || user?.role === "admin") : anyUser ? !!user : hasPageAccess(page);
 
   if (!allowed) {
     return (

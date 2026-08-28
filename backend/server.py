@@ -28,6 +28,7 @@ from sap_wip_clearing_client import SAPWipClearingClient, SAPWipClearingError, c
 from sap_production_proposal_client import SAPProductionProposalClient, SAPProductionProposalError
 from sap_sto_client import SAPSTOClient
 from sap_outbound_delivery_client import SAPOutboundDeliveryClient, SAPOutboundDeliveryError
+from sap_inbound_delivery_client import SAPInboundDeliveryClient, SAPInboundDeliveryError
 from erp_portal_client import ERPPortalClient
 from sap_production_model_client import SAPProductionModelClient, SAPProductionModelError, SAPProductionModelBomClient
 from sap_boo_client import SAPBooClient, SAPBooError
@@ -72,6 +73,7 @@ import autosave_store
 import job_store
 import supplier_service
 import stock_transfer_service
+import inbound_receipt_service
 import company_cache_service
 import object_storage_service
 import supplier_portal_service
@@ -236,6 +238,13 @@ sap_outbound_delivery_client = SAPOutboundDeliveryClient(
     endpoint=os.environ['BYD_ODATA_BASE'],
     username=os.environ['SAP_USERNAME'],
     password=os.environ['SAP_PASSWORD'],
+    vhost=os.environ['BYD_ODATA_VHOST'],
+)
+
+sap_inbound_delivery_client = SAPInboundDeliveryClient(
+    endpoint=os.environ['SAP_ODATA_INBOUND_BASE_URL'],
+    username=os.environ['SAP_ODATA_USERNAME'],
+    password=os.environ['SAP_ODATA_PASSWORD'],
     vhost=os.environ['BYD_ODATA_VHOST'],
 )
 
@@ -5449,6 +5458,43 @@ async def post_stock_transfer_parse_nl(payload: StockTransferNLParseRequest):
         return await stock_transfer_service.parse_natural_language_transfer_request(payload.text, known_sites)
     except stock_transfer_service.StockTransferValidationError as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+
+# ==================== Inbound STO Receipt (Aug 28 2026) ====================
+# No page permission required - open to any logged-in internal user, per
+# the user's explicit ask when pivoting away from combining outbound
+# deliveries (see inbound_receipt_service.py module docstring).
+
+class InboundReceiptItem(BaseModel):
+    line_no: int
+    received_qty: float
+
+
+class InboundReceiptRequest(BaseModel):
+    items: List[InboundReceiptItem] = []
+
+
+@api_router.get("/inbound-receipts/sites")
+async def get_inbound_receipt_sites():
+    return {"sites": await asyncio.to_thread(inbound_receipt_service.list_ship_to_sites_with_pending_receipts, db)}
+
+
+@api_router.get("/inbound-receipts/pending")
+async def get_inbound_receipts_pending(site_id: Optional[str] = None):
+    return {"orders": await asyncio.to_thread(inbound_receipt_service.list_pending_receipts, db, sap_outbound_delivery_client, site_id)}
+
+
+@api_router.post("/inbound-receipts/{sto_id}/receive")
+async def post_inbound_receipt(sto_id: str, payload: InboundReceiptRequest, request: Request):
+    user = await asyncio.to_thread(auth_service.get_current_user, request, db)
+    actor = (user or {}).get("name") or (user or {}).get("email") or "unknown"
+    overrides = {str(i.line_no): i.received_qty for i in payload.items}
+    try:
+        return await asyncio.to_thread(
+            inbound_receipt_service.receive_stock_transfer_order, db, sap_inbound_delivery_client, sto_id, actor, overrides
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ==================== Supplier Portal (external vendors, Aug 2026) ====================
