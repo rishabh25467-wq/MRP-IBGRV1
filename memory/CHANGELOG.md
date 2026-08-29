@@ -1,3 +1,27 @@
+## Second STO-orphan bug fixed: "Submitting to SAP now" stuck forever (2026-08-29, this session)
+
+- **User-reported**: STO-000014 stuck on the plain "Submitting to SAP now" banner in production for
+  15+ minutes, created before the Chromium/520 redeploy.
+- **Root cause**: `submit_order_to_sap`'s background job (`_run_submit_sto_to_sap_job`, kicked off from
+  both `/stock-transfer/orders` create and `/stock-transfer/orders/{id}/retry`) is a plain in-memory
+  `asyncio.create_task` with no "kind" tag on its `job_store` doc. `job_store.recover_orphaned_jobs`
+  (runs at every startup) DOES mark any job stuck in "running" as failed - but the startup block that
+  reacts to each recovered job only special-cased `kind == "inbound_receipt"`; a submit_sto job wasn't
+  tagged with any `kind` at all, so nothing ever touched the STO doc's own `status` field. It stayed
+  "pending_sap" forever (no error_message), so the frontend's `OrderDetailBody` kept showing the plain
+  "submitting" placeholder instead of the error+"Retry this order" UI it already has for every other
+  `sap_failed` order.
+- **Fix**: tagged both job-creation sites (`server.py`'s create + retry endpoints) with
+  `"kind": "submit_sto"`, and added a new branch in the startup recovery block that flips the STO doc
+  from `pending_sap` -> `sap_failed` with a clear "please retry" error_message (only if still
+  `pending_sap`, so a real success right before a restart is never clobbered). Verified live with a
+  seeded orphaned STO+job doc + an actual `supervisorctl restart backend` - confirmed both the job_store
+  doc and the STO doc flip correctly on the next boot.
+- User must **Redeploy** to get this fix (plus the earlier 520/job-TTL fixes) into production - the
+  redeploy's own restart should immediately self-heal STO-000014 (and any other STO similarly stuck)
+  into a "sap_failed" state with a Retry button, no manual DB fix needed.
+
+
 ## Production 520 - REAL root cause found & fixed (2026-08-29, same session, after first fix)
 
 - The `.gitignore`/soft-delete fix (previous entry) was real but user reported the SAME 520 again after

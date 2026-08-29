@@ -222,6 +222,24 @@ if _recovered_jobs:
                 {"_id": _job["sto_id"]},
                 {"$set": {"receipt_error": "Interrupted by a backend restart/deploy while this order's receipt was running - please retry."}},
             )
+        elif _job.get("kind") == "submit_sto" and _job.get("sto_id"):
+            # Real incident (Aug 29 2026): STO-000014 stuck forever on
+            # "Submitting to SAP now" after a mid-deploy restart killed this
+            # in-memory asyncio task - the STO doc's own `status` stayed
+            # "pending_sap" (never touched by recover_orphaned_jobs above,
+            # which only updates the job_store doc), so the frontend's
+            # OrderDetailBody kept showing the plain "submitting" placeholder
+            # forever instead of the error+Retry UI it already has for any
+            # other sap_failed order. Only heal it if still "pending_sap" -
+            # a genuinely fast restart that landed after the real SAP write
+            # already succeeded must not clobber a real "created_in_sap".
+            db[stock_transfer_service.STO_COLLECTION].update_one(
+                {"_id": _job["sto_id"], "status": "pending_sap"},
+                {"$set": {
+                    "status": "sap_failed",
+                    "error_message": "Interrupted by a backend restart/deploy while this order was submitting to SAP - please retry.",
+                }},
+            )
 
 _recovered_issues = store_approval_service.recover_orphaned_issues(
     db, "Reverted to pending after a backend restart interrupted the stock issue before any SAP movement fired."
@@ -5343,7 +5361,7 @@ async def post_stock_transfer_order(payload: StockTransferOrderCreate, request: 
     # instantly regardless of SAP's latency (same pattern as every other
     # SAP write in this app).
     sap_job_id = str(uuid.uuid4())
-    job_store.create_job(db, sap_job_id, {"status": "running", "step": "checking", "sto_id": doc["_id"]})
+    job_store.create_job(db, sap_job_id, {"status": "running", "step": "checking", "sto_id": doc["_id"], "kind": "submit_sto"})
     asyncio.create_task(_run_submit_sto_to_sap_job(sap_job_id, doc["_id"]))
     response = _sto_to_response(doc)
     response["sap_job_id"] = sap_job_id
@@ -5452,7 +5470,7 @@ async def post_stock_transfer_order_retry(sto_id: str):
     Planning/Logistics site via /admin/material-sites/activate. Re-runs
     the exact same Check-then-Maintain flow as a fresh order creation."""
     sap_job_id = str(uuid.uuid4())
-    job_store.create_job(db, sap_job_id, {"status": "running", "step": "checking", "sto_id": sto_id})
+    job_store.create_job(db, sap_job_id, {"status": "running", "step": "checking", "sto_id": sto_id, "kind": "submit_sto"})
     asyncio.create_task(_run_submit_sto_to_sap_job(sap_job_id, sto_id))
     return {"sap_job_id": sap_job_id}
 
