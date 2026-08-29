@@ -54,14 +54,11 @@ Extend a SAP BOM viewer application into a full production-planning suite for Ra
 ## Current backlog
 
 ### P0
-- Wire Supplier Portal GRN (external, stock items) to a Playwright automation - investigation IN
-  PROGRESS (2026-08-28 session, see CHANGELOG): confirmed no IDN or GSA path exists for real stock PO
-  items, BUT found a promising new lead - "Inbound Logistics -> Purchase Orders" work center has a
-  real, enabled "Post Goods Receipt" button directly at the PO level for released POs (no IDN needed).
-  User explicitly paused further investigation ("I'll tell u exact windows to follow later") - resume
-  by picking a genuinely "Ordered"/"In Process" PO with real un-received stock and read-only inspecting
-  that Post Goods Receipt screen's fields, per user's next instructions. Do NOT click Post Goods
-  Receipt on a real PO without the user's exact steps.
+- Supplier Portal GRN automation - BUILT & UNIT/INTEGRATION TESTED this session (2026-08-29, see
+  CHANGELOG), but the "Post Goods Receipt" dialog's field-filling has NEVER run against a real,
+  existing PO (every test used a deliberately fake PO number for safety). Needs ONE supervised live
+  test against a real, low-risk PO before this is trusted for unattended use - ask the user to
+  nominate one.
 - Possible data-integrity gap flagged (not yet investigated further, user said to leave it for now):
   Supplier Portal PO cache may be showing external vendors POs that are still "In Preparation"
   (unreleased draft) in SAP as if they were open orders to fulfil - PO 28792 was found in this state.
@@ -69,6 +66,9 @@ Extend a SAP BOM viewer application into a full production-planning suite for Ra
   pending-QC items.
 
 ### P1
+- `sap_valuation_client`'s blocking sync work shares the default thread pool and can starve ALL
+  `/api/*` requests for 60s+ intermittently (flagged by testing_agent, iteration_138/139) - needs a
+  dedicated executor or an async HTTP client + lower per-call timeouts. Not yet fixed.
 - Multiple SAP business users for Playwright concurrency (2-3, possibly split by warehouse) - would
   fix a real risk where concurrent jobs sharing one SAP login can force-kick each other via "Delete
   all sessions?" on login. User said "I'll decide, revisit later" (2026-08-28) - needs 2-3 new SAP

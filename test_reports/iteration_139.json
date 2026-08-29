@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 139 - targeted re-verification of the 4 GRN fixes from iteration_138 (no full re-test). ALL 4 FIXES VERIFIED PASS. (1) retry-movement / retry-goods-receipt now return 404 + clean JSON {'detail': 'No shipment found for this code'} for an unknown doc_code (was 500). (2) On a REAL end-to-end Approve of TESTG3 (fake PO 99999003, live SAP Playwright login, job took ~48s), data-testid='grn-job-progress' became visible IMMEDIATELY (~0s after clicking Approve) with text 'Posting to SAP...' and stayed visible for the whole in-flight window (screenshot captured). (3) The grn-sap-sync-status banner did NOT render at all while the job was in flight (no stale/premature 'SAP posting pending'), and after completion it correctly shows 'PO not found in SAP - check it's released (...)' - i.e. sap_sync_status='skipped', NOT 'posted'. (4) The Actual Qty column is still rendered post-approval: grn-actual-qty-value-99999003::10 = '100 EA' and ::20 = '50 EA'. The grn-retry-goods-receipt-button is visible and enabled. Movement banner correctly reads 'Warehouse movement skipped - Goods Receipt has not posted to SAP yet'. Backend regression suite (6 cases) added; 6/6 pass on a clean run. Only remaining finding is the previously-reported intermittent >60s stall of all /api/* requests correlated with the blocking sap_valuation_client background sync - reproduced again during this run and now confirmed from backend.err.log.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "ALL /api/* (background sap_valuation_client sync)", "issue": "RECURRING (also reported in iteration_138): during a ~4 minute window the pytest run hit repeated ReadTimeout(60s) on /api/admin/grn/* endpoints that answer in 0.1s otherwise. /var/log/supervisor/backend.err.log shows sap_valuation_client emitting dozens of blocking 'connect timeout=30' / 'read timeout=30' calls to my431827.businessbydesign.cloud.sap during exactly that window - the blocking sync work run via the default asyncio.to_thread executor saturates the thread pool and starves normal requests. Recommend a bounded/dedicated executor (or httpx async client) for the valuation sync, plus lower per-call timeouts."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "GRN Approval - SAP sync banner", "issues": ["Message is redundantly duplicated: \"PO not found in SAP - check it's released (PO not found in SAP's Purchase Orders view - check its status is actually released/receivable (not 'In Preparation'))\" - the static prefix and the backend per_po error say the same thing twice. Show only the backend error, or drop the parenthetical when the error already contains 'not found'.", "Bill Date still uses the native browser date input (type='date') instead of the shadcn date picker used elsewhere - carried over from iteration_138, not fixed."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_supplier_grn_fixes_iter139.py",
+    "/app/test_reports/pytest/grn_fixes_iter139.xml",
+    "/app/test_reports/pytest/grn_fixes_iter139_retry.xml"
+  ],
+  "action_items": [
+    "Optional polish: de-duplicate the 'PO not found in SAP' banner wording (static prefix + backend error repeat each other).",
+    "Optional (carried over): move the blocking sap_valuation_client sync off the default asyncio.to_thread executor - it intermittently starves ALL /api requests for >60s.",
+    "Optional (carried over): replace native Bill Date input with the shadcn date picker."
+  ],
+  "critical_code_review_comments": [
+    "Fix quality is good: progress banner is now guarded only by `busy && jobProgress` and sits right after the items table, so it is independent of isActionable; the sync/movement banners are guarded by `shipment.status === 'approved' && !busy`, which correctly suppresses them during the job; Actual Qty renders an Input when isActionable and a read-only span with data-testid grn-actual-qty-value-* otherwise.",
+    "supplier_shipment_service.py:470-472 correctly distinguishes all_skipped -> 'skipped' vs 'pending'; note that a MIXED result (one PO posted, one skipped) still collapses to 'pending' which is arguably right but means the ops message will read as a hard failure - consider a 'partial' state if multi-PO shipments are common.",
+    "server.py is still ~6280 lines (well over the 700-line guideline); the GRN/supplier block remains a natural router-module extraction.",
+    "_start_supplier_grn_job still reads os.environ['SAP_USERNAME'/'SAP_PASSWORD'] with [] indexing - a missing var surfaces a raw KeyError to the end user (unchanged from iteration_138, low priority since vars are set)."
+  ],
+  "updated_files": ["/app/backend/tests/test_supplier_grn_fixes_iter139.py"],
+  "success_rate": {"backend": "100% (6/6 pytest cases pass; 3 earlier failures were environment read-timeouts, all passed on immediate re-run)", "frontend": "100% (all 4 fix-verification checks + retry-button check pass)"},
+  "seed_data_creation": "No new seed data. CONSUMED test shipment TESTG3 - it is now status=approved, sap_sync_status=skipped, sap_movement_status=not_applicable, site P7 / warehouse P7-JW, supplier_doc_num=TEST-INV-G3, actual_qty 100/50. Re-approving it returns 400. A NEW in_transit shipment with a fake PO is required to re-test the Approve path again.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "Session cookie vms_session=KGABHXazt4DGxMLppFGLi9bbLu25Z9m9 (super_admin, 'Inbound Tester') worked for all API + UI checks; unauthenticated retry endpoints correctly return 401.",
+  "context_for_next_testing_agent": "Iteration_138's 4 defects are all fixed and verified. TESTG3 is now fully approved (fake PO 99999003, sap_sync_status='skipped') and is in the retry-eligible state, so the 'Retry Goods Receipt' button path can be exercised on it (triggers another ~40-60s live SAP login, safe). TESTG1 is in the same state. To re-test the Approve path a fresh in_transit shipment with a fake PO must be seeded. Run this file with `-n 0`; if you hit 60s read timeouts on /api, it is the sap_valuation_client background-sync starvation issue - just re-run, it clears in a minute. Playwright cookie domain: sap-data-sync.preview.emergentagent.com.",
+  "rca_of_the_issue": "N/A for the verified fixes (all resolved). For the remaining intermittent API stall: sap_valuation_client performs many synchronous `requests` calls with 30s connect/read timeouts against an unreachable SAP host; they are dispatched via asyncio.to_thread which uses the default ThreadPoolExecutor shared with every other blocking DB/SAP helper in the app, so during a sync round the executor queue is full and unrelated /api requests wait past the client's 60s timeout."
+}

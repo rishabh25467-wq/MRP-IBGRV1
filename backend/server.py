@@ -71,6 +71,7 @@ import mrp_plan_store
 import autosave_store
 import job_store
 import sap_playwright_pgr_service
+import sap_playwright_supplier_pgr_service
 import playwright_concurrency
 import supplier_service
 import stock_transfer_service
@@ -5856,10 +5857,18 @@ class GrnDiscrepancyRequest(BaseModel):
     items: List[GrnDiscrepancyItem] = []
 
 
+class GrnItemActualQty(BaseModel):
+    po_number: str
+    item_number: str
+    actual_qty: float
+
+
 class GrnApproveRequest(BaseModel):
     supplier_doc_num: str = ""
+    bill_date: str = ""
     site_id: str
     warehouse_id: str
+    item_actual_qtys: List[GrnItemActualQty] = []
 
 
 @api_router.get("/admin/grn/sites")
@@ -5899,24 +5908,73 @@ async def post_admin_grn_approve(doc_code: str, payload: GrnApproveRequest, requ
     if not _has_site_access(request.state.user, payload.site_id):
         raise HTTPException(status_code=403, detail="You are not bound to this site")
     owner_party_id, _ = company_and_set_of_books_for_site(payload.site_id)
+    item_actual_qtys = {(i.po_number, i.item_number): i.actual_qty for i in payload.item_actual_qtys}
     try:
-        return await asyncio.to_thread(
-            supplier_shipment_service.approve_shipment, db, doc_code, approver, payload.supplier_doc_num,
-            payload.site_id, payload.warehouse_id, sap_gsa_write_client, sap_goods_movement_client, owner_party_id,
+        doc = await asyncio.to_thread(
+            supplier_shipment_service.prepare_approval, db, doc_code, approver, payload.supplier_doc_num,
+            payload.bill_date, payload.site_id, payload.warehouse_id, item_actual_qtys,
         )
     except supplier_shipment_service.ShipmentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except supplier_shipment_service.ShipmentValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    job_id = _start_supplier_grn_job(doc_code, doc, owner_party_id)
+    return {"job_id": job_id, "shipment": doc}
+
+
+def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> str:
+    """Shared by approve + retry-goods-receipt - kicks off the Playwright
+    Goods Receipt job (see sap_playwright_supplier_pgr_service.py) as a
+    background job, same job_store pattern as inbound_receipt's
+    /receive endpoint - Playwright is too slow to block the request."""
+    job_id = str(uuid.uuid4())
+    po_items = supplier_shipment_service.group_items_by_po_for_gr(doc)
+    job_store.create_job(db, job_id, {
+        "doc_code": doc_code, "kind": "supplier_grn", "status": "running", "phase": "queued",
+        "progress_current": 0, "progress_total": len(po_items) or 1, "result": None, "error": None,
+    })
+
+    def on_progress(phase: str, current: int, total: int):
+        asyncio.create_task(asyncio.to_thread(job_store.update_job, db, job_id, {
+            "phase": phase, "progress_current": current, "progress_total": total,
+        }))
+
+    async def run():
+        try:
+            username, password = os.environ.get("SAP_USERNAME"), os.environ.get("SAP_PASSWORD")
+            if not username or not password:
+                raise RuntimeError("SAP automation credentials are not configured - contact support")
+            gr_result = await sap_playwright_supplier_pgr_service.post_goods_receipt_via_ui(
+                username, password, po_items, progress_cb=on_progress,
+            )
+            final = await asyncio.to_thread(
+                supplier_shipment_service.finalize_goods_receipt, db, doc_code, gr_result["results"],
+                sap_goods_movement_client, owner_party_id,
+            )
+            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
+        except Exception as e:
+            logger.error(f"Supplier GRN job {job_id} ({doc_code}) failed: {e}")
+            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": str(e)})
+
+    asyncio.create_task(run())
+    return job_id
+
+
+@api_router.get("/admin/grn/receipt-status/{job_id}")
+async def get_admin_grn_job_status(job_id: str):
+    job = await asyncio.to_thread(job_store.get_job, db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return job
 
 
 @api_router.post("/admin/grn/{doc_code}/retry-movement")
 async def post_admin_grn_retry_movement(doc_code: str, request: Request):
-    doc = await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
-    if doc.get("site_id") and not _has_site_access(request.state.user, doc["site_id"]):
-        raise HTTPException(status_code=403, detail="You are not bound to this site")
-    owner_party_id, _ = company_and_set_of_books_for_site(doc.get("site_id"))
     try:
+        doc = await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
+        if doc.get("site_id") and not _has_site_access(request.state.user, doc["site_id"]):
+            raise HTTPException(status_code=403, detail="You are not bound to this site")
+        owner_party_id, _ = company_and_set_of_books_for_site(doc.get("site_id"))
         return await asyncio.to_thread(
             supplier_shipment_service.retry_goods_movement, db, doc_code, sap_goods_movement_client, owner_party_id,
         )
@@ -5928,18 +5986,18 @@ async def post_admin_grn_retry_movement(doc_code: str, request: Request):
 
 @api_router.post("/admin/grn/{doc_code}/retry-goods-receipt")
 async def post_admin_grn_retry_goods_receipt(doc_code: str, request: Request):
-    doc = await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
-    if doc.get("site_id") and not _has_site_access(request.state.user, doc["site_id"]):
-        raise HTTPException(status_code=403, detail="You are not bound to this site")
-    owner_party_id, _ = company_and_set_of_books_for_site(doc.get("site_id"))
     try:
-        return await asyncio.to_thread(
-            supplier_shipment_service.retry_goods_receipt, db, doc_code, sap_gsa_write_client, sap_goods_movement_client, owner_party_id,
-        )
+        doc = await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
+        if doc.get("site_id") and not _has_site_access(request.state.user, doc["site_id"]):
+            raise HTTPException(status_code=403, detail="You are not bound to this site")
+        owner_party_id, _ = company_and_set_of_books_for_site(doc.get("site_id"))
+        doc = await asyncio.to_thread(supplier_shipment_service.prepare_retry_goods_receipt, db, doc_code)
     except supplier_shipment_service.ShipmentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except supplier_shipment_service.ShipmentValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    job_id = _start_supplier_grn_job(doc_code, doc, owner_party_id)
+    return {"job_id": job_id}
 
 
 @api_router.post("/admin/grn/{doc_code}/discrepancy")

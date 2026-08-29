@@ -13,21 +13,35 @@ for as long as it stays `status="in_transit"` - the moment internal
 staff Approve or Reject it, it's locked (user's explicit ask).
 
 Phase 4: internal staff enter that code, physically match goods +
-supplier invoice, and Approve - which immediately attempts a 2-STEP live
-SAP write: (1) posts the real Goods Receipt via sap_gsa_write_client, ONE
-call PER distinct PO number in the shipment (a shipment can now span
-multiple POs), then (2) - since the GSA schema itself has NO field for
-warehouse/quality-status (confirmed against SAP's own help docs, Aug 28
-2026) - a follow-up Goods Movement (sap_goods_movement_client, reused
-from Store Approval) moves each line's received qty into the receiver's
-chosen warehouse. NOTE (confirmed live, Aug 28 2026): forcing an
-explicit RESTRICTED/Quality-Inspection stock status on that movement is
-NOT achievable on this tenant as currently configured - see
+supplier invoice, and Approve - which immediately records the approval
+(bill date + staff-CONFIRMED actual received qty per line, which the
+GRN screen collects separately from the vendor's own claimed ship_qty -
+user's explicit ask, Aug 29 2026 - since what's on the truck vs what
+was physically counted in can differ) and kicks off a 2-STEP live SAP
+write as a background job (Playwright is too slow to block the request,
+same pattern as every other UI-automation write in this app): (1) posts
+the real Goods Receipt via sap_playwright_supplier_pgr_service (SAP UI
+automation - see that module's docstring for why: the GSA API write
+this used before, sap_gsa_write_client, is CONFIRMED to only work for
+non-stock/service PO lines, never real stock materials), ONE call PER
+distinct PO number in the shipment (grouping every line item of that PO
+into a single submission, matching the user's own manual flow exactly -
+a shipment can span multiple POs), then (2) - since the GSA-era Goods
+Movement approach carries over unchanged here - a follow-up Goods
+Movement (sap_goods_movement_client, reused from Store Approval) moves
+each line's STAFF-CONFIRMED actual qty (not the vendor's ship_qty) into
+the receiver's chosen warehouse. NOTE (confirmed live, Aug 28 2026):
+forcing an explicit RESTRICTED/Quality-Inspection stock status on that
+movement is NOT achievable on this tenant as currently configured - see
 _post_goods_movement_for_items's docstring below for the live test that
 proved this; step 2 today only does a PLAIN move into the chosen
 warehouse. The internal approval itself is NEVER blocked by SAP being
 unreachable - `sap_sync_status`/`sap_movement_status` track each step
 separately so staff always know exactly how far a shipment got.
+
+Invoice creation (a separate SAP screen, Supplier Invoicing work center)
+is explicitly OUT OF SCOPE here (user's explicit ask, Aug 29 2026) - a
+later phase, done by a different user.
 
 Discrepancy handling (Aug 28 2026, user's explicit ask): the RECEIVING
 STORE staff (not the vendor) mark a mismatch with a free-text reason +
@@ -380,11 +394,12 @@ def _post_goods_movement_for_items(db, doc, goods_movement_client, owner_party_i
     per_item = []
     all_ok = True
     for it in doc["items"]:
+        qty = it.get("actual_qty", it["ship_qty"])
         try:
             result = goods_movement_client.goods_movement(
                 owner_party_id=owner_party_id, product_id=it["product_id"],
                 source_logistics_area_id=f"{site_id}-RM", target_logistics_area_id=warehouse_id,
-                quantity=it["ship_qty"], quantity_uom=it.get("unit_of_measure") or "EA", site_id=site_id,
+                quantity=qty, quantity_uom=it.get("unit_of_measure") or "EA", site_id=site_id,
                 dry_run=False,
             )
         except Exception as e:
@@ -395,48 +410,71 @@ def _post_goods_movement_for_items(db, doc, goods_movement_client, owner_party_i
     return {"ok": all_ok, "per_item": per_item}
 
 
-def approve_shipment(db, doc_code: str, approved_by: str, supplier_doc_num: str, site_id: str, warehouse_id: str,
-                      gsa_write_client, goods_movement_client, owner_party_id: str) -> dict:
-    """Internal approval is recorded unconditionally (staff have already
-    physically matched goods + invoice) - the SAP posting attempt is
-    best-effort and tracked separately via sap_sync_status/
-    sap_movement_status, so a SAP outage never stops staff from doing
-    their job in this app. Two-step live write: (1) ONE Goods Receipt
-    call PER distinct PO number in the shipment, then (2), only if step
-    1 fully succeeded, a Goods Movement per line item into the chosen
-    warehouse (PLAIN move only - see _post_goods_movement_for_items'
-    docstring for the confirmed RESTRICTED/Quality-Inspection limitation)."""
+def group_items_by_po_for_gr(doc: dict) -> dict:
+    """Shapes a shipment's items into the {po_number: {supplier_doc_num,
+    bill_date, item_qtys, item_products}} form sap_playwright_
+    supplier_pgr_service.post_goods_receipt_via_ui expects - one entry
+    per distinct PO, grouping every line item of that PO (user's
+    explicit ask). `item_products` lets the Playwright side match each
+    grid row by Product ID rather than trusting row order (see that
+    module's docstring)."""
+    grouped = {}
+    for it in doc["items"]:
+        po = grouped.setdefault(it["po_number"], {
+            "supplier_doc_num": doc.get("supplier_doc_num"),
+            "bill_date": doc.get("bill_date"),
+            "item_qtys": {},
+            "item_products": {},
+        })
+        po["item_qtys"][it["item_number"]] = it.get("actual_qty", it["ship_qty"])
+        po["item_products"][it["item_number"]] = it["product_id"]
+    return grouped
+
+
+def prepare_approval(db, doc_code: str, approved_by: str, supplier_doc_num: str, bill_date: str, site_id: str,
+                      warehouse_id: str, item_actual_qtys: dict) -> dict:
+    """Records the internal approval unconditionally (staff have already
+    physically matched goods + invoice) - sync/fast, the live SAP write
+    itself (Playwright, slow) happens as a background job kicked off by
+    the caller right after this returns (see server.py's approve
+    endpoint). `item_actual_qtys`: {(po_number, item_number): qty} - the
+    staff-CONFIRMED received quantity, defaults to the vendor's own
+    claimed ship_qty for any line not explicitly overridden."""
     doc = get_shipment_by_code(db, doc_code)
     if doc["status"] not in ("in_transit", "discrepancy"):
         raise ShipmentValidationError(f"Shipment is already {doc['status']}")
-
-    grouped_by_po = {}
+    items = []
     for it in doc["items"]:
-        grouped_by_po.setdefault(it["po_number"], []).append(it)
+        key = (it["po_number"], it["item_number"])
+        items.append({**it, "actual_qty": item_actual_qtys.get(key, it["ship_qty"])})
+    db[SHIPMENTS_COLLECTION].update_one(
+        {"_id": doc["_id"]},
+        {"$set": {
+            "items": items, "status": "approved", "approved_at": datetime.now(timezone.utc), "approved_by": approved_by,
+            "supplier_doc_num": (supplier_doc_num or "").strip() or None, "bill_date": (bill_date or "").strip() or None,
+            "site_id": site_id, "warehouse_id": warehouse_id, "sap_sync_status": "pending", "sap_gr_result": None,
+            "sap_movement_status": "not_applicable", "sap_movement_result": None,
+        }},
+    )
+    return get_shipment_by_code(db, doc_code)
 
-    sap_sync_status = "pending"
-    sap_gr_result = None
-    try:
-        per_po_results = []
-        for po_number, items in grouped_by_po.items():
-            result = gsa_write_client.post_goods_receipt(
-                po_number, doc["_id"],
-                [{"item_id": it["item_number"], "quantity": it["ship_qty"], "unit_of_measure": it.get("unit_of_measure")} for it in items],
-            )
-            per_po_results.append({"po_number": po_number, **result})
-        sap_gr_result = {"ok": True, "per_po": per_po_results}
-        sap_sync_status = "posted"
-    except Exception as e:
-        # Deliberately broad, not just SAPGSAWriteError - the internal
-        # approval (staff has already physically matched goods+invoice)
-        # must NEVER 500/block on ANY surprise from the SAP posting
-        # attempt, expected or not (found by testing_agent, iteration_121).
-        sap_gr_result = {"ok": False, "reason": str(e)}
+
+def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_client, owner_party_id: str) -> dict:
+    """Called after sap_playwright_supplier_pgr_service.
+    post_goods_receipt_via_ui returns - `gr_results` is its
+    results list. All POs in the shipment must have posted for step 2
+    (Goods Movement) to run, matching approve_shipment's old
+    all-or-nothing behaviour."""
+    doc = get_shipment_by_code(db, doc_code)
+    all_ok = bool(gr_results) and all(r.get("status") == "posted" for r in gr_results)
+    all_skipped = bool(gr_results) and all(r.get("status") == "skipped" for r in gr_results)
+    sap_gr_result = {"ok": all_ok, "per_po": gr_results}
+    sap_sync_status = "posted" if all_ok else ("skipped" if all_skipped else "pending")
 
     sap_movement_status = "not_applicable"
     sap_movement_result = None
     if sap_sync_status == "posted":
-        sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, owner_party_id, site_id, warehouse_id)
+        sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, owner_party_id, doc["site_id"], doc["warehouse_id"])
         sap_movement_status = "posted" if sap_movement_result.get("ok") else "pending"
     else:
         sap_movement_result = {"ok": False, "reason": "Skipped - Goods Receipt (step 1) did not succeed yet"}
@@ -444,13 +482,25 @@ def approve_shipment(db, doc_code: str, approved_by: str, supplier_doc_num: str,
     db[SHIPMENTS_COLLECTION].update_one(
         {"_id": doc["_id"]},
         {"$set": {
-            "status": "approved", "approved_at": datetime.now(timezone.utc), "approved_by": approved_by,
-            "supplier_doc_num": (supplier_doc_num or "").strip() or None, "site_id": site_id, "warehouse_id": warehouse_id,
             "sap_sync_status": sap_sync_status, "sap_gr_result": sap_gr_result,
             "sap_movement_status": sap_movement_status, "sap_movement_result": sap_movement_result,
         }},
     )
     return get_shipment_by_code(db, doc_code)
+
+
+def prepare_retry_goods_receipt(db, doc_code: str) -> dict:
+    """Validates a shipment is eligible for a fresh Goods Receipt attempt
+    (mirrors the old retry_goods_receipt's own guard) - no SAP call here,
+    the caller runs the same Playwright job + finalize_goods_receipt used
+    by the initial approval."""
+    doc = get_shipment_by_code(db, doc_code)
+    if doc["status"] != "approved":
+        raise ShipmentValidationError("This shipment has not been approved yet")
+    if doc.get("sap_sync_status") == "posted":
+        raise ShipmentValidationError("The Goods Receipt has already posted to SAP - nothing to retry")
+    return doc
+
 
 
 def retry_goods_movement(db, doc_code: str, goods_movement_client, owner_party_id: str) -> dict:
@@ -470,51 +520,5 @@ def retry_goods_movement(db, doc_code: str, goods_movement_client, owner_party_i
     db[SHIPMENTS_COLLECTION].update_one(
         {"_id": doc["_id"]},
         {"$set": {"sap_movement_status": sap_movement_status, "sap_movement_result": sap_movement_result}},
-    )
-    return get_shipment_by_code(db, doc_code)
-
-
-def retry_goods_receipt(db, doc_code: str, gsa_write_client, goods_movement_client, owner_party_id: str) -> dict:
-    """Retries step 1 (the Goods Receipt/GSA call) for a shipment that's
-    already `approved` locally but whose SAP write failed (Aug 28 2026 -
-    transient "Web service processing error" on SAP's own side, distinct
-    from the STO Inbound Receipt "action is disabled" issue). Mirrors
-    retry_goods_movement above - approve_shipment itself can't be
-    re-called since it's gated on status not yet being "approved"."""
-    doc = get_shipment_by_code(db, doc_code)
-    if doc["status"] != "approved":
-        raise ShipmentValidationError("This shipment has not been approved yet")
-    if doc.get("sap_sync_status") == "posted":
-        raise ShipmentValidationError("The Goods Receipt has already posted to SAP - nothing to retry")
-
-    grouped_by_po = {}
-    for it in doc["items"]:
-        grouped_by_po.setdefault(it["po_number"], []).append(it)
-    try:
-        per_po_results = []
-        for po_number, items in grouped_by_po.items():
-            result = gsa_write_client.post_goods_receipt(
-                po_number, doc["_id"],
-                [{"item_id": it["item_number"], "quantity": it["ship_qty"], "unit_of_measure": it.get("unit_of_measure")} for it in items],
-            )
-            per_po_results.append({"po_number": po_number, **result})
-        sap_gr_result = {"ok": True, "per_po": per_po_results}
-        sap_sync_status = "posted"
-    except Exception as e:
-        sap_gr_result = {"ok": False, "reason": str(e)}
-        sap_sync_status = "pending"
-
-    sap_movement_status = doc.get("sap_movement_status") or "not_applicable"
-    sap_movement_result = doc.get("sap_movement_result")
-    if sap_sync_status == "posted" and doc.get("site_id") and doc.get("warehouse_id"):
-        sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, owner_party_id, doc["site_id"], doc["warehouse_id"])
-        sap_movement_status = "posted" if sap_movement_result.get("ok") else "pending"
-
-    db[SHIPMENTS_COLLECTION].update_one(
-        {"_id": doc["_id"]},
-        {"$set": {
-            "sap_sync_status": sap_sync_status, "sap_gr_result": sap_gr_result,
-            "sap_movement_status": sap_movement_status, "sap_movement_result": sap_movement_result,
-        }},
     )
     return get_shipment_by_code(db, doc_code)

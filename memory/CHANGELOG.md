@@ -1,3 +1,47 @@
+## Supplier Portal GRN automation built (2026-08-29, this session)
+
+- **New**: `sap_playwright_supplier_pgr_service.py` - Playwright automation for external Supplier PO
+  Goods Receipt, replacing `sap_gsa_write_client.post_goods_receipt` (confirmed only works for
+  non-stock/service PO lines) with the real manual flow the user's ops team showed via screenshots:
+  Inbound Logistics -> Purchase Orders -> search exact PO (via Filter panel's "Purchase Order ID"
+  field on "All Purchase Orders by Selection" base view, NOT the free-text search box - confirmed
+  unreliable during the earlier live investigation) -> select row -> "Post Goods Receipt" -> fill
+  Delivery Notification ID (supplier_doc_num) + Actual Delivery Date (repurposed as staff-entered
+  "Bill Date") + Actual Quantity per line (matched by Product ID text, NOT row order - a real bug
+  caught by testing_agent code review and fixed before ever touching a real PO) -> Save and Close.
+  Scope: GRN only, invoice creation is a later phase (untouched, different user/screen).
+- **Backend flow restructured** (`supplier_shipment_service.py`): `approve_shipment`/`retry_goods_receipt`
+  (synchronous, GSA-based) replaced by `prepare_approval` (fast, records staff-confirmed `actual_qty`
+  per line + `bill_date` immediately) + `finalize_goods_receipt` (called after the async Playwright job
+  completes) - same job_store background-job pattern as every other SAP UI automation in this app
+  (Playwright is too slow to block a request). New `sap_sync_status` value `"skipped"` distinct from
+  `"pending"` when every PO in the shipment reports "not found in SAP" (vs. a real failure).
+- **Frontend** (`GrnApprovalPage.jsx`): editable "Actual Qty" per line item (defaults to vendor's
+  ship_qty, staff can override), new "Bill Date" input, async job polling with a progress banner,
+  "Retry Goods Receipt" button when SAP posting didn't succeed. Actual Qty now stays visible
+  (read-only) after approval too.
+- **Testing**: iteration_138 found 2 backend 500s (retry endpoints not catching ShipmentNotFoundError)
+  + 1 critical Playwright bug (row-order matching instead of Product ID matching - fixed before ever
+  running against a real PO) + 3 frontend UX bugs (progress banner never visible, stale banner shown
+  pre-completion, Actual Qty column disappearing post-approval) - ALL FIXED and re-verified passing in
+  iteration_139 via a real, safe end-to-end test (deliberately fake/nonexistent PO number, so the full
+  pipeline - real SAP login, real search, "not found" result - was exercised with zero risk to real
+  SAP data).
+- **IMPORTANT - what's still UNVERIFIED**: the "Post Goods Receipt" dialog's actual field-filling (
+  Delivery Notification ID, Actual Delivery Date, Actual Quantity grid, Save and Close) has NEVER run
+  against a REAL, existing PO - every test so far used a fake PO number that safely returns "skipped"
+  before ever reaching that step. The exact SAP field labels/date format/grid layout are best-effort
+  from the user's own screenshots, not live-confirmed. **The very first real call against an actual PO
+  should be supervised/reviewed by the user** before this is trusted for unattended use - nominate one
+  small, low-risk real PO for that first live test.
+- Minor recurring issue flagged by testing_agent (pre-existing, NOT part of this session's changes):
+  `sap_valuation_client`'s blocking sync work can starve the shared thread pool, causing intermittent
+  60s+ stalls on unrelated `/api/*` requests. Not fixed this session (unrelated to GRN, needs its own
+  dedicated executor/lower timeouts) - added to backlog.
+
+---
+
+
 ## Orphaned Goods Issue poll job fixed (2026-08-29, this session)
 
 - **Real incident**: STO-000013 stuck permanently on "Goods Issue: waiting for SAP to schedule the

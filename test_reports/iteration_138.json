@@ -1,0 +1,56 @@
+{
+  "summary": "Iteration 138 - full E2E test of the new Supplier Portal GRN async (Playwright) Goods Receipt flow. Backend: 16 pytest cases over /api/admin/grn/{sites,warehouses,shipments,lookup,receipt-status,approve,retry-goods-receipt,retry-movement}. Frontend: 3 Playwright runs on /admin/grn-approval covering page load, both lookup paths (code input + pending row click), editable Actual Qty inputs, Bill Date/Site/Warehouse form, reject + discrepancy dialog rendering, and a REAL end-to-end Approve on test shipment TESTG1 (fake PO 99999001). The core feature works: the async job kicked off, did a live SAP login, searched PO 99999001, found 0 rows and correctly returned status='skipped' -> sap_sync_status='pending' (correctly NOT 'posted'), movement 'not_applicable', staff actual_qty override (100 -> 95) + supplier_doc_num + bill_date + site/warehouse all persisted, badge flipped to 'Received', error surfaced in the SAP sync banner, and an enabled 'Retry Goods Receipt' button rendered. 4 defects found (2 backend 500s, 2 frontend progress/UX issues) + 1 environment stability observation.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/admin/grn/{doc_code}/retry-goods-receipt", "issue": "Returns HTTP 500 (unhandled ShipmentNotFoundError) for an unknown shipment code. server.py:5986 calls get_shipment_by_code OUTSIDE the try/except that maps ShipmentNotFoundError -> 404; only the second (prepare_retry_goods_receipt) call is guarded. Should be 404.", "priority": "HIGH"},
+      {"endpoint": "POST /api/admin/grn/{doc_code}/retry-movement", "issue": "Same bug: server.py:5970 get_shipment_by_code is outside the try -> HTTP 500 + full traceback in backend.err.log for an unknown doc_code. Should be 404.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "POST /api/admin/grn/{doc_code}/approve (job runner)", "issue": "_start_supplier_grn_job reads os.environ['SAP_USERNAME'/'SAP_PASSWORD'] with [] indexing; if unset, the job fails with a raw KeyError string that is surfaced verbatim to the end user via job.error. Prefer a guarded lookup with a friendly message."},
+      {"endpoint": "background SAP sync (not GRN-specific)", "issue": "Twice during the session ALL /api/admin/grn/* requests stalled >60s (ingress returned an HTML error page / read timeouts) while the periodic sap_valuation_client sync was logging 30s connect timeouts to my431827.businessbydesign.cloud.sap. A dedicated 24-sample probe run afterwards was 100% green at ~0.13s, so it is intermittent and correlated with the blocking-sync background job (likely default asyncio.to_thread executor saturation). Recommend a bounded/dedicated executor for SAP sync work."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "GrnApprovalPage - approve progress indicator", "issue": "data-testid='grn-job-progress' NEVER renders during the initial Approve: prepare_approval flips status to 'approved' and setShipment(data.shipment) runs immediately, so isActionable becomes false and the whole block containing grn-job-progress unmounts before the first poll. The approved-block's 'grn-retry-job-progress' element renders instead. Effectively dead code + testid contract mismatch; move the progress indicator outside the isActionable block.", "selector": "[data-testid='grn-job-progress']", "priority": "MEDIUM"},
+      {"component": "GrnApprovalPage - post-approve read-only line items", "issue": "The staff-CONFIRMED Actual Qty that was actually sent to SAP (95 for item 10) is not displayed after approval - only Ship Qty (100/50) plus a generic note 'Actual received quantity confirmed by staff may differ from Ship Qty above.'. Persisted item.actual_qty should be shown as a read-only column for auditability.", "selector": "[data-testid='grn-shipment-detail']", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [
+      {"flow": "Approve & Post to SAP (async job)", "issue": "While the Playwright job is still running (30-90s), the UI already shows the terminal-looking amber 'SAP posting pending' banner plus a (disabled) Retry button, because the pre-job shipment doc is rendered with sap_sync_status='pending'. It reads as a failure before SAP has even been contacted. Suppress/replace the sync + movement banners with an explicit in-progress state while jobProgress is active.", "affected_selectors": ["[data-testid='grn-sap-sync-status']", "[data-testid='grn-retry-goods-receipt-button']", "[data-testid='grn-sap-movement-status']"]}
+    ],
+    "design_issues": [
+      {"screen": "GRN Approval - approval form", "issues": ["Bill Date uses the native browser date input (type='date', mm/dd/yyyy with the browser's own picker) instead of the shadcn calendar/date-picker component used elsewhere - inconsistent look and locale-dependent format"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_supplier_grn_async_iter138.py",
+    "/app/backend/tests/_probe_iter138_availability.py",
+    "/app/test_reports/pytest/grn_async_iter138.xml"
+  ],
+  "action_items": [
+    "Move get_shipment_by_code inside the try/except in post_admin_grn_retry_goods_receipt (server.py:5986) and post_admin_grn_retry_movement (server.py:5970) so unknown codes return 404, not 500.",
+    "Render the approve-job progress indicator outside the isActionable block (or reuse a single testid) so grn-job-progress actually appears during the initial Approve.",
+    "Hide/replace the SAP sync + movement result banners (and the Retry button) with an in-progress state while the job is still polling, so a running job is not shown as 'SAP posting pending'.",
+    "Show the persisted staff-confirmed actual_qty per line in the read-only post-approval view.",
+    "Replace the native date input for Bill Date with the shadcn date picker.",
+    "Optional: guard os.environ['SAP_USERNAME'/'SAP_PASSWORD'] in _start_supplier_grn_job with a user-friendly error."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 6286 lines - well over the 700-line guideline; the GRN/supplier block is a natural extraction candidate (router module).",
+    "_start_supplier_grn_job's on_progress does asyncio.create_task(asyncio.to_thread(...)) from a sync callback; it works today because progress_cb is invoked from the event loop, but the task is fire-and-forget (no reference held, no exception handling) and would raise 'no running event loop' if the callback were ever invoked from a worker thread.",
+    "sap_playwright_supplier_pgr_service._fill_line_actual_quantities matches grid rows purely by ORDER (idx -> list(item_qtys.keys())[idx]) despite the docstring claiming Product ID matching (product_col is computed then never used). On a real PO whose SAP grid order differs from the shipment's item order this would silently post quantities against the WRONG line. Must be fixed/verified before the first real-PO run.",
+    "_fill_line_actual_quantities also uses the same 'tr[id^=\"__table\"]' selector as the PO result list; if the dialog is not the only table on screen, rows from the background list can be picked up. Worth a scoped locator inside the dialog.",
+    "finalize_goods_receipt treats an empty gr_results list as not-ok (good), but a 'skipped' PO is indistinguishable from a hard failure in sap_sync_status ('pending' for both) - consider a distinct status so ops know retrying will not help until the PO is released in SAP."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_supplier_grn_async_iter138.py",
+    "/app/backend/tests/_probe_iter138_availability.py"
+  ],
+  "success_rate": {"backend": "88% (14/16 pytest cases pass; the 2 failures are the retry-endpoint 500s)", "frontend": "90% (all render/edit/lookup/approve/persistence checks pass; progress-indicator testid + in-progress banner state are the misses)"},
+  "seed_data_creation": "No new seed data. Consumed the pre-seeded test shipment TESTG1 (now status=approved, sap_sync_status=pending, actual_qty 95/50, site P7 / warehouse P7-RM). A NEW in_transit shipment with a fake PO will be needed to re-test the Approve path; TESTG1 can still be used to test the Retry Goods Receipt path (it is in the retry-eligible state).",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "Synthetic session cookie vms_session=KGABHXazt4DGxMLppFGLi9bbLu25Z9m9 (role super_admin, user 'Inbound Tester') - worked for all page-permission and API auth checks; unauthenticated approve correctly returns 401.",
+  "context_for_next_testing_agent": "TESTG1 has been fully approved once (live Playwright SAP login ran, ~30s, PO 99999001 correctly not found -> 'skipped'). Re-approving returns 400 'Shipment is already approved'. To retest Approve, seed a fresh in_transit shipment with a fake PO. TESTG1 is currently eligible for the Retry Goods Receipt path (status=approved, sap_sync_status=pending) - clicking Retry triggers another ~30-60s live SAP login and is safe with the fake PO. Run backend pytest with `-n 0` for this file (parallel xdist runs intermittently hit the >60s backend stalls described above). Playwright cookie domain: sap-data-sync.preview.emergentagent.com.",
+  "rca_of_the_issue": "Retry 500s: both retry endpoints call supplier_shipment_service.get_shipment_by_code BEFORE entering the try block that maps ShipmentNotFoundError -> HTTPException(404), so the domain exception escapes to the ASGI layer (traceback confirmed in /var/log/supervisor/backend.err.log at server.py:5986 / supplier_shipment_service.py:322). Missing grn-job-progress: the approve() handler sets the shipment to the prepare_approval result (status='approved') before polling, which makes isActionable false and unmounts the JSX subtree that holds the grn-job-progress element, so the intended progress UI is unreachable and the terminal 'SAP posting pending' banner is shown for a job that has not run yet."
+}

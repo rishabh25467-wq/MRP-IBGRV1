@@ -40,6 +40,9 @@ export default function GrnApprovalPage() {
   const [siteId, setSiteId] = useState("");
   const [warehouseId, setWarehouseId] = useState("");
   const [warehousesLoading, setWarehousesLoading] = useState(false);
+  const [billDate, setBillDate] = useState("");
+  const [actualQtys, setActualQtys] = useState({});
+  const [jobProgress, setJobProgress] = useState(null);
 
   const [discOpen, setDiscOpen] = useState(false);
   const [discReason, setDiscReason] = useState("");
@@ -86,7 +89,14 @@ export default function GrnApprovalPage() {
   const resetApprovalForm = () => {
     setSupplierDocNum("");
     setWarehouseId("");
+    setBillDate("");
     if (sites.length !== 1) setSiteId("");
+  };
+
+  const initActualQtys = (items) => {
+    const next = {};
+    (items || []).forEach((it) => { next[`${it.po_number}::${it.item_number}`] = it.actual_qty ?? it.ship_qty; });
+    setActualQtys(next);
   };
 
   const lookup = async (targetCode) => {
@@ -100,11 +110,24 @@ export default function GrnApprovalPage() {
       setShipment(data);
       setCode(value);
       resetApprovalForm();
+      initActualQtys(data.items);
     } catch (err) {
       setSearchError(err?.response?.data?.detail || "No shipment found for this code");
     } finally {
       setSearching(false);
     }
+  };
+
+  const pollGrnJob = async (jobId) => {
+    const deadline = Date.now() + 6 * 60 * 1000; // multi-line, multi-PO GRNs can take a couple of minutes
+    while (Date.now() < deadline) {
+      const { data: job } = await axios.get(`${API}/admin/grn/receipt-status/${jobId}`);
+      setJobProgress(job);
+      if (job.status === "done") return job.result;
+      if (job.status === "failed") throw new Error(job.error || "Goods Receipt posting failed");
+      await new Promise((r) => setTimeout(r, 2500));
+    }
+    throw new Error("This is taking longer than expected - check back shortly, it may still complete in the background.");
   };
 
   const approve = async () => {
@@ -113,23 +136,52 @@ export default function GrnApprovalPage() {
       return;
     }
     setBusy(true);
+    setJobProgress(null);
     try {
+      const item_actual_qtys = shipment.items.map((it) => ({
+        po_number: it.po_number, item_number: it.item_number,
+        actual_qty: Number(actualQtys[`${it.po_number}::${it.item_number}`] ?? it.ship_qty),
+      }));
       const { data } = await axios.post(`${API}/admin/grn/${shipment._id}/approve`, {
-        supplier_doc_num: supplierDocNum, site_id: siteId, warehouse_id: warehouseId,
+        supplier_doc_num: supplierDocNum, bill_date: billDate, site_id: siteId, warehouse_id: warehouseId, item_actual_qtys,
       });
-      setShipment(data);
-      if (data.sap_sync_status === "posted" && data.sap_movement_status === "posted") {
-        toast.success(`Goods Receipt posted + stock moved to ${data.site_id}/${data.warehouse_id}`);
-      } else if (data.sap_sync_status === "posted") {
-        toast.warning("Goods Receipt posted to SAP - warehouse movement still pending", { description: JSON.stringify(data.sap_movement_result) });
+      setShipment(data.shipment);
+      const result = await pollGrnJob(data.job_id);
+      setShipment(result);
+      if (result.sap_sync_status === "posted" && result.sap_movement_status === "posted") {
+        toast.success(`Goods Receipt posted + stock moved to ${result.site_id}/${result.warehouse_id}`);
+      } else if (result.sap_sync_status === "posted") {
+        toast.warning("Goods Receipt posted to SAP - warehouse movement still pending", { description: JSON.stringify(result.sap_movement_result) });
       } else {
-        toast.warning("Approved internally - SAP posting is pending", { description: data.sap_gr_result?.reason });
+        toast.error("Approved internally - SAP posting failed, use Retry Goods Receipt below", { description: JSON.stringify(result.sap_gr_result) });
       }
       loadPending();
     } catch (err) {
       toast.error("Approval failed", { description: err?.response?.data?.detail || err.message });
+      lookup(shipment?._id);
     } finally {
       setBusy(false);
+      setJobProgress(null);
+    }
+  };
+
+  const retryGoodsReceipt = async () => {
+    setBusy(true);
+    setJobProgress(null);
+    try {
+      const { data } = await axios.post(`${API}/admin/grn/${shipment._id}/retry-goods-receipt`);
+      const result = await pollGrnJob(data.job_id);
+      setShipment(result);
+      if (result.sap_sync_status === "posted") {
+        toast.success("Goods Receipt posted to SAP");
+      } else {
+        toast.warning("Still pending", { description: JSON.stringify(result.sap_gr_result) });
+      }
+    } catch (err) {
+      toast.error("Retry failed", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setBusy(false);
+      setJobProgress(null);
     }
   };
 
@@ -279,24 +331,51 @@ export default function GrnApprovalPage() {
                   <th className="text-left py-1 font-semibold">Description</th>
                   <th className="text-right py-1 font-semibold">Ship Qty</th>
                   <th className="text-right py-1 font-semibold">PO Qty</th>
+                  <th className="text-right py-1 font-semibold">Actual Qty</th>
                 </tr>
               </thead>
               <tbody>
-                {shipment.items.map((it, i) => (
-                  <tr key={i} className="border-t border-[#CBD3DB]">
-                    <td className="py-1.5 font-data">{it.po_number}</td>
-                    <td className="py-1.5 font-data">{it.item_number}</td>
-                    <td className="py-1.5">{it.description}</td>
-                    <td className="py-1.5 text-right font-data font-semibold">{it.ship_qty} {it.unit_of_measure}</td>
-                    <td className="py-1.5 text-right font-data text-[#5B738B]">{it.po_qty}</td>
-                  </tr>
-                ))}
+                {shipment.items.map((it, i) => {
+                  const key = `${it.po_number}::${it.item_number}`;
+                  return (
+                    <tr key={i} className="border-t border-[#CBD3DB]">
+                      <td className="py-1.5 font-data">{it.po_number}</td>
+                      <td className="py-1.5 font-data">{it.item_number}</td>
+                      <td className="py-1.5">{it.description}</td>
+                      <td className="py-1.5 text-right font-data font-semibold">{it.ship_qty} {it.unit_of_measure}</td>
+                      <td className="py-1.5 text-right font-data text-[#5B738B]">{it.po_qty}</td>
+                      <td className="py-1.5 text-right">
+                        {isActionable ? (
+                          <Input
+                            type="number"
+                            value={actualQtys[key] ?? ""}
+                            onChange={(e) => setActualQtys((prev) => ({ ...prev, [key]: e.target.value }))}
+                            className="w-24 h-7 text-right font-data rounded-sm border-[#CBD3DB] ml-auto"
+                            data-testid={`grn-actual-qty-input-${key}`}
+                          />
+                        ) : (
+                          <span className="font-data font-semibold" data-testid={`grn-actual-qty-value-${key}`}>{it.actual_qty ?? it.ship_qty} {it.unit_of_measure}</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {isActionable && (
+                  <tr><td colSpan={6} className="py-1.5 text-xs text-[#5B738B]">Actual Qty defaults to Ship Qty - adjust only if the physical count differs.</td></tr>
+                )}
               </tbody>
             </table>
 
+            {busy && jobProgress && (
+              <div className="mt-3 text-xs text-[#5B738B] flex items-center gap-2 bg-[#F1F5F9] rounded-sm px-3 py-2" data-testid="grn-job-progress">
+                <ArrowsClockwise size={12} className="animate-spin" />
+                Posting to SAP... {jobProgress.progress_total > 1 ? `(PO ${Math.min(jobProgress.progress_current + 1, jobProgress.progress_total)}/${jobProgress.progress_total})` : ""}
+              </div>
+            )}
+
             {isActionable && (
               <div className="mt-5 border-t border-[#CBD3DB] pt-4 space-y-3">
-                <div className="grid sm:grid-cols-3 gap-3">
+                <div className="grid sm:grid-cols-4 gap-3">
                   <div>
                     <Label className="text-xs text-[#5B738B]">Supplier Invoice Number</Label>
                     <Input
@@ -305,6 +384,16 @@ export default function GrnApprovalPage() {
                       onChange={(e) => setSupplierDocNum(e.target.value)}
                       className="rounded-sm border-[#CBD3DB] mt-1"
                       data-testid="grn-supplier-doc-num-input"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs text-[#5B738B]">Bill Date</Label>
+                    <Input
+                      type="date"
+                      value={billDate}
+                      onChange={(e) => setBillDate(e.target.value)}
+                      className="rounded-sm border-[#CBD3DB] mt-1"
+                      data-testid="grn-bill-date-input"
                     />
                   </div>
                   <div>
@@ -337,13 +426,13 @@ export default function GrnApprovalPage() {
 
                 <div className="flex gap-2">
                   <Button onClick={approve} disabled={busy} className="rounded-sm bg-[#10B981] hover:bg-[#0B7A56] transition-colors duration-150" data-testid="grn-approve-button">
-                    <CheckCircle size={14} className="mr-1" /> Approve &amp; Post to SAP
+                    <CheckCircle size={14} className="mr-1" /> {busy ? "Posting..." : "Approve & Post to SAP"}
                   </Button>
-                  <Button variant="outline" onClick={() => setRejectOpen(true)} className="rounded-sm border-[#E02424]/40 text-[#B91C1C]" data-testid="grn-reject-button">
+                  <Button variant="outline" onClick={() => setRejectOpen(true)} disabled={busy} className="rounded-sm border-[#E02424]/40 text-[#B91C1C]" data-testid="grn-reject-button">
                     <XCircle size={14} className="mr-1" /> Reject
                   </Button>
                   {shipment.status === "in_transit" && (
-                    <Button variant="outline" onClick={openDiscrepancy} className="rounded-sm border-[#E3A008]/50 text-[#8A6116]" data-testid="grn-mark-discrepancy-button">
+                    <Button variant="outline" onClick={openDiscrepancy} disabled={busy} className="rounded-sm border-[#E3A008]/50 text-[#8A6116]" data-testid="grn-mark-discrepancy-button">
                       <WarningCircle size={14} className="mr-1" /> Mark Discrepancy
                     </Button>
                   )}
@@ -351,14 +440,23 @@ export default function GrnApprovalPage() {
               </div>
             )}
 
-            {shipment.status === "approved" && (
+            {shipment.status === "approved" && !busy && (
               <div className="mt-4 space-y-2">
-                <div className="text-sm px-3 py-2 rounded-sm flex items-center gap-2 border" data-testid="grn-sap-sync-status"
-                     style={shipment.sap_sync_status === "posted" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : { color: "#1D4ED8", background: "rgba(63,131,248,0.1)", borderColor: "rgba(63,131,248,0.3)" }}>
-                  {shipment.sap_sync_status === "posted" ? <CheckCircle size={16} /> : <PlugsConnected size={16} />}
-                  {shipment.sap_sync_status === "posted"
-                    ? "Goods Receipt posted to SAP"
-                    : `SAP posting pending${shipment.sap_gr_result?.reason ? ` - ${shipment.sap_gr_result.reason}` : ""}`}
+                <div className="text-sm px-3 py-2 rounded-sm flex items-center justify-between gap-2 border" data-testid="grn-sap-sync-status"
+                     style={shipment.sap_sync_status === "posted" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : { color: "#B45309", background: "rgba(227,160,8,0.1)", borderColor: "rgba(227,160,8,0.3)" }}>
+                  <span className="flex items-center gap-2">
+                    {shipment.sap_sync_status === "posted" ? <CheckCircle size={16} /> : <PlugsConnected size={16} />}
+                    {shipment.sap_sync_status === "posted"
+                      ? "Goods Receipt posted to SAP"
+                      : shipment.sap_sync_status === "skipped"
+                      ? (shipment.sap_gr_result?.per_po?.[0]?.error || "PO not found in SAP - check it's released")
+                      : `SAP posting pending${shipment.sap_gr_result?.per_po?.find((p) => p.error)?.error ? ` - ${shipment.sap_gr_result.per_po.find((p) => p.error).error}` : ""}`}
+                  </span>
+                  {shipment.sap_sync_status !== "posted" && (
+                    <Button size="sm" variant="outline" onClick={retryGoodsReceipt} disabled={busy} className="rounded-sm h-7 text-xs" data-testid="grn-retry-goods-receipt-button">
+                      <ArrowsClockwise size={12} className="mr-1" /> Retry
+                    </Button>
+                  )}
                 </div>
                 <div className="text-sm px-3 py-2 rounded-sm flex items-center justify-between gap-2 border" data-testid="grn-sap-movement-status"
                      style={shipment.sap_movement_status === "posted" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : { color: "#B45309", background: "rgba(227,160,8,0.1)", borderColor: "rgba(227,160,8,0.3)" }}>
