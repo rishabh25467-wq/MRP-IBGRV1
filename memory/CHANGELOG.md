@@ -1,4 +1,23 @@
-## Third 520 fix: removed the startup Chromium warm-up itself (2026-08-29, same session)
+## Fourth fix: STO-000014 STILL stuck after previous redeploy - broader retroactive sweep (2026-08-29)
+
+- User reported STO-000014 unchanged (still "pending_sap"/"Submitting to SAP now") even after the
+  520 fix redeployed. Root cause of THIS gap: the earlier `_recovered_jobs` startup loop only reacts to
+  a "submit_sto" job that is STILL "running" at THAT SPECIFIC restart - STO-000014's underlying job had
+  already been marked "failed" by an EARLIER restart (before the "submit_sto" `kind` tag/healing code
+  even existed), so it was invisible to that loop on every subsequent restart forever.
+- **Fix**: added `stock_transfer_service.heal_stuck_pending_sap_orders(db)`, called at module-level
+  startup (server.py) - a direct, unconditional sweep of every "pending_sap" STO. Only skips ones with a
+  genuinely `status: "running"` submit_sto job in `background_jobs` right now; everything else (no job,
+  failed job, anything) gets flipped to "sap_failed" with a clear retry message. Verified live with two
+  seeded scenarios (stale-failed-job and a fresh-running-job) via an actual `supervisorctl restart
+  backend` - both correctly end up "sap_failed" with the existing Retry button available (a job still
+  "running" across a restart is, by this app's own design, always dead anyway - `job_store.
+  recover_orphaned_jobs` already treats it the same way).
+- This will automatically heal STO-000014 (and any other similarly-stuck order, regardless of how long
+  ago it broke) on the NEXT backend restart/redeploy - no manual DB fix needed, user just needs to
+  Redeploy and then click "Retry this order".
+
+
 
 - Second redeploy (with the previous fix's `warm_up_playwright_chromium` startup event) STILL 520'd -
   this time IMMEDIATELY after redeploy, not after a while, ruling out the earlier race-condition theory

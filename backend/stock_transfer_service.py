@@ -947,6 +947,44 @@ def find_orphaned_gi_jobs(db) -> list:
     return [d["_id"] for d in db[STO_COLLECTION].find({"gi_job_running": True}, {"_id": 1})]
 
 
+def heal_stuck_pending_sap_orders(db) -> list:
+    """Call once at process startup - a broader, retroactive sweep on top
+    of server.py's `_recovered_jobs` loop. That loop only reacts to a
+    "submit_sto" job that is STILL in job_store's ORPHANABLE_JOB_STATUSES
+    at THIS particular restart; a job that already got marked "failed" by
+    an EARLIER restart (e.g. before the "submit_sto" `kind` tag / this
+    healing code even existed) is invisible to it forever, so its STO doc
+    stays "pending_sap" showing the plain "Submitting to SAP now" banner
+    indefinitely with no Retry button - real incident, STO-000014, Aug 29
+    2026: survived one restart+redeploy untouched because the job behind
+    it had already failed on an even earlier restart. This instead looks
+    directly at every "pending_sap" STO and only leaves ones with a
+    GENUINELY currently-`running` submit_sto job alone (a real in-flight
+    submission, not something to touch) - everything else (no job at all,
+    or a job that's failed/done/anything else) gets flipped to
+    "sap_failed" with a clear message so the existing Retry button
+    appears, regardless of which restart originally orphaned it."""
+    import job_store
+    stuck = list(db[STO_COLLECTION].find({"status": "pending_sap"}, {"_id": 1}))
+    healed = []
+    for doc in stuck:
+        sto_id = doc["_id"]
+        running_job = db[job_store.COLLECTION_NAME].find_one(
+            {"sto_id": sto_id, "kind": "submit_sto", "status": "running"}
+        )
+        if running_job:
+            continue
+        db[STO_COLLECTION].update_one(
+            {"_id": sto_id, "status": "pending_sap"},
+            {"$set": {
+                "status": "sap_failed",
+                "error_message": "This order never finished submitting to SAP (likely interrupted by an earlier backend restart) - please retry.",
+            }},
+        )
+        healed.append(sto_id)
+    return healed
+
+
 def ensure_gi_job_stopped(db, sto_id: str, error: str) -> None:
     """Defensive safety net (Aug 29 2026, found while testing the orphan-
     resume fix above) for server.py's _run_goods_issue_job: guarantees

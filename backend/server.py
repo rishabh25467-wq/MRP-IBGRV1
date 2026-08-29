@@ -241,6 +241,10 @@ if _recovered_jobs:
                 }},
             )
 
+_recovered_pending_sap = stock_transfer_service.heal_stuck_pending_sap_orders(db)
+if _recovered_pending_sap:
+    logger.warning(f"Startup: healed {len(_recovered_pending_sap)} STO(s) stuck on 'pending_sap' with no genuinely running submit job: {_recovered_pending_sap}")
+
 _recovered_issues = store_approval_service.recover_orphaned_issues(
     db, "Reverted to pending after a backend restart interrupted the stock issue before any SAP movement fired."
 )
