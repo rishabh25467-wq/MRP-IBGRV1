@@ -2266,7 +2266,6 @@ async def get_open_production_lots(request: Request, status: str = Query("open",
     # show a "user"-role account what belongs to them (their bound sites,
     # same Site Binding mechanism as Store Approval) - admin/super_admin
     # keep seeing everything, unchanged.
-    rows = _filter_by_site_access(rows, request.state.user)
     rows = await asyncio.to_thread(_attach_order_creators, rows, db)
     # Aug 25 2026, user's explicit follow-up ask: on top of the site
     # restriction above, a plain "user" account only ever sees the
@@ -2290,6 +2289,15 @@ async def get_open_production_lots(request: Request, status: str = Query("open",
     # drifted personal name (id still matches) AND a shared name used by
     # a different login than the one that originally created it (name
     # still matches).
+    # Aug 29 2026 second bug fix (real incident: Madhur Maurya's own
+    # released orders at P1 invisible on his own Active Orders table,
+    # even though the id/name match below is correct) - _filter_by_
+    # site_access() used to run BEFORE the ownership check, stripping any
+    # row outside the user's own bound_sites before "is this mine" got a
+    # chance to keep it. A user's own creation history was never meant to
+    # be gated by which sites they're bound to for VIEWING - dropped the
+    # site filter entirely; ownership alone decides what a "user" role
+    # sees here now (admin/super_admin unaffected, already saw everything).
     user = request.state.user
     if user.get("role") not in ("super_admin", "admin"):
         my_id = user.get("_id")
@@ -3797,11 +3805,7 @@ async def release_production_order(payload: ReleaseProductionOrderRequest, reque
 
 @api_router.get("/production-confirmation/proposal-history")
 async def get_proposal_and_release_history(request: Request):
-    # Aug 25 2026, user's explicit ask: same Site Binding scoping as the
-    # open-lots table above, applied to the Create Production Order tab's
-    # Recent Activity list - admin/super_admin still see every site.
     entries = await asyncio.to_thread(production_confirmation_service.get_proposal_and_release_history, db)
-    entries = _filter_by_site_access(entries, request.state.user)
     # Aug 25 2026, user's explicit follow-up ask (same rule as the
     # open-lots table): a plain "user" account only sees entries THEY
     # created/released - admin/super_admin still see every entry.
@@ -3814,6 +3818,18 @@ async def get_proposal_and_release_history(request: Request):
     # see get_open_production_lots' identical comment above for exactly
     # why both a drifted personal name AND a shared name used by a
     # different login both need to keep working.
+    # Aug 29 2026 second bug fix (real incident: Madhur Maurya's own
+    # 3 released orders at P1 invisible on his own Recent Activity list,
+    # even though the id/name match above is correct) - this endpoint
+    # used to ALSO run entries through _filter_by_site_access() before
+    # the ownership check, which strips any row outside the user's own
+    # bound_sites BEFORE "is this mine" gets a chance to keep it. A
+    # user's own creation history was never meant to be gated by which
+    # sites they're bound to for VIEWING - same rule already applied to
+    # /store-requests/journal's `requester` case (see its comment) - so
+    # the site filter is dropped entirely here now; ownership alone
+    # decides what a "user" role sees on THIS specific personal-log
+    # endpoint (admin/super_admin unaffected, they already saw everything).
     user = request.state.user
     if user.get("role") not in ("super_admin", "admin"):
         my_id = user.get("_id")

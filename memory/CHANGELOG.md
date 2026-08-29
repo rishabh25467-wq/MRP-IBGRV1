@@ -1,3 +1,30 @@
+## Cross-site own-history visibility bug fixed (2026-08-29, this session)
+
+- **Real incident**: Madhur Maurya's own 3 released production orders (site P1) were invisible on his
+  own Production Confirmation page (both "Active Orders" and the "Recent Activity" log showed empty),
+  while an admin viewing the same data could see them fine.
+- **Root cause**: `/api/production-confirmation/open-lots` and `/api/production-confirmation/
+  proposal-history` both ran `_filter_by_site_access()` (strips rows outside the user's own
+  `bound_sites`) BEFORE the "is this mine" ownership match. So if a user's `bound_sites` doesn't
+  include the site they actually created something at (site field on the Create form is free-text,
+  not permission-checked), their OWN entry gets stripped before ownership is even evaluated.
+- **Fix**: dropped the `_filter_by_site_access()` call entirely on both endpoints for non-admin users
+  - ownership (`_id`/name match) alone now decides visibility, exactly matching the precedent already
+  set by `/store-requests/journal`'s `requester` param (its own comment: "'show me my own requests'
+  was never meant to be gated by which sites... bound to"). admin/super_admin behavior unchanged (they
+  already saw everything).
+- Verified via a real reproduction: created a 'user'-role test account bound only to `bound_sites=
+  ['P2']`, inserted a `production_order_creation_history` doc they authored at site `P1` - confirmed
+  invisible before the fix's logic, now correctly returned by `/proposal-history` post-fix. Test data
+  cleaned up after.
+- This is a THIRD fix on this exact code path (after Aug 25/28/29 earlier fixes for id/name matching)
+  - if a user reports this again, check whether it's yet another distinct filter stacking on top
+  (e.g. a NEW site or ownership-adjacent restriction added later that reintroduces the same class of
+  bug), not a regression of this specific fix.
+
+---
+
+
 ## Global concurrency badge (2026-08-28, this session)
 
 - **Backend**: `playwright_concurrency.py` now tracks `_active_count`/`_queued_count` alongside the
