@@ -20,10 +20,23 @@ from datetime import datetime, timezone
 COLLECTION_NAME = "background_jobs"
 
 
+# 7 days, not 24h (deployment-scan-flagged, fixed 2026-08-29) - these are
+# transient UI-polling progress docs, not the business record itself (the
+# real outcome lands on the STO/shipment/production-order doc via each
+# job's own finalize_* step), but a week gives ops enough room to
+# troubleshoot a stuck/failed job before its tracking doc disappears.
+JOB_RETENTION_SECONDS = 7 * 86400
+
+
 def ensure_indexes(db) -> None:
     """TTL index so finished/abandoned job docs get cleaned up automatically
-    after a day instead of growing the collection forever."""
-    db[COLLECTION_NAME].create_index("created_at", expireAfterSeconds=86400)
+    instead of growing the collection forever."""
+    try:
+        db[COLLECTION_NAME].create_index("created_at", expireAfterSeconds=JOB_RETENTION_SECONDS, name="created_at_1")
+    except Exception:
+        # Index already exists with the old 86400 TTL - update it in place
+        # instead of dropping (avoids a brief window with no TTL index at all).
+        db.command("collMod", COLLECTION_NAME, index={"keyPattern": {"created_at": 1}, "expireAfterSeconds": JOB_RETENTION_SECONDS})
 
 
 def create_job(db, job_id: str, initial_state: dict) -> None:

@@ -1,3 +1,37 @@
+## Production 520 - REAL root cause found & fixed (2026-08-29, same session, after first fix)
+
+- The `.gitignore`/soft-delete fix (previous entry) was real but user reported the SAME 520 again after
+  redeploying it - "worked for a while then crashed", ruling out a boot-time crash.
+- **Actual root cause**: `playwright_concurrency.py`'s one-time Chromium self-heal held a plain
+  `threading.Lock` across a blocking `.acquire()` called SYNCHRONOUSLY from inside an `async def`. Two
+  of the three Playwright job entry points (`sap_playwright_pgr_service`, `sap_playwright_supplier_pgr_
+  service`) are `await`-ed directly from the main event loop (not inside their own worker thread, unlike
+  the outbound GI path). On a freshly-deployed pod where Chromium had never been verified, if a SECOND
+  such job landed while the FIRST was still mid-install (~up to 180s), the second job's blocking
+  `Lock.acquire()` froze the entire asyncio event loop - i.e. every unrelated request/health check -
+  until the first job's install finished. Cloudflare saw the origin go silent long enough to return 520.
+  Reproduced locally by hand (confirmed real Chromium/Playwright pip version mismatch even in this
+  preview pod: pip playwright==1.62.0 expects revision 1234, disk had 1208) and confirmed the fix with a
+  scripted concurrency test (2 racing self-heals + a 0.2s heartbeat coroutine): before the fix this would
+  have frozen the heartbeat for the full install duration; after the fix, max observed gap was 0.21s.
+- **Fix** (`backend/playwright_concurrency.py`): moved the lock-acquire + `playwright install chromium`
+  subprocess entirely onto `_QUEUE_WAIT_EXECUTOR` via `run_in_executor` (renamed to `_verify_chromium_
+  sync`), so it can never block the event loop regardless of which context calls `launch_chromium`. Added
+  `warm_up_chromium()`, called fire-and-forget from a new `server.py` startup event, so a fresh pod
+  proactively verifies/installs Chromium before any real job ever needs the cold path at all.
+- **Also fixed** a second BLOCKER the deployment scan caught along the way: `job_store.py`'s
+  `background_jobs` TTL index was hard-deleting job-tracking docs after 24h via an unattended startup-
+  registered index; bumped to 7 days (`JOB_RETENTION_SECONDS`), applied live via `collMod` so the
+  existing index updates in place instead of erroring on conflict.
+- Re-ran `deployment_agent` after all three fixes: **PASS, no blockers**. Remaining items are WARN-only,
+  not blocking deploy: (1) MSSQL ERP integration needs outbound K8s egress to on-prem IPs, (2) Chromium
+  under Emergent's standard 1Gi/250m pod tier risks OOM under concurrent Playwright load (worth watching,
+  not fixed here - pod sizing is an infra decision, not a code fix), (3) a few unbounded `find({})`
+  calls (`store_approval_service.list_all_requests`, `mrp_plan_store.list_named_plans`, `supplier_
+  shipment_service.list_shipments`, `server.py admin_list_users`) should eventually get pagination.
+- User must **Redeploy again** to push this second, real fix to production.
+
+
 ## Production 520 deployment blocker fixed (2026-08-29, this session)
 
 - **Root cause of Cloudflare 520 in production**: `.gitignore` had `backend/.env` and `frontend/.env`

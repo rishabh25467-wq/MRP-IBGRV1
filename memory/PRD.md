@@ -66,6 +66,13 @@ Extend a SAP BOM viewer application into a full production-planning suite for Ra
   pending-QC items.
 
 ### P1
+- Chromium under Emergent's standard 1Gi/250m pod tier risks OOM under concurrent Playwright load
+  (deployment-scan WARN, 2026-08-29) - not fixed, needs a pod-sizing decision, not a code fix.
+- MSSQL ERP integration (`erp_portal_client.py`) needs confirmed outbound K8s egress to its on-prem
+  IPs in production (deployment-scan WARN, 2026-08-29).
+- A few unbounded `find({})` calls need pagination (deployment-scan WARN, 2026-08-29):
+  `store_approval_service.list_all_requests`, `mrp_plan_store.list_named_plans`,
+  `supplier_shipment_service.list_shipments`, `server.py admin_list_users`.
 - `sap_valuation_client`'s blocking sync work shares the default thread pool and can starve ALL
   `/api/*` requests for 60s+ intermittently (flagged by testing_agent, iteration_138/139) - needs a
   dedicated executor or an async HTTP client + lower per-call timeouts. Not yet fixed.

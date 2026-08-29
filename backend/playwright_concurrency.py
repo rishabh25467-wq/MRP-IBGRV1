@@ -99,6 +99,33 @@ async def close_all_browsers() -> None:
         _active_browsers.discard(browser)
 
 
+def _verify_chromium_sync(original_error: Exception) -> None:
+    """Runs the actual blocking lock-acquire + `playwright install chromium`
+    subprocess. MUST always be called via `_QUEUE_WAIT_EXECUTOR` (never
+    straight off the event loop) - `_chromium_verify_lock` is a plain
+    `threading.Lock`, and a second concurrent caller blocked on
+    `.acquire()` while still on the asyncio event loop thread would
+    freeze the ENTIRE server (every unrelated request/health-check) for
+    up to the full 180s timeout below, not just its own job (real
+    production incident, Aug 29 2026: two Goods Receipt jobs landed on a
+    freshly-deployed pod at the same moment, before Chromium had ever
+    been verified, and the second job's blocking lock-acquire on the
+    main event loop thread froze the whole app long enough for
+    Cloudflare to return a 520)."""
+    global _chromium_verified
+    with _chromium_verify_lock:
+        if _chromium_verified:
+            return
+        logger.warning(f"Chromium launch failed ({original_error}) - attempting a one-time self-heal via `playwright install chromium`")
+        result = subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            capture_output=True, text=True, timeout=180,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"playwright install chromium failed: {result.stderr[-500:]}") from original_error
+        _chromium_verified = True
+
+
 async def launch_chromium(playwright):
     """Use instead of `playwright.chromium.launch(headless=True)` directly
     - self-heals ONCE if the on-disk browser cache is missing/mismatched
@@ -111,22 +138,29 @@ async def launch_chromium(playwright):
     `_chromium_verified` is a process-wide latch so a genuinely broken
     install (e.g. no disk space, no network) fails fast on every launch
     after the first attempt instead of eating a ~180s reinstall timeout
-    every single time."""
-    global _chromium_verified
+    every single time. See `warm_up_chromium()` for the proactive
+    server-startup call that makes hitting this cold path at all rare."""
     try:
         return await playwright.chromium.launch(headless=True)
     except Exception as e:
         if _chromium_verified or "Executable doesn't exist" not in str(e):
             raise
-        with _chromium_verify_lock:
-            if _chromium_verified:
-                return await playwright.chromium.launch(headless=True)
-            logger.warning(f"Chromium launch failed ({e}) - attempting a one-time self-heal via `playwright install chromium`")
-            result = await asyncio.to_thread(
-                subprocess.run, [sys.executable, "-m", "playwright", "install", "chromium"],
-                capture_output=True, text=True, timeout=180,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"playwright install chromium failed: {result.stderr[-500:]}") from e
-            _chromium_verified = True
+        await asyncio.get_running_loop().run_in_executor(_QUEUE_WAIT_EXECUTOR, _verify_chromium_sync, e)
         return await playwright.chromium.launch(headless=True)
+
+
+async def warm_up_chromium() -> None:
+    """Called once from server.py's startup event, fire-and-forget, so a
+    freshly-deployed/restarted pod verifies (and if needed, installs)
+    Chromium BEFORE any real user job ever hits the cold self-heal path
+    in `launch_chromium` above - shrinks the window where two concurrent
+    jobs could otherwise race each other into the event-loop-freezing
+    bug described there down to effectively zero."""
+    from playwright.async_api import async_playwright
+    try:
+        async with async_playwright() as p:
+            browser = await launch_chromium(p)
+            await browser.close()
+        logger.info("Playwright Chromium warm-up check passed on startup.")
+    except Exception as e:
+        logger.error(f"Playwright Chromium warm-up failed on startup (jobs will retry the self-heal on demand): {e}")
