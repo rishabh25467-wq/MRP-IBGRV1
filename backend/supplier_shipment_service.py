@@ -127,13 +127,21 @@ def refresh_po_cache(db, vendor_code: str, items: list) -> None:
         fresh_keys.append(key)
         db[PO_CACHE_COLLECTION].update_one(
             {"_id": key},
-            {"$set": {**it, "vendor_code": vendor_code, "source": "sap_live", "updated_at": now, "missing_since": None}},
+            {"$set": {**it, "vendor_code": vendor_code, "source": "sap_live", "updated_at": now, "missing_since": None, "expired": False}},
             upsert=True,
         )
     missing_query = {"vendor_code": vendor_code, "source": "sap_live", "_id": {"$nin": fresh_keys}}
     db[PO_CACHE_COLLECTION].update_many({**missing_query, "missing_since": None}, {"$set": {"missing_since": now}})
     stale_cutoff = now - timedelta(minutes=STALE_CYCLES_BEFORE_DELETE * REFRESH_INTERVAL_MINUTES)
-    db[PO_CACHE_COLLECTION].delete_many({**missing_query, "missing_since": {"$lte": stale_cutoff}})
+    # Soft-delete only (deployment-scan-flagged, fixed 2026-08-29): an unattended background
+    # loop must never hard-delete rows outright, even ones scoped this narrowly - mark them
+    # `expired` instead so a vendor's PO disappears from their open-PO list (see the
+    # `expired` filters in get_cached_pos_with_remaining/_resolve_items below) without losing
+    # the underlying record for audit/debugging.
+    db[PO_CACHE_COLLECTION].update_many(
+        {**missing_query, "missing_since": {"$lte": stale_cutoff}},
+        {"$set": {"expired": True, "expired_at": now}},
+    )
 
 
 def refresh_all_vendor_caches(db, rows: list) -> dict:
@@ -188,7 +196,7 @@ def _shipped_qty_so_far(db, vendor_code: str, po_number: str, item_number: str, 
 
 
 def get_cached_pos_with_remaining(db, vendor_code: str) -> list:
-    items = list(db[PO_CACHE_COLLECTION].find({"vendor_code": vendor_code}, {"_id": 0}).sort("po_number", 1))
+    items = list(db[PO_CACHE_COLLECTION].find({"vendor_code": vendor_code, "expired": {"$ne": True}}, {"_id": 0}).sort("po_number", 1))
     for it in items:
         shipped = _shipped_qty_so_far(db, vendor_code, it["po_number"], it["item_number"])
         it["already_shipped_qty"] = shipped
@@ -223,7 +231,7 @@ def _resolve_items(db, vendor_code: str, requested_items: list, exclude_doc_code
             ship_qty = float(req.get("ship_qty") or 0)
         except (TypeError, ValueError):
             raise ShipmentValidationError(f"Invalid ship quantity for item {item_number} on PO {po_number}")
-        cached = db[PO_CACHE_COLLECTION].find_one({"vendor_code": vendor_code, "po_number": po_number, "item_number": item_number})
+        cached = db[PO_CACHE_COLLECTION].find_one({"vendor_code": vendor_code, "po_number": po_number, "item_number": item_number, "expired": {"$ne": True}})
         if not cached:
             raise ShipmentValidationError(f"Item {item_number} was not found on Purchase Order {po_number}")
         if ship_qty <= 0:

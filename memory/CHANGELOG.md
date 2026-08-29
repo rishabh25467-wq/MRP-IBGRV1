@@ -1,3 +1,20 @@
+## Production 520 deployment blocker fixed (2026-08-29, this session)
+
+- **Root cause of Cloudflare 520 in production**: `.gitignore` had `backend/.env` and `frontend/.env`
+  listed (lines 105-106), so the deploy build shipped without required env vars -> app crashed on
+  boot. Fixed by removing those two lines - both files now verified un-ignored (`git check-ignore`
+  exit 1). Playwright/Chromium runtime self-heal (`playwright_concurrency.launch_chromium`) was
+  investigated too and confirmed NOT the real cause - it's a working-as-designed one-time lazy
+  `playwright install chromium` when a job actually runs, not a boot-time crash path.
+- **Second BLOCKER fixed**: `supplier_shipment_service.refresh_po_cache`'s unattended 10-min
+  background loop used to `delete_many` stale `supplier_portal_po_cache` rows outright. Converted to
+  soft-delete (`{"expired": True, "expired_at": now}`); `get_cached_pos_with_remaining` and
+  `_resolve_items` now filter `expired: {"$ne": True}`, and a row that reappears in a later live
+  fetch gets `expired: False` again.
+- Re-ran `deployment_agent` after both fixes - result: **PASS**, no blockers. User must **Redeploy**
+  to push this to production.
+
+
 ## Supplier Portal GRN automation built (2026-08-29, this session)
 
 - **New**: `sap_playwright_supplier_pgr_service.py` - Playwright automation for external Supplier PO
