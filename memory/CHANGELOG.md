@@ -1,3 +1,26 @@
+## Sixth fix: real root cause per Emergent Support - deferred orphan-job resume (2026-08-29)
+
+- Emergent Support (with real production log access, which the main agent does not have) identified two
+  things: (1) production's build image does NOT bake in the Playwright Chromium binary - it self-installs
+  fresh on EVERY restart (not persisted), and (2) `resume_orphaned_goods_issue_jobs` (server.py startup
+  event) fires immediately at boot, before the app is marked healthy - if it re-launches a Playwright job,
+  the resulting Chromium self-install competes hard for the standard tier's tiny CPU allocation at the
+  exact moment the platform's health check is deciding if this boot succeeded, failing the health check,
+  getting the pod killed, and repeating forever (the orphaned job never gets the chance to finish).
+- **Fix applied (in this agent's control)**: added a `STARTUP_JOB_RESUME_DELAY_SECONDS = 60` delay before
+  `resume_orphaned_goods_issue_jobs` actually re-launches `_run_goods_issue_job` for each orphaned STO -
+  the startup event itself still returns immediately (never blocks "Application startup complete"), but
+  the real Chromium-invoking work now only starts a full minute later, matching the same delay pattern
+  every OTHER background loop in this file already uses (20-60s staggered starts) - this was the one
+  exception that fired instantly.
+- **NOT fixed (outside this agent's tooling)**: baking Chromium into the deployment build image itself.
+  No Dockerfile exists in this repo (base image is a fixed `env_image_name` in `.emergent/emergent.yml`),
+  and `deployment_agent`'s tool only performs static code scans - it could not reveal a build-step
+  mechanism for this platform. User needs to ask Emergent Support directly how to add a
+  `playwright install --with-deps chromium` build step, or evaluate moving SAP browser automation to a
+  hosted browser-automation service instead (bigger change, would need explicit user decision first).
+
+
 ## Fifth fix: duplicate concurrent Resume jobs for the same Proposal (2026-08-29)
 
 - User reported clicking "Resume" 4-5 times on a failed production-order job (Proposal 227067),

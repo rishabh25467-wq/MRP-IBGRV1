@@ -179,6 +179,9 @@ async def close_playwright_browsers():
     await playwright_concurrency.close_all_browsers()
 
 
+STARTUP_JOB_RESUME_DELAY_SECONDS = 60
+
+
 @app.on_event("startup")
 async def resume_orphaned_goods_issue_jobs():
     """Real incident (Aug 29 2026): STO-000013 stuck forever on plain
@@ -191,12 +194,30 @@ async def resume_orphaned_goods_issue_jobs():
     top-level `_recovered_jobs`/`_recovered_issues` blocks below,
     despite the similar intent) because resuming needs a real asyncio
     task on a running event loop, which doesn't exist yet at plain
-    module-import time."""
+    module-import time.
+
+    `STARTUP_JOB_RESUME_DELAY_SECONDS` (Aug 29 2026, per Emergent Support's
+    own diagnosis of a real production crash loop): this used to fire
+    `_run_goods_issue_job` immediately, which can launch headless Chromium
+    on a cold pod (production's Playwright browser cache is NOT persisted/
+    baked into the image, so it self-installs on every restart) - that
+    install competes hard for the tiny standard-tier CPU allocation at the
+    EXACT moment the platform's health check is deciding if this boot
+    succeeded, so a slow/CPU-starved install could fail the health check,
+    get the pod killed, and repeat forever with the job never once getting
+    the chance to actually finish. Delaying the real work (not the startup
+    event itself, which still returns immediately either way) gives the
+    pod a full minute to be marked healthy on its own first."""
     orphaned_sto_ids = await asyncio.to_thread(stock_transfer_service.find_orphaned_gi_jobs, db)
     if orphaned_sto_ids:
-        logger.warning(f"Startup: resuming {len(orphaned_sto_ids)} Goods Issue poll job(s) orphaned by a restart mid-run: {orphaned_sto_ids}")
+        logger.warning(f"Startup: resuming {len(orphaned_sto_ids)} Goods Issue poll job(s) orphaned by a restart mid-run (after a {STARTUP_JOB_RESUME_DELAY_SECONDS}s delay so this doesn't compete with the health check): {orphaned_sto_ids}")
+
+        async def _delayed_resume(sto_id: str):
+            await asyncio.sleep(STARTUP_JOB_RESUME_DELAY_SECONDS)
+            await _run_goods_issue_job(sto_id)
+
         for _sto_id in orphaned_sto_ids:
-            asyncio.create_task(_run_goods_issue_job(_sto_id))
+            asyncio.create_task(_delayed_resume(_sto_id))
 
 
 mongo_client = MongoClient(os.environ['MONGO_URL'], tz_aware=True)
