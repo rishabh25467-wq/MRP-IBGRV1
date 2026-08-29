@@ -3469,6 +3469,24 @@ async def resume_failed_create_and_release_job(job_id: str, payload: ResumeFaile
             status_code=400,
             detail="Cannot resume - no SAP Proposal was ever created for this order, so there's nothing to resume from. Fix the underlying issue and create a new order instead.",
         )
+    # Real incident (Aug 29 2026): unlike /retry-from-proposal below, this
+    # endpoint had NO guard against being called more than once for the
+    # SAME proposal_id - the old (failed) job_id's own status never
+    # changes once Resume is clicked, so a user who refreshes and clicks
+    # Resume again on what looks like the same still-"failed" row (not
+    # realizing a NEW job_id is already actively polling for that exact
+    # proposal) silently piles up multiple concurrent 20-minute SAP
+    # polling loops for the same Proposal - real resource pressure that
+    # can contribute to the app becoming unresponsive under load.
+    duplicate_job = db[job_store.COLLECTION_NAME].find_one({
+        "production_proposal_id": proposal_id,
+        "status": {"$in": list(production_confirmation_service.ACTIVE_ORDER_JOB_STATUSES)},
+    })
+    if duplicate_job:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Proposal {proposal_id} is already being resumed/tracked (status: {duplicate_job['status']}) - refresh the Active Orders table above instead of clicking Resume again.",
+        )
     resumed_payload = CreateProductionProposalRequest(**snapshot)
     new_job_id = str(uuid.uuid4())
     job_store.create_job(db, new_job_id, {

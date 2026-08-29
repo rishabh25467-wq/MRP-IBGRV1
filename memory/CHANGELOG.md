@@ -1,3 +1,22 @@
+## Fifth fix: duplicate concurrent Resume jobs for the same Proposal (2026-08-29)
+
+- User reported clicking "Resume" 4-5 times on a failed production-order job (Proposal 227067),
+  getting the identical orphan-restart message each time, and production 520'd again during this.
+- **Real bug found**: `/production-confirmation/create-and-release-order/{job_id}/resume` had NO guard
+  against creating a duplicate concurrent 20-minute SAP polling job for the same `production_proposal_id`
+  - unlike the near-identical `/retry-from-proposal` endpoint, which already checks
+  `ACTIVE_ORDER_JOB_STATUSES` before allowing a retry. Repeated Resume clicks could pile up multiple
+  concurrent long-running polling loops (each doing `asyncio.to_thread` SAP calls every ~90s) for the
+  same proposal - real resource pressure that can compound with concurrent Playwright automation.
+- **Fix**: added the same `ACTIVE_ORDER_JOB_STATUSES` duplicate-check to `/resume`.
+- **Not resolved**: the underlying repeated production 520 during active use could not be root-caused
+  further from static code review alone - no access to production's actual runtime/crash/OOM logs.
+  `support_agent` confirmed this requires escalating to support@emergent.sh directly (production log
+  access + possible resource tier increase for Chromium/Playwright-heavy workloads) - user was given
+  exact contact instructions. Main agent's `deployment_agent` tool only performs static scans in this
+  environment; it did not surface real production logs despite explicit requests.
+
+
 ## Fourth fix: STO-000014 STILL stuck after previous redeploy - broader retroactive sweep (2026-08-29)
 
 - User reported STO-000014 unchanged (still "pending_sap"/"Submitting to SAP now") even after the
