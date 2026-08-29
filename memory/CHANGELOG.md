@@ -1,4 +1,22 @@
-## Second STO-orphan bug fixed: "Submitting to SAP now" stuck forever (2026-08-29, this session)
+## Third 520 fix: removed the startup Chromium warm-up itself (2026-08-29, same session)
+
+- Second redeploy (with the previous fix's `warm_up_playwright_chromium` startup event) STILL 520'd -
+  this time IMMEDIATELY after redeploy, not after a while, ruling out the earlier race-condition theory
+  as the cause of THIS occurrence.
+- **Root cause**: the warm-up itself launches a full headless Chromium instance at the exact moment the
+  process is also opening Mongo/MSSQL/SAP connections during boot. Measured live in this pod: one idle
+  Chromium instance = ~194MB RSS (5 processes). Production's smaller resource tier (deployment-scan WARN,
+  already flagged: "250m CPU/1Gi memory") almost certainly OOM-crashed the container from this extra
+  concentrated spike at the worst possible moment - preview's 15GB headroom hid it completely.
+- **Fix**: removed the `warm_up_playwright_chromium` startup event and `playwright_concurrency.
+  warm_up_chromium()` entirely. Kept the actual real fix from earlier (non-blocking self-heal via
+  `run_in_executor` in `_verify_chromium_sync`/`launch_chromium`) - it still can't freeze the event loop,
+  it just no longer runs proactively at boot; Chromium's one-time install cost is now only ever paid
+  lazily, on the first real Playwright job, spread out in time instead of concentrated at startup.
+- Re-ran `deployment_agent` after removal: **PASS**, no blockers, no new issues from the removal.
+- User must **Redeploy again**.
+
+
 
 - **User-reported**: STO-000014 stuck on the plain "Submitting to SAP now" banner in production for
   15+ minutes, created before the Chromium/520 redeploy.

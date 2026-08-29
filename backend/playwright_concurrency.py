@@ -138,8 +138,18 @@ async def launch_chromium(playwright):
     `_chromium_verified` is a process-wide latch so a genuinely broken
     install (e.g. no disk space, no network) fails fast on every launch
     after the first attempt instead of eating a ~180s reinstall timeout
-    every single time. See `warm_up_chromium()` for the proactive
-    server-startup call that makes hitting this cold path at all rare."""
+    every single time.
+
+    NOTE (Aug 29 2026): deliberately does NOT get proactively "warmed up"
+    at server startup anymore - a boot-time eager launch used to add a
+    real ~200MB Chromium memory spike at the exact moment the process is
+    also opening its Mongo/MSSQL/SAP connections, which is suspected to
+    have OOM-crashed the container on Emergent's standard production pod
+    tier (measured live: one idle Chromium instance = ~194MB RSS, on top
+    of everything else starting up at once). The lazy self-heal below
+    already can't freeze the event loop (see `_verify_chromium_sync`),
+    so paying that cost lazily on the first real job - spread out in
+    time instead of concentrated at boot - is strictly safer."""
     try:
         return await playwright.chromium.launch(headless=True)
     except Exception as e:
@@ -147,20 +157,3 @@ async def launch_chromium(playwright):
             raise
         await asyncio.get_running_loop().run_in_executor(_QUEUE_WAIT_EXECUTOR, _verify_chromium_sync, e)
         return await playwright.chromium.launch(headless=True)
-
-
-async def warm_up_chromium() -> None:
-    """Called once from server.py's startup event, fire-and-forget, so a
-    freshly-deployed/restarted pod verifies (and if needed, installs)
-    Chromium BEFORE any real user job ever hits the cold self-heal path
-    in `launch_chromium` above - shrinks the window where two concurrent
-    jobs could otherwise race each other into the event-loop-freezing
-    bug described there down to effectively zero."""
-    from playwright.async_api import async_playwright
-    try:
-        async with async_playwright() as p:
-            browser = await launch_chromium(p)
-            await browser.close()
-        logger.info("Playwright Chromium warm-up check passed on startup.")
-    except Exception as e:
-        logger.error(f"Playwright Chromium warm-up failed on startup (jobs will retry the self-heal on demand): {e}")

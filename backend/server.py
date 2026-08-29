@@ -6273,15 +6273,6 @@ async def _run_full_sync(trigger: str) -> dict:
 
 
 @app.on_event("startup")
-async def warm_up_playwright_chromium():
-    """Fire-and-forget - verifies/installs Chromium once right at boot so a
-    fresh pod's first real Goods Receipt/Issue job never has to hit the
-    cold self-heal path in playwright_concurrency.launch_chromium (see its
-    docstring for the production 520 incident this prevents)."""
-    asyncio.create_task(playwright_concurrency.warm_up_chromium())
-
-
-@app.on_event("startup")
 async def start_nightly_sync_loop():
     async def loop():
         while True:

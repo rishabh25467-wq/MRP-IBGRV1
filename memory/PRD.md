@@ -67,7 +67,9 @@ Extend a SAP BOM viewer application into a full production-planning suite for Ra
 
 ### P1
 - Chromium under Emergent's standard 1Gi/250m pod tier risks OOM under concurrent Playwright load
-  (deployment-scan WARN, 2026-08-29) - not fixed, needs a pod-sizing decision, not a code fix.
+  (deployment-scan WARN, 2026-08-29) - the eager startup warm-up that made this WORSE (crashed
+  production immediately on boot) was removed same day; the underlying per-job resource cost during
+  real concurrent SAP UI automation is still a pod-sizing decision, not fixed by code.
 - MSSQL ERP integration (`erp_portal_client.py`) needs confirmed outbound K8s egress to its on-prem
   IPs in production (deployment-scan WARN, 2026-08-29).
 - A few unbounded `find({})` calls need pagination (deployment-scan WARN, 2026-08-29):
