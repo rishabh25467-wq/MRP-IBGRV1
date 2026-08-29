@@ -1,3 +1,23 @@
+## Seventh fix: removed runtime Chromium self-heal entirely, per Support (2026-08-29)
+
+- Following Support's exact diagnosis and instructions: (1) confirmed `playwright==1.62.0` in
+  requirements.txt and `PLAYWRIGHT_BROWSERS_PATH="/pw-browsers"` in backend/.env are both already
+  correct, untouched; (2) user will trigger a fresh Re-publish to bake Chromium into the image at build
+  time; (3) removed the runtime `playwright install chromium` self-heal from
+  `playwright_concurrency.py` entirely (`_verify_chromium_sync`, `_chromium_verified` latch,
+  `_chromium_verify_lock` all deleted) - `launch_chromium()` is now a thin passthrough with no fallback.
+  The `resume_orphaned_goods_issue_jobs` 60s startup defer (previous fix) already covers point 3's other
+  half and needed no further change.
+- Rationale (per Support): a runtime self-install could pull a Chromium build number mismatched against
+  the pinned Playwright version, and separately competed for CPU during the health-check window - a
+  build-time bake (matching the pinned version exactly) avoids both problems.
+- Verification command for the user to run post-redeploy (from Support):
+  `ls /pw-browsers/chromium_headless_shell-*/chrome-linux/` inside the deployed container - seeing the
+  headless_shell binary confirms Chromium is baked into the image.
+- Hosted browser-automation service (Browserless/ScrapingBee) noted by Support as a valid FUTURE option
+  if in-pod browser load grows, but explicitly NOT needed now - the build-time bake is sufficient.
+
+
 ## Sixth fix: real root cause per Emergent Support - deferred orphan-job resume (2026-08-29)
 
 - Emergent Support (with real production log access, which the main agent does not have) identified two
