@@ -1,3 +1,34 @@
+## Orphaned Goods Issue poll job fixed (2026-08-29, this session)
+
+- **Real incident**: STO-000013 stuck permanently on "Goods Issue: waiting for SAP to schedule the
+  delivery..." on PRODUCTION with no Retry button ever appearing, right after the user's first
+  production deploy.
+- **Root cause**: `_run_goods_issue_job` (server.py) is a plain in-memory `asyncio.create_task`, unlike
+  every other background job in this app (not tracked in the recoverable `background_jobs` collection).
+  A backend restart/redeploy while it's actively polling kills the task permanently, leaving
+  `gi_job_running: True` stuck forever with no code path left to revive it or show a retry option
+  (only "failed"/"not_found_timeout" show the Retry Goods Issue button).
+- **Fix 1**: new `stock_transfer_service.find_orphaned_gi_jobs()` + `@app.on_event("startup")`
+  `resume_orphaned_goods_issue_jobs()` in server.py - on every backend start, any STO stuck with
+  `gi_job_running: True` gets its Goods Issue polling automatically resumed via a fresh
+  `_run_goods_issue_job` task.
+- **Fix 2** (found while testing fix 1): a `SAPOutboundDeliveryError` raised BEFORE
+  `try_post_goods_issue`'s own per-line code gets a chance to update the doc (e.g. resolving delivery
+  items itself fails) left the same stuck symptom via a different trigger (no restart needed). New
+  `stock_transfer_service.ensure_gi_job_stopped()` - defensive safety net called from
+  `_run_goods_issue_job`'s `except SAPOutboundDeliveryError` branch, guarantees `gi_job_running` always
+  clears and `gi_status` becomes "failed" if not already terminal.
+- Verified both fixes end-to-end with a real synthetic orphaned STO doc (`gi_job_running: True`,
+  `gi_status: "awaiting_delivery"`) + a backend restart: confirmed startup log "resuming 1 Goods Issue
+  poll job(s)", and confirmed final state `gi_status: "failed"`, `gi_job_running: False` (no longer stuck,
+  Retry button will now show). Test doc cleaned up after.
+- **IMPORTANT**: this fix only exists in PREVIEW as of 2026-08-29 - user must redeploy to production for
+  STO-000013 (and this bug class generally) to actually resolve there. The moment the new backend starts
+  on production, it will auto-detect and resume STO-000013 with no manual data intervention needed.
+
+---
+
+
 ## Cross-site own-history visibility bug fixed (2026-08-29, this session)
 
 - **Real incident**: Madhur Maurya's own 3 released production orders (site P1) were invisible on his

@@ -178,6 +178,26 @@ async def close_playwright_browsers():
     await playwright_concurrency.close_all_browsers()
 
 
+@app.on_event("startup")
+async def resume_orphaned_goods_issue_jobs():
+    """Real incident (Aug 29 2026): STO-000013 stuck forever on plain
+    "awaiting_delivery" after a production deploy - `_run_goods_issue_job`
+    below is a plain in-memory asyncio task (unlike every other
+    background job in this app, not tracked in the recoverable
+    `background_jobs` collection), so a restart mid-poll kills it for
+    good and leaves `gi_job_running` stuck True with no retry button
+    ever appearing. Runs in an actual startup event (not the plain
+    top-level `_recovered_jobs`/`_recovered_issues` blocks below,
+    despite the similar intent) because resuming needs a real asyncio
+    task on a running event loop, which doesn't exist yet at plain
+    module-import time."""
+    orphaned_sto_ids = await asyncio.to_thread(stock_transfer_service.find_orphaned_gi_jobs, db)
+    if orphaned_sto_ids:
+        logger.warning(f"Startup: resuming {len(orphaned_sto_ids)} Goods Issue poll job(s) orphaned by a restart mid-run: {orphaned_sto_ids}")
+        for _sto_id in orphaned_sto_ids:
+            asyncio.create_task(_run_goods_issue_job(_sto_id))
+
+
 mongo_client = MongoClient(os.environ['MONGO_URL'], tz_aware=True)
 db = mongo_client[os.environ['DB_NAME']]
 job_store.ensure_indexes(db)
@@ -5374,6 +5394,16 @@ async def _run_goods_issue_job(sto_id: str):
             # opposed to "not created yet") - stop polling, this needs a
             # human to look at it (see gi_status/gi_error on the STO doc).
             logger.error(f"Stock Transfer Order {sto_id}: Goods Issue post failed: {e}")
+            # Defensive safety net (found while testing the orphan-resume
+            # fix above, Aug 29 2026): try_post_goods_issue's single-line
+            # path already sets gi_status="failed"/gi_job_running=False
+            # itself before raising this, but a rejection raised earlier
+            # in that call (e.g. resolving the delivery items themselves)
+            # never reaches that update - would leave the order stuck on
+            # its old gi_status with gi_job_running permanently True,
+            # identical symptom to the orphaned-restart bug just from a
+            # different trigger. Idempotent: does nothing if already set.
+            await asyncio.to_thread(stock_transfer_service.ensure_gi_job_stopped, db, sto_id, str(e))
             return
         except Exception as e:
             logger.warning(f"Stock Transfer Order {sto_id}: Goods Issue poll attempt hit a transient error, will retry: {e}")

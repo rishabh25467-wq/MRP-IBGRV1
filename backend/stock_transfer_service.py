@@ -928,6 +928,39 @@ def mark_gi_job_started(db, sto_id: str) -> None:
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_job_running": True}})
 
 
+def find_orphaned_gi_jobs(db) -> list:
+    """Call once at process startup, before any new Goods Issue job can
+    start (mirrors job_store.recover_orphaned_jobs, same root cause).
+    `_run_goods_issue_job` (server.py) is a plain in-memory asyncio task,
+    not tracked in the recoverable `background_jobs` collection - if the
+    backend restarts/redeploys while it's still polling, that task is
+    gone for good but `gi_job_running` stays True forever (nothing else
+    ever clears it), leaving the order stuck in whatever `gi_status` it
+    was last in with NO retry button ever appearing (only "failed"/
+    "not_found_timeout" show one) and no code path left to revive it.
+    Real incident (Aug 29 2026): STO-000013 stuck on plain
+    "awaiting_delivery" indefinitely right after a production deploy.
+    Returns the sto_ids so the caller can resume each one's polling loop
+    fresh - safe even if it had actually finished right before the
+    restart, since try_post_goods_issue() checks gi_status=="posted"
+    first and returns immediately."""
+    return [d["_id"] for d in db[STO_COLLECTION].find({"gi_job_running": True}, {"_id": 1})]
+
+
+def ensure_gi_job_stopped(db, sto_id: str, error: str) -> None:
+    """Defensive safety net (Aug 29 2026, found while testing the orphan-
+    resume fix above) for server.py's _run_goods_issue_job: guarantees
+    gi_job_running actually gets cleared on a terminal SAPOutboundDeliveryError,
+    even for a rejection raised before try_post_goods_issue's own
+    per-line code got a chance to update the STO doc itself. Idempotent
+    no-op if gi_status is already a terminal state (posted/failed/
+    not_found_timeout/insufficient_stock)."""
+    doc = db[STO_COLLECTION].find_one({"_id": sto_id}, {"gi_status": 1})
+    if (doc or {}).get("gi_status") in ("posted", "failed", "not_found_timeout", "insufficient_stock"):
+        return
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_status": "failed", "gi_error": error, "gi_job_running": False}})
+
+
 def mark_goods_issue_timed_out(db, sto_id: str, note: str, stock_note: str = None) -> None:
     """`stock_note` (Aug 27 2026) - use a stock-specific message when the
     20-min window expires while gi_status was "insufficient_stock" (the
