@@ -3048,6 +3048,39 @@ def _claim_order_id(db, order_id: str, job_id: str) -> bool:
         return False
 
 
+def _find_existing_prep_order_for_material(material_id: str, quantity: float, job_id: str) -> Optional[str]:
+    """Real incident fix (Proposal 226316, Sep 2026): looks for an order
+    that ALREADY exists at LifeCycleStatusCode=1 ("In Preparation") for
+    this exact material+quantity, right now, tenant-wide - used ONLY on a
+    Resume/Retry (see _continue_order_creation's `is_resume` docstring),
+    never on a genuinely fresh proposal, since the tenant-wide scan below
+    has a real cost and a brand-new proposal cannot possibly have an
+    order yet. Same material+quantity verification and order_claims guard
+    as the normal "new In-Preparation order" polling branch - returns
+    None (never raises) if nothing matches or the SAP call itself fails,
+    so callers always safely fall back to the normal wait/poll loop."""
+    try:
+        prep_ids = sap_production_order_release_client.list_ids_by_status("1")
+    except SAPProductionOrderReleaseError as e:
+        logger.warning(f"create-and-release job {job_id}: could not check for an already-existing In-Preparation order, falling back to the normal wait loop: {e}")
+        return None
+    matches = []
+    for candidate_id in prep_ids:
+        try:
+            requested = sap_production_order_release_client.get_requested_material(candidate_id)
+        except SAPProductionOrderReleaseError:
+            continue
+        if not requested or requested["material_id"] != material_id:
+            continue
+        if requested["quantity"] is not None and abs(requested["quantity"] - quantity) >= 0.001:
+            continue
+        matches.append(candidate_id)
+    for candidate_id in sorted(matches, key=lambda x: int(x) if x.isdigit() else -1, reverse=True):
+        if _claim_order_id(db, candidate_id, job_id):
+            return candidate_id
+    return None
+
+
 async def _run_create_and_release_job(job_id: str, payload: "CreateProductionProposalRequest", avail_dt):
     """One-click orchestration, run fully in the background so it is never
     bound by the platform's ~60s ingress timeout: Create Proposal -> (settle
@@ -3198,144 +3231,165 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
         }})
 
 
-async def _continue_order_creation(job_id: str, payload: "CreateProductionProposalRequest", proposal_id: str):
+async def _continue_order_creation(job_id: str, payload: "CreateProductionProposalRequest", proposal_id: str, is_resume: bool = False):
     """Resumes/runs the Proposal -> Order polling + Release pipeline. Called
     either right after Proposal creation (no stock shortfall), or later by
     _resume_order_creation_job() once a paused Store Approval request is
     resolved (store issued enough stock, store chose to proceed with a
-    partial issue, or the planner approved a partial issue)."""
+    partial issue, or the planner approved a partial issue).
+
+    `is_resume=True` (set only by the /resume and /retry-from-proposal
+    endpoints and _resume_order_creation_job - never by the initial fresh
+    call) fixes a real incident (Proposal 226316, Sep 2026): every call
+    used to capture its OWN fresh "In Preparation" baseline right here,
+    so an order that a PREVIOUS, crashed/timed-out attempt already
+    created in SAP for this exact proposal was silently already inside
+    that very baseline and could therefore never be seen as "new" - the
+    retry looped uselessly re-triggering "Request Production" on the
+    Proposal for the full 20 minutes instead of just releasing the order
+    that was already sitting there In Preparation. Checked ONLY on
+    resume/retry (never on a fresh proposal, which cannot have an order
+    yet) to avoid the extra tenant-wide scan's cost on the common path."""
     try:
         job_store.update_job(db, job_id, {"status": "waiting_for_order", "production_proposal_id": proposal_id})
         await asyncio.sleep(SAP_SETTLE_DELAY_SECONDS)  # let SAP fully commit the new Proposal before anything reads/acts on it
 
-        open_statuses = ["1", "2", "3"]
-        baseline_ids = None
-        baseline_prep_ids = None
-        while baseline_ids is None or baseline_prep_ids is None:
-            try:
-                if baseline_ids is None:
-                    baseline_ids = {r["production_lot_id"] for r in await asyncio.to_thread(
-                        sap_production_lot_client.find_open_lots, open_statuses, payload.site_id, 999
-                    )}
-                if baseline_prep_ids is None:
-                    baseline_prep_ids = await asyncio.to_thread(sap_production_order_release_client.list_ids_by_status, "1")
-            except (SAPProductionLotError, SAPProductionOrderReleaseError) as e:
-                logger.warning(f"create-and-release job {job_id}: baseline lookup hit a transient SAP error, retrying: {e}")
-                await asyncio.sleep(CREATE_RELEASE_POLL_INTERVAL_SECONDS)
-
-        elapsed_start = time.monotonic()
-        last_trigger = None  # force an immediate first trigger below
-        trigger_count = 0
         new_order_id = None
         order_self_released = False
-        while time.monotonic() - elapsed_start <= CREATE_RELEASE_MAX_WAIT_SECONDS:
-            # User-requested stop (Aug 2026 - "allow to stop the rotating
-            # wheel"): checked once per poll tick, cheap Mongo read. This
-            # only stops OUR OWN polling/re-triggering - it can NEVER
-            # delete/cancel the SAP Proposal already created (no such SAP
-            # API exists, see part-2 session note), so that stays exactly
-            # as it is, un-converted, in SAP.
-            current_job = job_store.get_job(db, job_id)
-            if current_job and current_job.get("cancel_requested"):
-                job_store.update_job(db, job_id, {"status": "cancelled", "result": {
-                    "production_proposal_id": proposal_id, "production_order_id": None, "released": False,
-                    "note": f"Stopped - this app will no longer auto-check for the resulting Order. Proposal {proposal_id} was already created in SAP and is NOT deleted; if SAP still converts it into an Order later, it will need to be released manually.",
-                }})
-                return
-            elapsed = time.monotonic() - elapsed_start
-            if last_trigger is None or elapsed - last_trigger >= CREATE_RELEASE_RETRIGGER_EVERY_SECONDS:
-                trigger_count += 1
-                trigger_ok = False
-                trigger_error = None
+        if is_resume:
+            new_order_id = await asyncio.to_thread(
+                _find_existing_prep_order_for_material, payload.material_id, payload.quantity, job_id,
+            )
+            if new_order_id:
+                logger.info(f"create-and-release job {job_id}: proposal {proposal_id} already has order {new_order_id} In Preparation - releasing it directly instead of waiting/re-triggering")
+
+        if new_order_id is None:
+            open_statuses = ["1", "2", "3"]
+            baseline_ids = None
+            baseline_prep_ids = None
+            while baseline_ids is None or baseline_prep_ids is None:
                 try:
-                    trigger_result = await asyncio.to_thread(sap_production_proposal_release_client.release_order, proposal_id)
-                    trigger_ok = bool(trigger_result.get("success"))
-                except SAPProductionOrderReleaseError as e:
-                    trigger_error = str(e)
-                    logger.warning(f"create-and-release job {job_id}: Release-trigger attempt #{trigger_count} failed, will keep polling/retrying: {e}")
-                job_store.update_job(db, job_id, {
-                    "last_release_trigger_at": datetime.now(timezone.utc).isoformat(),
-                    "release_trigger_count": trigger_count, "last_release_trigger_ok": trigger_ok,
-                    # Aug 2026 fix (user's explicit ask): the real SAP error
-                    # text used to be discarded (only this bool was kept),
-                    # making a stuck job impossible to diagnose from the UI.
-                    "last_release_trigger_error": trigger_error,
-                })
-                last_trigger = time.monotonic() - elapsed_start
-                await asyncio.sleep(SAP_SETTLE_DELAY_SECONDS)  # give SAP a beat to act on the trigger before the very next lookup
-            try:
-                current_rows = await asyncio.to_thread(
-                    sap_production_lot_client.find_open_lots, open_statuses, payload.site_id, 999
-                )
-                # Same site-wide gap as the self-release branch below - two
-                # concurrent orders for DIFFERENT materials at this site
-                # could both appear as "new" here. Only consider ones for
-                # OUR material (find_open_lots rows already carry it).
-                current_ids = {r["production_lot_id"] for r in current_rows if r.get("main_output_product") == payload.material_id}
-                new_ids = current_ids - baseline_ids
-                if new_ids:
-                    candidate_id = max(new_ids, key=lambda x: int(x) if x.isdigit() else -1)
-                    # Atomic claim - guards against a SECOND concurrent job
-                    # for this same material+site (another user, or the
-                    # same user double-clicking) grabbing the same order.
-                    if await asyncio.to_thread(_claim_order_id, db, candidate_id, job_id):
-                        new_order_id = candidate_id
-                        break
-                    baseline_ids = current_ids  # already claimed by another job - never reconsider it
-            except SAPProductionLotError as e:
-                # SAP's tenant sees frequent transient connection timeouts under
-                # load - a single failed poll attempt must NEVER kill the job,
-                # just skip this round and try again next interval.
-                logger.warning(f"create-and-release job {job_id}: poll attempt hit a transient SAP error, will retry: {e}")
-            try:
-                # SAP does NOT auto-assign a Production Lot (so the poll
-                # above alone never fires) until the Order is actually
-                # Released - confirmed live. If a brand-new "In
-                # Preparation" order shows up, release it ourselves right
-                # away instead of waiting on a Lot that will never appear
-                # on its own.
-                current_prep_ids = await asyncio.to_thread(sap_production_order_release_client.list_ids_by_status, "1")
-                new_prep_ids = current_prep_ids - baseline_prep_ids
-                if new_prep_ids:
-                    candidate_id = max(new_prep_ids, key=lambda x: int(x) if x.isdigit() else -1)
-                    # list_ids_by_status() is tenant-wide (no Site/Material
-                    # filter exists on this entity) - verify this candidate
-                    # is really OUR material+quantity before ever touching
-                    # it (real incident: see get_requested_material docstring).
-                    candidate_matches = False
-                    verify_error = False
+                    if baseline_ids is None:
+                        baseline_ids = {r["production_lot_id"] for r in await asyncio.to_thread(
+                            sap_production_lot_client.find_open_lots, open_statuses, payload.site_id, 999
+                        )}
+                    if baseline_prep_ids is None:
+                        baseline_prep_ids = await asyncio.to_thread(sap_production_order_release_client.list_ids_by_status, "1")
+                except (SAPProductionLotError, SAPProductionOrderReleaseError) as e:
+                    logger.warning(f"create-and-release job {job_id}: baseline lookup hit a transient SAP error, retrying: {e}")
+                    await asyncio.sleep(CREATE_RELEASE_POLL_INTERVAL_SECONDS)
+
+            elapsed_start = time.monotonic()
+            last_trigger = None  # force an immediate first trigger below
+            trigger_count = 0
+            while time.monotonic() - elapsed_start <= CREATE_RELEASE_MAX_WAIT_SECONDS:
+                # User-requested stop (Aug 2026 - "allow to stop the rotating
+                # wheel"): checked once per poll tick, cheap Mongo read. This
+                # only stops OUR OWN polling/re-triggering - it can NEVER
+                # delete/cancel the SAP Proposal already created (no such SAP
+                # API exists, see part-2 session note), so that stays exactly
+                # as it is, un-converted, in SAP.
+                current_job = job_store.get_job(db, job_id)
+                if current_job and current_job.get("cancel_requested"):
+                    job_store.update_job(db, job_id, {"status": "cancelled", "result": {
+                        "production_proposal_id": proposal_id, "production_order_id": None, "released": False,
+                        "note": f"Stopped - this app will no longer auto-check for the resulting Order. Proposal {proposal_id} was already created in SAP and is NOT deleted; if SAP still converts it into an Order later, it will need to be released manually.",
+                    }})
+                    return
+                elapsed = time.monotonic() - elapsed_start
+                if last_trigger is None or elapsed - last_trigger >= CREATE_RELEASE_RETRIGGER_EVERY_SECONDS:
+                    trigger_count += 1
+                    trigger_ok = False
+                    trigger_error = None
                     try:
-                        requested = await asyncio.to_thread(sap_production_order_release_client.get_requested_material, candidate_id)
-                        candidate_matches = bool(requested) and requested["material_id"] == payload.material_id and (
-                            requested["quantity"] is None or abs(requested["quantity"] - payload.quantity) < 0.001
-                        )
+                        trigger_result = await asyncio.to_thread(sap_production_proposal_release_client.release_order, proposal_id)
+                        trigger_ok = bool(trigger_result.get("success"))
                     except SAPProductionOrderReleaseError as e:
-                        # Aug 2026 fix - real incident (Order 70547, PL-0037A):
-                        # a TRANSIENT failure here (this tenant sees frequent
-                        # connect timeouts) is NOT the same as a real mismatch.
-                        # The old code advanced baseline_prep_ids regardless,
-                        # permanently forgetting this candidate even if it was
-                        # really OUR order - dooming the job to poll for the
-                        # full 20 min with no way to ever find it again. Now
-                        # baseline_prep_ids is left untouched below so it's
-                        # simply re-checked on the very next poll tick.
-                        verify_error = True
-                        logger.warning(f"create-and-release job {job_id}: could not verify candidate order {candidate_id}'s material (transient - will retry next poll, not discarding it): {e}")
-                    # Claim BEFORE releasing anything - guards against a
-                    # SECOND concurrent job for this same material+quantity
-                    # (or a same-material job at a different site racing
-                    # the tenant-wide list) claiming/releasing the same order.
-                    if candidate_matches and await asyncio.to_thread(_claim_order_id, db, candidate_id, job_id):
-                        release_result = await asyncio.to_thread(sap_production_order_release_client.release_order, candidate_id, True)
-                        if release_result.get("success"):
+                        trigger_error = str(e)
+                        logger.warning(f"create-and-release job {job_id}: Release-trigger attempt #{trigger_count} failed, will keep polling/retrying: {e}")
+                    job_store.update_job(db, job_id, {
+                        "last_release_trigger_at": datetime.now(timezone.utc).isoformat(),
+                        "release_trigger_count": trigger_count, "last_release_trigger_ok": trigger_ok,
+                        # Aug 2026 fix (user's explicit ask): the real SAP error
+                        # text used to be discarded (only this bool was kept),
+                        # making a stuck job impossible to diagnose from the UI.
+                        "last_release_trigger_error": trigger_error,
+                    })
+                    last_trigger = time.monotonic() - elapsed_start
+                    await asyncio.sleep(SAP_SETTLE_DELAY_SECONDS)  # give SAP a beat to act on the trigger before the very next lookup
+                try:
+                    current_rows = await asyncio.to_thread(
+                        sap_production_lot_client.find_open_lots, open_statuses, payload.site_id, 999
+                    )
+                    # Same site-wide gap as the self-release branch below - two
+                    # concurrent orders for DIFFERENT materials at this site
+                    # could both appear as "new" here. Only consider ones for
+                    # OUR material (find_open_lots rows already carry it).
+                    current_ids = {r["production_lot_id"] for r in current_rows if r.get("main_output_product") == payload.material_id}
+                    new_ids = current_ids - baseline_ids
+                    if new_ids:
+                        candidate_id = max(new_ids, key=lambda x: int(x) if x.isdigit() else -1)
+                        # Atomic claim - guards against a SECOND concurrent job
+                        # for this same material+site (another user, or the
+                        # same user double-clicking) grabbing the same order.
+                        if await asyncio.to_thread(_claim_order_id, db, candidate_id, job_id):
                             new_order_id = candidate_id
-                            order_self_released = True
                             break
-                    if not verify_error:
-                        baseline_prep_ids = current_prep_ids  # don't re-consider this same candidate (mismatched material, already claimed, or matched-but-not-releasable) next loop
-            except SAPProductionOrderReleaseError as e:
-                logger.warning(f"create-and-release job {job_id}: In-Preparation-order poll/self-release hit a transient SAP error, will retry: {e}")
-            await asyncio.sleep(CREATE_RELEASE_POLL_INTERVAL_SECONDS)
+                        baseline_ids = current_ids  # already claimed by another job - never reconsider it
+                except SAPProductionLotError as e:
+                    # SAP's tenant sees frequent transient connection timeouts under
+                    # load - a single failed poll attempt must NEVER kill the job,
+                    # just skip this round and try again next interval.
+                    logger.warning(f"create-and-release job {job_id}: poll attempt hit a transient SAP error, will retry: {e}")
+                try:
+                    # SAP does NOT auto-assign a Production Lot (so the poll
+                    # above alone never fires) until the Order is actually
+                    # Released - confirmed live. If a brand-new "In
+                    # Preparation" order shows up, release it ourselves right
+                    # away instead of waiting on a Lot that will never appear
+                    # on its own.
+                    current_prep_ids = await asyncio.to_thread(sap_production_order_release_client.list_ids_by_status, "1")
+                    new_prep_ids = current_prep_ids - baseline_prep_ids
+                    if new_prep_ids:
+                        candidate_id = max(new_prep_ids, key=lambda x: int(x) if x.isdigit() else -1)
+                        # list_ids_by_status() is tenant-wide (no Site/Material
+                        # filter exists on this entity) - verify this candidate
+                        # is really OUR material+quantity before ever touching
+                        # it (real incident: see get_requested_material docstring).
+                        candidate_matches = False
+                        verify_error = False
+                        try:
+                            requested = await asyncio.to_thread(sap_production_order_release_client.get_requested_material, candidate_id)
+                            candidate_matches = bool(requested) and requested["material_id"] == payload.material_id and (
+                                requested["quantity"] is None or abs(requested["quantity"] - payload.quantity) < 0.001
+                            )
+                        except SAPProductionOrderReleaseError as e:
+                            # Aug 2026 fix - real incident (Order 70547, PL-0037A):
+                            # a TRANSIENT failure here (this tenant sees frequent
+                            # connect timeouts) is NOT the same as a real mismatch.
+                            # The old code advanced baseline_prep_ids regardless,
+                            # permanently forgetting this candidate even if it was
+                            # really OUR order - dooming the job to poll for the
+                            # full 20 min with no way to ever find it again. Now
+                            # baseline_prep_ids is left untouched below so it's
+                            # simply re-checked on the very next poll tick.
+                            verify_error = True
+                            logger.warning(f"create-and-release job {job_id}: could not verify candidate order {candidate_id}'s material (transient - will retry next poll, not discarding it): {e}")
+                        # Claim BEFORE releasing anything - guards against a
+                        # SECOND concurrent job for this same material+quantity
+                        # (or a same-material job at a different site racing
+                        # the tenant-wide list) claiming/releasing the same order.
+                        if candidate_matches and await asyncio.to_thread(_claim_order_id, db, candidate_id, job_id):
+                            release_result = await asyncio.to_thread(sap_production_order_release_client.release_order, candidate_id, True)
+                            if release_result.get("success"):
+                                new_order_id = candidate_id
+                                order_self_released = True
+                                break
+                        if not verify_error:
+                            baseline_prep_ids = current_prep_ids  # don't re-consider this same candidate (mismatched material, already claimed, or matched-but-not-releasable) next loop
+                except SAPProductionOrderReleaseError as e:
+                    logger.warning(f"create-and-release job {job_id}: In-Preparation-order poll/self-release hit a transient SAP error, will retry: {e}")
+                await asyncio.sleep(CREATE_RELEASE_POLL_INTERVAL_SECONDS)
 
         if not new_order_id:
             job_store.update_job(db, job_id, {"status": "done", "result": {
@@ -3516,7 +3570,7 @@ async def resume_failed_create_and_release_job(job_id: str, payload: ResumeFaile
         "status": "running", "result": None, "error": None, "payload_snapshot": snapshot,
         "actor_user_id": old_job.get("actor_user_id"),
     })
-    asyncio.create_task(_continue_order_creation(new_job_id, resumed_payload, proposal_id))
+    asyncio.create_task(_continue_order_creation(new_job_id, resumed_payload, proposal_id, is_resume=True))
     return {"job_id": new_job_id, "production_proposal_id": proposal_id}
 
 
@@ -3577,7 +3631,7 @@ async def retry_from_proposal(payload: RetryFromProposalRequest, request: Reques
         "status": "running", "result": None, "error": None, "payload_snapshot": resumed_payload.dict(),
         "actor_user_id": request.state.user.get("_id"),
     })
-    asyncio.create_task(_continue_order_creation(new_job_id, resumed_payload, payload.production_proposal_id))
+    asyncio.create_task(_continue_order_creation(new_job_id, resumed_payload, payload.production_proposal_id, is_resume=True))
     return {"job_id": new_job_id, "production_proposal_id": payload.production_proposal_id}
 
 
@@ -3626,7 +3680,7 @@ async def _resume_order_creation_job(job_id: str):
         logger.error(f"_resume_order_creation_job: job {job_id} missing payload_snapshot/production_proposal_id, cannot resume")
         return
     payload = CreateProductionProposalRequest(**snapshot)
-    asyncio.create_task(_continue_order_creation(job_id, payload, proposal_id))
+    asyncio.create_task(_continue_order_creation(job_id, payload, proposal_id, is_resume=True))
 
 
 class StoreIssueRequest(BaseModel):
@@ -5685,8 +5739,9 @@ async def post_inbound_receipt(sto_id: str, payload: InboundReceiptRequest, requ
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
         except Exception as e:
             logger.error(f"Inbound receipt job {job_id} ({sto_id}) failed: {e}")
-            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": str(e)})
-            await asyncio.to_thread(db[stock_transfer_service.STO_COLLECTION].update_one, {"_id": sto_id}, {"$set": {"receipt_error": str(e)}})
+            friendly_error = "Could not reach SAP's receipt screen - please retry" if "Executable doesn't exist" in str(e) or "BrowserType.launch" in str(e) else str(e)
+            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": friendly_error})
+            await asyncio.to_thread(db[stock_transfer_service.STO_COLLECTION].update_one, {"_id": sto_id}, {"$set": {"receipt_error": friendly_error}})
 
     asyncio.create_task(run())
     return {"job_id": job_id}
@@ -6019,7 +6074,8 @@ def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> st
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
         except Exception as e:
             logger.error(f"Supplier GRN job {job_id} ({doc_code}) failed: {e}")
-            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": str(e)})
+            friendly_error = "Could not reach SAP's receipt screen - please retry" if "Executable doesn't exist" in str(e) or "BrowserType.launch" in str(e) else str(e)
+            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": friendly_error})
 
     asyncio.create_task(run())
     return job_id

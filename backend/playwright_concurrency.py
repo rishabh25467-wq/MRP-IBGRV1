@@ -33,6 +33,8 @@ import asyncio
 import logging
 import os
 import queue
+import subprocess
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -64,6 +66,9 @@ _queued_count = 0
 # leaving orphaned Chromium processes behind (testing_agent iteration_133:
 # 18 stray chrome processes survived a hot-reload with 3 jobs in flight).
 _active_browsers = set()
+
+_chromium_verified = False
+_chromium_verify_lock = threading.Lock()
 
 
 async def acquire() -> tuple:
@@ -114,20 +119,54 @@ async def close_all_browsers() -> None:
         _active_browsers.discard(browser)
 
 
+def _verify_chromium_sync(original_error: Exception) -> None:
+    """Runs the actual blocking lock-acquire + `playwright install chromium`
+    subprocess. MUST always be called via `_QUEUE_WAIT_EXECUTOR` (never
+    straight off the event loop) - `_chromium_verify_lock` is a plain
+    `threading.Lock`, and a second concurrent caller blocked on
+    `.acquire()` while still on the asyncio event loop thread would
+    freeze the ENTIRE server for up to the full 180s timeout below (real
+    incident, Aug 29 2026 - fixed by moving this off the event loop)."""
+    global _chromium_verified
+    with _chromium_verify_lock:
+        if _chromium_verified:
+            return
+        logger.warning(f"Chromium launch failed ({original_error}) - attempting a one-time self-heal via `playwright install chromium`")
+        result = subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            capture_output=True, text=True, timeout=180,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"playwright install chromium failed: {result.stderr[-500:]}") from original_error
+        _chromium_verified = True
+
+
 async def launch_chromium(playwright):
-    """Thin wrapper kept for the single call site pattern (registers/
-    unregisters in `_active_browsers` at each call site) - no runtime
-    self-heal anymore (Aug 29 2026, per Emergent Support's diagnosis of a
-    real production crash loop). Chromium is now expected to be baked
-    into the deployment image at BUILD time (under PLAYWRIGHT_BROWSERS_
-    PATH=/pw-browsers, matching the pinned `playwright==1.62.0` in
-    requirements.txt) instead of self-installing at runtime on every
-    restart - a runtime `playwright install chromium` could pull a build
-    number that doesn't match what THIS pinned Playwright version
-    expects (real incident: exactly this mismatch), and separately, the
-    install itself competed for the standard tier's tiny CPU allocation
-    at the exact moment the platform's health check was deciding if a
-    fresh boot succeeded, causing a crash-restart loop. If this raises
-    "Executable doesn't exist", the fix is a fresh Re-publish (rebuilds
-    the image with Chromium baked in), not a runtime reinstall."""
-    return await playwright.chromium.launch(headless=True)
+    """Use instead of `playwright.chromium.launch(headless=True)` directly.
+
+    Chromium is EXPECTED to already be baked into the deployment image at
+    build time (PLAYWRIGHT_BROWSERS_PATH=/pw-browsers, matching the
+    pinned `playwright==1.62.0`), per Emergent Support's guidance - a
+    proactive/eager self-heal was removed Aug 29 2026 because it competed
+    for CPU during the platform's boot health-check window.
+
+    Re-added Aug 31 2026 as a LAZY, on-demand-only safety net after a
+    real production outage: despite that guidance, a live deploy still
+    had NO Chromium binary at runtime (confirmed: raw "Executable doesn't
+    exist" errors leaking straight to users on the Inbound Receipt
+    screen, with nothing left to catch it once the previous self-heal was
+    removed). Unlike the removed eager version, this only triggers the
+    FIRST time an actual job needs Chromium (long after boot/health-check
+    has already passed, and via `_QUEUE_WAIT_EXECUTOR` off the event
+    loop - see `_verify_chromium_sync`), so it can't cause the earlier
+    boot-time CPU contention. `_chromium_verified` is a process-wide
+    latch so a genuinely broken install (no disk/network) fails fast on
+    every launch after the first attempt instead of eating a ~180s
+    reinstall timeout every single time."""
+    try:
+        return await playwright.chromium.launch(headless=True)
+    except Exception as e:
+        if _chromium_verified or "Executable doesn't exist" not in str(e):
+            raise
+        await asyncio.get_running_loop().run_in_executor(_QUEUE_WAIT_EXECUTOR, _verify_chromium_sync, e)
+        return await playwright.chromium.launch(headless=True)
