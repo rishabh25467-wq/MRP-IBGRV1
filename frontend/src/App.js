@@ -40,8 +40,11 @@ function AuthGate({ children }) {
   const { user, loading, isPendingAccess } = useAuth();
 
   if (loading) return null;
-  if (!user) return <LoginPage />;
-  if (isPendingAccess) return <PendingAccessPage />;
+  // User's explicit ask (Sep 2026): build-version footer must show on
+  // EVERY page - Login/Pending-Access used to bypass the layout wrapper
+  // that carries <Footer/> below, so they never got it.
+  if (!user) return <div className="min-h-screen flex flex-col"><div className="flex-1"><LoginPage /></div><Footer /></div>;
+  if (isPendingAccess) return <div className="min-h-screen flex flex-col"><div className="flex-1"><PendingAccessPage /></div><Footer /></div>;
   return children;
 }
 
@@ -147,15 +150,20 @@ function AppShell() {
   const { pathname } = useLocation();
   if (pathname.startsWith("/supplier-portal")) {
     return (
-      <Routes>
-        <Route path="/supplier-portal/signup" element={<SupplierSignupPage />} />
-        <Route path="/supplier-portal/login" element={<SupplierLoginPage />} />
-        <Route path="/supplier-portal" element={<SupplierPortalGate page="dashboard" />} />
-        <Route path="/supplier-portal/dashboard" element={<SupplierPortalGate page="dashboard" />} />
-        <Route path="/supplier-portal/dashboard/:vendorCode" element={<SupplierPortalGate page="dashboard" />} />
-        <Route path="/supplier-portal/shipments" element={<SupplierPortalGate page="shipments" />} />
-        <Route path="/supplier-portal/shipments/:vendorCode" element={<SupplierPortalGate page="shipments" />} />
-      </Routes>
+      <div className="min-h-screen flex flex-col">
+        <div className="flex-1">
+          <Routes>
+            <Route path="/supplier-portal/signup" element={<SupplierSignupPage />} />
+            <Route path="/supplier-portal/login" element={<SupplierLoginPage />} />
+            <Route path="/supplier-portal" element={<SupplierPortalGate page="dashboard" />} />
+            <Route path="/supplier-portal/dashboard" element={<SupplierPortalGate page="dashboard" />} />
+            <Route path="/supplier-portal/dashboard/:vendorCode" element={<SupplierPortalGate page="dashboard" />} />
+            <Route path="/supplier-portal/shipments" element={<SupplierPortalGate page="shipments" />} />
+            <Route path="/supplier-portal/shipments/:vendorCode" element={<SupplierPortalGate page="shipments" />} />
+          </Routes>
+        </div>
+        <Footer />
+      </div>
     );
   }
   return <InternalApp />;
