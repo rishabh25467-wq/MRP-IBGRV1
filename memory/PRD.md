@@ -56,9 +56,46 @@ Extend a SAP BOM viewer application into a full production-planning suite for Ra
    padding restored (`print:p-10`) to keep real margins. Also changed "Transport"
    label to "Transport Details" (renders as "TRANSPORT DETAILS"). Same fix applied
    to `GatePassPage.js`. Verified end-to-end with a real generated PDF via Playwright.
+5. **"Waiting forever" once a multiline Delivery already exists** (Order 30518, 2nd
+   incident): once an earlier attempt created a real combined Outbound Delivery,
+   its request items permanently vanish from SAP's "pending" list -
+   `try_post_goods_issue` used to only ever check that list and report "waiting"
+   forever. New `_try_release_existing_multiline_delivery` (stock_transfer_service.py)
+   checks for an already-known delivery FIRST and releases it via a fast direct API
+   call (new `get_delivery_object_id_by_id` on sap_outbound_delivery_client.py),
+   falling back to the Playwright UI (new `release_existing_delivery_via_ui`) only
+   if the API attempt fails.
+6. **Unbounded hang, no per-attempt ceiling** (Order 30529 - stuck with NOTHING
+   created yet in SAP, confirmed live via API + user's own SAP screenshot): a single
+   Playwright attempt had no timeout, so the 20-min job-level ceiling could never
+   fire (blocked waiting on that one hung thread). Added `GI_PLAYWRIGHT_ATTEMPT_TIMEOUT_SECONDS`
+   (300s) wrapping every attempt in `asyncio.wait_for`.
+7. **UI staleness**: the order detail popup was a frozen snapshot (never refreshed
+   while open) - now syncs with the list on every list refresh; list itself now
+   auto-refreshes every 20s while any order has `gi_job_running`.
+8. **Debug screenshot per step + Force Stop button** (user's explicit ask, after
+   4 straight incidents): `_save_debug_screenshot` now takes a `step` label, called
+   at every phase transition (not just failures), timestamped, capped at 20/order
+   (`MAX_DEBUG_SCREENSHOTS_PER_ORDER`). New endpoints
+   `GET /stock-transfer/orders/{sto_id}/debug-screenshots` +
+   `GET /stock-transfer/debug-screenshots/{filename}`, viewer in `OrderDetailBody`
+   (admin-only). New `POST /stock-transfer/orders/{sto_id}/force-stop-gi` (backed by
+   `request_gi_job_stop`/`is_gi_stop_requested`) - instant UI feedback (flips to
+   "failed" immediately), background loop exits quietly once it notices the flag
+   (bounded by the same 5-min ceiling). Button only shows when `gi_job_running` is
+   true or `gi_status === "insufficient_stock"` (mirrors backend validation exactly
+   - first version showed it too broadly and produced a false-positive error toast).
 - Preview env note: `/pw-browsers` Chromium install disappeared twice this session
   (pod restart wipes ephemeral storage) - re-ran `playwright install chromium`
   each time; not a code issue.
+- Build version footer already exists (`/api/version`, `Footer.jsx`) - "Build
+  {commit} · {date}" on every page, useful for the user to verify a redeploy
+  actually picked up the latest fixes.
+- Told user directly (their explicit challenge on reliability): the multi-line
+  Goods Issue automation cannot be promised 100% consistent - it drives SAP's live
+  Fiori UI screen-by-screen because no API exists to combine multi-line deliveries
+  (8 dead-end API attempts already documented). Single-line orders use a pure API
+  path and don't share this risk class at all.
 
 ## Known SAP-side structural limitations (do not re-investigate, already conclusively proven)
 - `PGRBackground` (Post Goods Receipt) via OData is disabled for this tenant's Inbound Delivery
