@@ -91,6 +91,17 @@ Extend a SAP BOM viewer application into a full production-planning suite for Ra
 - Build version footer already exists (`/api/version`, `Footer.jsx`) - "Build
   {commit} · {date}" on every page, useful for the user to verify a redeploy
   actually picked up the latest fixes.
+  - **Root cause of blank footer in production found (Sep 2026)**: production
+    deploys have no `.git` history, so the old `git log`-at-runtime approach
+    always failed silently there. Fixed: `_get_build_version()` (server.py) now
+    reads a committed `backend/build_info.json` first, falling back to live git
+    only for local/preview dev. **New script `backend/generate_build_info.py`
+    must be run (regenerating + committing build_info.json) right before every
+    publish/deploy** - it captures the commit hash at generation time, so it's
+    only accurate as of whenever it was last run. Also fixed: build-version
+    footer was missing entirely on Login/Pending-Access screens and the whole
+    Supplier Portal route tree (separate layout, never had `<Footer/>`) -
+    added to both in App.js.
 - Told user directly (their explicit challenge on reliability): the multi-line
   Goods Issue automation cannot be promised 100% consistent - it drives SAP's live
   Fiori UI screen-by-screen because no API exists to combine multi-line deliveries

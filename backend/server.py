@@ -103,11 +103,22 @@ api_router = APIRouter(prefix="/api")
 
 
 def _get_build_version() -> dict:
-    """Short git commit hash + date, computed once at startup (Aug 27
-    2026, user's explicit ask: "add build version on footer") - this
-    repo has no separate semantic-version bump step, so the current git
-    commit is the most accurate, zero-maintenance stand-in for "what
-    build is actually running right now"."""
+    """Short git commit hash + date (Aug 27 2026, user's explicit ask:
+    "add build version on footer"). Real incident fix (Sep 2026): a
+    deployed production build has no `.git` history at all, so `git log`
+    always failed there and the footer stayed blank on production while
+    working fine on preview - reads from a committed `build_info.json`
+    FIRST now (regenerated from git via generate_build_info.py before
+    every publish - see that script's own docstring), falling back to a
+    live `git log` only for local/preview dev convenience when that file
+    is stale or missing."""
+    info_path = Path(__file__).parent / "build_info.json"
+    try:
+        data = json.loads(info_path.read_text())
+        if data.get("commit"):
+            return data
+    except Exception:
+        pass
     try:
         commit = subprocess.check_output(
             ["git", "log", "-1", "--format=%h|%cd", "--date=format:%d %b %Y"],
