@@ -1,3 +1,15 @@
+## Eleventh feature: show which pooled SAP login handled each order (2026-08-31)
+
+- User's explicit ask, following the credential pool feature - now that 3 different SAP logins can
+  handle a Goods Issue, show WHICH one actually ran for a given order.
+- Extended `combine_and_post_goods_issue_via_ui`'s `progress_cb` signature to `(phase, username=None)` -
+  reports the acquired pooled credential's username alongside the "opening_delivery" phase transition.
+- `stock_transfer_service._try_post_goods_issue_multiline` persists it as `gi_playwright_user` on the
+  STO doc via the same callback wiring as the progress phase.
+- Frontend: shown next to the Delivery Request ID line above the items table - "Delivery Request in
+  SAP: 58918 · SAP user: STOREBOT1".
+
+
 ## Tenth feature: GI progress phases + live Delivery Request ID (2026-08-31)
 
 - User's explicit ask: stop leaving them "with no idea what's happening" after clicking Retry Goods

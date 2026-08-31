@@ -267,6 +267,7 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
         {order.gi_delivery_request_id && (
           <p className="px-2 py-1 text-[11px] text-[#475467] bg-[#F9FAFB] border-b border-[#EAECF0]" data-testid="stock-transfer-detail-items-table-delivery-request">
             Delivery Request in SAP: <span className="font-bold text-[#344054]">{order.gi_delivery_request_id}</span>
+            {order.gi_playwright_user && <> &middot; SAP user: <span className="font-bold text-[#344054]">{order.gi_playwright_user}</span></>}
           </p>
         )}
         <table className="w-full text-xs border-collapse" data-testid="stock-transfer-detail-items-table">

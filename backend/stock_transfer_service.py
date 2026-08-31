@@ -658,10 +658,16 @@ def _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_invent
         "gr_no": doc.get("gr_no"),
         "date_of_supply": doc.get("date_of_supply"),
     }
+    def _on_gi_progress(phase, username=None):
+        update = {"gi_progress_phase": phase}
+        if username:
+            update["gi_playwright_user"] = username
+        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": update})
+
     try:
         ui_result = asyncio.run(sap_playwright_outbound_gi_service.combine_and_post_goods_issue_via_ui(
             sap_order_id, metadata, sap_outbound_delivery_client, all_uuids,
-            progress_cb=lambda phase: db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_progress_phase": phase}}),
+            progress_cb=_on_gi_progress,
         ))
     except Exception as e:
         # A Playwright/infra hiccup (click timeout, browser crash, nav

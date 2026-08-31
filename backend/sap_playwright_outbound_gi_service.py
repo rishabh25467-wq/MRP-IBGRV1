@@ -201,15 +201,18 @@ async def combine_and_post_goods_issue_via_ui(sap_order_id: str, metadata: dict,
     separate Inbound Receipt step (receiving warehouse's own later
     action).
 
-    progress_cb(phase: str), optional, plain sync callback (called from
-    inside asyncio.run() on a worker thread, never the main event loop -
-    a blocking DB write inside it is safe) - "opening_delivery" once
-    logged in and about to act on the Delivery Proposal, "posting_
-    goods_issue" right before the final Release click. User's explicit
-    ask (Aug 31 2026) to stop the retry button leaving them "with no
-    idea what's happening" during the up-to-a-minute Playwright run -
-    unlike the OTHER 2 Playwright services' progress_cb, plain wording
-    here is fine (this order's OWN GI banner already says "SAP"
+    progress_cb(phase: str, username: str = None), optional, plain sync
+    callback (called from inside asyncio.run() on a worker thread, never
+    the main event loop - a blocking DB write inside it is safe) -
+    "opening_delivery" once logged in and about to act on the Delivery
+    Proposal (also carries which of the pooled SAP logins this run
+    acquired - user's explicit ask, Aug 31 2026, to show which bot
+    account handled a given order now that there are 3 to pick from),
+    "posting_goods_issue" right before the final Release click. User's
+    explicit ask (Aug 31 2026) to stop the retry button leaving them
+    "with no idea what's happening" during the up-to-a-minute Playwright
+    run - unlike the OTHER 2 Playwright services' progress_cb, plain
+    wording here is fine (this order's OWN GI banner already says "SAP"
     elsewhere, unlike the Inbound Receipt/Supplier GRN flows).
 
     Returns {"status": "waiting"} if SAP hasn't produced the combined
@@ -221,10 +224,10 @@ async def combine_and_post_goods_issue_via_ui(sap_order_id: str, metadata: dict,
     from playwright.async_api import async_playwright
     import playwright_concurrency
 
-    def _progress(phase: str) -> None:
+    def _progress(phase: str, username: str = None) -> None:
         if progress_cb:
             try:
-                progress_cb(phase)
+                progress_cb(phase, username)
             except Exception:
                 pass
 
@@ -236,7 +239,7 @@ async def combine_and_post_goods_issue_via_ui(sap_order_id: str, metadata: dict,
             try:
                 page = await browser.new_page(viewport={"width": 1600, "height": 900})
                 await _login(page, username, password)
-                _progress("opening_delivery")
+                _progress("opening_delivery", username=username)
                 await _open_work_center_item(page, "Outbound Logistics", "Delivery Proposals")
                 row_count = await _filter_by_reference(page, "Reference ID", sap_order_id)
                 if row_count == 0:
