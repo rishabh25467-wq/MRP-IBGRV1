@@ -1199,7 +1199,7 @@ export default function StockTransferPage() {
             <table className="w-full text-[12px] border-collapse min-w-[900px]" data-testid="stock-transfer-recent-table">
               <thead>
                 <tr>
-                  {["STO ID", "Created", "By", "Ship-from", "Ship-to", "Location", "Items", "Delivery Date", "SAP Order ID", "Status", "Goods Issue", "GST Push", "ERP Portal"].map((h) => (
+                  {["STO ID", "Created", "By", "Ship-from", "Ship-to", "Location", "Items", "Delivery Date", "SAP Order ID", "Status", "Goods Issue", "SAP User", "GST Push", "ERP Portal"].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-[11px] font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -1256,6 +1256,7 @@ export default function StockTransferPage() {
                       <td className="border border-[#D0D5DD] px-2 py-1.5">
                         {giBadge ? <span className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold ${giBadge.className}`}>{giBadge.label}</span> : <span className="text-[#98A2B3]">—</span>}
                       </td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono" data-testid={`stock-transfer-recent-sap-user-${o.sto_id}`}>{o.gi_playwright_user || "—"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">
                         {gstBadge ? <span className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold ${gstBadge.className}`}>{gstBadge.label}</span> : <span className="text-[#98A2B3]">—</span>}
                       </td>

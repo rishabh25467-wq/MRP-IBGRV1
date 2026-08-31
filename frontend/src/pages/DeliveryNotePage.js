@@ -85,9 +85,21 @@ function CopyStamp({ label }) {
   );
 }
 
+// Sep 2026, user's explicit ask (annotated PDF): Chrome's own default
+// print header/footer (timestamp, page title, page URL) was showing up
+// on the printed Delivery Challan - not something this page's own
+// markup ever renders, purely the browser's print-dialog default. The
+// only page-side fix is `@page { margin: 0 }`, which starves Chrome of
+// the margin space it draws that header/footer text into - compensated
+// with the document's own `print:p-10` below so content still isn't
+// flush against the paper edge.
+function PrintPageStyle() {
+  return <style>{"@media print { @page { margin: 0; size: auto; } }"}</style>;
+}
+
 function DeliveryNoteDocument({ data, companyName, copyLabel }) {
   return (
-    <div className="max-w-[820px] mx-auto bg-white border border-[#D0D5DD] shadow-sm p-8 text-[13px] text-[#101828] print:border-0 print:shadow-none print:p-0" style={{ fontFamily: "'DM Sans', sans-serif" }} data-testid="delivery-note-document">
+    <div className="max-w-[820px] mx-auto bg-white border border-[#D0D5DD] shadow-sm p-8 text-[13px] text-[#101828] print:border-0 print:shadow-none print:p-10" style={{ fontFamily: "'DM Sans', sans-serif" }} data-testid="delivery-note-document">
       <CopyStamp label={copyLabel} />
       <div className="flex justify-between items-start border-b-2 border-[#101828] pb-3">
         <div>
@@ -107,7 +119,7 @@ function DeliveryNoteDocument({ data, companyName, copyLabel }) {
           <p><span className="font-bold">Date of Issue:</span> {formatDateDMY(data.date_of_supply) || "—"}</p>
         </div>
         <div className="border border-[#D0D5DD] rounded-sm p-2">
-          <p className="font-bold uppercase text-xs mb-1 text-[#475467]">Transport</p>
+          <p className="font-bold uppercase text-xs mb-1 text-[#475467]">Transport Details</p>
           <p>Vehicle No: {data.vehicle_no || "—"}</p>
           <p>G.R. No: {data.gr_no || "—"}</p>
           <p>Mode: {data.transportation_mode || "—"}</p>
@@ -199,6 +211,7 @@ export default function DeliveryNotePage() {
 
   return (
     <div className="min-h-screen bg-[#F2F4F7] py-6 print:bg-white print:py-0" data-testid="delivery-note-page">
+      <PrintPageStyle />
       <div className="max-w-[820px] mx-auto mb-4 flex justify-end gap-2 print:hidden">
         <select
           value={copyType}

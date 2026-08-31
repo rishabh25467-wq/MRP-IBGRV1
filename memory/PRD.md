@@ -29,6 +29,36 @@ Extend a SAP BOM viewer application into a full production-planning suite for Ra
 - Supplier Portal: PO acceptance, shipment creation, GRN admin approval + SAP GSA posting.
 - Purchase Order Creation automation.
 - Internal GRN admin approval + posting (Goods Movement).
+- Delivery Challan / Gate Pass print pages (`DeliveryNotePage.js`, `GatePassPage.js`).
+
+## Session Aug 31 2026 - fixes
+1. **Create-and-release retry loop (proposal 226316)**: `_continue_order_creation`
+   (server.py) now takes `is_resume` - on Resume/Retry only, it first scans for an
+   already-existing "In Preparation" order matching material+qty (new helper
+   `_find_existing_prep_order_for_material`) and releases it directly, instead of
+   capturing a fresh baseline that always excluded the pre-existing order and looped
+   uselessly re-triggering "Request Production" for 20 min every retry.
+2. **Outbound GI "Release button disabled" false positive** (Order 30518/Delivery
+   P1D1-492): `sap_playwright_outbound_gi_service.py`'s Release-button check now
+   retries up to 4x (clicking "Check Consistency" each time, 8s+6s waits) before
+   concluding a real SAP-side rejection - SAP recomputes Consistency Status
+   ASYNCHRONOUSLY after the metadata Save, and the old 5s wait was systematically
+   too short on this tenant, so every Retry hit the identical false-positive.
+3. **"SAP User" column missing from STO list table**: `gi_playwright_user` was
+   already returned by the API and shown in the single-order detail view, but never
+   rendered as a column in the "Recent Stock Transfer Orders" table - added.
+   Historical orders (before this field existed) and all single-line STOs (no
+   Playwright/SAP-UI login involved, pure API path) correctly show "—".
+4. **Delivery Challan print format** (user-annotated PDF): removed Chrome's own
+   default print header/footer (timestamp, "Materials Hub" page title, page URL -
+   never rendered by app code, pure browser print-dialog default) via
+   `@page { margin: 0 }` in a print-only `<style>` tag, with the document's own
+   padding restored (`print:p-10`) to keep real margins. Also changed "Transport"
+   label to "Transport Details" (renders as "TRANSPORT DETAILS"). Same fix applied
+   to `GatePassPage.js`. Verified end-to-end with a real generated PDF via Playwright.
+- Preview env note: `/pw-browsers` Chromium install disappeared twice this session
+  (pod restart wipes ephemeral storage) - re-ran `playwright install chromium`
+  each time; not a code issue.
 
 ## Known SAP-side structural limitations (do not re-investigate, already conclusively proven)
 - `PGRBackground` (Post Goods Receipt) via OData is disabled for this tenant's Inbound Delivery
@@ -66,6 +96,10 @@ Extend a SAP BOM viewer application into a full production-planning suite for Ra
   pending-QC items.
 
 ### P1
+- Preview pod's `/pw-browsers` Chromium install can silently disappear on a pod
+  restart (observed twice, Aug 31 2026 session) - re-run `playwright install chromium`
+  with `PLAYWRIGHT_BROWSERS_PATH=/pw-browsers` if any Playwright job errors with
+  "Executable doesn't exist". Not a code bug, just preview-env ephemeral storage.
 - Chromium under Emergent's standard 1Gi/250m pod tier risks OOM under concurrent Playwright load
   (deployment-scan WARN, 2026-08-29) - the eager startup warm-up that made this WORSE (crashed
   production immediately on boot) was removed same day; the underlying per-job resource cost during

@@ -38,13 +38,14 @@ export default function GatePassPage() {
 
   return (
     <div className="min-h-screen bg-[#F2F4F7] py-6 print:bg-white print:py-0" data-testid="gate-pass-page">
+      <style>{"@media print { @page { margin: 0; size: auto; } }"}</style>
       <div className="max-w-[520px] mx-auto mb-4 flex justify-end print:hidden">
         <Button onClick={() => window.print()} data-testid="gate-pass-print-btn" className="bg-[#175CD3] hover:bg-[#164FB0]">
           <Printer size={16} className="mr-2" /> Print / Save as PDF
         </Button>
       </div>
 
-      <div className="max-w-[520px] mx-auto bg-white border border-[#D0D5DD] shadow-sm p-6 text-[13px] text-[#101828] print:border-0 print:shadow-none print:p-0" style={{ fontFamily: "'DM Sans', sans-serif" }} data-testid="gate-pass-document">
+      <div className="max-w-[520px] mx-auto bg-white border border-[#D0D5DD] shadow-sm p-6 text-[13px] text-[#101828] print:border-0 print:shadow-none print:p-6" style={{ fontFamily: "'DM Sans', sans-serif" }} data-testid="gate-pass-document">
         <div className="text-center border-b-2 border-[#101828] pb-2">
           <h1 className="text-lg font-bold tracking-wide">{data.ship_from_company?.company_name || data.ship_from_site_id}</h1>
           <h2 className="text-sm font-bold uppercase mt-1">Gate Pass</h2>
