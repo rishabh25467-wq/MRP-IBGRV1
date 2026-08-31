@@ -661,6 +661,7 @@ def _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_invent
     try:
         ui_result = asyncio.run(sap_playwright_outbound_gi_service.combine_and_post_goods_issue_via_ui(
             sap_order_id, metadata, sap_outbound_delivery_client, all_uuids,
+            progress_cb=lambda phase: db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_progress_phase": phase}}),
         ))
     except Exception as e:
         # A Playwright/infra hiccup (click timeout, browser crash, nav
@@ -786,6 +787,7 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client,
 
     delivery_items = sap_outbound_delivery_client.find_delivery_request_items(doc["sap_order_uuid"])
     if not delivery_items:
+        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_progress_phase": "checking_sap"}})
         return "waiting"
 
     object_ids = [d["object_id"] for d in delivery_items if d.get("object_id")]
@@ -940,7 +942,7 @@ def mark_gi_job_started(db, sto_id: str) -> None:
         {"_id": sto_id, "gi_job_started_at": {"$exists": False}},
         {"$set": {"gi_job_started_at": datetime.now(timezone.utc)}},
     )
-    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_job_running": True}})
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_job_running": True, "gi_progress_phase": "checking_sap"}})
 
 
 def get_gi_job_started_at(db, sto_id: str) -> datetime:

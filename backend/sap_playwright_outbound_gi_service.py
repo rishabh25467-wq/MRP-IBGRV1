@@ -192,7 +192,7 @@ async def _fill_delivery_metadata(page, metadata: dict) -> None:
     await page.wait_for_timeout(5000)
 
 
-async def combine_and_post_goods_issue_via_ui(sap_order_id: str, metadata: dict, sap_outbound_delivery_client, item_uuids: list) -> dict:
+async def combine_and_post_goods_issue_via_ui(sap_order_id: str, metadata: dict, sap_outbound_delivery_client, item_uuids: list, progress_cb=None) -> dict:
     """Single order per call (one browser session) - the caller running
     one of these per STO concurrently gets true batch parallelism for
     free (separate headless Chromium instances, each with its own
@@ -200,6 +200,17 @@ async def combine_and_post_goods_issue_via_ui(sap_order_id: str, metadata: dict,
     "combine + Goods Issue" pipeline staying independent from the
     separate Inbound Receipt step (receiving warehouse's own later
     action).
+
+    progress_cb(phase: str), optional, plain sync callback (called from
+    inside asyncio.run() on a worker thread, never the main event loop -
+    a blocking DB write inside it is safe) - "opening_delivery" once
+    logged in and about to act on the Delivery Proposal, "posting_
+    goods_issue" right before the final Release click. User's explicit
+    ask (Aug 31 2026) to stop the retry button leaving them "with no
+    idea what's happening" during the up-to-a-minute Playwright run -
+    unlike the OTHER 2 Playwright services' progress_cb, plain wording
+    here is fine (this order's OWN GI banner already says "SAP"
+    elsewhere, unlike the Inbound Receipt/Supplier GRN flows).
 
     Returns {"status": "waiting"} if SAP hasn't produced the combined
     Delivery Proposal yet (caller should keep polling, same as the
@@ -210,6 +221,13 @@ async def combine_and_post_goods_issue_via_ui(sap_order_id: str, metadata: dict,
     from playwright.async_api import async_playwright
     import playwright_concurrency
 
+    def _progress(phase: str) -> None:
+        if progress_cb:
+            try:
+                progress_cb(phase)
+            except Exception:
+                pass
+
     username, password = await playwright_concurrency.acquire()
     try:
         async with async_playwright() as p:
@@ -218,6 +236,7 @@ async def combine_and_post_goods_issue_via_ui(sap_order_id: str, metadata: dict,
             try:
                 page = await browser.new_page(viewport={"width": 1600, "height": 900})
                 await _login(page, username, password)
+                _progress("opening_delivery")
                 await _open_work_center_item(page, "Outbound Logistics", "Delivery Proposals")
                 row_count = await _filter_by_reference(page, "Reference ID", sap_order_id)
                 if row_count == 0:
@@ -281,6 +300,7 @@ async def combine_and_post_goods_issue_via_ui(sap_order_id: str, metadata: dict,
                     # Goods Issue itself (see module/function docstring).
                     logger.warning(f"Order {sap_order_id}: filling delivery metadata failed, proceeding to Release anyway: {e}")
 
+                _progress("posting_goods_issue")
                 release_click = await _click_button(page, "Release")
                 if release_click == "not_found":
                     for b in await page.query_selector_all(".sapMBtnBase"):

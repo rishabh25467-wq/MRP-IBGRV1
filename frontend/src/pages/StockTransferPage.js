@@ -203,8 +203,13 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
                 : order.gi_status === "failed" ? "Goods Issue failed:"
                 : order.gi_status === "not_found_timeout" ? "Goods Issue still pending after 20 min - the order itself is unaffected."
                 : order.gi_status === "insufficient_stock" ? "Goods Issue: insufficient live stock at the source warehouse."
-                : "Goods Issue: waiting for SAP to schedule the delivery..."}
+                : order.gi_progress_phase === "opening_delivery" ? "Goods Issue: opening the delivery in SAP..."
+                : order.gi_progress_phase === "posting_goods_issue" ? "Goods Issue: posting now..."
+                : "Goods Issue: checking SAP for the delivery..."}
             </p>
+            {!["posted", "failed", "not_found_timeout", "insufficient_stock"].includes(order.gi_status) && (
+              <p className="mt-0.5 text-xs opacity-80" data-testid="stock-transfer-detail-gi-progress">Auto-checking every 20s - this can take a few minutes.</p>
+            )}
             {order.gi_status === "posted" && formatDateTime(order.gi_posted_at) && (
               <p className="mt-0.5 text-xs opacity-80" data-testid="stock-transfer-detail-gi-posted-at">Posted at: {formatDateTime(order.gi_posted_at)}</p>
             )}
