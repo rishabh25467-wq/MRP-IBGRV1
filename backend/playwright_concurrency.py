@@ -1,19 +1,25 @@
-"""Caps concurrent headless Playwright/SAP-UI sessions at 3 across the
-whole backend (Aug 2026, user's explicit ask) - so N warehouses
-receiving/shipping at once can never spin up more than 3 headless
-Chromium instances in this container at a time; anything beyond that
-queues instead of racing for CPU/memory and risking container OOM.
+"""Dedicates each of up to 3 concurrent headless Playwright/SAP-UI
+sessions its OWN SAP login from a fixed pool of 3 (Aug 31 2026, user's
+explicit ask, following a real "Playwright SAP Login Collision" P1: SAP
+kicks out an existing session the instant the SAME user logs in again
+from a second browser, so 2 concurrent jobs sharing one login could boot
+each other out mid-task) - so N warehouses receiving/shipping at once
+can never spin up more than 3 headless Chromium instances in this
+container at a time, AND never share a SAP login while doing so;
+anything beyond 3 queues for a free (browser slot, credential) pair
+instead of racing for CPU/memory/SAP sessions.
 
-A plain threading.Semaphore (NOT asyncio.Semaphore) on purpose: the two
-call sites (sap_playwright_pgr_service.py, sap_playwright_outbound_gi_
-service.py) each acquire/release it from inside their own async
-function, but those functions get invoked from different execution
-contexts - one straight from the main event loop, the other via
-asyncio.run() inside a asyncio.to_thread() worker thread (its own
-private event loop). An asyncio.Semaphore's wakeup is Future-based and
-isn't safe to release() from a different thread/event-loop than the
-one that awaited it; the blocking wait always happens on a plain
-worker thread instead, never on an event loop itself.
+A plain queue.Queue (NOT asyncio.Queue) on purpose: the three call sites
+(sap_playwright_pgr_service.py, sap_playwright_outbound_gi_service.py,
+sap_playwright_supplier_pgr_service.py) each acquire/release it from
+inside their own async function, but those functions get invoked from
+different execution contexts - one straight from the main event loop,
+another via asyncio.run() inside a asyncio.to_thread() worker thread
+(its own private event loop). An asyncio-native primitive's wakeup is
+Future-based and isn't safe to interact with from a different
+thread/event-loop than the one that awaited it; the blocking wait
+always happens on a plain worker thread instead, never on an event
+loop itself.
 
 `acquire()`/`release()` below deliberately park that blocking wait on
 their OWN dedicated executor (`_QUEUE_WAIT_EXECUTOR`), not the app-wide
@@ -21,21 +27,31 @@ asyncio default executor (see testing_agent iteration_133 code review)
 - server.py's every other `asyncio.to_thread()` call (DB reads, every
 SAP client, etc.) shares that one default pool, so a user selecting
 many pending STOs at once (each queuing a job that blocks a thread
-until its semaphore turn) could otherwise exhaust it and stall
-unrelated requests app-wide."""
+until its turn) could otherwise exhaust it and stall unrelated requests
+app-wide."""
 import asyncio
 import logging
+import os
+import queue
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
-MAX_CONCURRENT_SAP_UI_SESSIONS = 3
-sap_ui_semaphore = threading.Semaphore(MAX_CONCURRENT_SAP_UI_SESSIONS)
+SAP_UI_CREDENTIAL_POOL = [
+    (os.environ["SAP_USERNAME"], os.environ["SAP_PASSWORD"]),
+    (os.environ["SAP_UI_USERNAME_2"], os.environ["SAP_UI_PASSWORD_2"]),
+    (os.environ["SAP_UI_USERNAME_3"], os.environ["SAP_UI_PASSWORD_3"]),
+]
+MAX_CONCURRENT_SAP_UI_SESSIONS = len(SAP_UI_CREDENTIAL_POOL)
+
+_credential_pool = queue.Queue()
+for _credential in SAP_UI_CREDENTIAL_POOL:
+    _credential_pool.put(_credential)
 
 _QUEUE_WAIT_EXECUTOR = ThreadPoolExecutor(max_workers=64, thread_name_prefix="sap-ui-queue-wait")
 
-# Plain counters (not derivable from a threading.Semaphore itself) backing
+# Plain counters (not derivable from a queue.Queue itself) backing
 # the frontend's global concurrency badge (user's explicit ask, Aug 2026) -
 # approximate-but-good-enough for a status display, not used for any
 # actual gating logic.
@@ -43,19 +59,22 @@ _status_lock = threading.Lock()
 _active_count = 0
 _queued_count = 0
 
-# Every headless browser launched while holding the semaphore registers
+# Every headless browser launched while holding a credential registers
 # itself here so a backend shutdown can close them explicitly instead of
 # leaving orphaned Chromium processes behind (testing_agent iteration_133:
 # 18 stray chrome processes survived a hot-reload with 3 jobs in flight).
 _active_browsers = set()
 
 
-async def acquire() -> None:
+async def acquire() -> tuple:
+    """Blocks until a (browser slot, dedicated SAP login) pair is free -
+    returns that login as a (username, password) tuple. MUST be paired
+    with `release(credential)` using the SAME tuple, in a finally block."""
     global _queued_count, _active_count
     with _status_lock:
         _queued_count += 1
     try:
-        await asyncio.get_running_loop().run_in_executor(_QUEUE_WAIT_EXECUTOR, sap_ui_semaphore.acquire)
+        credential = await asyncio.get_running_loop().run_in_executor(_QUEUE_WAIT_EXECUTOR, _credential_pool.get)
     except Exception:
         with _status_lock:
             _queued_count -= 1
@@ -63,11 +82,12 @@ async def acquire() -> None:
     with _status_lock:
         _queued_count -= 1
         _active_count += 1
+    return credential
 
 
-def release() -> None:
+def release(credential: tuple) -> None:
     global _active_count
-    sap_ui_semaphore.release()
+    _credential_pool.put(credential)
     with _status_lock:
         _active_count = max(0, _active_count - 1)
 

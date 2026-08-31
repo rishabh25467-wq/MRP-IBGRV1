@@ -72,7 +72,6 @@ import autosave_store
 import job_store
 import sap_playwright_pgr_service
 import sap_playwright_supplier_pgr_service
-import playwright_concurrency
 import supplier_service
 import stock_transfer_service
 import inbound_receipt_service
@@ -90,6 +89,9 @@ load_dotenv(ROOT_DIR / '.env')
 # crash with a KeyError, since none of those vars exist in the process
 # environment until the .env file is actually loaded.
 import auth_service
+# playwright_concurrency.py (Aug 31 2026) - same reason: builds its SAP
+# UI login credential pool from os.environ at module level.
+import playwright_concurrency
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -5677,8 +5679,7 @@ async def post_inbound_receipt(sto_id: str, payload: InboundReceiptRequest, requ
             asyncio.create_task(asyncio.to_thread(job_store.update_job, db, job_id, update))
         try:
             pgr_result = await sap_playwright_pgr_service.post_goods_receipts_via_ui(
-                os.environ["SAP_USERNAME"], os.environ["SAP_PASSWORD"], doc.get("outbound_delivery_ids") or [],
-                line_overrides=line_overrides, progress_cb=on_progress,
+                doc.get("outbound_delivery_ids") or [], line_overrides=line_overrides, progress_cb=on_progress,
             )
             final = await asyncio.to_thread(inbound_receipt_service.finalize_receipt, db, sto_id, pgr_result["results"], actor, bool(line_overrides))
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
@@ -6008,11 +6009,8 @@ def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> st
 
     async def run():
         try:
-            username, password = os.environ.get("SAP_USERNAME"), os.environ.get("SAP_PASSWORD")
-            if not username or not password:
-                raise RuntimeError("SAP automation credentials are not configured - contact support")
             gr_result = await sap_playwright_supplier_pgr_service.post_goods_receipt_via_ui(
-                username, password, po_items, progress_cb=on_progress,
+                po_items, progress_cb=on_progress,
             )
             final = await asyncio.to_thread(
                 supplier_shipment_service.finalize_goods_receipt, db, doc_code, gr_result["results"],

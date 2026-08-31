@@ -192,12 +192,14 @@ async def _fill_delivery_metadata(page, metadata: dict) -> None:
     await page.wait_for_timeout(5000)
 
 
-async def combine_and_post_goods_issue_via_ui(username: str, password: str, sap_order_id: str, metadata: dict, sap_outbound_delivery_client, item_uuids: list) -> dict:
+async def combine_and_post_goods_issue_via_ui(sap_order_id: str, metadata: dict, sap_outbound_delivery_client, item_uuids: list) -> dict:
     """Single order per call (one browser session) - the caller running
     one of these per STO concurrently gets true batch parallelism for
-    free (separate headless Chromium instances), matching the "combine +
-    Goods Issue" pipeline staying independent from the separate Inbound
-    Receipt step (receiving warehouse's own later action).
+    free (separate headless Chromium instances, each with its own
+    dedicated SAP login - see playwright_concurrency.py), matching the
+    "combine + Goods Issue" pipeline staying independent from the
+    separate Inbound Receipt step (receiving warehouse's own later
+    action).
 
     Returns {"status": "waiting"} if SAP hasn't produced the combined
     Delivery Proposal yet (caller should keep polling, same as the
@@ -208,7 +210,7 @@ async def combine_and_post_goods_issue_via_ui(username: str, password: str, sap_
     from playwright.async_api import async_playwright
     import playwright_concurrency
 
-    await playwright_concurrency.acquire()
+    username, password = await playwright_concurrency.acquire()
     try:
         async with async_playwright() as p:
             browser = await playwright_concurrency.launch_chromium(p)
@@ -310,4 +312,4 @@ async def combine_and_post_goods_issue_via_ui(username: str, password: str, sap_
                 await browser.close()
                 playwright_concurrency.unregister_browser(browser)
     finally:
-        playwright_concurrency.release()
+        playwright_concurrency.release((username, password))

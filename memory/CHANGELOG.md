@@ -1,3 +1,28 @@
+## Ninth feature: dedicated SAP login credential pool for Playwright (2026-08-31)
+
+- Resolves the previously-blocked "Playwright SAP Login Collision" P1 (all 3 concurrent Playwright
+  slots used to share the SAME single `SAP_USERNAME`/`SAP_PASSWORD` login - SAP kicks out an existing
+  session the instant the same user logs in again elsewhere, so 2 concurrent jobs could boot each other
+  out mid-task). User provided 2 additional bot accounts (STOREBOT1, STOREBOT2) specifically to fix this.
+- Added `SAP_UI_USERNAME_2`/`SAP_UI_PASSWORD_2` (STOREBOT1) and `SAP_UI_USERNAME_3`/`SAP_UI_PASSWORD_3`
+  (STOREBOT2) to backend/.env - combined with the existing `SAP_USERNAME`/`SAP_PASSWORD`, this gives
+  exactly 3 credentials matching `MAX_CONCURRENT_SAP_UI_SESSIONS = 3`.
+- Rewrote `playwright_concurrency.py`'s counting `threading.Semaphore` into a `queue.Queue`-backed pool
+  of 3 `(username, password)` tuples - `acquire()` now returns a dedicated credential (blocking off the
+  event loop exactly as before), `release(credential)` returns it to the pool. Each of the 3 Playwright
+  service files (`sap_playwright_pgr_service.py`, `sap_playwright_outbound_gi_service.py`,
+  `sap_playwright_supplier_pgr_service.py`) no longer take `username`/`password` as parameters - they
+  pull their own dedicated login from the pool internally. Updated all 3 call sites (server.py x2,
+  stock_transfer_service.py x1) to stop passing `os.environ["SAP_USERNAME"]`/`PASSWORD`.
+- Had to move `import playwright_concurrency` in server.py to AFTER `load_dotenv()` (same established
+  pattern as `auth_service`) since it now reads `os.environ` at module level to build the pool.
+- Verified live: acquiring 3 times returns 3 genuinely distinct credentials, a 4th correctly blocks
+  until one is released, and the released credential correctly goes to the waiting caller.
+- `sap_outbound_delivery_client` (a separate OData API client, not a Playwright UI login) still
+  legitimately uses `SAP_USERNAME`/`SAP_PASSWORD` directly - untouched, no session-collision risk for
+  pure API calls.
+
+
 ## Eighth fix: GI 20-min timeout never fired across restarts (2026-08-29/31)
 
 - STO-000015 showed the plain "Goods Issue: waiting for SAP to schedule the delivery..." banner for

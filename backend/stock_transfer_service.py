@@ -660,7 +660,7 @@ def _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_invent
     }
     try:
         ui_result = asyncio.run(sap_playwright_outbound_gi_service.combine_and_post_goods_issue_via_ui(
-            os.environ["SAP_USERNAME"], os.environ["SAP_PASSWORD"], sap_order_id, metadata, sap_outbound_delivery_client, all_uuids,
+            sap_order_id, metadata, sap_outbound_delivery_client, all_uuids,
         ))
     except Exception as e:
         # A Playwright/infra hiccup (click timeout, browser crash, nav

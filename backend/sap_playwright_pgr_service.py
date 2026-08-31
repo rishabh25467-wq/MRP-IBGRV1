@@ -275,7 +275,7 @@ def _humanize_error(raw: str) -> str:
     return real[-1] if real else raw
 
 
-async def post_goods_receipts_via_ui(username: str, password: str, delivery_ids: list, line_overrides: dict = None, progress_cb=None) -> dict:
+async def post_goods_receipts_via_ui(delivery_ids: list, line_overrides: dict = None, progress_cb=None) -> dict:
     """Logs in ONCE, then posts Goods Receipt for every delivery_id in
     order - best-effort per delivery, one failure never stops the rest.
     `line_overrides`: optional {product_id: qty} for any line the user
@@ -307,7 +307,7 @@ async def post_goods_receipts_via_ui(username: str, password: str, delivery_ids:
                 pass
 
     _progress("queued")
-    await playwright_concurrency.acquire()
+    username, password = await playwright_concurrency.acquire()
     try:
         async with async_playwright() as p:
             browser = await playwright_concurrency.launch_chromium(p)
@@ -341,7 +341,7 @@ async def post_goods_receipts_via_ui(username: str, password: str, delivery_ids:
                 await browser.close()
                 playwright_concurrency.unregister_browser(browser)
     finally:
-        playwright_concurrency.release()
+        playwright_concurrency.release((username, password))
 
     _progress("done", total)
     return {"results": results, "completed_at": datetime.now(timezone.utc).isoformat()}

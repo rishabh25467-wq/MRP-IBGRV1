@@ -212,7 +212,7 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
     return {"po_number": po_number, "status": "posted"}
 
 
-async def post_goods_receipt_via_ui(username: str, password: str, po_items: dict, progress_cb=None) -> dict:
+async def post_goods_receipt_via_ui(po_items: dict, progress_cb=None) -> dict:
     """po_items: {po_number: {"supplier_doc_num": str, "bill_date": str,
     "item_qtys": {item_number: qty}, "item_products": {item_number:
     product_id}}} - one call per distinct PO, grouping every line item
@@ -243,7 +243,7 @@ async def post_goods_receipt_via_ui(username: str, password: str, po_items: dict
                 pass
 
     _progress("queued")
-    await playwright_concurrency.acquire()
+    username, password = await playwright_concurrency.acquire()
     try:
         async with async_playwright() as p:
             browser = await playwright_concurrency.launch_chromium(p)
@@ -280,7 +280,7 @@ async def post_goods_receipt_via_ui(username: str, password: str, po_items: dict
                 await browser.close()
                 playwright_concurrency.unregister_browser(browser)
     finally:
-        playwright_concurrency.release()
+        playwright_concurrency.release((username, password))
 
     _progress("done", total)
     return {"results": results, "completed_at": datetime.now(timezone.utc).isoformat()}
