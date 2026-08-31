@@ -203,12 +203,15 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
                 : order.gi_status === "failed" ? "Goods Issue failed:"
                 : order.gi_status === "not_found_timeout" ? "Goods Issue still pending after 20 min - the order itself is unaffected."
                 : order.gi_status === "insufficient_stock" ? "Goods Issue: insufficient live stock at the source warehouse."
-                : order.gi_progress_phase === "opening_delivery" ? "Goods Issue: opening the delivery in SAP..."
-                : order.gi_progress_phase === "posting_goods_issue" ? "Goods Issue: posting now..."
+                : order.gi_progress_phase === "opening_delivery" ? `Goods Issue: opening delivery ${order.gi_delivery_request_id || ""} in SAP...`
+                : order.gi_progress_phase === "posting_goods_issue" ? `Goods Issue: posting delivery ${order.gi_delivery_request_id || ""} now...`
                 : "Goods Issue: checking SAP for the delivery..."}
             </p>
             {!["posted", "failed", "not_found_timeout", "insufficient_stock"].includes(order.gi_status) && (
               <p className="mt-0.5 text-xs opacity-80" data-testid="stock-transfer-detail-gi-progress">Auto-checking every 20s - this can take a few minutes.</p>
+            )}
+            {order.gi_delivery_request_id && !["posted", "failed"].includes(order.gi_status) && (
+              <p className="mt-0.5 text-xs opacity-80" data-testid="stock-transfer-detail-delivery-request-id">Delivery Request found in SAP: {order.gi_delivery_request_id}</p>
             )}
             {order.gi_status === "posted" && formatDateTime(order.gi_posted_at) && (
               <p className="mt-0.5 text-xs opacity-80" data-testid="stock-transfer-detail-gi-posted-at">Posted at: {formatDateTime(order.gi_posted_at)}</p>
@@ -261,6 +264,11 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
       </div>
 
       <div className="border border-[#EAECF0] rounded-sm overflow-auto">
+        {order.gi_delivery_request_id && (
+          <p className="px-2 py-1 text-[11px] text-[#475467] bg-[#F9FAFB] border-b border-[#EAECF0]" data-testid="stock-transfer-detail-items-table-delivery-request">
+            Delivery Request in SAP: <span className="font-bold text-[#344054]">{order.gi_delivery_request_id}</span>
+          </p>
+        )}
         <table className="w-full text-xs border-collapse" data-testid="stock-transfer-detail-items-table">
           <thead>
             <tr>

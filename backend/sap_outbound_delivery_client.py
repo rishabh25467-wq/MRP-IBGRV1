@@ -215,6 +215,30 @@ class SAPOutboundDeliveryClient:
             })
         return results
 
+    def get_delivery_request_display_id(self, parent_object_id: str) -> str:
+        """The human-readable Delivery Request ID (e.g. "58918", what the
+        SAP UI's Delivery Proposals screen itself calls "Delivery Request
+        ID") - a header-level field, NOT present on the item-level rows
+        `find_delivery_request_items` returns above (their own "ID" field
+        is always blank; live-verified). User's explicit ask (Aug 31
+        2026) to surface this in our own UI as soon as it exists, instead
+        of only being visible by opening the SAP screen directly."""
+        url = f"{self.endpoint}/OutboundDeliveryRequestCollection"
+        params = {
+            "$filter": f"ObjectID eq '{parent_object_id}'",
+            "$format": "json",
+            "sap-vhost": self.vhost,
+        }
+        try:
+            with sap_semaphore:
+                resp = requests.get(url, params=params, auth=self.auth, headers={"Accept": "application/json"}, timeout=30)
+        except requests.exceptions.RequestException as e:
+            raise SAPOutboundDeliveryError(f"Could not reach SAP: {e}")
+        if resp.status_code != 200:
+            raise SAPOutboundDeliveryError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+        results = resp.json().get("d", {}).get("results", [])
+        return results[0].get("BaseBusinessTransactionDocumentID") if results else None
+
     def find_outbound_delivery_ids(self, item_uuids: list) -> list:
         """Aug 27 2026, user's explicit ask ("please visible delivery id
         also") - once a line's Outbound Delivery Request Item has

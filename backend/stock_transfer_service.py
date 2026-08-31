@@ -791,6 +791,17 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client,
         return "waiting"
 
     object_ids = [d["object_id"] for d in delivery_items if d.get("object_id")]
+    if not doc.get("gi_delivery_request_id"):
+        # Only looked up once (not every poll tick) - a header-level ID
+        # shared by every line, live-verified stable for the life of this
+        # Delivery Request. Best-effort: a failure here must never block
+        # the actual Goods Issue flow below, it's purely informational.
+        try:
+            display_id = sap_outbound_delivery_client.get_delivery_request_display_id(delivery_items[0]["parent_object_id"])
+            if display_id:
+                db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_delivery_request_id": display_id}})
+        except Exception as e:
+            logger.warning(f"Could not fetch Delivery Request display ID for {sto_id}: {e}")
     # Position-aware matching (testing_agent iteration_127 hardening):
     # a plain product_id->line dict collapses two STO lines that share
     # the SAME product_id but different source_warehouse_id - pop each

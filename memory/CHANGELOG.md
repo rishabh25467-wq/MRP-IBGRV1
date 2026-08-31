@@ -1,3 +1,29 @@
+## Tenth feature: GI progress phases + live Delivery Request ID (2026-08-31)
+
+- User's explicit ask: stop leaving them "with no idea what's happening" after clicking Retry Goods
+  Issue, and surface the human-readable "Delivery Request ID" (e.g. "58918", what SAP's own Delivery
+  Proposals screen calls it) as soon as it exists, instead of only being visible by opening SAP directly.
+- Added `gi_progress_phase` field on the STO doc: "checking_sap" (default, before SAP has produced the
+  delivery), "opening_delivery" (Playwright logged in, about to act on the Proposal), "posting_goods_
+  issue" (about to click Release) - wired via a new `progress_cb` param on
+  `combine_and_post_goods_issue_via_ui` (sap_playwright_outbound_gi_service.py), called from
+  `_try_post_goods_issue_multiline` (stock_transfer_service.py).
+- Added `sap_outbound_delivery_client.get_delivery_request_display_id(parent_object_id)` - the item-level
+  `find_delivery_request_items()` rows only carry SAP's internal GUID `ObjectID`, never the human-
+  readable ID; had to separately query `OutboundDeliveryRequestCollection` filtered by the item's
+  `ParentObjectID` to get `BaseBusinessTransactionDocumentID` (confirmed live: GUID
+  FA163E8819FA1FE1A99ED6DA634D4892 -> "58918", matching the SAP screenshot). Looked up once per order
+  (cached on `gi_delivery_request_id`) so it's not an extra API call every 20s poll tick.
+- Frontend (StockTransferPage.js): banner now reads "Goods Issue: checking SAP for the delivery..." /
+  "...opening delivery {id} in SAP..." / "...posting delivery {id} now..." instead of one static
+  message; a "Delivery Request in SAP: {id}" line was also added above the line-items table (shared
+  header-level fact, not a per-row column, since one Delivery Request covers every line of a combined
+  multi-line order).
+- Real-world validation: while implementing this, STO-000073 (a live preview test order) actually
+  completed its full cycle end-to-end (`gi_status: "posted"`), incidentally proving the whole pipeline
+  (Chromium bake, credential pool, timer fix) all work together correctly in a real run.
+
+
 ## Ninth feature: dedicated SAP login credential pool for Playwright (2026-08-31)
 
 - Resolves the previously-blocked "Playwright SAP Login Collision" P1 (all 3 concurrent Playwright
