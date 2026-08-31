@@ -42,6 +42,8 @@ navigation/action targets differ (Outbound Logistics work center instead
 of Inbound Logistics)."""
 import logging
 import os
+import glob
+import time
 from datetime import date
 
 from sap_playwright_pgr_service import _login, _wait_for_blocking_layer_clear, _extract_error_text, _humanize_error
@@ -49,6 +51,7 @@ from sap_playwright_pgr_service import _login, _wait_for_blocking_layer_clear, _
 logger = logging.getLogger(__name__)
 
 DEBUG_SCREENSHOT_DIR = "/app/backend/playwright_debug"
+MAX_DEBUG_SCREENSHOTS_PER_ORDER = 20
 
 
 class SAPPlaywrightOutboundGIError(Exception):
@@ -141,12 +144,28 @@ async def _click_button(page, label: str):
     return "not_found"
 
 
-async def _save_debug_screenshot(page, sap_order_id: str) -> None:
+async def _save_debug_screenshot(page, sap_order_id: str, step: str = "failure") -> None:
+    """User's explicit ask (Sep 2026, real incident Order 30529 - hung
+    with nothing visible, no way to tell WHERE): used to only ever fire
+    on a final failure, overwriting the same one file - useless for a
+    hang that never reaches a failure branch at all. Now called at every
+    phase transition too (see combine_and_post_goods_issue_via_ui/
+    _open_delivery_and_release), one timestamped file per step so the
+    NEXT hang shows exactly which step it was stuck on, instead of
+    guessing blind - see server.py's debug-screenshots admin endpoints.
+    Keeps only the last MAX_DEBUG_SCREENSHOTS_PER_ORDER per order id."""
     try:
         os.makedirs(DEBUG_SCREENSHOT_DIR, exist_ok=True)
-        await page.screenshot(path=f"{DEBUG_SCREENSHOT_DIR}/outbound_gi_{sap_order_id}.png")
+        path = f"{DEBUG_SCREENSHOT_DIR}/outbound_gi_{sap_order_id}_{int(time.time() * 1000)}_{step}.png"
+        await page.screenshot(path=path)
+        existing = sorted(glob.glob(f"{DEBUG_SCREENSHOT_DIR}/outbound_gi_{sap_order_id}_*.png"))
+        for stale in existing[:-MAX_DEBUG_SCREENSHOTS_PER_ORDER]:
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
     except Exception as e:
-        logger.warning(f"Could not save outbound GI debug screenshot for order {sap_order_id}: {e}")
+        logger.warning(f"Could not save outbound GI debug screenshot ({step}) for order {sap_order_id}: {e}")
 
 
 def _to_sap_date(iso_date: str) -> str:
@@ -190,6 +209,88 @@ async def _fill_delivery_metadata(page, metadata: dict) -> None:
             await b.click(force=True)
             break
     await page.wait_for_timeout(5000)
+
+
+async def _open_delivery_and_release(page, delivery_id: str, metadata: dict, sap_order_id: str) -> dict:
+    """Shared by combine_and_post_goods_issue_via_ui (fresh Delivery,
+    right after 'Create Outbound Delivery') and release_existing_delivery_via_ui
+    (retry path for a Delivery an EARLIER attempt already created but
+    never got Released) - opens the given Delivery ID in Outbound
+    Deliveries, fills its metadata (best-effort), and clicks Release with
+    the Check-Consistency retry loop (see that block's own comment).
+    Returns {"status": "posted", "delivery_ids": [delivery_id]},
+    {"status": "failed", "error": "..."}."""
+    try:
+        await _open_work_center_item(page, "Outbound Logistics", "Outbound Deliveries")
+        dcount = await _filter_by_reference(page, "Delivery ID", delivery_id)
+        await _save_debug_screenshot(page, sap_order_id, "outbound_deliveries_filtered")
+        if dcount >= 1:
+            link = None
+            for l in await page.locator("a.sapMLnk, span.sapMLnk").all():
+                if await l.is_visible() and delivery_id in (await l.inner_text()):
+                    link = l
+                    break
+            if link:
+                await link.click(force=True)
+                await page.wait_for_timeout(6000)
+                await _fill_delivery_metadata(page, metadata)
+                await _save_debug_screenshot(page, sap_order_id, "metadata_filled")
+    except Exception as e:
+        # Metadata is best-effort - a failure here must not block
+        # Goods Issue itself (see module/function docstring).
+        logger.warning(f"Order {sap_order_id}: filling delivery metadata failed, proceeding to Release anyway: {e}")
+
+    release_click = await _click_button(page, "Release")
+    if release_click == "not_found":
+        for b in await page.query_selector_all(".sapMBtnBase"):
+            if await b.is_visible() and (await b.inner_text()).strip() == "Edit":
+                await b.click(force=True)
+                await page.wait_for_timeout(4000)
+                release_click = await _click_button(page, "Release")
+                break
+    if release_click == "disabled":
+        # Real incident fix (Order 30518/Delivery P1D1-492, Sep
+        # 2026): SAP recomputes Consistency Status
+        # ASYNCHRONOUSLY right after the metadata Save above -
+        # reading the Release button the instant after Save can
+        # catch it mid-recompute (still shows disabled) even
+        # though SAP settles to "consistent" + an enabled
+        # Release button just seconds later (confirmed: this
+        # exact delivery showed "Outbound delivery consistent"
+        # and a normal Release button when checked manually in
+        # SAP right after this job reported it failed). Click
+        # "Check Consistency" (the real SAP button, same one a
+        # human would use) and re-check Release a few times
+        # before ever concluding this is a real, unrecoverable
+        # SAP-side rejection - a genuinely bad field value stays
+        # disabled through every one of these retries too, so
+        # this never masks a real rejection, just avoids a false
+        # positive on a timing race.
+        for _ in range(4):
+            await page.wait_for_timeout(8000)
+            for b in await page.query_selector_all(".sapMBtnBase"):
+                if await b.is_visible() and (await b.inner_text()).strip() == "Check Consistency":
+                    await b.click(force=True)
+                    await page.wait_for_timeout(6000)
+                    break
+            release_click = await _click_button(page, "Release")
+            if release_click != "disabled":
+                break
+    if release_click == "disabled":
+        await _save_debug_screenshot(page, sap_order_id, "release_disabled")
+        return {"status": "failed", "error": f"Delivery {delivery_id}'s 'Release' button is disabled - SAP Consistency Status check failed, needs manual SAP review"}
+    await page.wait_for_timeout(15000)
+
+    error_text = await _extract_error_text(page)
+    release_status = page.locator("text=Released").first
+    if await release_status.count() > 0:
+        await _save_debug_screenshot(page, sap_order_id, "released_confirmed")
+        return {"status": "posted", "delivery_ids": [delivery_id]}
+    if error_text:
+        await _save_debug_screenshot(page, sap_order_id, "release_error")
+        return {"status": "failed", "error": _humanize_error(error_text)}
+    await _save_debug_screenshot(page, sap_order_id, "release_unconfirmed")
+    return {"status": "failed", "error": f"Delivery {delivery_id} was created but could not be confirmed Released - will retry"}
 
 
 async def combine_and_post_goods_issue_via_ui(sap_order_id: str, metadata: dict, sap_outbound_delivery_client, item_uuids: list, progress_cb=None) -> dict:
@@ -240,8 +341,10 @@ async def combine_and_post_goods_issue_via_ui(sap_order_id: str, metadata: dict,
                 page = await browser.new_page(viewport={"width": 1600, "height": 900})
                 await _login(page, username, password)
                 _progress("opening_delivery", username=username)
+                await _save_debug_screenshot(page, sap_order_id, "after_login")
                 await _open_work_center_item(page, "Outbound Logistics", "Delivery Proposals")
                 row_count = await _filter_by_reference(page, "Reference ID", sap_order_id)
+                await _save_debug_screenshot(page, sap_order_id, "delivery_proposals_filtered")
                 if row_count == 0:
                     return {"status": "waiting"}
 
@@ -256,16 +359,19 @@ async def combine_and_post_goods_issue_via_ui(sap_order_id: str, metadata: dict,
 
                 create_click = await _click_button(page, "Create Outbound Delivery")
                 if create_click == "disabled":
+                    await _save_debug_screenshot(page, sap_order_id, "create_delivery_disabled")
                     return {"status": "failed", "error": "'Create Outbound Delivery' is disabled for this order in SAP - needs manual SAP review"}
                 if create_click == "not_found":
+                    await _save_debug_screenshot(page, sap_order_id, "create_delivery_not_found")
                     return {"status": "failed", "error": "'Create Outbound Delivery' button not found on the Delivery Proposals screen"}
                 await page.wait_for_timeout(2000)
                 without_release = page.locator("text=Without Release").first
                 if await without_release.count() == 0:
-                    await _save_debug_screenshot(page, sap_order_id)
+                    await _save_debug_screenshot(page, sap_order_id, "without_release_not_found")
                     return {"status": "failed", "error": "'Without Release' option not found after clicking 'Create Outbound Delivery'"}
                 await without_release.click(force=True)
                 await page.wait_for_timeout(15000)
+                await _save_debug_screenshot(page, sap_order_id, "delivery_created")
 
                 delivery_ids = []
                 for _ in range(4):
@@ -280,80 +386,55 @@ async def combine_and_post_goods_issue_via_ui(sap_order_id: str, metadata: dict,
                         break
                     await page.wait_for_timeout(8000)
                 if not delivery_ids:
-                    await _save_debug_screenshot(page, sap_order_id)
+                    await _save_debug_screenshot(page, sap_order_id, "delivery_id_not_found")
                     return {"status": "failed", "error": "Outbound Delivery was created but its ID could not be found via SAP OData afterward - will retry"}
                 if len(delivery_ids) != 1:
                     logger.warning(f"Order {sap_order_id}: expected 1 combined delivery, SAP OData shows {len(delivery_ids)}: {delivery_ids}")
 
-                try:
-                    await _open_work_center_item(page, "Outbound Logistics", "Outbound Deliveries")
-                    dcount = await _filter_by_reference(page, "Delivery ID", delivery_ids[0])
-                    if dcount >= 1:
-                        link = None
-                        for l in await page.locator("a.sapMLnk, span.sapMLnk").all():
-                            if await l.is_visible() and delivery_ids[0] in (await l.inner_text()):
-                                link = l
-                                break
-                        if link:
-                            await link.click(force=True)
-                            await page.wait_for_timeout(6000)
-                            await _fill_delivery_metadata(page, metadata)
-                except Exception as e:
-                    # Metadata is best-effort - a failure here must not block
-                    # Goods Issue itself (see module/function docstring).
-                    logger.warning(f"Order {sap_order_id}: filling delivery metadata failed, proceeding to Release anyway: {e}")
-
                 _progress("posting_goods_issue")
-                release_click = await _click_button(page, "Release")
-                if release_click == "not_found":
-                    for b in await page.query_selector_all(".sapMBtnBase"):
-                        if await b.is_visible() and (await b.inner_text()).strip() == "Edit":
-                            await b.click(force=True)
-                            await page.wait_for_timeout(4000)
-                            release_click = await _click_button(page, "Release")
-                            break
-                if release_click == "disabled":
-                    # Real incident fix (Order 30518/Delivery P1D1-492, Sep
-                    # 2026): SAP recomputes Consistency Status
-                    # ASYNCHRONOUSLY right after the metadata Save above -
-                    # reading the Release button the instant after Save can
-                    # catch it mid-recompute (still shows disabled) even
-                    # though SAP settles to "consistent" + an enabled
-                    # Release button just seconds later (confirmed: this
-                    # exact delivery showed "Outbound delivery consistent"
-                    # and a normal Release button when checked manually in
-                    # SAP right after this job reported it failed). Click
-                    # "Check Consistency" (the real SAP button, same one a
-                    # human would use) and re-check Release a few times
-                    # before ever concluding this is a real, unrecoverable
-                    # SAP-side rejection - a genuinely bad field value stays
-                    # disabled through every one of these retries too, so
-                    # this never masks a real rejection, just avoids a false
-                    # positive on a timing race.
-                    for _ in range(4):
-                        await page.wait_for_timeout(8000)
-                        for b in await page.query_selector_all(".sapMBtnBase"):
-                            if await b.is_visible() and (await b.inner_text()).strip() == "Check Consistency":
-                                await b.click(force=True)
-                                await page.wait_for_timeout(6000)
-                                break
-                        release_click = await _click_button(page, "Release")
-                        if release_click != "disabled":
-                            break
-                if release_click == "disabled":
-                    await _save_debug_screenshot(page, sap_order_id)
-                    return {"status": "failed", "error": f"Delivery {delivery_ids[0]}'s 'Release' button is disabled - SAP Consistency Status check failed, needs manual SAP review"}
-                await page.wait_for_timeout(15000)
+                return await _open_delivery_and_release(page, delivery_ids[0], metadata, sap_order_id)
+            finally:
+                await browser.close()
+                playwright_concurrency.unregister_browser(browser)
+    finally:
+        playwright_concurrency.release((username, password))
 
-                error_text = await _extract_error_text(page)
-                release_status = page.locator("text=Released").first
-                if await release_status.count() > 0:
-                    return {"status": "posted", "delivery_ids": delivery_ids}
-                if error_text:
-                    await _save_debug_screenshot(page, sap_order_id)
-                    return {"status": "failed", "error": _humanize_error(error_text)}
-                await _save_debug_screenshot(page, sap_order_id)
-                return {"status": "failed", "error": f"Delivery {delivery_ids[0]} was created but could not be confirmed Released - will retry"}
+
+async def release_existing_delivery_via_ui(sap_order_id: str, delivery_id: str, metadata: dict, progress_cb=None) -> dict:
+    """Retry path (real incident fix, Order 30518/Delivery P1D1-492, Sep
+    2026): once an earlier attempt already created a real combined
+    Outbound Delivery for a multi-line order, its underlying request
+    items are gone from SAP's "pending" Delivery Proposals list for good
+    (they've been consumed into that Delivery) - re-running
+    combine_and_post_goods_issue_via_ui from scratch would just see
+    `row_count == 0` on Delivery Proposals and report "waiting" forever,
+    NEVER attempting to release the Delivery that already exists. Skips
+    straight to Outbound Deliveries and reuses the same Release+
+    Check-Consistency-retry logic. See stock_transfer_service.py's
+    `_try_release_existing_multiline_delivery` - this is only reached
+    there as a fallback, after a faster direct API release attempt."""
+    from playwright.async_api import async_playwright
+    import playwright_concurrency
+
+    def _progress(phase: str, username: str = None) -> None:
+        if progress_cb:
+            try:
+                progress_cb(phase, username)
+            except Exception:
+                pass
+
+    username, password = await playwright_concurrency.acquire()
+    try:
+        async with async_playwright() as p:
+            browser = await playwright_concurrency.launch_chromium(p)
+            playwright_concurrency.register_browser(browser)
+            try:
+                page = await browser.new_page(viewport={"width": 1600, "height": 900})
+                await _login(page, username, password)
+                _progress("opening_delivery", username=username)
+                result = await _open_delivery_and_release(page, delivery_id, metadata, sap_order_id)
+                _progress("posting_goods_issue")
+                return result
             finally:
                 await browser.close()
                 playwright_concurrency.unregister_browser(browser)

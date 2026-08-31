@@ -59,6 +59,16 @@ logger = logging.getLogger(__name__)
 
 STO_COLLECTION = "stock_transfer_orders"
 INVENTORY_CACHE_COLLECTION = "inventory_cache"
+# Real incident fix (Sep 2026, Order 30518/Delivery P1D1-492): a single
+# Playwright combine+GI attempt with NO outer bound could hang inside
+# the browser automation indefinitely (a selector that never resolves,
+# a stalled SAP page navigation, etc.) - since _run_goods_issue_job's own
+# 20-min ceiling is only ever checked BETWEEN attempts, one hung attempt
+# silently blocked that ceiling from ever firing, leaving the order
+# stuck on "opening delivery..." forever with no error and no retry.
+# Comfortably above the worst-case legitimate run (login+nav+create
+# delivery+metadata fill+up to 4 consistency re-checks ~= 3 min).
+GI_PLAYWRIGHT_ATTEMPT_TIMEOUT_SECONDS = 300
 
 
 def _site_id_from_full_site(full_site: str) -> str:
@@ -665,18 +675,23 @@ def _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_invent
         db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": update})
 
     try:
-        ui_result = asyncio.run(sap_playwright_outbound_gi_service.combine_and_post_goods_issue_via_ui(
-            sap_order_id, metadata, sap_outbound_delivery_client, all_uuids,
-            progress_cb=_on_gi_progress,
+        ui_result = asyncio.run(asyncio.wait_for(
+            sap_playwright_outbound_gi_service.combine_and_post_goods_issue_via_ui(
+                sap_order_id, metadata, sap_outbound_delivery_client, all_uuids,
+                progress_cb=_on_gi_progress,
+            ),
+            timeout=GI_PLAYWRIGHT_ATTEMPT_TIMEOUT_SECONDS,
         ))
     except Exception as e:
         # A Playwright/infra hiccup (click timeout, browser crash, nav
-        # failure) is NOT a SAP business rejection - raising
-        # SAPOutboundDeliveryError here would stop the 20-min poll loop
-        # for good (see server.py's _run_goods_issue_job), exactly the
-        # same trap the outer poll loop's own generic `except Exception`
-        # already avoids. Log and let the next poll tick retry with a
-        # fresh browser session instead.
+        # failure) OR this attempt's own hard timeout above (see
+        # GI_PLAYWRIGHT_ATTEMPT_TIMEOUT_SECONDS docstring) is NOT a SAP
+        # business rejection - raising SAPOutboundDeliveryError here
+        # would stop the 20-min poll loop for good (see server.py's
+        # _run_goods_issue_job), exactly the same trap the outer poll
+        # loop's own generic `except Exception` already avoids. Log and
+        # let the next poll tick retry with a fresh browser session
+        # instead.
         logger.warning(f"Stock Transfer Order {sto_id}: Playwright combine+GI attempt hit a transient error, will retry: {e}")
         return "waiting"
 
@@ -713,6 +728,74 @@ def _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_invent
         "outbound_delivery_object_ids": object_ids,
         "outbound_delivery_ids": delivery_ids,
         "gi_line_status": _build_line_status(doc, delivery_items, force_shipped={d.get("product_id") for d in pending}),
+    }})
+    return "posted"
+
+
+def _try_release_existing_multiline_delivery(db, sap_outbound_delivery_client, sto_id: str, doc: dict, existing_delivery_ids: list) -> str:
+    """Real incident fix (Order 30518/Delivery P1D1-492, Sep 2026): once
+    an earlier attempt already created a real combined Outbound Delivery
+    for a multi-line order, its underlying request items are gone from
+    SAP's "pending" Delivery Proposals list for good (they've been
+    consumed into that Delivery) - try_post_goods_issue's own
+    find_delivery_request_items call below permanently returns empty for
+    them from then on. Every retry used to hit that empty-list branch and
+    report "waiting" forever, NEVER attempting to release the Delivery
+    that already exists - called here BEFORE that lookup, every time
+    there's already a known Delivery, so this can never happen again.
+    Tries the fast API-based Release first (works immediately once
+    Consistency Status is OK, e.g. right after SAP finishes its own async
+    recompute - see sap_playwright_outbound_gi_service.py's
+    _open_delivery_and_release docstring) before ever falling back to the
+    slower Playwright UI flow (needed if Consistency Status genuinely
+    still needs SAP's UI-side "Check Consistency" recompute)."""
+    delivery_id = existing_delivery_ids[0]
+    try:
+        object_id = sap_outbound_delivery_client.get_delivery_object_id_by_id(delivery_id)
+        sap_outbound_delivery_client.release_outbound_delivery(object_id)
+        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
+            "gi_status": "posted", "gi_posted_at": datetime.now(timezone.utc), "gi_error": None, "gi_job_running": False,
+            "outbound_delivery_ids": existing_delivery_ids,
+            "gi_line_status": _build_line_status(doc, [], force_shipped={it.get("product_id") for it in (doc.get("items") or [])}),
+        }})
+        return "posted"
+    except SAPOutboundDeliveryError as e:
+        logger.warning(f"Stock Transfer Order {sto_id}: fast API release of existing delivery {delivery_id} failed, falling back to Playwright UI: {e}")
+
+    metadata = {
+        "vehicle_no": doc.get("vehicle_no"), "transportation_mode": doc.get("transportation_mode"),
+        "place_of_supply": doc.get("place_of_supply"), "gr_no": doc.get("gr_no"), "date_of_supply": doc.get("date_of_supply"),
+    }
+    def _on_gi_progress(phase, username=None):
+        update = {"gi_progress_phase": phase}
+        if username:
+            update["gi_playwright_user"] = username
+        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": update})
+
+    try:
+        ui_result = asyncio.run(asyncio.wait_for(
+            sap_playwright_outbound_gi_service.release_existing_delivery_via_ui(
+                (doc.get("sap_order_id") or "").lstrip("0") or doc.get("sap_order_id"), delivery_id, metadata,
+                progress_cb=_on_gi_progress,
+            ),
+            timeout=GI_PLAYWRIGHT_ATTEMPT_TIMEOUT_SECONDS,
+        ))
+    except Exception as e:
+        logger.warning(f"Stock Transfer Order {sto_id}: Playwright release-existing-delivery attempt hit a transient error, will retry: {e}")
+        return "waiting"
+
+    if ui_result["status"] == "failed":
+        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
+            "gi_status": "failed", "gi_error": ui_result["error"], "gi_job_running": False,
+            "outbound_delivery_ids": existing_delivery_ids,
+            "gi_line_status": _build_line_status(doc, [], failed_products={it.get("product_id"): ui_result["error"] for it in (doc.get("items") or [])}),
+        }})
+        raise SAPOutboundDeliveryError(ui_result["error"])
+
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
+        "gi_status": "posted", "gi_posted_at": datetime.now(timezone.utc), "gi_error": None, "gi_job_running": False,
+        "outbound_delivery_ids": existing_delivery_ids,
+        "gi_line_status": _build_line_status(doc, [], force_shipped={it.get("product_id") for it in (doc.get("items") or [])}),
     }})
     return "posted"
 
@@ -790,6 +873,14 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client,
         raise StockTransferValidationError(f"Stock Transfer Order {sto_id} not found.")
     if doc.get("gi_status") == "posted":
         return "posted"
+
+    # See _try_release_existing_multiline_delivery's own docstring - must
+    # run BEFORE find_delivery_request_items below, since that call
+    # permanently returns empty once a Delivery already exists for a
+    # multi-line order's items.
+    existing_delivery_ids = doc.get("outbound_delivery_ids") or []
+    if existing_delivery_ids and len(doc.get("items") or []) > 1:
+        return _try_release_existing_multiline_delivery(db, sap_outbound_delivery_client, sto_id, doc, existing_delivery_ids)
 
     delivery_items = sap_outbound_delivery_client.find_delivery_request_items(doc["sap_order_uuid"])
     if not delivery_items:
@@ -1052,6 +1143,38 @@ def mark_goods_issue_timed_out(db, sto_id: str, note: str, stock_note: str = Non
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_status": "not_found_timeout", "gi_error": final_note, "gi_job_running": False}})
 
 
+def is_gi_stop_requested(db, sto_id: str) -> bool:
+    """Companion to request_gi_job_stop - see its own docstring."""
+    doc = db[STO_COLLECTION].find_one({"_id": sto_id}, {"gi_stop_requested": 1})
+    return bool((doc or {}).get("gi_stop_requested"))
+
+
+def request_gi_job_stop(db, sto_id: str) -> dict:
+    """"Force Stop This Job Now" (user's explicit ask, Sep 2026 - real
+    incident, Order 30529/30518, tired of waiting on ANY timer during a
+    stuck Goods Issue). Two parts: (1) flips gi_status to "failed" +
+    gi_job_running False RIGHT NOW for instant UI feedback (Retry button
+    appears immediately) - safe even if a browser attempt is still
+    genuinely mid-flight, since nothing here touches SAP itself, only
+    this app's own tracking; (2) sets gi_stop_requested so
+    _run_goods_issue_job's own loop (server.py), once it eventually
+    regains control (bounded by GI_PLAYWRIGHT_ATTEMPT_TIMEOUT_SECONDS - a
+    live OS thread running Playwright can't be safely killed mid-action,
+    so this can't be made truly instant), exits quietly instead of
+    overwriting this stop with whatever that attempt eventually returns."""
+    doc = db[STO_COLLECTION].find_one({"_id": sto_id})
+    if not doc:
+        raise StockTransferOrderNotFoundError(f"Stock Transfer Order {sto_id} not found.")
+    if not doc.get("gi_job_running") and doc.get("gi_status") not in ("awaiting_delivery", "insufficient_stock"):
+        raise StockTransferValidationError("No Goods Issue automation is currently running for this order.")
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
+        "gi_status": "failed",
+        "gi_error": "Stopped by user. If a Delivery was already created in SAP for this order, it was NOT deleted or released - check Outbound Deliveries in SAP, or just Retry from here to let this app find and release it automatically.",
+        "gi_job_running": False, "gi_stop_requested": True,
+    }})
+    return doc
+
+
 def reset_goods_issue_for_retry(db, sto_id: str) -> dict:
     """Manual "Retry Goods Issue" (Aug 27 2026, user's explicit ask) - for
     an order stuck on "failed" (a real SAP rejection) or
@@ -1070,7 +1193,7 @@ def reset_goods_issue_for_retry(db, sto_id: str) -> dict:
         raise StockTransferValidationError("A Goods Issue check is already running for this order - please wait for it to finish.")
     db[STO_COLLECTION].update_one(
         {"_id": sto_id},
-        {"$set": {"gi_status": "awaiting_delivery", "gi_error": None}, "$unset": {"gi_job_started_at": ""}},
+        {"$set": {"gi_status": "awaiting_delivery", "gi_error": None}, "$unset": {"gi_job_started_at": "", "gi_stop_requested": ""}},
     )
     return doc
 

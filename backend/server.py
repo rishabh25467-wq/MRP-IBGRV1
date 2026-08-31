@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import glob
 import re
 import subprocess
 import time
@@ -14,7 +15,7 @@ from typing import List, Optional
 import requests
 from dotenv import load_dotenv
 from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import PlainTextResponse, Response, FileResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
@@ -72,6 +73,7 @@ import autosave_store
 import job_store
 import sap_playwright_pgr_service
 import sap_playwright_supplier_pgr_service
+import sap_playwright_outbound_gi_service
 import supplier_service
 import stock_transfer_service
 import inbound_receipt_service
@@ -5509,6 +5511,15 @@ async def _run_goods_issue_job(sto_id: str):
     # without ever reaching its intended 20-min timeout).
     job_started_at = await asyncio.to_thread(stock_transfer_service.get_gi_job_started_at, db, sto_id)
     while (datetime.now(timezone.utc) - job_started_at).total_seconds() <= GOODS_ISSUE_MAX_WAIT_SECONDS:
+        # "Force Stop This Job Now" (user's explicit ask, Sep 2026) - see
+        # request_gi_job_stop's own docstring. The endpoint already gives
+        # instant UI feedback itself; this just makes sure THIS loop, once
+        # it regains control (bounded by GI_PLAYWRIGHT_ATTEMPT_TIMEOUT_SECONDS),
+        # exits quietly instead of overwriting that stop with whatever a
+        # still-in-flight attempt eventually returns.
+        if await asyncio.to_thread(stock_transfer_service.is_gi_stop_requested, db, sto_id):
+            logger.info(f"Stock Transfer Order {sto_id}: Goods Issue automation stopped by user request.")
+            return
         try:
             outcome = await asyncio.to_thread(stock_transfer_service.try_post_goods_issue, db, sap_outbound_delivery_client, sap_inventory_client, sto_id)
             if outcome == "posted":
@@ -5596,6 +5607,61 @@ async def post_stock_transfer_order_retry_goods_issue(sto_id: str):
         raise HTTPException(status_code=400, detail=str(e))
     asyncio.create_task(_run_goods_issue_job(sto_id))
     return {"status": "restarted"}
+
+
+@api_router.post("/stock-transfer/orders/{sto_id}/force-stop-gi")
+async def post_stock_transfer_order_force_stop_gi(sto_id: str):
+    """"Force Stop This Job Now" (user's explicit ask, Sep 2026 - tired of
+    waiting on any timer during a stuck Goods Issue). See
+    stock_transfer_service.request_gi_job_stop's own docstring for why
+    this gives instant UI feedback (Retry button appears right away) but
+    can't be a truly instant kill of a live browser action already
+    mid-flight (bounded instead by GI_PLAYWRIGHT_ATTEMPT_TIMEOUT_SECONDS,
+    same 5-min ceiling as any other stuck attempt)."""
+    try:
+        await asyncio.to_thread(stock_transfer_service.request_gi_job_stop, db, sto_id)
+    except stock_transfer_service.StockTransferOrderNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except stock_transfer_service.StockTransferValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "stopped"}
+
+
+@api_router.get("/stock-transfer/orders/{sto_id}/debug-screenshots")
+async def get_stock_transfer_debug_screenshots(sto_id: str):
+    """User's explicit ask (Sep 2026, real incident Order 30529 - "so the
+    next hang shows exactly where, instead of guessing blind") - lists
+    every step screenshot sap_playwright_outbound_gi_service.py has saved
+    for this order's OWN sap_order_id, newest first."""
+    doc = await asyncio.to_thread(lambda: db[stock_transfer_service.STO_COLLECTION].find_one({"_id": sto_id}))
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"Stock Transfer Order {sto_id} not found.")
+    sap_order_id = (doc.get("sap_order_id") or "").lstrip("0") or doc.get("sap_order_id")
+    if not sap_order_id:
+        return []
+    pattern = f"{sap_playwright_outbound_gi_service.DEBUG_SCREENSHOT_DIR}/outbound_gi_{sap_order_id}_*.png"
+    files = sorted(glob.glob(pattern), reverse=True)
+    results = []
+    for f in files:
+        name = os.path.basename(f)
+        parts = name[len(f"outbound_gi_{sap_order_id}_"):-len(".png")].split("_", 1)
+        ts_ms = int(parts[0]) if parts[0].isdigit() else None
+        step = parts[1] if len(parts) > 1 else "unknown"
+        results.append({
+            "filename": name, "step": step,
+            "taken_at": datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat() if ts_ms else None,
+        })
+    return results
+
+
+@api_router.get("/stock-transfer/debug-screenshots/{filename}")
+async def get_stock_transfer_debug_screenshot_file(filename: str):
+    if not re.fullmatch(r"outbound_gi_[A-Za-z0-9]+_\d+_[a-z_]+\.png", filename):
+        raise HTTPException(status_code=400, detail="Invalid filename.")
+    path = Path(sap_playwright_outbound_gi_service.DEBUG_SCREENSHOT_DIR) / filename
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Screenshot not found.")
+    return FileResponse(path)
 
 
 @api_router.post("/stock-transfer/orders/{sto_id}/retry-erp-sync")

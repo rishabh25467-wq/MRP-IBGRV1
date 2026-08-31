@@ -103,7 +103,42 @@ const emptyLine = (product) => ({
 // same as the detail dialog") - one single source of truth for what an
 // order's live status looks like, so the two views can never drift
 // apart again.
-export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingErpStoId, onRetryErpSync, retryingGiStoId, onRetryGoodsIssue }) => {
+const DebugScreenshotsViewer = ({ stoId }) => {
+  const [open, setOpen] = useState(false);
+  const [shots, setShots] = useState(null);
+  const toggle = async () => {
+    if (!open && !shots) {
+      try {
+        const { data } = await axios.get(`${API}/stock-transfer/orders/${stoId}/debug-screenshots`);
+        setShots(data);
+      } catch {
+        setShots([]);
+      }
+    }
+    setOpen((o) => !o);
+  };
+  return (
+    <div className="mt-2">
+      <button type="button" onClick={toggle} className="text-xs text-[#175CD3] underline" data-testid="stock-transfer-debug-screenshots-toggle">
+        {open ? "Hide" : "View"} debug screenshots (admin)
+      </button>
+      {open && (
+        <div className="mt-2 grid grid-cols-3 gap-2" data-testid="stock-transfer-debug-screenshots-grid">
+          {shots === null ? <p className="text-xs text-[#98A2B3]">Loading...</p>
+            : shots.length === 0 ? <p className="text-xs text-[#98A2B3]">No debug screenshots yet for this order.</p>
+            : shots.map((s) => (
+              <a key={s.filename} href={`${API}/stock-transfer/debug-screenshots/${s.filename}`} target="_blank" rel="noreferrer" className="block border border-[#EAECF0] rounded-sm overflow-hidden hover:opacity-80">
+                <img src={`${API}/stock-transfer/debug-screenshots/${s.filename}`} alt={s.step} className="w-full h-20 object-cover" />
+                <p className="text-[10px] px-1 py-0.5 bg-[#F9FAFB] truncate">{s.step}</p>
+              </a>
+            ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingErpStoId, onRetryErpSync, retryingGiStoId, onRetryGoodsIssue, stoppingGiStoId, onForceStopGi, isAdmin }) => {
   if (!order) return null;
   return (
     <>
@@ -235,6 +270,18 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
                 Retry Goods Issue
               </Button>
             )}
+            {(order.gi_job_running || order.gi_status === "insufficient_stock") && (
+              <Button
+                size="sm" variant="outline" className="mt-2 text-[#912018] border-[#FDA29B] hover:bg-[#FEF3F2]"
+                onClick={() => onForceStopGi(order.sto_id)}
+                disabled={stoppingGiStoId === order.sto_id}
+                data-testid="stock-transfer-detail-force-stop-gi-button"
+              >
+                {stoppingGiStoId === order.sto_id ? <CircleNotch size={14} className="animate-spin mr-1" /> : null}
+                Force Stop This Job Now
+              </Button>
+            )}
+            {isAdmin && <DebugScreenshotsViewer stoId={order.sto_id} />}
           </div>
         </div>
       )}
@@ -427,6 +474,19 @@ export default function StockTransferPage() {
     }
   };
 
+  const [stoppingGiStoId, setStoppingGiStoId] = useState(null);
+  const handleForceStopGi = async (stoId) => {
+    setStoppingGiStoId(stoId);
+    try {
+      await axios.post(`${API}/stock-transfer/orders/${stoId}/force-stop-gi`);
+      toast.message("Stopped - a Delivery may already exist in SAP for this order, check before retrying.");
+      setTimeout(() => { loadRecentOrders(); setStoppingGiStoId(null); }, 1500);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not stop this Goods Issue job.");
+      setStoppingGiStoId(null);
+    }
+  };
+
   const [retryingErpStoId, setRetryingErpStoId] = useState(null);
   const handleRetryErpSync = async (stoId) => {
     setRetryingErpStoId(stoId);
@@ -493,6 +553,32 @@ export default function StockTransferPage() {
   };
 
   useEffect(() => { loadRecentOrders(); }, []);
+
+  // Companion to the sync-fix above - without this, the list itself
+  // never refreshes on its own either (no other periodic poll exists),
+  // so a long-running background job just sits stale until the user
+  // manually reloads. Auto-refresh only while something is actually
+  // in-flight.
+  const hasRunningGiJob = recentOrders.some((o) => o.gi_job_running);
+  useEffect(() => {
+    if (!hasRunningGiJob) return;
+    const id = setInterval(loadRecentOrders, 20000);
+    return () => clearInterval(id);
+  }, [hasRunningGiJob]);
+
+  // Real bug (user's screenshot, Sep 2026): the detail modal is a static
+  // snapshot from whatever row was clicked - it never refreshed on its
+  // own, so if a background retry re-acquired a DIFFERENT pooled SAP
+  // login (itadmin/STOREBOT1/STOREBOT2 - by design, not sticky across
+  // retries) after the modal was opened, it kept showing the stale
+  // username while the list table below (refreshed by loadRecentOrders)
+  // already showed the current one. Keep it in sync with whatever the
+  // list already has, every time the list refreshes.
+  useEffect(() => {
+    if (!selectedOrder) return;
+    const updated = recentOrders.find((o) => o.sto_id === selectedOrder.sto_id);
+    if (updated && updated !== selectedOrder) setSelectedOrder(updated);
+  }, [recentOrders]);
 
   // Ship-to Site options depend on the (derived) Ship-from Site - refetch
   // whenever the first line item's warehouse pick resolves/changes it.
@@ -1319,6 +1405,7 @@ export default function StockTransferPage() {
                   retryingStoId={retryingStoId} onRetryOrder={handleRetryOrder}
                   retryingErpStoId={retryingErpStoId} onRetryErpSync={handleRetryErpSync}
                   retryingGiStoId={retryingGiStoId} onRetryGoodsIssue={handleRetryGoodsIssue}
+                  stoppingGiStoId={stoppingGiStoId} onForceStopGi={handleForceStopGi} isAdmin={isAdmin}
                 />
               )}
             </div>
@@ -1392,6 +1479,7 @@ export default function StockTransferPage() {
                 retryingStoId={retryingStoId} onRetryOrder={handleRetryOrder}
                 retryingErpStoId={retryingErpStoId} onRetryErpSync={handleRetryErpSync}
                 retryingGiStoId={retryingGiStoId} onRetryGoodsIssue={handleRetryGoodsIssue}
+                stoppingGiStoId={stoppingGiStoId} onForceStopGi={handleForceStopGi} isAdmin={isAdmin}
               />
             </>
           )}

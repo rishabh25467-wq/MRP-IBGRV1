@@ -302,6 +302,29 @@ class SAPOutboundDeliveryClient:
             results.append({"object_id": delivery["ObjectID"], "id": delivery.get("ID"), "item_uuid": row.get("ItemUUID")})
         return results
 
+    def get_delivery_object_id_by_id(self, delivery_id: str) -> str:
+        """Real incident fix (Order 30518/Delivery P1D1-492, Sep 2026):
+        looks up an Outbound Delivery's `ObjectID` (needed by
+        release_outbound_delivery below) from just its human-readable
+        `ID` (e.g. "P1D1-492") - used on a RETRY when this app already
+        knows a Delivery exists (`outbound_delivery_ids` persisted on the
+        STO doc) but its underlying request items are gone from SAP's
+        pending list for good, so the normal item_uuid-based lookup
+        (find_outbound_delivery_objects) can no longer be used."""
+        url = f"{self.endpoint}/OutboundDeliveryCollection"
+        params = {"$filter": f"ID eq '{delivery_id}'", "$format": "json", "sap-vhost": self.vhost}
+        try:
+            with sap_semaphore:
+                resp = requests.get(url, params=params, auth=self.auth, headers={"Accept": "application/json"}, timeout=30)
+        except requests.exceptions.RequestException as e:
+            raise SAPOutboundDeliveryError(f"Could not reach SAP: {e}")
+        if resp.status_code != 200:
+            raise SAPOutboundDeliveryError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+        results = resp.json().get("d", {}).get("results", [])
+        if not results or not results[0].get("ObjectID"):
+            raise SAPOutboundDeliveryError(f"Delivery {delivery_id} not found via SAP OData")
+        return results[0]["ObjectID"]
+
     def release_outbound_delivery(self, delivery_object_id: str) -> dict:
         """`OutboundDeliveryRelease` (confirmed via $metadata: bound to
         `OutboundDeliveryCollection`, single `ObjectID` param, same
