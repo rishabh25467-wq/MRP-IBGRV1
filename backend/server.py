@@ -5445,8 +5445,14 @@ async def _run_erp_portal_sync_job(sto_id: str):
 
 async def _run_goods_issue_job(sto_id: str):
     await asyncio.to_thread(stock_transfer_service.mark_gi_job_started, db, sto_id)
-    elapsed_start = time.monotonic()
-    while time.monotonic() - elapsed_start <= GOODS_ISSUE_MAX_WAIT_SECONDS:
+    # Real elapsed time since the job GENUINELY first started (persisted,
+    # survives restarts) - NOT time.monotonic() from this particular
+    # process's perspective, which used to reset to zero on every resume
+    # after a restart (see mark_gi_job_started's docstring for the real
+    # incident this caused: an order sitting 30+ real-world minutes
+    # without ever reaching its intended 20-min timeout).
+    job_started_at = await asyncio.to_thread(stock_transfer_service.get_gi_job_started_at, db, sto_id)
+    while (datetime.now(timezone.utc) - job_started_at).total_seconds() <= GOODS_ISSUE_MAX_WAIT_SECONDS:
         try:
             outcome = await asyncio.to_thread(stock_transfer_service.try_post_goods_issue, db, sap_outbound_delivery_client, sap_inventory_client, sto_id)
             if outcome == "posted":

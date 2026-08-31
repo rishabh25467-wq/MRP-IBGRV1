@@ -1,3 +1,24 @@
+## Eighth fix: GI 20-min timeout never fired across restarts (2026-08-29/31)
+
+- STO-000015 showed the plain "Goods Issue: waiting for SAP to schedule the delivery..." banner for
+  30+ real-world minutes, well past the intended 20-min auto-timeout that should flip it to a clear
+  "not_found_timeout" state.
+- **Root cause**: `_run_goods_issue_job`'s 20-min cap was tracked via `time.monotonic() - elapsed_start`
+  entirely in-memory - this resets to 0 every single time the job (re)starts, including every
+  auto-resume after a backend restart (`resume_orphaned_goods_issue_jobs`). On a day with several
+  redeploys, the clock kept getting reset before it could ever reach 20 real minutes.
+- **Fix**: added a persisted `gi_job_started_at` timestamp (`stock_transfer_service.
+  mark_gi_job_started`/`get_gi_job_started_at`) - set once on first poll attempt, never overwritten on
+  a later resume (survives any number of restarts), `$unset` only on an explicit manual "Retry Goods
+  Issue" (a genuinely fresh attempt). `_run_goods_issue_job`'s while loop now computes real elapsed
+  wall-clock time from this instead of `time.monotonic()`. Verified live: a seeded order with a
+  31-minutes-ago timestamp correctly reports >1800s elapsed after a simulated resume (previously would
+  have reset to 0); a genuinely fresh order still starts its clock at 0.
+- This will make STO-000015 (and any similarly stuck order) immediately flip to "not_found_timeout"
+  the next time its job resumes (next restart, or next redeploy) - giving the user a clear status and,
+  if the underlying SAP delivery genuinely never got created, an actionable Retry Goods Issue button.
+
+
 ## Seventh fix: removed runtime Chromium self-heal entirely, per Support (2026-08-29)
 
 - Following Support's exact diagnosis and instructions: (1) confirmed `playwright==1.62.0` in

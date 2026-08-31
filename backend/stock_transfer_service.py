@@ -925,7 +925,30 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client,
 
 
 def mark_gi_job_started(db, sto_id: str) -> None:
+    """Real incident (Aug 29 2026): STO-000015 sat on the plain "waiting
+    for SAP to schedule the delivery" banner for 30+ real-world minutes,
+    well past the intended 20-min timeout, because that timeout was
+    tracked purely via `time.monotonic()` inside `_run_goods_issue_job`
+    (server.py) - a counter that resets to zero every time the job
+    (re)starts, including every auto-resume after a backend restart. On
+    a day with several redeploys, the clock kept getting reset before it
+    could ever reach 20 minutes, even though the order had genuinely
+    been waiting far longer than that. `gi_job_started_at` is only ever
+    set once (first poll attempt, never overwritten on a later resume)
+    so the real-world elapsed time survives any number of restarts."""
+    db[STO_COLLECTION].update_one(
+        {"_id": sto_id, "gi_job_started_at": {"$exists": False}},
+        {"$set": {"gi_job_started_at": datetime.now(timezone.utc)}},
+    )
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_job_running": True}})
+
+
+def get_gi_job_started_at(db, sto_id: str) -> datetime:
+    """Companion to mark_gi_job_started - always call AFTER it (guarantees
+    the field exists by then, first-poll-attempt-wins race excluded since
+    both run sequentially in the same caller)."""
+    doc = db[STO_COLLECTION].find_one({"_id": sto_id}, {"gi_job_started_at": 1})
+    return doc["gi_job_started_at"]
 
 
 def find_orphaned_gi_jobs(db) -> list:
@@ -1026,7 +1049,10 @@ def reset_goods_issue_for_retry(db, sto_id: str) -> dict:
         raise StockTransferValidationError("Goods Issue is not currently in a failed/timed-out state for this order.")
     if doc.get("gi_job_running"):
         raise StockTransferValidationError("A Goods Issue check is already running for this order - please wait for it to finish.")
-    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_status": "awaiting_delivery", "gi_error": None}})
+    db[STO_COLLECTION].update_one(
+        {"_id": sto_id},
+        {"$set": {"gi_status": "awaiting_delivery", "gi_error": None}, "$unset": {"gi_job_started_at": ""}},
+    )
     return doc
 
 
