@@ -313,11 +313,34 @@ async def combine_and_post_goods_issue_via_ui(sap_order_id: str, metadata: dict,
                             release_click = await _click_button(page, "Release")
                             break
                 if release_click == "disabled":
-                    # A disabled Release button means SAP's own Consistency
-                    # Status check failed (e.g. a bad field value) - this is
-                    # an unrecoverable SAP-side rejection, not a transient
-                    # timing issue, so it must not be retried for the full
-                    # 20-min poll window.
+                    # Real incident fix (Order 30518/Delivery P1D1-492, Sep
+                    # 2026): SAP recomputes Consistency Status
+                    # ASYNCHRONOUSLY right after the metadata Save above -
+                    # reading the Release button the instant after Save can
+                    # catch it mid-recompute (still shows disabled) even
+                    # though SAP settles to "consistent" + an enabled
+                    # Release button just seconds later (confirmed: this
+                    # exact delivery showed "Outbound delivery consistent"
+                    # and a normal Release button when checked manually in
+                    # SAP right after this job reported it failed). Click
+                    # "Check Consistency" (the real SAP button, same one a
+                    # human would use) and re-check Release a few times
+                    # before ever concluding this is a real, unrecoverable
+                    # SAP-side rejection - a genuinely bad field value stays
+                    # disabled through every one of these retries too, so
+                    # this never masks a real rejection, just avoids a false
+                    # positive on a timing race.
+                    for _ in range(4):
+                        await page.wait_for_timeout(8000)
+                        for b in await page.query_selector_all(".sapMBtnBase"):
+                            if await b.is_visible() and (await b.inner_text()).strip() == "Check Consistency":
+                                await b.click(force=True)
+                                await page.wait_for_timeout(6000)
+                                break
+                        release_click = await _click_button(page, "Release")
+                        if release_click != "disabled":
+                            break
+                if release_click == "disabled":
                     await _save_debug_screenshot(page, sap_order_id)
                     return {"status": "failed", "error": f"Delivery {delivery_ids[0]}'s 'Release' button is disabled - SAP Consistency Status check failed, needs manual SAP review"}
                 await page.wait_for_timeout(15000)
