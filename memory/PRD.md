@@ -108,6 +108,53 @@ Extend a SAP BOM viewer application into a full production-planning suite for Ra
   (8 dead-end API attempts already documented). Single-line orders use a pure API
   path and don't share this risk class at all.
 
+## Session Sep 1 2026 - Native SAP Custom BO (ABSL) to replace multi-line Outbound Delivery Playwright automation
+Built entirely in a SEPARATE TEST TENANT (`my441464.businessbydesign.cloud.sap`, NOT the production
+tenant used elsewhere) via SAP Cloud Applications Studio - a proof-of-concept to eventually replace the
+flaky `sap_playwright_outbound_gi_service.py` UI automation with a native SAP backend action.
+- Solution "Combinedoutbounddelivery", custom BO `BusinessObject1` (elements: OrderReferenceID
+  [AlternativeKey, type ID], DeliveryID, VehicleNo, TransportMode, PlaceOfSupply, GRNo, DateOfSupply,
+  Status, DeliveryRequestUUID) with two actions:
+  - `Combine`: loops `outboundDeliveryRequest.Item.ItemScheduleLine` and calls the SAP-standard
+    `RequestDeliveryExecution(TaskBasedIndicator, AllowSplitIndicator, TargetSiteLogisticsRequestUUID,
+    SplitByShippingOrPickupDateTimeIndicator, SplitByOrderIndicator, SplitByDeliveryPriorityCodeIndicator)`
+    on each, all split indicators false, forcing ONE combined Outbound Delivery.
+  - `SetTransportDetailsAndRelease`: queries `OutboundDelivery` by `DeliveryID`, calls `.Release()`
+    (which also posts Goods Issue). GR/vehicle/transport `_KUT` custom field writes were EXPLICITLY
+    DROPPED per user's request mid-session - this action now only releases/posts.
+  - Both actions are "mass-enabled" (the auto-generated script's `this` is a COLLECTION of Root
+    instances, not a single instance - must `foreach (var item in this)`, a real gotcha that cost
+    several iterations before being caught via GitHub Copilot's read of the file's own header comment).
+- Exposed as TWO separate SOAP web services (WebService1=Combine, WebService2=SetTransportDetailsAndRelease),
+  both CRUD+Query+Action, under a shared Work Center View `CombineView`.
+- **BLOCKED at session end**: `Admin`/`Admin@11336` business user has NO business role assigned
+  ("No Active Business Roles available"), and `CombineView` could not be found via "Find Business Role
+  by Work Center View" search NOR in the "Work Center and View Assignment" tab's catalog - the custom
+  PDI-created view doesn't appear to be registered in the runtime Business Role/authorization catalog
+  yet. SOAP calls fail with `Authorization role missing for service ... operation Create` (HTTP 500
+  SOAP fault) - this is a genuine SAP Business Configuration/authorization gap, not a code bug. User
+  called HOLD on this - needs SAP Basis/admin expertise (likely: the custom Work Center itself, not
+  just the View, may need explicit Business Configuration scoping/activation, or a different broader
+  admin business role needs to be identified and assigned instead).
+- Confirmed WORKING (live-tested against test tenant): the SOAP request/response XML structure itself -
+  root wrapper elements (`BusinessObject1CreateRequest_sync` etc.) live in namespace
+  `http://sap.com/xi/SAPGlobal20/Global`, inner fields (`BasicMessageHeader`, `BusinessObject1`,
+  `Selection*`) are UNQUALIFIED (no `elementFormDefault` set anywhere in the WSDL). `QueryByElements`'s
+  real message is `BusinessObject1QueryByElementsSimpleByRequest_sync` with a
+  `BusinessObject1SimpleSelectionBy` wrapper (not a generic name). Endpoints:
+  `https://my441464.businessbydesign.cloud.sap/sap/bc/srt/scs/sap/yy0cq5p7hy_webservice{1,2}?sap-vhost=...`.
+  Standalone test script: `/app/backend/test_custom_bo_soap.py` (NOT wired into main app).
+- Local SAP Cloud Studio tooling bugs hit repeatedly this session (documented for future reference,
+  none are code/logic errors): (1) pasting text with "." into the ABSL editor can silently drop every
+  dot character (worked around via paste-with-"@"-placeholder then Find&Replace "@"->"."); (2) the
+  Web Service wizard's "Add > Create New View" step reliably fails with
+  `WsAuthWOC_View.tt: System.NotSupportedException: The invoked member is not supported in a dynamic
+  assembly` (a broken CopernicusIsolatedShell/T4 templating issue) - worked around by creating the Work
+  Center View as a standalone Solution Explorer item (Add New Item > Work Center View) instead, which
+  uses a different, working code path; (3) the wizard only lets you define ONE action-operation per
+  run despite selecting multiple actions in the checklist - needed two separate web services.
+- See `/app/memory/test_credentials.md` for full endpoint/credential details.
+
 ## Known SAP-side structural limitations (do not re-investigate, already conclusively proven)
 - `PGRBackground` (Post Goods Receipt) via OData is disabled for this tenant's Inbound Delivery
   Notifications - official SAP KBA 3583076 confirms Actual Quantity can't be passed this way. Fixed
@@ -132,6 +179,12 @@ Extend a SAP BOM viewer application into a full production-planning suite for Ra
 ## Current backlog
 
 ### P0
+- SAP Custom BO SOAP authorization (Sep 1 2026 session) - `Admin` test-tenant user's Create call fails
+  with "Authorization role missing"; `CombineView` work center view isn't discoverable in the Business
+  Role/Work Center assignment catalog. BLOCKED, needs SAP Basis/admin to resolve (see CHANGELOG-style
+  session note above) before the standalone SOAP test script can even validate Create/Read, let alone
+  Combine/Release. This whole effort is still in a TEST tenant only - production rollout is a distinct
+  future step after this is proven.
 - Supplier Portal GRN automation - BUILT & UNIT/INTEGRATION TESTED this session (2026-08-29, see
   CHANGELOG), but the "Post Goods Receipt" dialog's field-filling has NEVER run against a real,
   existing PO (every test used a deliberately fake PO number for safety). Needs ONE supervised live
