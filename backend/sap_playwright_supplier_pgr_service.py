@@ -53,8 +53,25 @@ async def _open_purchase_orders(page) -> None:
         if await el.is_visible():
             await el.click(force=True)
             await page.wait_for_timeout(3000)
+            await _wait_for_table_load(page)
             return
     raise RuntimeError("Could not find the 'Purchase Orders' view under Inbound Logistics")
+
+
+async def _wait_for_table_load(page, timeout: int = 60000) -> None:
+    """The Purchase Orders list shows its own inline "Loading..." text
+    while fetching rows (distinct from `_wait_for_blocking_layer_clear`'s
+    full-page modal overlay) - toolbar buttons (incl. the Filter icon)
+    stay disabled/unclickable the whole time. Root cause of the very
+    first live supervised test (Sep 1 2026) failing with "Could not find
+    the 'Purchase Order ID' filter field" on 2/2 real POs: the fixed
+    2500/3000ms waits were shorter than this tenant's actual load time,
+    so the Filter click landed while the list was still loading."""
+    try:
+        await page.get_by_text("Loading...", exact=True).first.wait_for(state="hidden", timeout=timeout)
+    except Exception:
+        pass
+    await page.wait_for_timeout(500)
 
 
 async def _search_po_exact(page, po_number: str) -> int:
@@ -72,6 +89,7 @@ async def _search_po_exact(page, po_number: str) -> int:
         if await broad_opt.count() > 0:
             await broad_opt.click(force=True)
             await page.wait_for_timeout(1500)
+            await _wait_for_table_load(page)
 
     filter_btn = None
     for b in await page.query_selector_all(".sapMBtnIconLeft, .sapMBtnBase"):
