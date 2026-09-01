@@ -153,10 +153,10 @@ const collectExpandableKeys = (nodes, prefix = "") => {
   return keys;
 };
 
-const flattenFullTree = (nodes, depth = 0) => {
+const flattenFullTree = (nodes, depth = 0, costs = null, costsLoaded = false) => {
   let out = [];
   nodes.forEach((node) => {
-    out.push({
+    const row = {
       Level: depth + 1,
       "Product ID": node.product_id,
       Description: node.description || "",
@@ -164,9 +164,17 @@ const flattenFullTree = (nodes, depth = 0) => {
       UOM: node.unit_of_measure || "",
       ECO: node.eco_id || "",
       Active: node.active ? "Yes" : "No",
-    });
+    };
+    if (costsLoaded) {
+      const effective = getEffectiveCost(node, costs);
+      row["Std Cost"] = effective ? Number(effective.amount.toFixed(2)) : "";
+      row["Currency"] = effective ? effective.currency || "" : "";
+      row["Ext. Cost"] = effective && node.quantity != null ? Number((effective.amount * node.quantity).toFixed(2)) : "";
+      row["Cost Source"] = effective ? (effective.isRollup ? "Rolled-up from components" : "Direct SAP Standard Cost") : "No cost";
+    }
+    out.push(row);
     if (node.children && node.children.length > 0) {
-      out = out.concat(flattenFullTree(node.children, depth + 1));
+      out = out.concat(flattenFullTree(node.children, depth + 1, costs, costsLoaded));
     }
   });
   return out;
@@ -314,13 +322,16 @@ export default function BomExplorerPage() {
 
   const exportToExcel = () => {
     if (!result) return;
-    const data = flattenFullTree(result.tree);
+    const data = flattenFullTree(result.tree, 0, costs, costsLoaded);
     const worksheet = XLSX.utils.json_to_sheet(data);
-    worksheet["!cols"] = [{ wch: 7 }, { wch: 20 }, { wch: 40 }, { wch: 10 }, { wch: 8 }, { wch: 16 }, { wch: 8 }];
+    const baseCols = [{ wch: 7 }, { wch: 20 }, { wch: 40 }, { wch: 10 }, { wch: 8 }, { wch: 16 }, { wch: 8 }];
+    worksheet["!cols"] = costsLoaded ? baseCols.concat([{ wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 24 }]) : baseCols;
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "BOM");
     XLSX.writeFile(workbook, `BOM_${result.bom_id}.xlsx`);
-    toast.success("Excel file downloaded", { description: `BOM_${result.bom_id}.xlsx` });
+    toast.success("Excel file downloaded", {
+      description: costsLoaded ? `BOM_${result.bom_id}.xlsx (with standard costs)` : `BOM_${result.bom_id}.xlsx`,
+    });
   };
 
   const loadStandardCosts = async () => {
