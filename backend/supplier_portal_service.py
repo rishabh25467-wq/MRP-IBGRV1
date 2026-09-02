@@ -23,6 +23,7 @@ import object_storage_service
 
 ACCOUNTS_COLLECTION = "supplier_portal_accounts"
 LOGIN_ATTEMPTS_COLLECTION = "supplier_portal_login_attempts"
+INVITES_COLLECTION = "supplier_portal_invites"
 
 SESSION_COOKIE_NAME = "supplier_token"
 SESSION_TTL = timedelta(hours=24)
@@ -233,3 +234,30 @@ def get_document(db, account_id: str, doc_type: str) -> tuple:
     filename = account.get(f"{doc_type}_doc_filename") or f"{doc_type}.bin"
     data, fallback_content_type = object_storage_service.get_object(path)
     return data, account.get(f"{doc_type}_doc_content_type") or fallback_content_type, filename
+
+
+# ---- Invite Supplier (Sep 2 2026) - manual, one-at-a-time outreach.
+# User's explicit ask: "No, I'll reach out manually" to bulk-invite, just
+# a form near Supplier Portal Approvals to send one supplier at a time an
+# invite email (signup link + their Vendor Code) via Microsoft Graph, sent
+# AS the inviting staff member's own mailbox. Logged here purely for the
+# admin's own audit trail of who's already been invited - does NOT create
+# or pre-approve the actual signup itself, the vendor still fills out the
+# real /supplier-portal/signup form (Vendor Code, GST, PAN docs) themselves. ----
+
+def create_invite(db, company_name: str, vendor_code: str, email: str, invited_by: str) -> dict:
+    doc = {
+        "_id": str(uuid.uuid4()),
+        "company_name": company_name.strip(),
+        "vendor_code": vendor_code.strip().upper(),
+        "email": email.strip().lower(),
+        "invited_by": invited_by,
+        "status": "sent",
+        "created_at": datetime.now(timezone.utc),
+    }
+    db[INVITES_COLLECTION].insert_one(doc)
+    return doc
+
+
+def list_invites(db) -> list:
+    return list(db[INVITES_COLLECTION].find().sort("created_at", -1))

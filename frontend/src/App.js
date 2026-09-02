@@ -21,6 +21,7 @@ import LoginPage from "@/pages/LoginPage";
 import PendingAccessPage from "@/pages/PendingAccessPage";
 import AccessManagementPage from "@/pages/AccessManagementPage";
 import SupplierPortalApprovalsPage from "@/pages/SupplierPortalApprovalsPage";
+import SupplierPortalInvitePage from "@/pages/SupplierPortalInvitePage";
 import GrnApprovalPage from "@/pages/GrnApprovalPage";
 import SupplierSignupPage from "@/pages/supplier-portal/SupplierSignupPage";
 import SupplierLoginPage from "@/pages/supplier-portal/SupplierLoginPage";
@@ -130,6 +131,7 @@ function InternalApp() {
             <Route path="/admin/l1-l2-report" element={<ProtectedRoute page="admin"><L1L2ReportPage /></ProtectedRoute>} />
             <Route path="/admin/access-management" element={<ProtectedRoute superAdminOnly><AccessManagementPage /></ProtectedRoute>} />
             <Route path="/admin/supplier-portal-approvals" element={<ProtectedRoute page="supplier_portal_admin"><SupplierPortalApprovalsPage /></ProtectedRoute>} />
+            <Route path="/admin/supplier-portal-invite" element={<ProtectedRoute page="supplier_portal_admin"><SupplierPortalInvitePage /></ProtectedRoute>} />
             <Route path="/admin/grn-approval" element={<ProtectedRoute page="supplier_portal_admin"><GrnApprovalPage /></ProtectedRoute>} />
             <Route path="/storeapproval" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
             <Route path="/storeapproval/journal" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />

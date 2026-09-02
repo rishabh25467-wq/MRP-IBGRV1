@@ -92,6 +92,10 @@ load_dotenv(ROOT_DIR / '.env')
 # crash with a KeyError, since none of those vars exist in the process
 # environment until the .env file is actually loaded.
 import auth_service
+# graph_mail_service.py (Sep 2 2026) - same reason: reads the same
+# AZURE_AD_* vars at module level for the Supplier Invite feature's
+# Microsoft Graph sendMail integration.
+import graph_mail_service
 # playwright_concurrency.py (Aug 31 2026) - same reason: builds its SAP
 # UI login credential pool from os.environ at module level.
 import playwright_concurrency
@@ -5914,6 +5918,12 @@ class SupplierRejectRequest(BaseModel):
     reason: str = ""
 
 
+class SupplierInviteRequest(BaseModel):
+    company_name: str
+    vendor_code: str
+    email: str
+
+
 @api_router.post("/supplier-portal/signup")
 async def post_supplier_portal_signup(
     vendor_code: str = Form(...),
@@ -6104,6 +6114,31 @@ async def get_admin_supplier_portal_document(account_id: str, doc_type: str):
     except supplier_portal_service.SupplierPortalNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return Response(content=data, media_type=content_type, headers={"Content-Disposition": f'inline; filename="{filename}"'})
+
+
+@api_router.get("/admin/supplier-portal/invites")
+async def get_admin_supplier_portal_invites():
+    return {"invites": await asyncio.to_thread(supplier_portal_service.list_invites, db)}
+
+
+@api_router.post("/admin/supplier-portal/invites")
+async def post_admin_supplier_portal_invite(payload: SupplierInviteRequest, request: Request):
+    staff_email = request.state.user.get("email")
+    if not staff_email:
+        raise HTTPException(status_code=400, detail="Your signed-in account has no email to send this invite from")
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.headers.get("host"))
+    signup_url = f"{proto}://{host}/supplier-portal/signup"
+    try:
+        await graph_mail_service.send_supplier_invite(staff_email, payload.email, payload.company_name, payload.vendor_code, signup_url)
+    except Exception as e:
+        logger.error(f"Supplier invite email failed for {payload.email}: {e}")
+        raise HTTPException(status_code=502, detail="Could not send the invite email. Check that Mail.Send (Application) permission is admin-consented in Azure AD.")
+    invite = await asyncio.to_thread(
+        supplier_portal_service.create_invite, db, payload.company_name, payload.vendor_code, payload.email,
+        request.state.user.get("name") or staff_email,
+    )
+    return invite
 
 
 # ---- Phase 4: internal GRN approval -> automated SAP Goods Receipt ----
