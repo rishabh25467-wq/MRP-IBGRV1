@@ -80,8 +80,29 @@ async def _search_po_exact(page, po_number: str) -> int:
     depending on which saved-query preset is active). Switches the base
     view to "All Purchase Orders by Selection" first (broadest possible,
     no hidden status/date scoping) then fills the Filter panel's own
-    "Purchase Order ID" field. Returns the row count found."""
-    base_dd = page.locator("text=Open Purchase Orders").first
+    "Purchase Order ID" field. Returns the row count found.
+
+    Sep 2 2026 BUG FOUND + FIXED (user report: PO 29086 genuinely
+    Released in SAP but the GRN screen said "PO not found... check its
+    status"): the base-view dropdown's CURRENTLY SELECTED label is not
+    stable across logins/bot credential slots - it was hardcoded to
+    look for the text "Open Purchase Orders" specifically, but this run
+    landed on "Due and Overdue Purchase Orders" instead (a real, valid
+    SAP-remembered variant, just a narrower one that silently excludes
+    perfectly valid POs like 29086), so the locator matched 0 elements,
+    the broaden-to-"All Purchase Orders by Selection" step never ran,
+    and the PO ID filter then searched the WRONG, narrower scope - per
+    user's explicit instruction ("do not search with due and overdue
+    filter, search in all purchase orders"). FIRST attempted fix
+    (`.sapMSlt` class) was ALSO wrong - live DOM inspection found 3
+    `.sapMSlt` elements on this page (the global header's "All
+    Categories" search-category selector is #0, this base-view select
+    is #1, "Group By" is #2), so `.first` kept grabbing the unrelated
+    header control. Real fix: `[id$="-defaultSetDDLB"]` - SAPUI5's own
+    stable ID suffix for a list report's "default view set" dropdown,
+    confirmed live to always resolve to the correct control regardless
+    of its current label or how many other `.sapMSlt`s are on the page."""
+    base_dd = page.locator('[id$="-defaultSetDDLB"]').first
     if await base_dd.count() > 0:
         await base_dd.click(force=True)
         await page.wait_for_timeout(1000)
@@ -161,18 +182,57 @@ async def _fill_line_actual_quantities(page, item_products: dict, item_qtys: dic
         if matched_row is None:
             unfilled.append(item_number)
             continue
-        cells = await matched_row.query_selector_all("td")
-        if len(cells) <= qty_col:
+        # Sep 2 2026 BUG FOUND + FIXED (same investigation as the
+        # PO-search/row-select/loading-time fixes above, confirmed live
+        # via backend logs: "'Locator' object has no attribute
+        # 'query_selector_all'"): `rows` here are Playwright LOCATORS
+        # (from `.locator(...).all()`), not ElementHandles - Locators
+        # don't have `query_selector_all`/`query_selector` at all
+        # (that's ElementHandle-only API). Must use `.locator("td")` +
+        # `.count()`/`.nth()` instead, consistently.
+        cells = matched_row.locator("td")
+        cell_count = await cells.count()
+        if cell_count <= qty_col:
             unfilled.append(item_number)
             continue
-        qty_input = await cells[qty_col].query_selector("input")
-        if not qty_input:
+        # Sep 2 2026 fix: this cell actually holds TWO inputs (confirmed
+        # live via a strict-mode Playwright error) - the real quantity
+        # text field AND a separate unit-of-measure combobox rendered in
+        # the same <td>. `:not([role="combobox"])` picks only the real
+        # quantity field.
+        qty_input = cells.nth(qty_col).locator('input:not([role="combobox"])')
+        if await qty_input.count() == 0:
             unfilled.append(item_number)
             continue
-        await qty_input.fill("")
-        await qty_input.fill(str(qty))
-        await qty_input.press("Tab")
+        await qty_input.first.fill("")
+        await qty_input.first.fill(str(qty))
+        await qty_input.first.press("Tab")
     return unfilled
+
+
+async def _click_po_row(page, row, po_number: str) -> None:
+    """SELECTS (does not navigate into) the row so the list's own
+    toolbar "Post Goods Receipt" button becomes enabled - matches the
+    real manual flow ("search the exact PO -> select its row -> 'Post
+    Goods Receipt' button", see module docstring). Sep 2 2026 BUG FOUND
+    + FIXED (same investigation as the PO-search fix above), THREE
+    attempts: (1) original `row.click()` landed at the row's bounding-
+    box CENTER, which falls on the "Supplier Name" cell and navigates
+    to that Business Partner's own detail screen instead of selecting
+    the row; (2) clicking the first `<td>`'s link was wrong too - that
+    cell has no link, it's an empty row-selection indicator column;
+    (3) clicking the "Purchase Order ID" link cell (matched by its own
+    text) navigates INTO the PO's own detail screen - confirmed live
+    that screen has NO "Post Goods Receipt" button at all (it's a
+    LIST-toolbar-only action, requires the row merely selected, not
+    opened). Real fix: click the empty first `<td>` (the selection
+    indicator column itself, no link) - this selects the row in place
+    without navigating anywhere."""
+    cells = await row.query_selector_all("td")
+    if cells:
+        await cells[0].click(force=True)
+    else:
+        await row.click(force=True)
 
 
 async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: str, item_qtys: dict, item_products: dict) -> dict:
@@ -181,7 +241,7 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
     if hits == 0:
         return {"po_number": po_number, "status": "skipped", "error": "PO not found in SAP's Purchase Orders view - check its status is actually released/receivable (not 'In Preparation')"}
     rows = await page.query_selector_all('tr[id^="__table"]')
-    await rows[0].click(force=True)
+    await _click_po_row(page, rows[0], po_number)
     await page.wait_for_timeout(1500)
 
     click_result = await _click_button(page, "Post Goods Receipt")
@@ -189,7 +249,22 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
         return {"po_number": po_number, "status": "failed", "error": "Post Goods Receipt is disabled for this PO in SAP"}
     if click_result == "not_found":
         return {"po_number": po_number, "status": "failed", "error": "Post Goods Receipt button not found for this PO"}
-    await page.wait_for_timeout(4000)
+    # Sep 2 2026 fix (same investigation as the search/row-select fixes
+    # above): the "Create Inbound Delivery and Goods Receipt" screen's
+    # own Line Items grid shows an inline "Loading..." text while its
+    # data fetches (same pattern as `_wait_for_table_load` on the list
+    # screen) - a fixed 4000ms wait was shorter than this tenant's real
+    # load time, so `_fill_line_actual_quantities` used to run against
+    # an empty/still-loading grid and report every item "could not be
+    # filled". Also waits for the full-page blocking overlay to clear
+    # first (this screen briefly shows one during its own navigation).
+    await page.wait_for_timeout(3000)
+    await _wait_for_blocking_layer_clear(page)
+    try:
+        await page.get_by_text("Loading...", exact=True).first.wait_for(state="hidden", timeout=60000)
+    except Exception:
+        pass
+    await page.wait_for_timeout(2000)
 
     notif_input = None
     for lbl in await page.query_selector_all("label"):

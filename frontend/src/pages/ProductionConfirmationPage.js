@@ -282,6 +282,38 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
 
   if (!row) return null;
 
+  // Sep 2 2026 fix (live incident, Lot 71425 - "output item posted but
+  // Task status still open in SAP and Emergent"): SAP's own
+  // ConfirmationFinishedIndicator on the ReportingPoint is PERMANENT
+  // once set - re-submitting Confirmed Output Quantity here for a lot
+  // already in this state always fails with "Changes in task or lot
+  // not permitted; confirmation complete indicator set". This detects
+  // that exact stuck state (output already fully posted, only the
+  // separate Task-close step is missing) and swaps the whole dialog
+  // for a single, safe "Finish Task" action instead.
+  const stuckTaskOnly = row.confirmation_finished === true && row.task_finished === false;
+
+  const finishTaskOnly = async () => {
+    setSaving(true);
+    setConfirmError(null);
+    try {
+      await axios.post(`${API}/production-confirmation/finish-task`, {
+        production_lot_id: row.production_lot_id,
+        production_lot_uuid: row.production_lot_uuid,
+        confirmation_group_uuid: row.confirmation_group_uuid,
+        production_task_id: row.production_task_id,
+        production_task_uuid: row.production_task_uuid,
+        actor: actorName.trim(),
+      });
+      toast.success(`Task closed in SAP for Lot ${row.production_lot_id}`);
+      onConfirmed(row);
+    } catch (e) {
+      setConfirmError(e.response?.data?.detail || "Failed to finish Task in SAP");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   // Match on the LOT's real Output Products grid, not our own AI-guessed
   // scrap-family code - confirmed live that SAP's actual by-product line
   // (e.g. IRON-SCR) doesn't always match our classifier's expected code
@@ -494,6 +526,14 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
               </button>
             </Alert>
           )}
+          {stuckTaskOnly ? (
+            <div className="text-sm text-[#344054] bg-[#FFFAEB] border border-[#FEDF89] rounded-sm px-3 py-2.5" data-testid="stuck-task-only-banner">
+              Output already fully posted to SAP ({formatQty(row.planned_quantity)} {formatUnit(row.unit_code)}) - only the
+              Task itself is still open. Re-entering a quantity would be rejected by SAP since this ReportingPoint is
+              already closed. Click <strong>Finish Task</strong> below to close it - no quantity is sent.
+            </div>
+          ) : (
+          <>
           <div className="text-xs text-[#667085] bg-[#F9FAFB] border border-[#EAECF0] rounded-sm px-3 py-2">
             Planned: <strong className="text-[#1D2939]">{formatQty(row.planned_quantity)}</strong> {formatUnit(row.unit_code)} ·
             {" "}Open: <strong className="text-[#1D2939]">{formatQty(row.open_quantity)}</strong> {formatUnit(row.unit_code)}
@@ -613,12 +653,20 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
             <Label htmlFor="finished-cb" className="text-sm text-[#344054]">Mark this task as finished (mandatory - every confirmation closes this lot)</Label>
           </div>
           <p className="text-[11px] text-[#98A2B3]">Component/input quantities are NOT sent - SAP's backflush auto-consumes BOM inputs from the confirmed output.</p>
+          </>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose} data-testid="confirm-cancel-button">Cancel</Button>
+          {stuckTaskOnly ? (
+            <Button onClick={finishTaskOnly} disabled={saving} data-testid="finish-task-only-button">
+              {saving ? "Closing Task in SAP..." : "Finish Task"}
+            </Button>
+          ) : (
           <Button onClick={submit} disabled={saving || checkingAvailability || (scrapCalc?.rm_product_id && !scrapCalc?.available)} data-testid="confirm-submit-button">
             {saving ? `${CONFIRM_PHASE_LABELS[savingPhase] || "Posting to SAP"} (${savingElapsed}s)...` : checkingAvailability ? "Checking stock..." : (scrapCalc?.rm_product_id && !scrapCalc?.available) ? "Fix weight data first" : "Post Confirmation"}
           </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -2804,6 +2804,40 @@ async def restart_production_task(payload: RestartTaskRequest):
     return result
 
 
+class FinishTaskRequest(BaseModel):
+    production_lot_id: str
+    production_lot_uuid: str
+    confirmation_group_uuid: str
+    production_task_id: Optional[str] = None
+    production_task_uuid: Optional[str] = None
+    actor: str
+
+
+@api_router.post("/production-confirmation/finish-task")
+async def finish_production_task(payload: FinishTaskRequest):
+    """Sep 2 2026 fix (live incident, Lot 71425 - "output item posted
+    but Task status still open in SAP and Emergent"): recovery path for
+    a lot whose ReportingPoint confirmation already succeeded (output
+    fully posted, ConfirmationFinishedIndicator permanently set) but
+    the separate "Finish Task" call that closes the Task itself never
+    went through - re-submitting the normal Confirm form fails because
+    SAP rejects any further change to an already-set ReportingPoint
+    ("confirmation complete indicator set"). This calls ONLY the
+    standalone Finish Task action, with no ReportingPoint/quantity
+    fields at all, so it's always safe to retry regardless of the
+    ReportingPoint's own state."""
+    if not payload.actor.strip():
+        raise HTTPException(status_code=400, detail="actor (your name) is required")
+    result = await asyncio.to_thread(
+        sap_production_lot_client.finish_task,
+        payload.production_lot_id, payload.production_lot_uuid, payload.confirmation_group_uuid,
+        payload.production_task_id, payload.production_task_uuid,
+    )
+    if not result.get("success"):
+        raise HTTPException(status_code=502, detail=f"Finish Task failed in SAP: {result.get('logs')}")
+    return result
+
+
 def _site_scope_for(user: dict):
     """None = unrestricted (admin/super_admin); otherwise the exact set of
     sites (possibly empty) a "user"-role account is bound to."""

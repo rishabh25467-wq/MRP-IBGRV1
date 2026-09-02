@@ -362,14 +362,33 @@ class SAPProductionLotClient:
         # Task's own life cycle status (shown as In Process/Finished in SAP's Task
         # Control UI). That requires a SEPARATE, standalone "Finish Task" request
         # (ProductionTask node only - no ReportingPoint/Material nodes allowed in it).
+        # Sep 2 2026 BUG FOUND + FIXED (live incident, Lot 71425 -
+        # "output item posted but Task status still open in SAP and
+        # Emergent"): this standalone finish_task() call used to be
+        # allowed to raise straight out of confirm_reporting_point() on
+        # any SAP fault - discarding the fact that the ReportingPoint
+        # update just above had ALREADY succeeded (a real, irreversible
+        # SAP state change - ConfirmationFinishedIndicator can never be
+        # unset). The caller then reported total failure and never
+        # logged anything (see _confirm_production_inner's exception
+        # handlers), so the user retried the WHOLE confirmation -
+        # which SAP now rejects outright ("Changes in task or lot not
+        # permitted; confirmation complete indicator set") since the
+        # ReportingPoint fields can't be resent. Now caught here so the
+        # partial success (RP done, Task still open) is preserved and
+        # reported accurately instead of silently lost.
         if confirmation_finished and success and (production_task_id or production_task_uuid):
-            task_result = self.finish_task(
-                production_lot_id=production_lot_id, production_lot_uuid=production_lot_uuid,
-                confirmation_group_uuid=confirmation_group_uuid,
-                production_task_id=production_task_id, production_task_uuid=production_task_uuid,
-            )
-            logs.extend(task_result["logs"])
-            success = success and task_result["success"]
+            try:
+                task_result = self.finish_task(
+                    production_lot_id=production_lot_id, production_lot_uuid=production_lot_uuid,
+                    confirmation_group_uuid=confirmation_group_uuid,
+                    production_task_id=production_task_id, production_task_uuid=production_task_uuid,
+                )
+                logs.extend(task_result["logs"])
+                success = success and task_result["success"]
+            except SAPProductionLotError as e:
+                logs.append({"node_name": "PRODUCTION_LOT->PRODUCTION_TASK_ROOT", "severity": "E", "note": f"Output was posted to SAP successfully, but closing the Task itself failed: {e}. Do NOT re-enter the quantity - retry with 'Finish Task' only."})
+                success = False
 
         return {"success": success, "logs": logs}
 
