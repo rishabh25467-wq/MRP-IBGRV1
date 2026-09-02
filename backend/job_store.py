@@ -15,7 +15,7 @@ still waiting on a job it thought was running, a popup that looked
 permanently stuck). A single Mongo collection, keyed by job_id, is visible
 to every worker/replica no matter which one handles a given request.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 COLLECTION_NAME = "background_jobs"
 
@@ -101,3 +101,53 @@ def recover_orphaned_jobs(db, message: str) -> list:
             },
         }})
     return orphaned
+
+
+# Sep 2 2026 (user's explicit ask: an internal-only reliability report,
+# "between you and me", not for regular staff) - PLAYWRIGHT_JOB_KINDS
+# covers every job kind that's actually a Playwright browser-automation
+# job (Supplier GRN, Inbound STO Receipt, and STO Outbound combine+
+# release/"submit_sto") - every other `kind` in this collection is a
+# plain API-driven background job and irrelevant to this report.
+PLAYWRIGHT_JOB_KINDS = ["supplier_grn", "inbound_receipt", "submit_sto"]
+
+# Jobs older than JOB_RETENTION_SECONDS (7 days) are already gone via the
+# TTL index above - the report can never show a longer window than that,
+# no matter what `days` is requested.
+RESTART_INTERRUPTION_MARKER = "Interrupted by a backend restart/deploy"
+
+
+def build_reliability_report(db, days: int) -> dict:
+    """Real vs backend-restart-noise success rate per Playwright job
+    kind, over the last `days` days (capped by the 7-day job retention
+    above). "Real failures" excludes any job whose error is the
+    dev-environment backend-restart marker (job_store.recover_orphaned_
+    jobs sets this) - those aren't SAP/Playwright reliability at all,
+    just this job having been mid-flight during a code deploy/hot-reload."""
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    by_kind = {}
+    for kind in PLAYWRIGHT_JOB_KINDS:
+        jobs = list(db[COLLECTION_NAME].find({"kind": kind, "created_at": {"$gte": since}}, {"status": 1, "error": 1, "created_at": 1}))
+        total = len(jobs)
+        done = sum(1 for j in jobs if j.get("status") == "done")
+        failed = [j for j in jobs if j.get("status") == "failed"]
+        restart_interrupted = [j for j in failed if RESTART_INTERRUPTION_MARKER in (j.get("error") or "")]
+        real_failures = [j for j in failed if j not in restart_interrupted]
+        reason_counts = {}
+        for j in real_failures:
+            reason = (j.get("error") or "Unknown error").strip()[:200]
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        real_denominator = total - len(restart_interrupted)
+        by_kind[kind] = {
+            "total_jobs": total,
+            "done": done,
+            "restart_interrupted": len(restart_interrupted),
+            "real_failures": len(real_failures),
+            "real_success_rate_pct": round(done / real_denominator * 100, 1) if real_denominator > 0 else None,
+            "real_failure_reasons": sorted(
+                [{"error": reason, "count": count} for reason, count in reason_counts.items()],
+                key=lambda r: -r["count"],
+            ),
+        }
+    return {"since": since.isoformat(), "days": days, "by_kind": by_kind}
+

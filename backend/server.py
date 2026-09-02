@@ -6335,6 +6335,18 @@ def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> st
     return job_id
 
 
+@api_router.get("/admin/playwright-reliability-report")
+async def get_playwright_reliability_report(request: Request, days: int = 7):
+    """Internal-only report (user's explicit ask, "between you and me",
+    not linked anywhere in the app's nav - reached only via the hidden
+    /playwrightrate frontend route) - Super Admin/Admin gated the same
+    way every other internal report in this app already is."""
+    if request.state.user.get("role") not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403, detail="Super Admin access required")
+    days = max(1, min(days, 7))  # background_jobs docs are TTL-purged after 7 days
+    return await asyncio.to_thread(job_store.build_reliability_report, db, days)
+
+
 @api_router.get("/admin/grn/receipt-status/{job_id}")
 async def get_admin_grn_job_status(job_id: str):
     job = await asyncio.to_thread(job_store.get_job, db, job_id)
