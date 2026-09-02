@@ -403,6 +403,7 @@ export default function SupplierDashboardPage() {
                   <th className="border border-[#D0D5DD] p-1.5 text-right">Open Qty</th>
                   <th className="border border-[#D0D5DD] p-1.5 text-left">Due Date</th>
                   <th className="border border-[#D0D5DD] p-1.5 text-right w-28">Ship Qty</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-left">SAP Verified</th>
                 </tr>
               </thead>
               <tbody>
@@ -444,16 +445,6 @@ export default function SupplierDashboardPage() {
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data text-xs">{fmtMoney(po.subtotal, po.currency)}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data">
                         {po.remaining_qty} {po.unit_of_measure}
-                        <div className="text-[10px] text-[#98A2B3] font-sans flex items-center justify-end gap-1" data-testid={`supplier-po-sap-verified-${po.po_number}-${po.item_number}`}>
-                          {po.sap_verified_at ? (
-                            <>
-                              SAP-verified {timeAgo(po.sap_verified_at)}
-                              <CheckCircle size={12} weight="fill" className="text-[#12B76A]" data-testid={`supplier-po-sap-verified-tick-${po.po_number}-${po.item_number}`} />
-                            </>
-                          ) : (
-                            "not yet verified in SAP"
-                          )}
-                        </div>
                       </td>
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data text-xs whitespace-nowrap">{fmtDate(po.due_date)}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right">
@@ -465,6 +456,18 @@ export default function SupplierDashboardPage() {
                           className="h-7 w-24 text-right rounded-sm border-[#D0D5DD] text-xs"
                           data-testid={`supplier-po-qty-input-${po.po_number}-${po.item_number}`}
                         />
+                      </td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 whitespace-nowrap">
+                        <div className="text-[10px] text-[#98A2B3] font-sans flex items-center gap-1" data-testid={`supplier-po-sap-verified-${po.po_number}-${po.item_number}`}>
+                          {po.sap_verified_at ? (
+                            <>
+                              <CheckCircle size={12} weight="fill" className="text-[#12B76A]" data-testid={`supplier-po-sap-verified-tick-${po.po_number}-${po.item_number}`} />
+                              SAP-verified {timeAgo(po.sap_verified_at)}
+                            </>
+                          ) : (
+                            "not yet verified in SAP"
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
