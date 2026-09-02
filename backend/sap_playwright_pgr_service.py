@@ -338,7 +338,15 @@ async def post_goods_receipts_via_ui(delivery_ids: list, line_overrides: dict = 
                         page = await browser.new_page(viewport={"width": 1600, "height": 900})
                         await _login(page, username, password)
             finally:
-                await browser.close()
+                # Sep 2 2026 (user's explicit ask, auto-retry safety) -
+                # same reasoning as sap_playwright_supplier_pgr_service.py:
+                # never let a browser.close() failure discard already-
+                # completed `results`, so a caller-level retry can never
+                # re-attempt a delivery that already posted.
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
                 playwright_concurrency.unregister_browser(browser)
     finally:
         playwright_concurrency.release((username, password))

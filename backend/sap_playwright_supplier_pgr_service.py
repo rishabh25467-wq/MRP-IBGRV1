@@ -440,7 +440,19 @@ async def post_goods_receipt_via_ui(po_items: dict, progress_cb=None) -> dict:
                         page = await browser.new_page(viewport={"width": 1600, "height": 900})
                         await _login(page, username, password)
             finally:
-                await browser.close()
+                # Sep 2 2026 (user's explicit ask, auto-retry safety):
+                # browser.close() is a real I/O call to the Chromium
+                # subprocess and could theoretically raise (e.g. if it
+                # already crashed) - if it did, that exception used to
+                # propagate past the `return` below and DISCARD every
+                # already-posted PO's result, which would make a caller-
+                # level retry unsafe (it would re-attempt POs that
+                # actually succeeded). Swallowing it here guarantees this
+                # function always returns whatever `results` it has.
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
                 playwright_concurrency.unregister_browser(browser)
     finally:
         playwright_concurrency.release((username, password))

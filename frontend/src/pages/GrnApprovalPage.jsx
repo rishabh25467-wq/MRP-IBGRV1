@@ -37,6 +37,7 @@ const GRN_STEP_LABELS = {
 const GRN_PHASE_LABELS = {
   queued: "Queued...",
   logging_in: "Connecting to SAP...",
+  retrying: "A step failed - retrying automatically...",
   moving_stock: "Moving stock into the warehouse...",
   done: "Done",
 };

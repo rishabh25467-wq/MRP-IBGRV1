@@ -5878,8 +5878,10 @@ async def post_inbound_receipt(sto_id: str, payload: InboundReceiptRequest, requ
                 update["processing_started_at"] = datetime.now(timezone.utc).isoformat()
             asyncio.create_task(asyncio.to_thread(job_store.update_job, db, job_id, update))
         try:
-            pgr_result = await sap_playwright_pgr_service.post_goods_receipts_via_ui(
-                doc.get("outbound_delivery_ids") or [], line_overrides=line_overrides, progress_cb=on_progress,
+            pgr_result = await _run_playwright_job_with_retries(
+                job_id, lambda: sap_playwright_pgr_service.post_goods_receipts_via_ui(
+                    doc.get("outbound_delivery_ids") or [], line_overrides=line_overrides, progress_cb=on_progress,
+                ),
             )
             final = await asyncio.to_thread(inbound_receipt_service.finalize_receipt, db, sto_id, pgr_result["results"], actor, bool(line_overrides))
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
@@ -6265,6 +6267,35 @@ async def post_admin_grn_approve(doc_code: str, payload: GrnApproveRequest, requ
     return {"job_id": job_id, "shipment": doc}
 
 
+async def _run_playwright_job_with_retries(job_id: str, fn, max_attempts: int = 3):
+    """Sep 2 2026, user's explicit ask ("success rate of about 85%...
+    make sure you don't break anything else") - retries a WHOLE
+    Playwright GR job up to `max_attempts` times before giving up.
+    Safe to retry the whole thing (not just "resume") because a failure
+    here can only ever come from BEFORE any PO/delivery was attempted -
+    SAP login not loading, browser launch failing, or a network drop -
+    per-PO/per-delivery failures are already caught and isolated INSIDE
+    post_goods_receipt_via_ui/post_goods_receipts_via_ui themselves and
+    never raise (confirmed live: every real failure so far was exactly
+    one of "SAP login did not reach the launchpad", a missing Chromium
+    binary, or "Could not reach SAP" - all pre-loop). Those two
+    functions were also hardened the same day so a browser.close()
+    hiccup can never discard already-posted results either. So retrying
+    here is exactly as safe as a human clicking the existing manual
+    Retry button - no PO/delivery is ever attempted twice."""
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await fn()
+        except Exception as e:
+            last_error = e
+            if attempt < max_attempts:
+                logger.warning(f"Playwright job {job_id} attempt {attempt}/{max_attempts} failed, retrying: {e}")
+                await asyncio.to_thread(job_store.update_job, db, job_id, {"phase": "retrying"})
+                await asyncio.sleep(8)
+    raise last_error
+
+
 def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> str:
     """Shared by approve + retry-goods-receipt - kicks off the Playwright
     Goods Receipt job (see sap_playwright_supplier_pgr_service.py) as a
@@ -6285,8 +6316,8 @@ def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> st
 
     async def run():
         try:
-            gr_result = await sap_playwright_supplier_pgr_service.post_goods_receipt_via_ui(
-                po_items, progress_cb=on_progress,
+            gr_result = await _run_playwright_job_with_retries(
+                job_id, lambda: sap_playwright_supplier_pgr_service.post_goods_receipt_via_ui(po_items, progress_cb=on_progress),
             )
             on_progress("moving_stock", gr_result["total_steps"] - 1, gr_result["total_steps"])
             final = await asyncio.to_thread(
