@@ -921,7 +921,7 @@ SCRAP_FAMILY_RULES = [
     ("Aluminium Scrap", "ALU-SCRAP", ["ALU", "ALUMINIUM", "ALUMINUM"]),
     ("SS Scrap", "SSSCRAP", ["SS", "STAINLESS"]),
     ("CR Iron Scrap", "CR-SCRAP", ["CR"]),
-    ("Iron Scrap", "IRON-SCR", ["HR", "STEEL", "COIL", "SHEET", "FLAT"]),
+    ("Iron Scrap", "IRON-SCR", ["HR", "STEEL", "COIL", "SHEET", "FLAT", "ROD", "PIPE", "ANGLE", "CHANNEL", "MESH", "INGOT"]),
 ]
 ZINC_KEYWORDS = ["ZN", "ZINC"]  # never a structural raw material - galvanization/coating only, always excluded
 
@@ -938,14 +938,24 @@ def _classify_scrap_family(product_id: str, description: str):
     return None
 
 
-def _pick_rm_item(mass_items: list) -> dict:
+def _pick_rm_item(mass_items: list, allow_unclassified_fallback: bool = False) -> dict:
     """Picks the real structural raw material among a BOM's mass-based
     components. Zinc is NEVER the RM (galvanization/coating only, per
     user's explicit rule) - always excluded. Among the rest, prefers an
-    item that matches a known scrap family (Iron/Brass/Copper keywords);
-    falls back to the largest-quantity remaining item if none match a
-    known family (e.g. paint/coating consumables like "MAT" are usually
-    much smaller by weight than the actual structural material anyway).
+    item that matches a known scrap family (Iron/Brass/Copper/Rod/Pipe/
+    Angle/Channel/Mesh/Ingot keywords).
+
+    Sep 2 2026 fix (real bug: a hardware-bag BOM with no sheet/coil/flat
+    input wrongly got its Wall Anchor - just the biggest-quantity mass
+    component - mistaken for a raw material being formed, blocking
+    confirmation on a bogus "set Net Weight" demand). No family match no
+    longer silently falls back to "biggest quantity wins" - it now only
+    falls back when `allow_unclassified_fallback` is True, i.e. this
+    exact finished item already has a Net Weight configured (real
+    precedent that an admin intentionally set up scrap tracking for it,
+    e.g. the handful of legacy "SUSPENSION SECTION"/cryptic-coded items
+    that don't match any keyword) - never for a first-time/never-
+    configured item.
 
     Keyword matching is token-prefix based (not raw substring) - e.g.
     "SCREW"/"MICRO" no longer false-match "CR", "CUT"/"SECURE" no longer
@@ -958,7 +968,9 @@ def _pick_rm_item(mass_items: list) -> dict:
         return None
     classified = [(i, _classify_scrap_family(i["product_id"], i.get("description"))) for i in candidates]
     matched = [i for i, cls in classified if cls]
-    pool = matched or candidates
+    pool = matched or (candidates if allow_unclassified_fallback else [])
+    if not pool:
+        return None
     return max(pool, key=lambda i: i["quantity"])
 
 
@@ -999,13 +1011,13 @@ async def _compute_scrap_calc(product_id: str, material_inputs: Optional[List[Ma
             item for group in (bom_doc or {}).get("groups", []) for item in group.get("items", [])
             if item.get("unit_of_measure") == "MASS" and item.get("quantity") is not None
         ]
-    rm_item = _pick_rm_item(mass_items)
+    component_doc = db["component_master"].find_one({"_id": product_id})
+    net_weight_kg = (component_doc or {}).get("net_weight_kg")
+    rm_item = _pick_rm_item(mass_items, allow_unclassified_fallback=net_weight_kg is not None)
     if not rm_item:
         return {"available": False, "reason": "No raw-material (mass-based) BOM component found for this item"}
     scrap_family = _classify_scrap_family(rm_item["product_id"], rm_item.get("description"))
 
-    component_doc = db["component_master"].find_one({"_id": product_id})
-    net_weight_kg = (component_doc or {}).get("net_weight_kg")
     if net_weight_kg is None:
         # Local cache never got this value - before giving up, check if SAP
         # already has it set (common case: entered directly in SAP, or from
