@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 import requests
 from requests.auth import HTTPBasicAuth
 
+from sap_rate_limiter import sap_semaphore
+
 
 class SAPProductionOrderReleaseError(Exception):
     pass
@@ -36,11 +38,12 @@ class SAPProductionOrderReleaseClient:
         self.entity_set = entity_set
 
     def resolve_object_id(self, order_or_proposal_id: str) -> str:
-        resp = requests.get(
-            f"{self.base_url}/{self.entity_set}",
-            params={"$filter": f"ID eq '{order_or_proposal_id}'"},
-            auth=self.auth, headers={"Accept": "application/json"}, timeout=30,
-        )
+        with sap_semaphore:
+            resp = requests.get(
+                f"{self.base_url}/{self.entity_set}",
+                params={"$filter": f"ID eq '{order_or_proposal_id}'"},
+                auth=self.auth, headers={"Accept": "application/json"}, timeout=30,
+            )
         if resp.status_code != 200:
             raise SAPProductionOrderReleaseError(self._error_message(resp))
         results = resp.json().get("d", {}).get("results", [])
@@ -52,13 +55,14 @@ class SAPProductionOrderReleaseClient:
         object_id = self.resolve_object_id(order_or_proposal_id)
         session = requests.Session()
         session.auth = self.auth
-        token_resp = session.get(f"{self.base_url}/$metadata", headers={"X-CSRF-Token": "Fetch"}, timeout=30)
-        csrf_token = token_resp.headers.get("X-CSRF-Token")
-        resp = session.post(
-            f"{self.base_url}/Release",
-            params={"ObjectID": f"'{object_id}'"},
-            headers={"X-CSRF-Token": csrf_token, "Accept": "application/json"}, timeout=30,
-        )
+        with sap_semaphore:
+            token_resp = session.get(f"{self.base_url}/$metadata", headers={"X-CSRF-Token": "Fetch"}, timeout=30)
+            csrf_token = token_resp.headers.get("X-CSRF-Token")
+            resp = session.post(
+                f"{self.base_url}/Release",
+                params={"ObjectID": f"'{object_id}'"},
+                headers={"X-CSRF-Token": csrf_token, "Accept": "application/json"}, timeout=30,
+            )
         if resp.status_code != 200:
             raise SAPProductionOrderReleaseError(self._error_message(resp))
         released = True
@@ -86,11 +90,12 @@ class SAPProductionOrderReleaseClient:
         never shows up in the SOAP open-lots poll) until an order is
         actually released, so relying on Lot-polling alone can wait
         forever on an order stuck at "In Preparation"."""
-        resp = requests.get(
-            f"{self.base_url}/{self.entity_set}",
-            params={"$filter": f"LifeCycleStatusCode eq '{life_cycle_status_code}'", "$format": "json", "$select": "ID"},
-            auth=self.auth, headers={"Accept": "application/json"}, timeout=60,
-        )
+        with sap_semaphore:
+            resp = requests.get(
+                f"{self.base_url}/{self.entity_set}",
+                params={"$filter": f"LifeCycleStatusCode eq '{life_cycle_status_code}'", "$format": "json", "$select": "ID"},
+                auth=self.auth, headers={"Accept": "application/json"}, timeout=60,
+            )
         if resp.status_code != 200:
             raise SAPProductionOrderReleaseError(self._error_message(resp))
         return {r["ID"] for r in resp.json().get("d", {}).get("results", [])}
@@ -100,11 +105,12 @@ class SAPProductionOrderReleaseClient:
         source of truth - matches the SOAP Production Lot status exactly,
         unlike the separate, staler "list" status on
         ProductionOrderRequestSegmentReference). Returns {"code", "label"}."""
-        resp = requests.get(
-            f"{self.base_url}/{self.entity_set}",
-            params={"$filter": f"ID eq '{order_id}'", "$format": "json"},
-            auth=self.auth, headers={"Accept": "application/json"}, timeout=30,
-        )
+        with sap_semaphore:
+            resp = requests.get(
+                f"{self.base_url}/{self.entity_set}",
+                params={"$filter": f"ID eq '{order_id}'", "$format": "json"},
+                auth=self.auth, headers={"Accept": "application/json"}, timeout=30,
+            )
         if resp.status_code != 200:
             raise SAPProductionOrderReleaseError(self._error_message(resp))
         results = resp.json().get("d", {}).get("results", [])
@@ -139,11 +145,12 @@ class SAPProductionOrderReleaseClient:
         the same polling window. Returns None if the segment reference
         isn't available/parseable (caller should treat that as "cannot
         verify, don't risk it" - not as a match)."""
-        resp = requests.get(
-            f"{self.base_url}/{self.entity_set}",
-            params={"$filter": f"ID eq '{order_id}'", "$format": "json", "$expand": "ProductionOrderRequestSegmentReference"},
-            auth=self.auth, headers={"Accept": "application/json"}, timeout=30,
-        )
+        with sap_semaphore:
+            resp = requests.get(
+                f"{self.base_url}/{self.entity_set}",
+                params={"$filter": f"ID eq '{order_id}'", "$format": "json", "$expand": "ProductionOrderRequestSegmentReference"},
+                auth=self.auth, headers={"Accept": "application/json"}, timeout=30,
+            )
         if resp.status_code != 200:
             raise SAPProductionOrderReleaseError(self._error_message(resp))
         results = resp.json().get("d", {}).get("results", [])
@@ -170,14 +177,15 @@ class SAPProductionOrderReleaseClient:
         object_id = self.resolve_object_id(order_id)
         session = requests.Session()
         session.auth = self.auth
-        token_resp = session.get(f"{self.base_url}/$metadata", headers={"X-CSRF-Token": "Fetch"}, timeout=30)
-        csrf_token = token_resp.headers.get("X-CSRF-Token")
-        session.patch(
-            f"{self.base_url}/{self.entity_set}('{object_id}')",
-            json={"Z_ProductionProposalIDcontent_SDK": str(proposal_id)},
-            headers={"X-CSRF-Token": csrf_token, "Accept": "application/json", "Content-Type": "application/json"},
-            timeout=30,
-        )
+        with sap_semaphore:
+            token_resp = session.get(f"{self.base_url}/$metadata", headers={"X-CSRF-Token": "Fetch"}, timeout=30)
+            csrf_token = token_resp.headers.get("X-CSRF-Token")
+            session.patch(
+                f"{self.base_url}/{self.entity_set}('{object_id}')",
+                json={"Z_ProductionProposalIDcontent_SDK": str(proposal_id)},
+                headers={"X-CSRF-Token": csrf_token, "Accept": "application/json", "Content-Type": "application/json"},
+                timeout=30,
+            )
 
     def create_with_source_of_supply(self, material_uuid: str, supply_planning_area_uuid: str, quantity: float,
                                       unit_code: str, availability_datetime, logistic_relationship_uuid: str,
@@ -205,43 +213,45 @@ class SAPProductionOrderReleaseClient:
         session.auth = self.auth
 
         def _matching_ids():
-            resp = session.get(
-                f"{self.base_url}/{self.entity_set}",
-                params={
-                    "$filter": f"SourceOfSupplyLogisticRelationshipUUID eq guid'{logistic_relationship_uuid}'",
-                    "$format": "json",
-                },
-                timeout=30,
-            )
+            with sap_semaphore:
+                resp = session.get(
+                    f"{self.base_url}/{self.entity_set}",
+                    params={
+                        "$filter": f"SourceOfSupplyLogisticRelationshipUUID eq guid'{logistic_relationship_uuid}'",
+                        "$format": "json",
+                    },
+                    timeout=30,
+                )
             if resp.status_code != 200:
                 raise SAPProductionOrderReleaseError(self._error_message(resp))
             return {r["ID"] for r in resp.json().get("d", {}).get("results", [])}
 
         before_ids = _matching_ids()
 
-        token_resp = session.get(f"{self.base_url}/$metadata", headers={"X-CSRF-Token": "Fetch"}, timeout=30)
-        csrf_token = token_resp.headers.get("X-CSRF-Token")
-        params = {
-            "SourceOfSupplyLogisticRelationshipUUID": f"guid'{logistic_relationship_uuid}'",
-            "MainMaterialOutputSupplyPlanningAreaUUID": f"guid'{supply_planning_area_uuid}'",
-            "MainMaterialOutputMaterialUUID": f"guid'{material_uuid}'",
-            "MainMaterialOutputAvailabilityDateTime": f"datetimeoffset'{avail_str}'",
-            "MainMaterialOutputQuantityTypeCode": f"'{unit_code}'",
-            # SAP OData v2 rejects a bare decimal literal like "1.0" with
-            # "Malformed URI literal syntax" (confirmed via live testing) -
-            # Edm.Decimal literals require the 'm' suffix whenever a
-            # decimal point is present. Always appending it is safe for
-            # whole numbers too (e.g. "1m" is accepted, same as "1").
-            "MainMaterialOutputQuantity": f"{quantity}m",
-            "SourceOfSupplyExplosionDate": f"datetime'{explosion_str}'",
-            "FixedIndicator": "true",
-        }
-        resp = session.post(
-            f"{self.base_url}/ProductionPlanningOrderCreate",
-            params=params,
-            headers={"X-CSRF-Token": csrf_token, "Accept": "application/json"},
-            timeout=45,
-        )
+        with sap_semaphore:
+            token_resp = session.get(f"{self.base_url}/$metadata", headers={"X-CSRF-Token": "Fetch"}, timeout=30)
+            csrf_token = token_resp.headers.get("X-CSRF-Token")
+            params = {
+                "SourceOfSupplyLogisticRelationshipUUID": f"guid'{logistic_relationship_uuid}'",
+                "MainMaterialOutputSupplyPlanningAreaUUID": f"guid'{supply_planning_area_uuid}'",
+                "MainMaterialOutputMaterialUUID": f"guid'{material_uuid}'",
+                "MainMaterialOutputAvailabilityDateTime": f"datetimeoffset'{avail_str}'",
+                "MainMaterialOutputQuantityTypeCode": f"'{unit_code}'",
+                # SAP OData v2 rejects a bare decimal literal like "1.0" with
+                # "Malformed URI literal syntax" (confirmed via live testing) -
+                # Edm.Decimal literals require the 'm' suffix whenever a
+                # decimal point is present. Always appending it is safe for
+                # whole numbers too (e.g. "1m" is accepted, same as "1").
+                "MainMaterialOutputQuantity": f"{quantity}m",
+                "SourceOfSupplyExplosionDate": f"datetime'{explosion_str}'",
+                "FixedIndicator": "true",
+            }
+            resp = session.post(
+                f"{self.base_url}/ProductionPlanningOrderCreate",
+                params=params,
+                headers={"X-CSRF-Token": csrf_token, "Accept": "application/json"},
+                timeout=45,
+            )
         if resp.status_code != 200:
             raise SAPProductionOrderReleaseError(self._error_message(resp))
         if not resp.json().get("d", {}).get("results", {}).get("ProductionPlanningOrderCreate"):

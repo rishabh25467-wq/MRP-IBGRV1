@@ -22,6 +22,8 @@ rejects it on PATCH of an existing Proposal, it is create-time-only."""
 import requests
 from requests.auth import HTTPBasicAuth
 
+from sap_rate_limiter import sap_semaphore
+
 ACTIVE_STATUS_CODE = "2"
 
 
@@ -45,13 +47,14 @@ class SAPProductionModelClient:
         self.auth = HTTPBasicAuth(username, password)
 
     def get_supply_planning_area_uuid(self, site_id: str) -> str:
-        resp = requests.get(
-            f"{self.base_url}/SupplyPlanningAreaCollection",
-            auth=self.auth,
-            headers={"Accept": "application/json"},
-            params={"$filter": f"ID eq '{site_id}'", "$format": "json"},
-            timeout=30,
-        )
+        with sap_semaphore:
+            resp = requests.get(
+                f"{self.base_url}/SupplyPlanningAreaCollection",
+                auth=self.auth,
+                headers={"Accept": "application/json"},
+                params={"$filter": f"ID eq '{site_id}'", "$format": "json"},
+                timeout=30,
+            )
         if resp.status_code != 200:
             raise SAPProductionModelError(f"SAP returned HTTP {resp.status_code}: {resp.text[:300]}")
         results = resp.json().get("d", {}).get("results", [])
@@ -62,13 +65,14 @@ class SAPProductionModelClient:
     def _all_supply_planning_areas(self) -> dict:
         """UUID (uppercased) -> Site ID, for the whole tenant. Small
         dataset (a handful of sites), fetched fresh each call - cheap."""
-        resp = requests.get(
-            f"{self.base_url}/SupplyPlanningAreaCollection",
-            auth=self.auth,
-            headers={"Accept": "application/json"},
-            params={"$format": "json"},
-            timeout=30,
-        )
+        with sap_semaphore:
+            resp = requests.get(
+                f"{self.base_url}/SupplyPlanningAreaCollection",
+                auth=self.auth,
+                headers={"Accept": "application/json"},
+                params={"$format": "json"},
+                timeout=30,
+            )
         if resp.status_code != 200:
             raise SAPProductionModelError(f"SAP returned HTTP {resp.status_code}: {resp.text[:300]}")
         return {r["UUID"].upper(): r["ID"] for r in resp.json().get("d", {}).get("results", []) if r.get("UUID")}
@@ -85,17 +89,18 @@ class SAPProductionModelClient:
         site_spa_uuid = self.get_supply_planning_area_uuid(site_id) if site_id else None
         spa_uuid_to_id = self._all_supply_planning_areas()
 
-        resp = requests.get(
-            f"{self.base_url}/ProductionModelCollection",
-            auth=self.auth,
-            headers={"Accept": "application/json"},
-            params={
-                "$filter": f"MaterialUUID eq guid'{material_uuid}'",
-                "$expand": "ReleasedPlanningProductionModelReleasedPlanningProductionModel/SourceOfSupplySourceOfSupplyLogisticRelationship,ProductionModelSupplyPlanningArea",
-                "$format": "json",
-            },
-            timeout=30,
-        )
+        with sap_semaphore:
+            resp = requests.get(
+                f"{self.base_url}/ProductionModelCollection",
+                auth=self.auth,
+                headers={"Accept": "application/json"},
+                params={
+                    "$filter": f"MaterialUUID eq guid'{material_uuid}'",
+                    "$expand": "ReleasedPlanningProductionModelReleasedPlanningProductionModel/SourceOfSupplySourceOfSupplyLogisticRelationship,ProductionModelSupplyPlanningArea",
+                    "$format": "json",
+                },
+                timeout=30,
+            )
         if resp.status_code != 200:
             raise SAPProductionModelError(f"SAP returned HTTP {resp.status_code}: {resp.text[:300]}")
         data = resp.json()
@@ -185,17 +190,18 @@ class SAPProductionModelBomClient:
         self.auth = HTTPBasicAuth(username, password)
 
     def get_bill_of_material_id_for_model(self, production_model_uuid: str) -> str | None:
-        resp = requests.get(
-            f"{self.base_url}/ReleasedExecutionProductionModelCollection",
-            auth=self.auth,
-            headers={"Accept": "application/json"},
-            params={
-                "$filter": f"ProductionModelUUID eq guid'{production_model_uuid}'",
-                "$expand": "ReleasedExecutionProductionModelProductionSegment",
-                "$format": "json",
-            },
-            timeout=30,
-        )
+        with sap_semaphore:
+            resp = requests.get(
+                f"{self.base_url}/ReleasedExecutionProductionModelCollection",
+                auth=self.auth,
+                headers={"Accept": "application/json"},
+                params={
+                    "$filter": f"ProductionModelUUID eq guid'{production_model_uuid}'",
+                    "$expand": "ReleasedExecutionProductionModelProductionSegment",
+                    "$format": "json",
+                },
+                timeout=30,
+            )
         if resp.status_code != 200:
             raise SAPProductionModelError(f"SAP returned HTTP {resp.status_code}: {resp.text[:300]}")
         data = resp.json()
@@ -223,17 +229,18 @@ class SAPProductionModelBomClient:
         existing order - see production_order_creation_history) rather
         than its UUID, and returning BillOfOperationsID instead (Aug 2026,
         user's ask - "I need Reporting Point Description")."""
-        resp = requests.get(
-            f"{self.base_url}/ReleasedExecutionProductionModelCollection",
-            auth=self.auth,
-            headers={"Accept": "application/json"},
-            params={
-                "$filter": f"ProductionModelID eq '{production_model_id}'",
-                "$expand": "ReleasedExecutionProductionModelProductionSegment",
-                "$format": "json",
-            },
-            timeout=30,
-        )
+        with sap_semaphore:
+            resp = requests.get(
+                f"{self.base_url}/ReleasedExecutionProductionModelCollection",
+                auth=self.auth,
+                headers={"Accept": "application/json"},
+                params={
+                    "$filter": f"ProductionModelID eq '{production_model_id}'",
+                    "$expand": "ReleasedExecutionProductionModelProductionSegment",
+                    "$format": "json",
+                },
+                timeout=30,
+            )
         if resp.status_code != 200:
             raise SAPProductionModelError(f"SAP returned HTTP {resp.status_code}: {resp.text[:300]}")
         data = resp.json()
