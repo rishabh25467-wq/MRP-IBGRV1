@@ -6121,6 +6121,26 @@ async def get_admin_supplier_portal_invites():
     return {"invites": await asyncio.to_thread(supplier_portal_service.list_invites, db)}
 
 
+@api_router.post("/admin/supplier-portal/invites/{invite_id}/resend")
+async def post_admin_supplier_portal_invite_resend(invite_id: str, request: Request):
+    staff_email = request.state.user.get("email")
+    if not staff_email:
+        raise HTTPException(status_code=400, detail="Your signed-in account has no email to send this invite from")
+    try:
+        invite = await asyncio.to_thread(supplier_portal_service.get_invite, db, invite_id)
+    except supplier_portal_service.SupplierPortalNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.headers.get("host"))
+    signup_url = f"{proto}://{host}/supplier-portal/signup"
+    try:
+        await graph_mail_service.send_supplier_invite(staff_email, invite["email"], invite["company_name"], invite["vendor_code"], signup_url)
+    except Exception as e:
+        logger.error(f"Supplier invite RESEND failed for {invite['email']}: {e}")
+        raise HTTPException(status_code=502, detail="Could not resend the invite email. Check that Mail.Send (Application) permission is admin-consented in Azure AD.")
+    return await asyncio.to_thread(supplier_portal_service.record_resend, db, invite_id, request.state.user.get("name") or staff_email)
+
+
 @api_router.post("/admin/supplier-portal/invites")
 async def post_admin_supplier_portal_invite(payload: SupplierInviteRequest, request: Request):
     staff_email = request.state.user.get("email")

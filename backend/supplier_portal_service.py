@@ -253,11 +253,41 @@ def create_invite(db, company_name: str, vendor_code: str, email: str, invited_b
         "email": email.strip().lower(),
         "invited_by": invited_by,
         "status": "sent",
+        "resend_count": 0,
+        "last_sent_at": datetime.now(timezone.utc),
         "created_at": datetime.now(timezone.utc),
     }
     db[INVITES_COLLECTION].insert_one(doc)
     return doc
 
 
+def get_invite(db, invite_id: str) -> dict:
+    invite = db[INVITES_COLLECTION].find_one({"_id": invite_id})
+    if not invite:
+        raise SupplierPortalNotFoundError("Invite not found")
+    return invite
+
+
+def record_resend(db, invite_id: str, resent_by: str) -> dict:
+    db[INVITES_COLLECTION].update_one(
+        {"_id": invite_id},
+        {"$set": {"last_sent_at": datetime.now(timezone.utc), "last_resent_by": resent_by}, "$inc": {"resend_count": 1}},
+    )
+    return get_invite(db, invite_id)
+
+
 def list_invites(db) -> list:
-    return list(db[INVITES_COLLECTION].find().sort("created_at", -1))
+    """Each invite is enriched with `signup_status` - whether that
+    vendor code has actually signed up yet (user's explicit ask), by
+    cross-referencing the real ACCOUNTS_COLLECTION. "not_signed_up" means
+    no signup attempt yet; otherwise mirrors the account's own
+    pending/approved/rejected status."""
+    invites = list(db[INVITES_COLLECTION].find().sort("created_at", -1))
+    status_by_code = {}
+    for inv in invites:
+        code = inv["vendor_code"]
+        if code not in status_by_code:
+            account = db[ACCOUNTS_COLLECTION].find_one({"vendor_code": code}, {"status": 1})
+            status_by_code[code] = account["status"] if account else "not_signed_up"
+        inv["signup_status"] = status_by_code[code]
+    return invites

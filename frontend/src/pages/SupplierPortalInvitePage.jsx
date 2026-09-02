@@ -1,16 +1,24 @@
 import { useState, useEffect } from "react";
 import "@/App.css";
 import axios from "axios";
-import { PaperPlaneTilt, Buildings, Shield, EnvelopeSimple } from "@phosphor-icons/react";
+import { PaperPlaneTilt, Buildings, Shield, EnvelopeSimple, Warning, ArrowsClockwise } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+
+const SIGNUP_STATUS_BADGE = {
+  not_signed_up: { label: "Not signed up yet", className: "bg-[#98A2B3]/15 text-[#5B738B] rounded-sm" },
+  pending: { label: "Pending Approval", className: "bg-[#E3A008]/15 text-[#8A6116] rounded-sm" },
+  approved: { label: "Approved", className: "bg-[#10B981]/15 text-[#0B7A56] rounded-sm" },
+  rejected: { label: "Rejected", className: "bg-[#E02424]/10 text-[#B91C1C] rounded-sm" },
+};
 
 export default function SupplierPortalInvitePage() {
   const [companyName, setCompanyName] = useState("");
@@ -19,6 +27,8 @@ export default function SupplierPortalInvitePage() {
   const [sending, setSending] = useState(false);
   const [invites, setInvites] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [resendingId, setResendingId] = useState(null);
+  const [confirmedDuplicate, setConfirmedDuplicate] = useState(false);
 
   const loadInvites = async () => {
     setLoading(true);
@@ -36,8 +46,24 @@ export default function SupplierPortalInvitePage() {
     loadInvites();
   }, []);
 
+  // User's explicit ask: warn before re-inviting a vendor code that's
+  // already been sent an invite before - avoids emailing the same
+  // supplier twice by mistake. Checked against the already-loaded
+  // invite history, no extra backend call needed.
+  const existingInviteForCode = vendorCode.trim()
+    ? invites.find((inv) => inv.vendor_code.toUpperCase() === vendorCode.trim().toUpperCase())
+    : null;
+
+  useEffect(() => {
+    setConfirmedDuplicate(false);
+  }, [vendorCode]);
+
   const sendInvite = async (e) => {
     e.preventDefault();
+    if (existingInviteForCode && !confirmedDuplicate) {
+      setConfirmedDuplicate(true);
+      return;
+    }
     setSending(true);
     try {
       await axios.post(`${API}/admin/supplier-portal/invites`, { company_name: companyName, vendor_code: vendorCode, email });
@@ -45,11 +71,25 @@ export default function SupplierPortalInvitePage() {
       setCompanyName("");
       setVendorCode("");
       setEmail("");
+      setConfirmedDuplicate(false);
       loadInvites();
     } catch (err) {
       toast.error("Could not send invite", { description: err?.response?.data?.detail || err.message });
     } finally {
       setSending(false);
+    }
+  };
+
+  const resendInvite = async (invite) => {
+    setResendingId(invite._id);
+    try {
+      await axios.post(`${API}/admin/supplier-portal/invites/${invite._id}/resend`);
+      toast.success(`Invite resent to ${invite.email}`);
+      loadInvites();
+    } catch (err) {
+      toast.error("Could not resend invite", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setResendingId(null);
     }
   };
 
@@ -118,13 +158,26 @@ export default function SupplierPortalInvitePage() {
               data-testid="supplier-invite-email-input"
             />
           </div>
+
+          {existingInviteForCode && (
+            <div className="flex items-start gap-2 bg-[#E3A008]/10 border border-[#E3A008]/30 rounded-sm px-3 py-2" data-testid="supplier-invite-duplicate-warning">
+              <Warning size={16} weight="fill" className="text-[#8A6116] mt-0.5 shrink-0" />
+              <p className="text-xs text-[#8A6116]">
+                Vendor code <span className="font-data font-semibold">{existingInviteForCode.vendor_code}</span> was already invited on{" "}
+                {new Date(existingInviteForCode.created_at).toLocaleDateString()} to <span className="font-medium">{existingInviteForCode.email}</span>.
+                {confirmedDuplicate ? " Click \"Send Anyway\" to send again." : " Click \"Send Invite\" again to confirm."}
+              </p>
+            </div>
+          )}
+
           <Button
             type="submit"
             disabled={sending}
             className="rounded-sm bg-[#0076CC] hover:bg-[#005A9E] transition-colors duration-150"
             data-testid="supplier-invite-send-button"
           >
-            <PaperPlaneTilt size={14} className="mr-1.5" /> {sending ? "Sending..." : "Send Invite"}
+            <PaperPlaneTilt size={14} className="mr-1.5" />
+            {sending ? "Sending..." : existingInviteForCode ? "Send Anyway" : "Send Invite"}
           </Button>
         </form>
 
@@ -138,24 +191,47 @@ export default function SupplierPortalInvitePage() {
                 <th className="text-left px-3 py-2 font-semibold">Email</th>
                 <th className="text-left px-3 py-2 font-semibold">Invited By</th>
                 <th className="text-left px-3 py-2 font-semibold">Sent</th>
+                <th className="text-left px-3 py-2 font-semibold">Signup Status</th>
+                <th className="text-right px-3 py-2 font-semibold">Actions</th>
               </tr>
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={5} className="px-3 py-6 text-center text-[#5B738B]" data-testid="supplier-invite-history-loading">Loading...</td></tr>
+                <tr><td colSpan={7} className="px-3 py-6 text-center text-[#5B738B]" data-testid="supplier-invite-history-loading">Loading...</td></tr>
               )}
               {!loading && invites.length === 0 && (
-                <tr><td colSpan={5} className="px-3 py-6 text-center text-[#5B738B]" data-testid="supplier-invite-history-empty">No invites sent yet.</td></tr>
+                <tr><td colSpan={7} className="px-3 py-6 text-center text-[#5B738B]" data-testid="supplier-invite-history-empty">No invites sent yet.</td></tr>
               )}
-              {!loading && invites.map((inv) => (
-                <tr key={inv._id} className="border-b border-[#CBD3DB]" data-testid={`supplier-invite-history-row-${inv._id}`}>
-                  <td className="px-3 py-2">{inv.company_name}</td>
-                  <td className="px-3 py-2 font-data font-medium">{inv.vendor_code}</td>
-                  <td className="px-3 py-2 text-[#5B738B] flex items-center gap-1"><EnvelopeSimple size={12} /> {inv.email}</td>
-                  <td className="px-3 py-2 text-[#5B738B]">{inv.invited_by}</td>
-                  <td className="px-3 py-2 text-[#5B738B]">{new Date(inv.created_at).toLocaleString()}</td>
-                </tr>
-              ))}
+              {!loading && invites.map((inv) => {
+                const badge = SIGNUP_STATUS_BADGE[inv.signup_status] || SIGNUP_STATUS_BADGE.not_signed_up;
+                return (
+                  <tr key={inv._id} className="border-b border-[#CBD3DB]" data-testid={`supplier-invite-history-row-${inv._id}`}>
+                    <td className="px-3 py-2">{inv.company_name}</td>
+                    <td className="px-3 py-2 font-data font-medium">{inv.vendor_code}</td>
+                    <td className="px-3 py-2 text-[#5B738B] flex items-center gap-1"><EnvelopeSimple size={12} /> {inv.email}</td>
+                    <td className="px-3 py-2 text-[#5B738B]">{inv.invited_by}</td>
+                    <td className="px-3 py-2 text-[#5B738B]">
+                      {new Date(inv.last_sent_at || inv.created_at).toLocaleString()}
+                      {inv.resend_count > 0 && <span className="text-[10px] text-[#98A2B3]"> (resent {inv.resend_count}x)</span>}
+                    </td>
+                    <td className="px-3 py-2"><Badge className={badge.className}>{badge.label}</Badge></td>
+                    <td className="px-3 py-2 text-right">
+                      {inv.signup_status === "not_signed_up" && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={resendingId === inv._id}
+                          onClick={() => resendInvite(inv)}
+                          className="rounded-sm border-[#0076CC]/40 text-[#0076CC]"
+                          data-testid={`supplier-invite-resend-button-${inv._id}`}
+                        >
+                          <ArrowsClockwise size={13} className="mr-1" /> {resendingId === inv._id ? "Resending..." : "Resend"}
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -163,3 +239,4 @@ export default function SupplierPortalInvitePage() {
     </div>
   );
 }
+
