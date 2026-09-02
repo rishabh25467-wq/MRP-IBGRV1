@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import {
   Buildings, SignOut, Package, PlugsConnected, Truck, MagnifyingGlass,
-  X, Eye, ListChecks, ArrowRight, Flask,
+  X, Eye, ListChecks, ArrowRight, Flask, CheckCircle,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +25,18 @@ function fmtMoney(amount, currency) {
   } catch {
     return amount.toFixed(2);
   }
+}
+
+// User's ask (Sep 2 2026): dates were wrapping onto 2 lines in the PO
+// table ("2026-08-\n21") - short DD-MMM-YY format fits on one line.
+function fmtDate(dateStr) {
+  if (!dateStr) return "-";
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return dateStr;
+  const day = String(d.getDate()).padStart(2, "0");
+  const month = d.toLocaleString("en-US", { month: "short" });
+  const year = String(d.getFullYear()).slice(-2);
+  return `${day}-${month}-${year}`;
 }
 
 // Sep 2 2026, user's explicit ask - Open Qty is now fetched live from
@@ -427,16 +439,23 @@ export default function SupplierDashboardPage() {
                       </td>
                       <td className="border border-[#D0D5DD] px-2 py-1">{po.description || po.product_id}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-xs">{po.buyer_entity_name}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1 font-data text-xs">{po.po_date || "-"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data text-xs whitespace-nowrap">{fmtDate(po.po_date)}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data text-xs">{fmtMoney(po.unit_price, po.currency)}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data text-xs">{fmtMoney(po.subtotal, po.currency)}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data">
                         {po.remaining_qty} {po.unit_of_measure}
-                        <div className="text-[10px] text-[#98A2B3] font-sans" data-testid={`supplier-po-sap-verified-${po.po_number}-${po.item_number}`}>
-                          {po.sap_verified_at ? `SAP-verified ${timeAgo(po.sap_verified_at)}` : "not yet verified in SAP"}
+                        <div className="text-[10px] text-[#98A2B3] font-sans flex items-center justify-end gap-1" data-testid={`supplier-po-sap-verified-${po.po_number}-${po.item_number}`}>
+                          {po.sap_verified_at ? (
+                            <>
+                              SAP-verified {timeAgo(po.sap_verified_at)}
+                              <CheckCircle size={12} weight="fill" className="text-[#12B76A]" data-testid={`supplier-po-sap-verified-tick-${po.po_number}-${po.item_number}`} />
+                            </>
+                          ) : (
+                            "not yet verified in SAP"
+                          )}
                         </div>
                       </td>
-                      <td className="border border-[#D0D5DD] px-2 py-1 font-data text-xs">{po.due_date || "-"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data text-xs whitespace-nowrap">{fmtDate(po.due_date)}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right">
                         <Input
                           type="number"
@@ -545,7 +564,7 @@ export default function SupplierDashboardPage() {
           <DialogHeader>
             <DialogTitle className="font-heading font-data">PO {detailPoNumber}</DialogTitle>
             <DialogDescription>
-              {detailItems[0]?.buyer_entity_name} · Ordered {detailItems[0]?.po_date || "-"}
+              {detailItems[0]?.buyer_entity_name} · Ordered {fmtDate(detailItems[0]?.po_date)}
             </DialogDescription>
           </DialogHeader>
           <table className="w-full text-sm border-collapse">
@@ -567,7 +586,7 @@ export default function SupplierDashboardPage() {
                   <td className="py-1.5 text-right font-data">{it.po_qty} {it.unit_of_measure}</td>
                   <td className="py-1.5 text-right font-data">{fmtMoney(it.unit_price, it.currency)}</td>
                   <td className="py-1.5 text-right font-data">{fmtMoney(it.subtotal, it.currency)}</td>
-                  <td className="py-1.5 font-data">{it.due_date || "-"}</td>
+                  <td className="py-1.5 font-data whitespace-nowrap">{fmtDate(it.due_date)}</td>
                 </tr>
               ))}
             </tbody>
