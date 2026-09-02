@@ -9,6 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { NavTabs } from "@/components/NavTabs";
@@ -23,6 +24,34 @@ const STATUS_BADGE = {
   approved: { label: "Received", className: "bg-[#ECFDF3] text-[#027A48] border border-[#ABEFC6] rounded-sm" },
   rejected: { label: "Rejected", className: "bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA] rounded-sm" },
 };
+
+// Sep 2 2026 (user's ask: step-by-step visibility + a reverse timer
+// instead of a plain spinner) - matches the `phase` strings server.py
+// forwards from sap_playwright_supplier_pgr_service.py's progress_cb.
+const GRN_STEP_LABELS = {
+  searching: "Searching for PO",
+  opening_receipt: "Opening Goods Receipt for PO",
+  entering_quantities: "Entering quantities for PO",
+  saving: "Saving to SAP for PO",
+};
+const GRN_PHASE_LABELS = {
+  queued: "Queued...",
+  logging_in: "Connecting to SAP...",
+  moving_stock: "Moving stock into the warehouse...",
+  done: "Done",
+};
+function describeGrnPhase(phase) {
+  if (!phase) return "Starting...";
+  if (GRN_PHASE_LABELS[phase]) return GRN_PHASE_LABELS[phase];
+  const [step, po, poCount] = phase.split(":");
+  const label = GRN_STEP_LABELS[step] || step;
+  return po ? `${label} ${po}${poCount ? ` (${poCount})` : ""}` : label;
+}
+// Rough empirical average per discrete step, purely for the countdown's
+// display - the real remaining time is unknowable in advance (live SAP
+// UI automation), so this clamps at "Almost there..." instead of ever
+// going negative or over-promising.
+const GRN_SECONDS_PER_STEP = 9;
 
 export default function GrnApprovalPage() {
   const [code, setCode] = useState("");
@@ -43,6 +72,15 @@ export default function GrnApprovalPage() {
   const [billDate, setBillDate] = useState("");
   const [actualQtys, setActualQtys] = useState({});
   const [jobProgress, setJobProgress] = useState(null);
+  const [jobElapsed, setJobElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!busy) return;
+    setJobElapsed(0);
+    const start = Date.now();
+    const tick = setInterval(() => setJobElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => clearInterval(tick);
+  }, [busy]);
 
   const [discOpen, setDiscOpen] = useState(false);
   const [discReason, setDiscReason] = useState("");
@@ -415,9 +453,25 @@ export default function GrnApprovalPage() {
             </table>
 
             {busy && jobProgress && (
-              <div className="mt-3 text-xs text-[#475467] flex items-center gap-2 bg-[#F1F5F9] rounded-sm px-3 py-2" data-testid="grn-job-progress">
-                <ArrowsClockwise size={12} className="animate-spin" />
-                Posting to SAP... {jobProgress.progress_total > 1 ? `(PO ${Math.min(jobProgress.progress_current + 1, jobProgress.progress_total)}/${jobProgress.progress_total})` : ""}
+              <div className="mt-3 rounded-sm border border-[#EAECF0] bg-[#F9FAFB] px-3 py-3 space-y-2" data-testid="grn-job-progress">
+                <div className="flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2 text-[#344054] font-medium">
+                    <ArrowsClockwise size={12} className="animate-spin text-[#475467]" />
+                    <span data-testid="grn-job-progress-step">{describeGrnPhase(jobProgress.phase)}</span>
+                  </div>
+                  <span className="text-[#667085] font-data" data-testid="grn-job-progress-timer">
+                    {(() => {
+                      const remaining = GRN_SECONDS_PER_STEP * jobProgress.progress_total - jobElapsed;
+                      return remaining > 0 ? `~${remaining}s left` : "Almost there...";
+                    })()}
+                  </span>
+                </div>
+                <Progress
+                  value={Math.min(100, Math.round((jobProgress.progress_current / Math.max(1, jobProgress.progress_total)) * 100))}
+                  className="h-1.5"
+                  data-testid="grn-job-progress-bar"
+                />
+                <div className="text-[11px] text-[#98A2B3] font-data">Elapsed: {jobElapsed}s</div>
               </div>
             )}
 
@@ -506,6 +560,11 @@ export default function GrnApprovalPage() {
                     </Button>
                   )}
                 </div>
+                {shipment.sap_sync_status === "posted" && shipment.sap_gr_result?.per_po?.some((p) => p.inbound_delivery_id) && (
+                  <div className="text-xs text-[#667085] px-3 font-data" data-testid="grn-inbound-delivery-ids">
+                    SAP Inbound Delivery #: {shipment.sap_gr_result.per_po.filter((p) => p.inbound_delivery_id).map((p) => p.inbound_delivery_id).join(", ")}
+                  </div>
+                )}
                 <div className="text-sm px-3 py-2 rounded-sm flex items-center justify-between gap-2 border" data-testid="grn-sap-movement-status"
                      style={shipment.sap_movement_status === "posted" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : { color: "#B45309", background: "rgba(227,160,8,0.1)", borderColor: "rgba(227,160,8,0.3)" }}>
                   <span className="flex items-center gap-2">

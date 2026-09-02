@@ -31,6 +31,7 @@ into post_goods_receipt_via_ui MUST be supervised/reviewed by the user
 before this is trusted for unattended use."""
 import logging
 import os
+import re
 from datetime import datetime, timezone
 
 from sap_playwright_pgr_service import _login, _wait_for_blocking_layer_clear, _extract_error_text, _humanize_error, _click_button
@@ -235,7 +236,36 @@ async def _click_po_row(page, row, po_number: str) -> None:
         await row.click(force=True)
 
 
-async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: str, item_qtys: dict, item_products: dict) -> dict:
+async def _extract_confirmation_text(page) -> str:
+    """Sep 2 2026 addition (user's ask: "show SAP inbound number for
+    user's reference"): the SAME role='alert' region `_extract_error_text`
+    reads from also carries the SUCCESS confirmation on a real save
+    ("Inbound delivery 123456 has been created" / "Your entries have
+    been saved") - `_extract_error_text` deliberately discards anything
+    without "Error" in it. This returns that text regardless, so the
+    caller can pull the real Inbound Delivery ID out of it."""
+    for sel in ["[role='alert']", "[role='alertdialog']", ".sapMMessageToast"]:
+        el = page.locator(sel).first
+        if await el.count() > 0 and await el.is_visible():
+            text = (await el.inner_text()).strip()
+            if text:
+                return text[:300]
+    return ""
+
+
+def _extract_inbound_delivery_id(confirmation_text: str) -> str:
+    """Pulls the numeric Inbound Delivery ID out of SAP's own confirmation
+    text, e.g. "Inbound Delivery 1801234 has been created"."""
+    m = re.search(r"[Ii]nbound [Dd]elivery\s+(\d+)", confirmation_text or "")
+    return m.group(1) if m else None
+
+
+async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: str, item_qtys: dict, item_products: dict, on_step=None) -> dict:
+    async def step(name):
+        if on_step:
+            on_step(name)
+
+    await step("searching")
     await _open_purchase_orders(page)
     hits = await _search_po_exact(page, po_number)
     if hits == 0:
@@ -249,6 +279,7 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
         return {"po_number": po_number, "status": "failed", "error": "Post Goods Receipt is disabled for this PO in SAP"}
     if click_result == "not_found":
         return {"po_number": po_number, "status": "failed", "error": "Post Goods Receipt button not found for this PO"}
+    await step("opening_receipt")
     # Sep 2 2026 fix (same investigation as the search/row-select fixes
     # above): the "Create Inbound Delivery and Goods Receipt" screen's
     # own Line Items grid shows an inline "Loading..." text while its
@@ -288,11 +319,13 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
             await date_input.fill(bill_date)
             await date_input.press("Tab")
 
+    await step("entering_quantities")
     unfilled = await _fill_line_actual_quantities(page, item_products, item_qtys)
     if unfilled:
         await _click_button(page, "Close")
         return {"po_number": po_number, "status": "failed", "error": f"Could not enter Actual Quantity for item(s) {', '.join(unfilled)}"}
 
+    await step("saving")
     if await _click_button(page, "Save and Close") != "clicked":
         await _click_button(page, "Close")
         return {"po_number": po_number, "status": "failed", "error": "Save and Close button not found"}
@@ -302,7 +335,16 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
     if error_text:
         await _click_button(page, "Close")
         return {"po_number": po_number, "status": "failed", "error": _humanize_error(error_text)}
-    return {"po_number": po_number, "status": "posted"}
+    # Sep 2 2026 (user's ask: "show SAP inbound number for user's
+    # reference") - the same message strip that would carry an error
+    # carries this success confirmation instead; not every tenant
+    # response includes the ID in a parseable form, so this is
+    # best-effort (None if it can't be found, never blocks the result).
+    confirmation_text = await _extract_confirmation_text(page)
+    return {"po_number": po_number, "status": "posted", "inbound_delivery_id": _extract_inbound_delivery_id(confirmation_text)}
+
+
+STEPS_PER_PO = 4
 
 
 async def post_goods_receipt_via_ui(po_items: dict, progress_cb=None) -> dict:
@@ -315,23 +357,34 @@ async def post_goods_receipt_via_ui(po_items: dict, progress_cb=None) -> dict:
     (see _fill_line_actual_quantities' docstring for why row-order
     matching alone is not safe to trust).
 
-    progress_cb(phase, current, total) - same contract as
-    sap_playwright_pgr_service.post_goods_receipts_via_ui, wording never
-    reveals SAP/Playwright to the end user.
+    progress_cb(phase, current, total) - Sep 2 2026 (user's ask: real
+    step-by-step visibility instead of a single spinner): `phase` is
+    now one of "queued"/"logging_in"/"moving_stock"/"done", or
+    "{step}:{po_number}:{idx}/{total_pos}" where step is one of
+    "searching"/"opening_receipt"/"entering_quantities"/"saving" -
+    wording never reveals SAP/Playwright to the end user, the caller
+    (server.py) maps these to a plain-English progress bar. `current`/
+    `total` count discrete steps across the WHOLE job (this function's
+    steps + the Goods Movement step server.py reports after this
+    returns), so a single progress bar/percentage stays consistent
+    end to end - see `total_progress_steps()`.
 
     Returns {"results": [{"po_number", "status": "posted"|"failed"|
-    "skipped", "error"?}]}."""
+    "skipped", "error"?, "inbound_delivery_id"?}], "total_steps"}."""
     from playwright.async_api import async_playwright
     import playwright_concurrency
 
     po_numbers = list(po_items.keys())
-    total = len(po_numbers)
+    total_pos = len(po_numbers)
+    total_steps = total_progress_steps(total_pos)
     results = []
+    counter = {"n": 0}
 
-    def _progress(phase: str, current: int = 0) -> None:
+    def _progress(phase: str) -> None:
+        counter["n"] += 1
         if progress_cb:
             try:
-                progress_cb(phase, current, total)
+                progress_cb(phase, counter["n"], total_steps)
             except Exception:
                 pass
 
@@ -343,15 +396,18 @@ async def post_goods_receipt_via_ui(po_items: dict, progress_cb=None) -> dict:
             playwright_concurrency.register_browser(browser)
             try:
                 page = await browser.new_page(viewport={"width": 1600, "height": 900})
-                _progress("processing", 0)
+                _progress("logging_in")
                 await _login(page, username, password)
                 for idx, po_number in enumerate(po_numbers, start=1):
-                    _progress("processing", idx - 1)
                     spec = po_items[po_number]
+
+                    def on_step(name, _po=po_number, _idx=idx):
+                        _progress(f"{name}:{_po}:{_idx}/{total_pos}")
+
                     try:
                         result = await _post_one_po(
                             page, po_number, spec.get("supplier_doc_num"), spec.get("bill_date"),
-                            spec.get("item_qtys") or {}, spec.get("item_products") or {},
+                            spec.get("item_qtys") or {}, spec.get("item_products") or {}, on_step=on_step,
                         )
                     except Exception as e:
                         logger.error(f"Playwright Supplier GRN failed for PO {po_number}: {e}")
@@ -362,7 +418,7 @@ async def post_goods_receipt_via_ui(po_items: dict, progress_cb=None) -> dict:
                             pass
                         result = {"po_number": po_number, "status": "failed", "error": "Could not reach SAP's receipt screen - please retry"}
                     results.append(result)
-                    if result["status"] == "failed" and idx < total:
+                    if result["status"] == "failed" and idx < total_pos:
                         try:
                             await page.close()
                         except Exception:
@@ -375,5 +431,14 @@ async def post_goods_receipt_via_ui(po_items: dict, progress_cb=None) -> dict:
     finally:
         playwright_concurrency.release((username, password))
 
-    _progress("done", total)
-    return {"results": results, "completed_at": datetime.now(timezone.utc).isoformat()}
+    return {"results": results, "completed_at": datetime.now(timezone.utc).isoformat(), "total_steps": total_steps}
+
+
+def total_progress_steps(total_pos: int) -> int:
+    """1 (queued) + 1 (logging_in) + total_pos*STEPS_PER_PO (search/open/
+    enter/save per PO) + 1 (moving_stock, reported by server.py after
+    this module's function returns) - shared formula so server.py's
+    progress bar percentage covers the WHOLE approve() job (Playwright
+    GR + the Goods Movement SOAP call after it) as one consistent
+    sequence, not two separate counters."""
+    return 2 + total_pos * STEPS_PER_PO + 1

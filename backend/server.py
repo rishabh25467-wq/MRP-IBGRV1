@@ -6210,9 +6210,10 @@ def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> st
     /receive endpoint - Playwright is too slow to block the request."""
     job_id = str(uuid.uuid4())
     po_items = supplier_shipment_service.group_items_by_po_for_gr(doc)
+    total_steps = sap_playwright_supplier_pgr_service.total_progress_steps(len(po_items) or 1)
     job_store.create_job(db, job_id, {
         "doc_code": doc_code, "kind": "supplier_grn", "status": "running", "phase": "queued",
-        "progress_current": 0, "progress_total": len(po_items) or 1, "result": None, "error": None,
+        "progress_current": 0, "progress_total": total_steps, "result": None, "error": None,
     })
 
     def on_progress(phase: str, current: int, total: int):
@@ -6225,10 +6226,12 @@ def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> st
             gr_result = await sap_playwright_supplier_pgr_service.post_goods_receipt_via_ui(
                 po_items, progress_cb=on_progress,
             )
+            on_progress("moving_stock", gr_result["total_steps"] - 1, gr_result["total_steps"])
             final = await asyncio.to_thread(
                 supplier_shipment_service.finalize_goods_receipt, db, doc_code, gr_result["results"],
                 sap_goods_movement_client, sap_inventory_client, owner_party_id,
             )
+            on_progress("done", gr_result["total_steps"], gr_result["total_steps"])
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
         except Exception as e:
             logger.error(f"Supplier GRN job {job_id} ({doc_code}) failed: {e}")
