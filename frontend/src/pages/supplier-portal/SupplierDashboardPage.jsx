@@ -48,6 +48,11 @@ export default function SupplierDashboardPage() {
   const [submitError, setSubmitError] = useState("");
   const [successCode, setSuccessCode] = useState(null);
 
+  // Entity restriction ("mrp vendor side changes.docx", Sep 2026): a
+  // vendor with POs from more than one buyer entity (RI/RT) must pick ONE
+  // to view/act on at a time - never a mixed table, never a mixed cart.
+  const [selectedEntity, setSelectedEntity] = useState(null);
+
   const [detailPoNumber, setDetailPoNumber] = useState(null);
 
   // TESTING ONLY (user's explicit ask, Aug 28 2026) - impersonate any
@@ -75,8 +80,45 @@ export default function SupplierDashboardPage() {
     setLoading(true);
     load();
     setCart({});
+    setSelectedEntity(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vendorCode]);
+
+  // Every distinct buying entity (RI/RT) present across this vendor's own
+  // POs - built from the same `buyer_code`/`buyer_entity_name` fields
+  // already used for the "PO From" column.
+  const entities = useMemo(() => {
+    const map = new Map();
+    pos.forEach((po) => {
+      const code = po.buyer_code || "RT";
+      if (!map.has(code)) map.set(code, po.buyer_entity_name || code);
+    });
+    return Array.from(map.entries()).map(([code, name]) => ({ code, name }));
+  }, [pos]);
+
+  // Auto-pick when there's only one entity to choose from (nothing to
+  // force) - otherwise leave it unselected until the vendor picks one, and
+  // reset if the previously-selected entity's POs disappeared (e.g. all
+  // finished, or an impersonation switch).
+  useEffect(() => {
+    if (entities.length === 1) {
+      setSelectedEntity(entities[0].code);
+    } else if (selectedEntity && !entities.some((e) => e.code === selectedEntity)) {
+      setSelectedEntity(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entities]);
+
+  const chooseEntity = (code) => {
+    if (code === selectedEntity) return;
+    setSelectedEntity(code);
+    setCart({});
+  };
+
+  const entityPos = useMemo(
+    () => (selectedEntity ? pos.filter((po) => (po.buyer_code || "RT") === selectedEntity) : []),
+    [pos, selectedEntity]
+  );
 
   useEffect(() => {
     if (!account?.testing_mode || !vendorSearch.trim()) {
@@ -96,9 +138,9 @@ export default function SupplierDashboardPage() {
 
   const filteredPos = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return pos;
-    return pos.filter((po) => [po.po_number, po.item_number, po.description, po.product_id].some((v) => (v || "").toString().toLowerCase().includes(q)));
-  }, [pos, search]);
+    if (!q) return entityPos;
+    return entityPos.filter((po) => [po.po_number, po.item_number, po.description, po.product_id].some((v) => (v || "").toString().toLowerCase().includes(q)));
+  }, [entityPos, search]);
 
   // Bulk Cart Add - group by PO Number (open items only) so a single
   // "select all" toggle can act on the whole group; anchored to the
@@ -180,10 +222,10 @@ export default function SupplierDashboardPage() {
       const items = cartItems.map((c) => ({ po_number: c.po_number, item_number: c.item_number, ship_qty: parseFloat(c.ship_qty) }));
       const params = isImpersonating ? { as_vendor: vendorCode } : {};
       const { data } = await supplierApi.post("/shipments", { items }, { params });
-      setSuccessCode(data._id);
       setCart({});
       setConfirmOpen(false);
       setReviewOpen(false);
+      setTimeout(() => setSuccessCode(data._id), 200);
       load();
     } catch (e) {
       setSubmitError(formatApiErrorDetail(e.response?.data?.detail));
@@ -193,11 +235,11 @@ export default function SupplierDashboardPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#F5F6F7] font-sans" data-testid="supplier-dashboard-page">
-      <div className="bg-[#0076CC] text-white px-6 py-3 flex items-center justify-between shadow-sm gap-4 flex-wrap">
+    <div className="min-h-screen bg-[#F2F4F7] font-sans" data-testid="supplier-dashboard-page">
+      <div className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] text-white px-6 flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-2">
           <Buildings size={20} weight="fill" className="text-white" />
-          <span className="font-sans font-bold tracking-tight">Supplier Portal</span>
+          <span className="font-heading font-bold tracking-tight">Supplier Portal</span>
         </div>
         {account?.testing_mode && (
           <div className="relative flex-1 max-w-xs" data-testid="supplier-vendor-impersonation-search">
@@ -213,16 +255,16 @@ export default function SupplierDashboardPage() {
               />
             </div>
             {vendorDropdownOpen && vendorResults.length > 0 && (
-              <div className="absolute top-full left-0 mt-1 w-full bg-white text-[#111827] rounded-sm shadow-lg border border-[#CBD3DB] max-h-56 overflow-y-auto z-20" data-testid="supplier-vendor-search-results">
+              <div className="absolute top-full left-0 mt-1 w-full bg-white text-[#1D2939] rounded-sm shadow-lg border border-[#D0D5DD] max-h-56 overflow-y-auto z-20" data-testid="supplier-vendor-search-results">
                 {vendorResults.map((v) => (
                   <button
                     key={v.vendor_code}
                     onClick={() => { setVendorDropdownOpen(false); setVendorSearch(""); navigate(`/supplier-portal/dashboard/${v.vendor_code}`); }}
-                    className="w-full text-left px-3 py-2 text-xs hover:bg-[#F5F6F7] flex justify-between gap-2"
+                    className="w-full text-left px-3 py-2 text-xs hover:bg-[#F0F4F8] flex justify-between gap-2"
                     data-testid={`supplier-vendor-search-result-${v.vendor_code}`}
                   >
                     <span className="truncate">{v.vendor_name || v.vendor_code}</span>
-                    <span className="font-data text-[#5B738B] shrink-0">{v.vendor_code}</span>
+                    <span className="font-data text-[#475467] shrink-0">{v.vendor_code}</span>
                   </button>
                 ))}
               </div>
@@ -248,22 +290,52 @@ export default function SupplierDashboardPage() {
       <div className="max-w-6xl mx-auto p-4 md:p-6 pb-24">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
-            <h1 className="font-sans text-lg font-bold text-[#111827]">Your Open Purchase Orders</h1>
-            <p className="text-sm text-[#5B738B] mt-1 font-data">Vendor Code {vendorCode} · {account?.email}</p>
+            <h1 className="font-heading text-xl font-bold text-[#1D2939]">Your Open Purchase Orders</h1>
+            <p className="text-sm text-[#475467] mt-1 font-data">Vendor Code {vendorCode} · {account?.email}</p>
           </div>
           <div className="relative">
-            <MagnifyingGlass size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#5B738B]" />
+            <MagnifyingGlass size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#475467]" />
             <Input
               placeholder="Search PO #, Item #, or description..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="pl-8 rounded-sm border-[#CBD3DB] focus:ring-2 focus:ring-[#4DA3E0] focus:outline-none w-64"
+              className="h-8 pl-8 pr-2 w-72 text-[13px] rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]"
               data-testid="supplier-po-search-input"
             />
           </div>
         </div>
 
-        {loading && <div className="mt-8 text-sm text-[#5B738B]" data-testid="supplier-dashboard-loading">Loading your Purchase Orders...</div>}
+        {loading && <div className="mt-8 text-sm text-[#475467]" data-testid="supplier-dashboard-loading">Loading your Purchase Orders...</div>}
+
+        {!loading && entities.length > 1 && (
+          <div className="mt-4 flex items-center gap-2 flex-wrap" data-testid="supplier-entity-switcher">
+            <span className="text-xs font-semibold text-[#475467] uppercase">Entity</span>
+            {entities.map((e) => (
+              <button
+                key={e.code}
+                onClick={() => chooseEntity(e.code)}
+                className={`text-xs font-semibold px-3 py-1.5 rounded-sm border transition-colors duration-150 ${
+                  selectedEntity === e.code
+                    ? "bg-[#004B87] border-[#004B87] text-white"
+                    : "bg-white border-[#D0D5DD] text-[#1D2939] hover:border-[#004B87]"
+                }`}
+                data-testid={`supplier-entity-option-${e.code}`}
+              >
+                {e.name} ({e.code})
+              </button>
+            ))}
+          </div>
+        )}
+
+        {!loading && entities.length > 1 && !selectedEntity && (
+          <div className="mt-6 bg-white border border-[#D0D5DD] rounded-sm shadow-sm p-8 text-center" data-testid="supplier-entity-pick-required">
+            <Buildings size={32} weight="fill" className="text-[#004B87] mx-auto mb-3" />
+            <h2 className="font-heading font-bold text-[#1D2939]">Choose an entity to continue</h2>
+            <p className="text-sm text-[#475467] mt-1 max-w-md mx-auto">
+              You have open Purchase Orders from more than one entity - pick one above to view and act on its POs.
+            </p>
+          </div>
+        )}
 
         {!loading && !liveSync && pos.length > 0 && (
           <div className="mt-4 text-xs text-[#8A6116] bg-[#E3A008]/15 border border-[#E3A008]/30 rounded-sm px-3 py-2" data-testid="supplier-dashboard-stale-banner">
@@ -272,10 +344,10 @@ export default function SupplierDashboardPage() {
         )}
 
         {!loading && !liveSync && pos.length === 0 && (
-          <div className="mt-6 bg-white border border-[#CBD3DB] rounded-sm shadow-sm p-8 text-center" data-testid="supplier-dashboard-not-configured">
+          <div className="mt-6 bg-white border border-[#D0D5DD] rounded-sm shadow-sm p-8 text-center" data-testid="supplier-dashboard-not-configured">
             <PlugsConnected size={32} weight="fill" className="text-[#E3A008] mx-auto mb-3" />
-            <h2 className="font-sans font-bold text-[#111827]">SAP Connection Coming Soon</h2>
-            <p className="text-sm text-[#5B738B] mt-1 max-w-md mx-auto">
+            <h2 className="font-heading font-bold text-[#1D2939]">SAP Connection Coming Soon</h2>
+            <p className="text-sm text-[#475467] mt-1 max-w-md mx-auto">
               Your account is approved. We're still connecting this portal to SAP - your Purchase Orders will appear here automatically once that's live.
             </p>
           </div>
@@ -286,27 +358,27 @@ export default function SupplierDashboardPage() {
         )}
 
         {!loading && liveSync && !error && pos.length === 0 && (
-          <div className="mt-6 bg-white border border-[#CBD3DB] rounded-sm shadow-sm p-8 text-center" data-testid="supplier-dashboard-empty">
-            <Package size={32} weight="fill" className="text-[#5B738B] mx-auto mb-3" />
-            <p className="text-sm text-[#5B738B]">No open Purchase Orders right now.</p>
+          <div className="mt-6 bg-white border border-[#D0D5DD] rounded-sm shadow-sm p-8 text-center" data-testid="supplier-dashboard-empty">
+            <Package size={32} weight="fill" className="text-[#475467] mx-auto mb-3" />
+            <p className="text-sm text-[#475467]">No open Purchase Orders right now.</p>
           </div>
         )}
 
         {!loading && filteredPos.length > 0 && (
-          <div className="mt-4 bg-white border border-[#CBD3DB] rounded-sm shadow-sm overflow-x-auto" data-testid="supplier-dashboard-po-table">
-            <table className="w-full text-sm border-collapse">
-              <thead className="bg-[#F5F6F7] text-[#5B738B] text-xs uppercase">
+          <div className="mt-4 bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] overflow-x-auto" data-testid="supplier-dashboard-po-table">
+            <table className="w-full text-[13px] border-collapse">
+              <thead className="bg-[#EAECF0] text-[#344054] text-xs font-bold font-heading uppercase tracking-wide">
                 <tr>
-                  <th className="text-left px-3 py-2 font-semibold w-8"></th>
-                  <th className="text-left px-3 py-2 font-semibold">PO Number</th>
-                  <th className="text-left px-3 py-2 font-semibold">Item</th>
-                  <th className="text-left px-3 py-2 font-semibold">PO From</th>
-                  <th className="text-left px-3 py-2 font-semibold">PO Date</th>
-                  <th className="text-right px-3 py-2 font-semibold">Unit Price</th>
-                  <th className="text-right px-3 py-2 font-semibold">Subtotal</th>
-                  <th className="text-right px-3 py-2 font-semibold">Open Qty</th>
-                  <th className="text-left px-3 py-2 font-semibold">Due Date</th>
-                  <th className="text-right px-3 py-2 font-semibold w-28">Ship Qty</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-left w-8"></th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-left">PO Number</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-left">Item</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-left">PO From</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-left">PO Date</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-right">Unit Price</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-right">Subtotal</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-right">Open Qty</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-left">Due Date</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-right w-28">Ship Qty</th>
                 </tr>
               </thead>
               <tbody>
@@ -314,8 +386,8 @@ export default function SupplierDashboardPage() {
                   const key = cartKey(po);
                   const inCart = !!cart[key];
                   return (
-                    <tr key={i} className="border-b border-[#CBD3DB] hover:bg-[#F5F6F7]/60" data-testid={`supplier-po-row-${po.po_number}-${po.item_number}`}>
-                      <td className="px-3 py-2">
+                    <tr key={i} className="bg-white odd:bg-[#F9FAFB] hover:bg-[#F0F4F8] transition-colors duration-150" data-testid={`supplier-po-row-${po.po_number}-${po.item_number}`}>
+                      <td className="border border-[#D0D5DD] px-2 py-1">
                         <Checkbox
                           checked={inCart}
                           disabled={po.remaining_qty <= 0}
@@ -323,10 +395,10 @@ export default function SupplierDashboardPage() {
                           data-testid={`supplier-po-checkbox-${po.po_number}-${po.item_number}`}
                         />
                       </td>
-                      <td className="px-3 py-2 font-data">
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data">
                         <button
                           onClick={() => setDetailPoNumber(po.po_number)}
-                          className="text-[#0076CC] hover:underline underline-offset-2 flex items-center gap-1"
+                          className="text-[#004B87] hover:underline underline-offset-2 flex items-center gap-1"
                           data-testid={`supplier-po-detail-link-${po.po_number}`}
                         >
                           <Eye size={12} /> {po.po_number}
@@ -334,27 +406,27 @@ export default function SupplierDashboardPage() {
                         {po._isFirstOpenOfPo && po._poOpenRows.length > 1 && (
                           <button
                             onClick={() => toggleSelectAllForPo(po._poOpenRows)}
-                            className="text-xs text-[#0076CC] hover:underline underline-offset-2 mt-0.5 block whitespace-nowrap"
+                            className="text-xs text-[#004B87] hover:underline underline-offset-2 mt-0.5 block whitespace-nowrap"
                             data-testid={`supplier-po-select-all-${po.po_number}`}
                           >
                             {isPoFullySelected(po._poOpenRows) ? "Deselect all" : `Select all ${po._poOpenRows.length} items`}
                           </button>
                         )}
                       </td>
-                      <td className="px-3 py-2">{po.description || po.product_id}</td>
-                      <td className="px-3 py-2 text-xs">{po.buyer_entity_name}</td>
-                      <td className="px-3 py-2 font-data text-xs">{po.po_date || "-"}</td>
-                      <td className="px-3 py-2 text-right font-data text-xs">{fmtMoney(po.unit_price, po.currency)}</td>
-                      <td className="px-3 py-2 text-right font-data text-xs">{fmtMoney(po.subtotal, po.currency)}</td>
-                      <td className="px-3 py-2 text-right font-data">{po.remaining_qty} {po.unit_of_measure}</td>
-                      <td className="px-3 py-2 font-data text-xs">{po.due_date || "-"}</td>
-                      <td className="px-3 py-2 text-right">
+                      <td className="border border-[#D0D5DD] px-2 py-1">{po.description || po.product_id}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-xs">{po.buyer_entity_name}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data text-xs">{po.po_date || "-"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data text-xs">{fmtMoney(po.unit_price, po.currency)}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data text-xs">{fmtMoney(po.subtotal, po.currency)}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data">{po.remaining_qty} {po.unit_of_measure}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data text-xs">{po.due_date || "-"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right">
                         <Input
                           type="number"
                           disabled={!inCart}
                           value={inCart ? cart[key].ship_qty : ""}
                           onChange={(e) => updateCartQty(key, e.target.value)}
-                          className="h-7 w-24 text-right rounded-sm border-[#CBD3DB] text-xs"
+                          className="h-7 w-24 text-right rounded-sm border-[#D0D5DD] text-xs"
                           data-testid={`supplier-po-qty-input-${po.po_number}-${po.item_number}`}
                         />
                       </td>
@@ -365,15 +437,15 @@ export default function SupplierDashboardPage() {
             </table>
           </div>
         )}
-        {!loading && pos.length > 0 && filteredPos.length === 0 && (
-          <div className="mt-6 text-sm text-[#5B738B] text-center" data-testid="supplier-po-search-empty">No POs match "{search}".</div>
+        {!loading && (entities.length <= 1 || selectedEntity) && pos.length > 0 && filteredPos.length === 0 && (
+          <div className="mt-6 text-sm text-[#475467] text-center" data-testid="supplier-po-search-empty">No POs match "{search}".</div>
         )}
       </div>
 
       {cartItems.length > 0 && (
-        <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-[#CBD3DB] shadow-[0_-2px_8px_0_rgba(16,24,40,0.08)] px-4 py-3 flex items-center justify-between z-20" data-testid="supplier-cart-bar">
-          <span className="text-sm text-[#111827] font-semibold" data-testid="supplier-cart-count">{cartItems.length} item{cartItems.length > 1 ? "s" : ""} selected</span>
-          <Button onClick={() => setReviewOpen(true)} className="rounded-sm bg-[#0076CC] hover:bg-[#4DA3E0] transition-colors duration-150" data-testid="supplier-review-shipment-button">
+        <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-[#D0D5DD] shadow-[0_-2px_8px_0_rgba(16,24,40,0.08)] px-4 py-3 flex items-center justify-between z-20" data-testid="supplier-cart-bar">
+          <span className="text-sm text-[#1D2939] font-semibold" data-testid="supplier-cart-count">{cartItems.length} item{cartItems.length > 1 ? "s" : ""} selected</span>
+          <Button onClick={() => setReviewOpen(true)} className="rounded-sm bg-[#004B87] hover:bg-[#003A6A] transition-colors duration-150" data-testid="supplier-review-shipment-button">
             <Truck size={14} className="mr-1" /> Review Shipment
           </Button>
         </div>
@@ -382,24 +454,24 @@ export default function SupplierDashboardPage() {
       <Dialog open={reviewOpen} onOpenChange={setReviewOpen}>
         <DialogContent className="rounded-sm max-w-lg" data-testid="supplier-review-dialog">
           <DialogHeader>
-            <DialogTitle className="font-sans">Review Shipment</DialogTitle>
+            <DialogTitle className="font-heading">Review Shipment</DialogTitle>
             <DialogDescription>Confirm the items and quantities before generating your shipment code.</DialogDescription>
           </DialogHeader>
-          <div className="max-h-72 overflow-y-auto divide-y divide-[#CBD3DB]">
+          <div className="max-h-72 overflow-y-auto divide-y divide-[#D0D5DD]">
             {cartItems.map((c) => (
               <div key={c.key} className="flex items-center gap-2 py-2" data-testid={`supplier-review-row-${c.key}`}>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium truncate">{c.description || c.item_number}</div>
-                  <div className="text-xs text-[#5B738B] font-data">PO {c.po_number} · Item {c.item_number}</div>
+                  <div className="text-xs text-[#475467] font-data">PO {c.po_number} · Item {c.item_number}</div>
                 </div>
                 <Input
                   type="number"
                   value={c.ship_qty}
                   onChange={(e) => updateCartQty(c.key, e.target.value)}
-                  className="h-8 w-24 text-right rounded-sm border-[#CBD3DB] text-xs"
+                  className="h-8 w-24 text-right rounded-sm border-[#D0D5DD] text-xs"
                   data-testid={`supplier-review-qty-input-${c.key}`}
                 />
-                <span className="text-xs text-[#5B738B] w-10">{c.unit_of_measure}</span>
+                <span className="text-xs text-[#475467] w-10">{c.unit_of_measure}</span>
                 <button onClick={() => removeFromCart(c.key)} className="text-[#B91C1C] hover:bg-[#E02424]/10 rounded-sm p-1" data-testid={`supplier-review-remove-${c.key}`}>
                   <X size={14} />
                 </button>
@@ -411,7 +483,7 @@ export default function SupplierDashboardPage() {
             <Button
               onClick={() => setConfirmOpen(true)}
               disabled={cartItems.length === 0}
-              className="rounded-sm bg-[#0076CC] hover:bg-[#4DA3E0] transition-colors duration-150"
+              className="rounded-sm bg-[#004B87] hover:bg-[#003A6A] transition-colors duration-150"
               data-testid="supplier-review-confirm-button"
             >
               Confirm Shipment
@@ -423,7 +495,7 @@ export default function SupplierDashboardPage() {
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent className="rounded-sm" data-testid="supplier-confirm-generate-dialog">
           <DialogHeader>
-            <DialogTitle className="font-sans">Generate Shipment Code?</DialogTitle>
+            <DialogTitle className="font-heading">Generate Shipment Code?</DialogTitle>
             <DialogDescription>
               This will create one shipment covering {cartItems.length} item{cartItems.length > 1 ? "s" : ""} across {new Set(cartItems.map((c) => c.po_number)).size} PO(s). You can still edit its contents until it's received - are you sure?
             </DialogDescription>
@@ -431,7 +503,7 @@ export default function SupplierDashboardPage() {
           {submitError && <div className="text-sm text-[#B91C1C]" data-testid="supplier-submit-error">{submitError}</div>}
           <div className="flex justify-end gap-2 mt-2">
             <Button variant="outline" className="rounded-sm" onClick={() => setConfirmOpen(false)}>Cancel</Button>
-            <Button onClick={submitShipment} disabled={submitting} className="rounded-sm bg-[#0076CC] hover:bg-[#4DA3E0] transition-colors duration-150" data-testid="supplier-confirm-generate-button">
+            <Button onClick={submitShipment} disabled={submitting} className="rounded-sm bg-[#004B87] hover:bg-[#003A6A] transition-colors duration-150" data-testid="supplier-confirm-generate-button">
               {submitting ? "Generating..." : "Yes, Generate Code"}
             </Button>
           </div>
@@ -441,26 +513,26 @@ export default function SupplierDashboardPage() {
       <Dialog open={!!successCode} onOpenChange={(o) => !o && setSuccessCode(null)}>
         <DialogContent className="rounded-sm" data-testid="supplier-ship-success-dialog">
           <DialogHeader>
-            <DialogTitle className="font-sans">Shipment Created</DialogTitle>
+            <DialogTitle className="font-heading">Shipment Created</DialogTitle>
             <DialogDescription>Write this code on your shipment paperwork - it's how the warehouse matches it on arrival. You can still edit its contents from the Shipments page until it's received.</DialogDescription>
           </DialogHeader>
-          <div className="text-center py-4 bg-[#F5F6F7] border border-[#CBD3DB] rounded-sm">
-            <div className="text-3xl font-data font-bold tracking-widest text-[#0076CC]" data-testid="supplier-ship-success-code">{successCode}</div>
+          <div className="text-center py-4 bg-[#F2F4F7] border border-[#D0D5DD] rounded-sm">
+            <div className="text-3xl font-data font-bold tracking-widest text-[#004B87]" data-testid="supplier-ship-success-code">{successCode}</div>
           </div>
-          <Button onClick={() => setSuccessCode(null)} className="rounded-sm bg-[#0076CC] hover:bg-[#4DA3E0] transition-colors duration-150" data-testid="supplier-ship-success-close-button">Done</Button>
+          <Button onClick={() => setSuccessCode(null)} className="rounded-sm bg-[#004B87] hover:bg-[#003A6A] transition-colors duration-150" data-testid="supplier-ship-success-close-button">Done</Button>
         </DialogContent>
       </Dialog>
 
       <Dialog open={!!detailPoNumber} onOpenChange={(o) => !o && setDetailPoNumber(null)}>
         <DialogContent className="rounded-sm max-w-2xl" data-testid="supplier-po-detail-modal">
           <DialogHeader>
-            <DialogTitle className="font-sans font-data">PO {detailPoNumber}</DialogTitle>
+            <DialogTitle className="font-heading font-data">PO {detailPoNumber}</DialogTitle>
             <DialogDescription>
               {detailItems[0]?.buyer_entity_name} · Ordered {detailItems[0]?.po_date || "-"}
             </DialogDescription>
           </DialogHeader>
           <table className="w-full text-sm border-collapse">
-            <thead className="text-[#5B738B] text-xs uppercase">
+            <thead className="text-[#475467] text-xs uppercase">
               <tr>
                 <th className="text-left py-1 font-semibold">Item</th>
                 <th className="text-left py-1 font-semibold">Description</th>
@@ -472,7 +544,7 @@ export default function SupplierDashboardPage() {
             </thead>
             <tbody>
               {detailItems.map((it, i) => (
-                <tr key={i} className="border-t border-[#CBD3DB]">
+                <tr key={i} className="border-t border-[#D0D5DD]">
                   <td className="py-1.5 font-data">{it.item_number}</td>
                   <td className="py-1.5">{it.description}</td>
                   <td className="py-1.5 text-right font-data">{it.po_qty} {it.unit_of_measure}</td>
@@ -483,8 +555,8 @@ export default function SupplierDashboardPage() {
               ))}
             </tbody>
             <tfoot>
-              <tr className="border-t-2 border-[#CBD3DB]">
-                <td colSpan={4} className="py-2 text-right font-semibold text-xs text-[#5B738B]">PO Total</td>
+              <tr className="border-t-2 border-[#D0D5DD]">
+                <td colSpan={4} className="py-2 text-right font-semibold text-xs text-[#475467]">PO Total</td>
                 <td className="py-2 text-right font-data font-bold">{fmtMoney(detailItems.reduce((s, it) => s + (it.subtotal || 0), 0), detailItems[0]?.currency)}</td>
                 <td></td>
               </tr>

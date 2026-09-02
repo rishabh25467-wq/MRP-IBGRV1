@@ -1,0 +1,51 @@
+{
+  "summary": "Iteration 141 - regression of iteration_140's two fixes + JDE-theme visual refresh verification. Backend: new pytest suite /app/backend/tests/test_supplier_entity_iter141.py, 11/11 PASS (must run with -n 0). Verified (a) POST /api/supplier-portal/shipments with items from BOTH RI + RT is now rejected with 400 naming BOTH entities ('RADISH TECHNOLOGIES, RAY INTERNATIONAL') and nothing is persisted, (b) the same rejection on PUT /shipments/{code} while a single-entity create, a qty-only edit and an RT-only create all still succeed and persist (verified via GET + Mongo), (c) GET /api/admin/grn/lookup/{code} now returns site_access_blocked=true with allowed_site_ids=[] for a user bound to P3 only against an RI shipment, and site_access_blocked=false + ['P1','P8'] for an unbound super_admin, (d) approve from the blocked user still hard-rejected (403) and the shipment stays in_transit, (e) RT shipment sites exclude P1/P8, P1 warehouses still include P1-QC, pending list/404/401 edges OK. Frontend (Playwright, public URL): GRN Approval blocked state shows the red data-testid=grn-site-access-blocked-banner and Site + Warehouse selects and Approve are all disabled while Reject and Mark Discrepancy stay enabled; non-blocked super_admin sees exactly P1/P8 in the Site dropdown and P1-QC auto-preselected. Full supplier happy path passed end-to-end: login -> PO table (15 rows) -> search -> 'Select all 3 items' -> Review dialog -> generate code (JUVM4A) -> visible on Shipments page -> edit qty, ADD an item from PO 28833, REMOVE it again (all persisted) -> looked up on GRN Approval showing 'Buyer entity: RAY INTERNATIONAL' + P1/P8 only. Approve & Post to SAP was NEVER clicked. Re-seeding a temp RT po_cache row also re-verified the 2-entity switcher (pills, 'Choose an entity to continue' blocking card, per-entity row filtering, cart cleared on switch) and that the edit dialog offers ZERO cross-entity (RT) addable items. Theme verified by computed styles: teal #0E7C86 header at exactly 64px (h-16) on GRN + all supplier pages, primary buttons/links rgb(0,75,135) = #004B87 (no #0076CC anywhere), headings Chivo vs body IBM Plex Sans, grid-bordered tables with zebra striping; /bom-explorer and /production-plan still load clean (200, no error elements, no console errors) after the app-wide tailwind fontFamily change. All fixtures removed - verified zero residue.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "SupplierShipmentsPage - edit dialog", "issue": "Adding an item via the add-search sets ship_qty:\"\" (addItemToEdit) and 'Save Changes' stays ENABLED; saving without typing a qty sends parseFloat(\"\")=NaN -> null and the API returns HTTP 422 whose raw Pydantic message ('Input should be a valid number') is rendered to the vendor. Should either default the new row's qty to remaining_qty, block save while any qty is empty/<=0, or show an inline field error. Editing with a qty typed works correctly (verified add qty 3 + remove, both persisted).", "selector": "[data-testid=\"supplier-edit-save-button\"], [data-testid=\"supplier-edit-save-error\"]", "priority": "MEDIUM"},
+      {"component": "GrnApprovalPage - site_access_blocked state", "issue": "In the blocked state the Warehouse select renders the placeholder 'Loading...' instead of 'Select warehouse' (warehousesLoading/placeholder logic), which reads as a stuck spinner. Cosmetic only - the control is correctly disabled.", "selector": "[data-testid=\"grn-warehouse-select\"]", "priority": "LOW"},
+      {"component": "SupplierDashboardPage - shipment success dialog", "issue": "submitShipment() calls setSuccessCode() and setConfirmOpen(false) in the same tick, so the success dialog mounts while the 'Generate Shipment Code?' confirm dialog is still exit-animating - for ~150ms both dialogs' text overlaps in the same position (captured in a screenshot). Purely transient/cosmetic.", "selector": "[data-testid=\"supplier-ship-success-dialog\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "GRN Approval / Supplier Shipments", "issues": ["'Bill Date' and the shipments From/To filters still use the browser-native date input (mm/dd/yyyy) instead of the shadcn calendar used elsewhere - pre-existing, carried over unchanged by the theme refresh"]},
+      {"screen": "Theme refresh (GRN Approval, Supplier login/signup/dashboard/shipments)", "issues": ["No layout breakage, no overlapping text, no missing data-testids found; contrast on the teal header, #004B87 buttons and the red blocked banner all read cleanly at 1920x1080"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_supplier_entity_iter141.py",
+    "/app/test_reports/pytest/iter141_entity.xml",
+    "/app/backend/tests/_seed_iter141_ui.py",
+    "/app/tests/_iter141_rt_cache.py",
+    "/app/tests/_iter141_cleanup.py"
+  ],
+  "action_items": [
+    "SupplierShipmentsPage: prevent saving an edit with an empty/NaN ship_qty on a newly added row (disable save or inline validation) instead of surfacing the raw 422 'Input should be a valid number'",
+    "GrnApprovalPage: use 'Select warehouse' (not 'Loading...') as the Warehouse placeholder when no site is selected / when site access is blocked",
+    "Optional: close the generate-confirm dialog before mounting the success dialog (or delay ~200ms) to avoid the brief overlapping-dialog frame"
+  ],
+  "critical_code_review_comments": [
+    "supplier_shipment_service._resolve_items now correctly raises ShipmentValidationError on >1 buyer_code and the message lists both entity names - covers create AND edit since both funnel through it. Verified live.",
+    "GrnApprovalPage's computeEligibleSites + the [shipment, sites] useEffect resolve both iteration_140 defects (empty allowed_site_ids no longer falls back to all sites; the site-list race is gone).",
+    "GrnApprovalPage.jsx is 610 lines and mixes lookup, approve, reject, discrepancy, SAP retry and the pending table - approaching the split threshold, consider extracting the approval form + dialogs.",
+    "server.py's site_access_blocked = bool(buyer_code) and not allowed_site_ids is the right minimal signal, but the endpoint still returns HTTP 200 with an empty list - fine for the UI, just keep the two meanings documented.",
+    "The iter141 pytest module seeds/tears down shared Mongo fixtures, so it must run with -n 0 (pytest.ini enables xdist loadscope by default) - parallel workers otherwise delete each other's fixtures mid-run (observed: 4 spurious failures)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_supplier_entity_iter141.py",
+    "/app/backend/tests/_seed_iter141_ui.py",
+    "/app/tests/_iter141_rt_cache.py",
+    "/app/tests/_iter141_cleanup.py"
+  ],
+  "success_rate": {"backend": "100% (11/11 pytest)", "frontend": "100% of the tested flows (3 cosmetic/validation UI defects reported, none blocking)"},
+  "seed_data_creation": "All temporary and REMOVED (verified zero residue via /app/tests/_iter141_cleanup.py): supplier_portal_po_cache row H1330::ZZRT141::1 (buyer_code RT), shipments ZZ141R / ZZ141T / JUVM4A (the real vendor-created test shipment, deleted so PO 28792 item 2's open qty is restored), auth_users+auth_sessions zz141* (super_admin unbound + user bound to P3 only).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "Vendor: hamidi.demo@vendorportal.test / HamidiDemo123 (H1330, RI-only real POs). No internal test session left in the DB - re-seed with /app/backend/tests/_seed_iter141_ui.py seed (creates vms_session cookies zz141uisuper = unbound super_admin, zz141uiblocked = role user bound to P3 only, plus RI shipment ZZ141R) and run it with 'clean' afterwards.",
+  "context_for_next_testing_agent": "Run test_supplier_entity_iter141.py with `-n 0`. GRN code input maxLength=6 so seeded doc codes must be <=6 chars (ZZ141R/ZZ141T). Shipments collection is supplier_portal_shipments. Edit-dialog addable items only render once the add-search box has text (data-testid supplier-edit-addable-{po}-{item}) - an empty search legitimately shows 0. Approve & Post to SAP must never be clicked on a real PO. Backend writes under /app/backend trigger a uvicorn reload; the public URL 502s for a few minutes afterwards (localhost:8001 recovers first) - batch backend edits and poll before testing.",
+  "rca_of_the_issue": "Both iteration_140 defects are genuinely fixed: (1) mixed-entity shipments are now blocked in _resolve_items (single code path for create + edit), message includes both entity names; (2) the overloaded allowed_site_ids ambiguity is resolved by the explicit site_access_blocked flag plus computeEligibleSites, so an empty list now blocks the form (banner + disabled Site/Warehouse/Approve) instead of opening the dropdown to every site. The only new finding is unrelated to the entity work: the edit dialog's newly-added rows start with an empty ship_qty and no client-side guard, so a save without typing a qty produces a raw 422 Pydantic message."
+}

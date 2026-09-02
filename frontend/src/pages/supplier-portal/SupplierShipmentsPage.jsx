@@ -9,10 +9,10 @@ import { supplierApi } from "@/lib/supplierPortalApi";
 import { useSupplierAuth } from "@/contexts/SupplierAuthContext";
 
 const SHIPMENT_STATUS_BADGE = {
-  in_transit: { label: "In Transit", className: "bg-[#E3A008]/15 text-[#8A6116]", icon: Clock },
-  discrepancy: { label: "Discrepancy", className: "bg-[#E02424]/15 text-[#B91C1C]", icon: XCircle },
-  approved: { label: "Received", className: "bg-[#10B981]/15 text-[#0B7A56]", icon: CheckCircle },
-  rejected: { label: "Rejected", className: "bg-[#E02424]/10 text-[#B91C1C]", icon: XCircle },
+  in_transit: { label: "In Transit", className: "bg-[#FFFAEB] text-[#B54708] border-[#FEDF89]", icon: Clock },
+  discrepancy: { label: "Discrepancy", className: "bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]", icon: XCircle },
+  approved: { label: "Received", className: "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]", icon: CheckCircle },
+  rejected: { label: "Rejected", className: "bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]", icon: XCircle },
 };
 
 function formatApiErrorDetail(detail) {
@@ -93,7 +93,16 @@ export default function SupplierShipmentsPage() {
     if (!editing) return [];
     const already = new Set(editing.items.map((it) => `${it.po_number}::${it.item_number}`));
     const q = addSearch.trim().toLowerCase();
-    return pos.filter((po) => po.remaining_qty > 0 && !already.has(`${po.po_number}::${po.item_number}`) && (!q || [po.po_number, po.item_number, po.description].some((v) => (v || "").toString().toLowerCase().includes(q))));
+    // Keep a shipment single-entity (Sep 2026, "mrp vendor side changes.docx" -
+    // the GRN Approval screen's Site field is now derived from a shipment's
+    // buyer entity) - once it has items, only allow adding more from that
+    // SAME entity. Legacy shipments with no buyer_code on their items yet
+    // are left unrestricted.
+    const shipmentEntity = editing.items.find((it) => it.buyer_code)?.buyer_code;
+    return pos.filter((po) => po.remaining_qty > 0
+      && !already.has(`${po.po_number}::${po.item_number}`)
+      && (!shipmentEntity || (po.buyer_code || "RT") === shipmentEntity)
+      && (!q || [po.po_number, po.item_number, po.description].some((v) => (v || "").toString().toLowerCase().includes(q))));
   }, [editing, addSearch, pos]);
 
   const addItemToEdit = (po) => {
@@ -125,11 +134,11 @@ export default function SupplierShipmentsPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#F5F6F7] font-sans" data-testid="supplier-shipments-page">
-      <div className="bg-[#0076CC] text-white px-6 py-3 flex items-center justify-between shadow-sm gap-4 flex-wrap">
+    <div className="min-h-screen bg-[#F2F4F7] font-sans" data-testid="supplier-shipments-page">
+      <div className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] text-white px-6 flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-2">
           <Buildings size={20} weight="fill" className="text-white" />
-          <span className="font-sans font-bold tracking-tight">Supplier Portal</span>
+          <span className="font-heading font-bold tracking-tight">Supplier Portal</span>
         </div>
         <div className="flex items-center gap-4">
           <Link to={`/supplier-portal/dashboard/${vendorCode}`} data-testid="supplier-nav-dashboard-link">
@@ -148,22 +157,22 @@ export default function SupplierShipmentsPage() {
       </div>
 
       <div className="max-w-5xl mx-auto p-4 md:p-6">
-        <h1 className="font-sans text-lg font-bold text-[#111827]">Your Shipments</h1>
-        <p className="text-sm text-[#5B738B] mt-1">You can edit an "In Transit" shipment's contents anytime before it's received and posted to SAP - once approved, it's locked.</p>
+        <h1 className="font-heading text-xl font-bold text-[#1D2939]">Your Shipments</h1>
+        <p className="text-sm text-[#475467] mt-1">You can edit an "In Transit" shipment's contents anytime before it's received and posted to SAP - once approved, it's locked.</p>
 
-        <div className="mt-4 flex items-center gap-2 flex-wrap" data-testid="supplier-shipments-filters">
+        <div className="mt-4 bg-white border border-[#D0D5DD] rounded-sm p-2.5 flex items-center gap-3 flex-wrap shadow-[0_1px_2px_0_rgba(16,24,40,0.05)]" data-testid="supplier-shipments-filters">
           <div className="relative">
-            <MagnifyingGlass size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#5B738B]" />
+            <MagnifyingGlass size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#475467]" />
             <Input
               placeholder="Search doc code or PO number..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="pl-8 h-9 w-56 rounded-sm border-[#CBD3DB] text-sm"
+              className="pl-8 h-8 w-56 rounded-sm border-[#D0D5DD] text-[13px]"
               data-testid="supplier-shipments-search-input"
             />
           </div>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-40 h-9 rounded-sm border-[#CBD3DB] bg-white text-sm" data-testid="supplier-shipments-status-filter">
+            <SelectTrigger className="w-40 h-8 rounded-sm border-[#D0D5DD] bg-white text-[13px]" data-testid="supplier-shipments-status-filter">
               <SelectValue placeholder="Status" />
             </SelectTrigger>
             <SelectContent>
@@ -175,53 +184,53 @@ export default function SupplierShipmentsPage() {
             </SelectContent>
           </Select>
           <div className="flex items-center gap-1.5">
-            <span className="text-xs text-[#5B738B]">From</span>
-            <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="h-9 w-36 rounded-sm border-[#CBD3DB] text-sm" data-testid="supplier-shipments-date-from" />
+            <span className="text-xs text-[#475467]">From</span>
+            <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="h-8 w-36 rounded-sm border-[#D0D5DD] text-[13px]" data-testid="supplier-shipments-date-from" />
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="text-xs text-[#5B738B]">To</span>
-            <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="h-9 w-36 rounded-sm border-[#CBD3DB] text-sm" data-testid="supplier-shipments-date-to" />
+            <span className="text-xs text-[#475467]">To</span>
+            <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="h-8 w-36 rounded-sm border-[#D0D5DD] text-[13px]" data-testid="supplier-shipments-date-to" />
           </div>
           {filtersActive && (
             <Button variant="outline" size="sm" onClick={clearFilters} className="rounded-sm" data-testid="supplier-shipments-clear-filters">
               <X size={12} className="mr-1" /> Clear
             </Button>
           )}
-          <span className="text-xs text-[#5B738B] ml-auto">{filteredShipments.length} of {shipments.length} shipment{shipments.length !== 1 ? "s" : ""}</span>
+          <span className="text-xs text-[#475467] ml-auto">{filteredShipments.length} of {shipments.length} shipment{shipments.length !== 1 ? "s" : ""}</span>
         </div>
 
-        {loading && <div className="mt-8 text-sm text-[#5B738B]">Loading your shipments...</div>}
+        {loading && <div className="mt-8 text-sm text-[#475467]">Loading your shipments...</div>}
 
         {!loading && (
-          <div className="mt-4 bg-white border border-[#CBD3DB] rounded-sm shadow-sm overflow-hidden" data-testid="supplier-shipments-table">
-            <table className="w-full text-sm border-collapse">
-              <thead className="bg-[#F5F6F7] text-[#5B738B] text-xs uppercase">
+          <div className="mt-4 bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] overflow-x-auto" data-testid="supplier-shipments-table">
+            <table className="w-full text-[13px] border-collapse">
+              <thead className="bg-[#EAECF0] text-[#344054] text-xs font-bold font-heading uppercase tracking-wide">
                 <tr>
-                  <th className="text-left px-3 py-2 font-semibold">Doc Code</th>
-                  <th className="text-left px-3 py-2 font-semibold">Created</th>
-                  <th className="text-left px-3 py-2 font-semibold">PO Numbers</th>
-                  <th className="text-left px-3 py-2 font-semibold">Items</th>
-                  <th className="text-left px-3 py-2 font-semibold">Status</th>
-                  <th className="text-right px-3 py-2 font-semibold">Action</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-left">Doc Code</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-left">Created</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-left">PO Numbers</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-left">Items</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-left">Status</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-right">Action</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredShipments.length === 0 && (
-                  <tr><td colSpan={6} className="px-3 py-6 text-center text-[#5B738B]" data-testid="supplier-shipments-empty">{shipments.length === 0 ? "No shipments yet." : "No shipments match these filters."}</td></tr>
+                  <tr><td colSpan={6} className="border border-[#D0D5DD] px-3 py-6 text-center text-[#475467]" data-testid="supplier-shipments-empty">{shipments.length === 0 ? "No shipments yet." : "No shipments match these filters."}</td></tr>
                 )}
                 {filteredShipments.map((s) => {
                   const badge = SHIPMENT_STATUS_BADGE[s.status] || SHIPMENT_STATUS_BADGE.in_transit;
                   const Icon = badge.icon;
                   return (
-                    <tr key={s._id} onClick={() => setDetailShipment(s)} className="border-b border-[#CBD3DB] cursor-pointer hover:bg-[#F5F6F7]/60 transition-colors duration-150" data-testid={`supplier-shipment-row-${s._id}`}>
-                      <td className="px-3 py-2 font-data font-bold text-[#111827]">{s._id}</td>
-                      <td className="px-3 py-2 font-data text-xs text-[#5B738B]">{new Date(s.created_at).toLocaleDateString()}</td>
-                      <td className="px-3 py-2 font-data text-xs">{[...new Set(s.items.map((it) => it.po_number))].join(", ")}</td>
-                      <td className="px-3 py-2 text-xs text-[#5B738B] max-w-xs">
+                    <tr key={s._id} onClick={() => setDetailShipment(s)} className="cursor-pointer bg-white odd:bg-[#F9FAFB] hover:bg-[#F0F4F8] transition-colors duration-150" data-testid={`supplier-shipment-row-${s._id}`}>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data font-bold text-[#004B87]">{s._id}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data text-xs text-[#475467]">{new Date(s.created_at).toLocaleDateString()}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data text-xs">{[...new Set(s.items.map((it) => it.po_number))].join(", ")}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-xs text-[#475467] max-w-xs">
                         {s.items.map((it) => `PO ${it.po_number} · ${it.description || it.item_number} × ${it.ship_qty}${it.unit_of_measure ? ` ${it.unit_of_measure}` : ""}`).join("; ")}
                       </td>
-                      <td className="px-3 py-2">
-                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-sm text-xs font-semibold ${badge.className}`}>
+                      <td className="border border-[#D0D5DD] px-2 py-1">
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-sm text-xs font-semibold border ${badge.className}`}>
                           <Icon size={12} /> {badge.label}
                         </span>
                         {s.status === "rejected" && s.rejection_reason && (
@@ -236,7 +245,7 @@ export default function SupplierShipmentsPage() {
                           </div>
                         )}
                       </td>
-                      <td className="px-3 py-2 text-right">
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right">
                         {(s.status === "in_transit" || s.status === "discrepancy") && (
                           <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); openEdit(s); }} className="rounded-sm" data-testid={`supplier-shipment-edit-button-${s._id}`}>
                             <PencilSimple size={12} className="mr-1" /> Edit
@@ -255,52 +264,52 @@ export default function SupplierShipmentsPage() {
       <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>
         <DialogContent className="rounded-sm max-w-lg" data-testid="supplier-shipment-edit-dialog">
           <DialogHeader>
-            <DialogTitle className="font-sans font-data">Edit Shipment {editing?.code}</DialogTitle>
+            <DialogTitle className="font-heading font-data">Edit Shipment {editing?.code}</DialogTitle>
             <DialogDescription>Add or remove items, or change quantities. Changes only take effect once you save.</DialogDescription>
           </DialogHeader>
-          <div className="max-h-56 overflow-y-auto divide-y divide-[#CBD3DB]">
+          <div className="max-h-56 overflow-y-auto divide-y divide-[#D0D5DD]">
             {editing?.items.map((it, idx) => (
               <div key={`${it.po_number}-${it.item_number}`} className="flex items-center gap-2 py-2" data-testid={`supplier-edit-row-${it.po_number}-${it.item_number}`}>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium truncate">{it.description || it.item_number}</div>
-                  <div className="text-xs text-[#5B738B] font-data">PO {it.po_number} · Item {it.item_number}</div>
+                  <div className="text-xs text-[#475467] font-data">PO {it.po_number} · Item {it.item_number}</div>
                 </div>
                 <Input
                   type="number"
                   value={it.ship_qty}
                   onChange={(e) => updateEditQty(idx, e.target.value)}
-                  className="h-8 w-24 text-right rounded-sm border-[#CBD3DB] text-xs"
+                  className="h-8 w-24 text-right rounded-sm border-[#D0D5DD] text-xs"
                   data-testid={`supplier-edit-qty-input-${it.po_number}-${it.item_number}`}
                 />
-                <span className="text-xs text-[#5B738B] w-10">{it.unit_of_measure}</span>
+                <span className="text-xs text-[#475467] w-10">{it.unit_of_measure}</span>
                 <button onClick={() => removeItemFromEdit(idx)} className="text-[#B91C1C] hover:bg-[#E02424]/10 rounded-sm p-1" data-testid={`supplier-edit-remove-${it.po_number}-${it.item_number}`}>
                   <X size={14} />
                 </button>
               </div>
             ))}
-            {editing?.items.length === 0 && <div className="text-sm text-[#5B738B] py-4 text-center">No items - add at least one below.</div>}
+            {editing?.items.length === 0 && <div className="text-sm text-[#475467] py-4 text-center">No items - add at least one below.</div>}
           </div>
 
-          <div className="mt-2 border-t border-[#CBD3DB] pt-2">
+          <div className="mt-2 border-t border-[#D0D5DD] pt-2">
             <Input
               placeholder="Search your open POs to add an item..."
               value={addSearch}
               onChange={(e) => setAddSearch(e.target.value)}
-              className="rounded-sm border-[#CBD3DB] text-xs"
+              className="rounded-sm border-[#D0D5DD] text-xs"
               data-testid="supplier-edit-add-search-input"
             />
             {addSearch && (
-              <div className="max-h-32 overflow-y-auto mt-1 border border-[#CBD3DB] rounded-sm">
-                {addableItems.length === 0 && <div className="text-xs text-[#5B738B] p-2">No matching open items.</div>}
+              <div className="max-h-32 overflow-y-auto mt-1 border border-[#D0D5DD] rounded-sm">
+                {addableItems.length === 0 && <div className="text-xs text-[#475467] p-2">No matching open items.</div>}
                 {addableItems.map((po) => (
                   <button
                     key={`${po.po_number}-${po.item_number}`}
                     onClick={() => { addItemToEdit(po); setAddSearch(""); }}
-                    className="w-full text-left px-2 py-1.5 text-xs hover:bg-[#F5F6F7] flex items-center justify-between gap-2"
+                    className="w-full text-left px-2 py-1.5 text-xs hover:bg-[#F0F4F8] flex items-center justify-between gap-2"
                     data-testid={`supplier-edit-addable-${po.po_number}-${po.item_number}`}
                   >
                     <span className="truncate">PO {po.po_number} · {po.description}</span>
-                    <Plus size={12} className="text-[#0076CC] shrink-0" />
+                    <Plus size={12} className="text-[#004B87] shrink-0" />
                   </button>
                 ))}
               </div>
@@ -310,7 +319,12 @@ export default function SupplierShipmentsPage() {
           {saveError && <div className="text-sm text-[#B91C1C]" data-testid="supplier-edit-save-error">{saveError}</div>}
           <div className="flex justify-end gap-2 mt-2">
             <Button variant="outline" className="rounded-sm" onClick={() => setEditing(null)}>Cancel</Button>
-            <Button onClick={() => setConfirmSaveOpen(true)} disabled={!editing?.items.length} className="rounded-sm bg-[#0076CC] hover:bg-[#4DA3E0] transition-colors duration-150" data-testid="supplier-edit-save-button">
+            <Button
+              onClick={() => setConfirmSaveOpen(true)}
+              disabled={!editing?.items.length || editing.items.some((it) => !(parseFloat(it.ship_qty) > 0))}
+              className="rounded-sm bg-[#004B87] hover:bg-[#003A6A] transition-colors duration-150"
+              data-testid="supplier-edit-save-button"
+            >
               Save Changes
             </Button>
           </div>
@@ -320,12 +334,12 @@ export default function SupplierShipmentsPage() {
       <Dialog open={confirmSaveOpen} onOpenChange={setConfirmSaveOpen}>
         <DialogContent className="rounded-sm" data-testid="supplier-edit-confirm-dialog">
           <DialogHeader>
-            <DialogTitle className="font-sans">Save these changes?</DialogTitle>
+            <DialogTitle className="font-heading">Save these changes?</DialogTitle>
             <DialogDescription>This updates shipment {editing?.code}'s contents. Are you sure?</DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-2 mt-2">
             <Button variant="outline" className="rounded-sm" onClick={() => setConfirmSaveOpen(false)}>Cancel</Button>
-            <Button onClick={saveEdit} disabled={saving} className="rounded-sm bg-[#0076CC] hover:bg-[#4DA3E0] transition-colors duration-150" data-testid="supplier-edit-confirm-save-button">
+            <Button onClick={saveEdit} disabled={saving} className="rounded-sm bg-[#004B87] hover:bg-[#003A6A] transition-colors duration-150" data-testid="supplier-edit-confirm-save-button">
               {saving ? "Saving..." : "Yes, Save Changes"}
             </Button>
           </div>
@@ -335,7 +349,7 @@ export default function SupplierShipmentsPage() {
       <Dialog open={!!detailShipment} onOpenChange={(o) => !o && setDetailShipment(null)}>
         <DialogContent className="rounded-sm max-w-2xl" data-testid="supplier-shipment-detail-modal">
           <DialogHeader>
-            <DialogTitle className="font-sans font-data flex items-center gap-2">
+            <DialogTitle className="font-heading font-data flex items-center gap-2">
               {detailShipment?._id}
               {detailShipment && (() => {
                 const badge = SHIPMENT_STATUS_BADGE[detailShipment.status] || SHIPMENT_STATUS_BADGE.in_transit;
@@ -366,12 +380,12 @@ export default function SupplierShipmentsPage() {
               <div className="text-xs mt-1">
                 Flagged items: {(detailShipment.discrepancy_items || []).map((it) => `${it.po_number}/${it.item_number}`).join(", ")}
               </div>
-              <div className="text-xs mt-1 text-[#5B738B]">Please edit this shipment to fix the mismatch - it will automatically go back to "In Transit" for re-review.</div>
+              <div className="text-xs mt-1 text-[#475467]">Please edit this shipment to fix the mismatch - it will automatically go back to "In Transit" for re-review.</div>
             </div>
           )}
 
           <table className="w-full text-sm border-collapse mt-2">
-            <thead className="text-[#5B738B] text-xs uppercase">
+            <thead className="text-[#475467] text-xs uppercase">
               <tr>
                 <th className="text-left py-1 font-semibold">PO Number</th>
                 <th className="text-left py-1 font-semibold">Item</th>
@@ -382,20 +396,20 @@ export default function SupplierShipmentsPage() {
             </thead>
             <tbody>
               {detailShipment?.items.map((it, i) => (
-                <tr key={i} className="border-t border-[#CBD3DB]" data-testid={`supplier-shipment-detail-item-${it.po_number}-${it.item_number}`}>
+                <tr key={i} className="border-t border-[#D0D5DD]" data-testid={`supplier-shipment-detail-item-${it.po_number}-${it.item_number}`}>
                   <td className="py-1.5 font-data">{it.po_number}</td>
                   <td className="py-1.5 font-data">{it.item_number}</td>
                   <td className="py-1.5">{it.description}</td>
                   <td className="py-1.5 text-right font-data font-semibold">{it.ship_qty} {it.unit_of_measure}</td>
-                  <td className="py-1.5 text-right font-data text-[#5B738B]">{it.po_qty}</td>
+                  <td className="py-1.5 text-right font-data text-[#475467]">{it.po_qty}</td>
                 </tr>
               ))}
             </tbody>
           </table>
 
           {detailShipment?.status === "approved" && (
-            <div className="border-t border-[#CBD3DB] pt-3 mt-1" data-testid="supplier-shipment-detail-sap-status">
-              <div className="text-xs font-semibold text-[#5B738B] uppercase mb-1.5">SAP Posting Status</div>
+            <div className="border-t border-[#D0D5DD] pt-3 mt-1" data-testid="supplier-shipment-detail-sap-status">
+              <div className="text-xs font-semibold text-[#475467] uppercase mb-1.5">SAP Posting Status</div>
               <div className="flex items-center gap-1.5 text-sm" style={{ color: detailShipment.sap_sync_status === "posted" ? "#0B7A56" : "#1D4ED8" }}>
                 <PlugsConnected size={14} />
                 {detailShipment.sap_sync_status === "posted" ? "Posted to SAP" : "SAP posting pending"}

@@ -57,7 +57,9 @@ import secrets
 import string
 from datetime import datetime, timedelta, timezone
 
+import inventory_service
 import sap_po_client
+from sap_wip_clearing_client import company_and_set_of_books_for_site
 
 PO_CACHE_COLLECTION = "supplier_portal_po_cache"
 SHIPMENTS_COLLECTION = "supplier_portal_shipments"
@@ -249,8 +251,46 @@ def _resolve_items(db, vendor_code: str, requested_items: list, exclude_doc_code
             "already_shipped_qty": already_shipped,
             "ship_qty": ship_qty,
             "unit_of_measure": cached.get("unit_of_measure"),
+            # Buyer entity (RI/RT) of this line's PO - carried onto the shipment
+            # itself (Sep 2026, "mrp vendor side changes.docx") so the GRN
+            # Approval screen can constrain/pre-fix its Site field without a
+            # second SAP round-trip. Not present on shipments created before
+            # this field existed.
+            "buyer_code": cached.get("buyer_code"),
         })
+    buyer_codes = {r["buyer_code"] for r in resolved if r.get("buyer_code")}
+    if len(buyer_codes) > 1:
+        names = ", ".join(sorted(sap_po_client.buyer_entity_name(c) for c in buyer_codes))
+        raise ShipmentValidationError(
+            f"A shipment cannot mix Purchase Orders from more than one entity ({names}) - "
+            f"create separate shipments per entity"
+        )
     return resolved
+
+
+def shipment_buyer_code(doc: dict) -> str:
+    """The buying entity (RI/RT) of a shipment's PO(s), taken from its own
+    cached line items. Every item in a shipment now shares one entity since
+    the Supplier Dashboard forces a vendor to pick a single entity before
+    adding anything to their cart (Sep 2026) - returns None for shipments
+    created before this field existed."""
+    for it in doc.get("items", []):
+        if it.get("buyer_code"):
+            return it["buyer_code"]
+    return None
+
+
+def allowed_site_ids_for_buyer_code(db, buyer_code: str) -> list:
+    """Real physical sites belonging to a buying entity (RI/RT) - keeps the
+    GRN Approval screen's Site field from letting an RI PO be received under
+    an RT site or vice versa ("RI and RT Site should be non-editable and
+    pre-fixed based on shipment code", mrp vendor side changes.docx). Falls
+    back to every known site when the entity can't be determined (legacy
+    shipments)."""
+    all_sites = inventory_service.list_known_sites(db)
+    if not buyer_code:
+        return all_sites
+    return [s for s in all_sites if company_and_set_of_books_for_site(s)[0] == buyer_code]
 
 
 def create_shipment(db, account: dict, requested_items: list, vendor_code: str = None) -> dict:
@@ -328,6 +368,9 @@ def get_shipment_by_code(db, doc_code: str) -> dict:
     doc = db[SHIPMENTS_COLLECTION].find_one({"_id": (doc_code or "").strip().upper()})
     if not doc:
         raise ShipmentNotFoundError("No shipment found for this code")
+    buyer_code = shipment_buyer_code(doc)
+    doc["buyer_code"] = buyer_code
+    doc["buyer_entity_name"] = sap_po_client.buyer_entity_name(buyer_code) if buyer_code else None
     return doc
 
 
@@ -451,6 +494,12 @@ def prepare_approval(db, doc_code: str, approved_by: str, supplier_doc_num: str,
     doc = get_shipment_by_code(db, doc_code)
     if doc["status"] not in ("in_transit", "discrepancy"):
         raise ShipmentValidationError(f"Shipment is already {doc['status']}")
+    allowed_sites = allowed_site_ids_for_buyer_code(db, doc.get("buyer_code"))
+    if allowed_sites and site_id not in allowed_sites:
+        entity_name = sap_po_client.buyer_entity_name(doc.get("buyer_code"))
+        raise ShipmentValidationError(
+            f"This shipment's PO belongs to {entity_name} - Site must be one of: {', '.join(allowed_sites)}"
+        )
     items = []
     for it in doc["items"]:
         key = (it["po_number"], it["item_number"])

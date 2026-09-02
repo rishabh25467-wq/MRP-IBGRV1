@@ -1,0 +1,47 @@
+{
+  "summary": "First test pass on the Supplier Portal buyer-entity (RI/RT) scoping feature (mrp vendor side changes.docx). Backend: 10/10 pytest checks pass (PO list buyer_code/buyer_entity_name, GRN lookup allowed_site_ids narrowing for RI/RT/legacy, 400 rejection of cross-entity site on approve, 403 for unbound site, 404/401 edges, P1 QC warehouse present). Frontend: verified single-entity vendor (H1330, all RI) sees the PO table immediately with no picker; seeded a temporary RT PO to make the vendor 2-entity and confirmed the entity switcher + 'Choose an entity to continue' blocking card, per-entity row filtering and cart clearing on entity switch; confirmed the Shipments edit dialog only offers same-entity (RI) items and zero cross-entity (RT) items; confirmed GRN Approval shows 'Buyer entity: <NAME>', narrows the Site dropdown to that entity's sites only (RI=P1,P8 / RT=P2,P2W,P3,P4,P7,P9), auto-locks (disabled) when one site qualifies, auto-preselects the site's -QC warehouse (P1-QC, P2-QC, P8-QC) while the Warehouse dropdown stays clickable with all 8 warehouses; legacy (no buyer_code) shipment still falls back to all sites with no entity line. Reject + Mark Discrepancy regressions pass. Approve-to-SAP was deliberately NOT executed (per instructions); the site/entity validation was proven via API with a wrong site_id. All seeded fixtures (2 po_cache rows, 4 shipments, 1 synthetic session/user) were deleted afterwards - verified zero residue.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/supplier-portal/shipments and PUT /api/supplier-portal/shipments/{doc_code}", "issue": "Single-entity-per-shipment is enforced only in the UI. _resolve_items stores each line's buyer_code but never validates that all lines share one buyer_code, so a direct API call can still mix RI+RT items in one shipment; shipment_buyer_code() then silently returns the FIRST item's entity and GRN Approval would receive cross-entity lines under one site. Recommend raising ShipmentValidationError when resolved items span >1 buyer_code."},
+      {"endpoint": "GET /api/admin/grn/lookup/{doc_code}", "issue": "For a site-bound user whose bound_sites do not intersect the shipment's entity sites (verified: user bound to P3 only + RI shipment) the endpoint returns allowed_site_ids: [] with HTTP 200 and no explanatory flag - the UI then falls back to showing ALL sites (see frontend issue). Consider returning the entity's sites plus a separate 'not_bound' signal, or a 403-style message."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "GrnApprovalPage", "issue": "eligibleSites = shipment?.allowed_site_ids?.length ? filtered : sites - when the backend legitimately returns an EMPTY allowed_site_ids (site-bound user with no site in the shipment's entity, reproduced with a P3-bound user + RI shipment) the dropdown falls back to ALL 8 sites and no lock, i.e. the exact opposite of the intended restriction. Approve is still blocked backend-side (403/400) so there is no data corruption, but the screen is misleading. Should show a blocked state and disable Approve.", "selector": "[data-testid=\"grn-site-select\"]", "priority": "MEDIUM"},
+      {"component": "GrnApprovalPage", "issue": "lookup() computes the auto-locked site from the `sites` state captured at call time; `sites` is loaded by a separate async loadSites() on mount. If a lookup resolves before the site list arrives (slow inventory call / deep-link + immediate lookup) eligibleSites is [] -> falls back to all sites and siteId stays empty, with no re-computation afterwards. Suggest deriving siteId in a useEffect on [shipment, sites].", "selector": "[data-testid=\"grn-site-select\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "GRN Approval + Supplier Shipments", "issues": ["'Bill Date' and the shipments From/To date filters use the browser-native date input (mm/dd/yyyy) instead of the shadcn calendar component used elsewhere - pre-existing, not part of this change"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_supplier_buyer_entity_iter140.py",
+    "/app/test_reports/pytest/iter140_entity.xml",
+    "/app/backend/tests/_probe_entity_iter140.py"
+  ],
+  "action_items": [
+    "Enforce single buyer entity per shipment in supplier_shipment_service._resolve_items / create_shipment / update_shipment (backend), not just in the dashboard/edit UI",
+    "Fix GrnApprovalPage eligibleSites fallback so an EMPTY allowed_site_ids blocks the form instead of showing every site",
+    "Optional: recompute the auto-locked siteId in a useEffect on [shipment, sites] to remove the sites-not-yet-loaded race"
+  ],
+  "critical_code_review_comments": [
+    "supplier_shipment_service.prepare_approval correctly hard-blocks a cross-entity site (400 with entity name + valid site list) - verified live; but the equivalent guard is missing at shipment creation/edit time, so the invariant shipment_buyer_code() relies on ('every item shares one entity') is only UI-guaranteed.",
+    "GrnApprovalPage.jsx duplicates the eligible-sites derivation twice (inline `eligibleSites` const and again inside lookup()); extract one helper to avoid the two copies drifting.",
+    "GRN code input has maxLength 6, so any hand-seeded test shipment code longer than 6 chars cannot be looked up from the UI - worth noting for future fixtures (real codes are 6 chars).",
+    "Backend became completely unresponsive on port 8001 for ~4-5 minutes after every uvicorn --reload restart (any file write under /app/backend) - startup work appears to block the event loop before the app starts serving. Pre-existing, but it makes any edit under /app/backend cost several minutes of downtime."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_supplier_buyer_entity_iter140.py",
+    "/app/backend/tests/_probe_entity_iter140.py"
+  ],
+  "success_rate": {"backend": "100% (10/10 pytest)", "frontend": "100% of the new-feature flows verified (2 non-blocking edge-case UI defects reported)"},
+  "seed_data_creation": "All temporary and REMOVED after testing: supplier_portal_po_cache rows H1330::ZZRT140::1/2 (buyer_code RT, to simulate a 2-entity vendor), supplier_portal_shipments ZZTEST140RI/ZZTEST140RT/ZZRI40/ZZRT40/ZZEDIT140/ZZRI41, auth_users zz140-tid:zz140-oid + auth_sessions zz140sessionp3 (P3-bound user). Verified zero residue. Note the pytest file re-seeds/removes ZZTEST140RI/RT on each run (idempotent).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "Vendor: hamidi.demo@vendorportal.test / HamidiDemo123 (H1330, RI-only POs). Internal GRN: vms_session=XAlQkzY5hG8PB3MdokeHOlLvQVFkAQuFFqwSgDD6Dpk (supplier.approver.test, bound P1+P2 - good for the auto-lock case); vms_session=jlGgQkaVgmGB7rmnjW9CX2tKb1wFTPtx (x@internal.test super_admin, no binding - good for seeing the full per-entity site list; expires 2026-09-04).",
+  "context_for_next_testing_agent": "Correct shipments collection is `supplier_portal_shipments` (a stale `supplier_shipments` collection also exists in Mongo with one old TESTGRN doc - the app does NOT read it). GRN lookup input maxLength=6 so seeded doc codes must be <=6 chars. Lookup button testid is grn-code-search-button (not grn-lookup-button); shipments edit button is supplier-shipment-edit-button-{code}. Mark Discrepancy requires both a reason AND at least one item checkbox or it only toasts. Writing any file under /app/backend triggers a uvicorn reload that leaves the API dead for ~5 min - batch backend edits. Approve & Post to SAP was intentionally never executed.",
+  "rca_of_the_issue": "No functional defect found in the implemented feature itself. The two reported frontend defects share one root cause: `allowed_site_ids` is overloaded - it means both 'the entity's sites' and 'the entity's sites you are bound to', and an empty array (no overlap) is indistinguishable from 'unknown/legacy', so the UI's `length ? filter : sites` fallback opens the dropdown to every site. Backend prepare_approval + _has_site_access still reject such an attempt, so the impact is UI-only."
+}

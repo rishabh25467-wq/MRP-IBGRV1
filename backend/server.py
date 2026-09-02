@@ -6107,11 +6107,23 @@ async def get_admin_grn_shipments(status: str = Query(None)):
 
 
 @api_router.get("/admin/grn/lookup/{doc_code}")
-async def get_admin_grn_lookup(doc_code: str):
+async def get_admin_grn_lookup(doc_code: str, request: Request):
     try:
-        return await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
+        doc = await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
     except supplier_shipment_service.ShipmentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    # "RI and RT Site should be non-editable and pre-fixed based on shipment
+    # code" (mrp vendor side changes.docx, Sep 2026): narrow the Site choices
+    # down to only the buying entity's own sites, further narrowed by this
+    # user's own Store Assignment binding (if any).
+    allowed = await asyncio.to_thread(supplier_shipment_service.allowed_site_ids_for_buyer_code, db, doc.get("buyer_code"))
+    doc["allowed_site_ids"] = _visible_sites_for_user(request.state.user, allowed)
+    # Distinct from "legacy shipment, entity unknown" (allowed_site_ids falls
+    # back to every site in that case) - this specifically means "we know the
+    # entity, but you're not bound to any of ITS sites" (testing_agent,
+    # iteration_140), so the frontend must NOT fall back to showing every site.
+    doc["site_access_blocked"] = bool(doc.get("buyer_code")) and not doc["allowed_site_ids"]
+    return doc
 
 
 @api_router.post("/admin/grn/{doc_code}/approve")

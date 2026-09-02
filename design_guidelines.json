@@ -1,95 +1,364 @@
 {
-  "theme": "Oracle JD Edwards EnterpriseOne (Alta UI-inspired)",
+  "theme": "JDE Enterprise ERP (Materials Hub Standard)",
+  "overview": {
+    "problem_context": "The GRN Approval page and Supplier Portal pages currently use inconsistent visual styles (generic SaaS bright blue #0076CC, borderless tables, loose card paddings, soft rounded corners, unaligned font hierarchies) that break continuity with the rest of Materials Hub (BOM Explorer, Production Plan, Stock Transfer, Purchase Order).",
+    "target_visual_identity": "Compact, dense, high-clarity JD Edwards / Oracle Enterprise ERP look: grid-bordered dense tables with #EAECF0 headers, zebra striping (#FFFFFF / #F9FAFB), deep enterprise blue primary actions (#004B87), IBM Plex Sans for body/labels, Chivo for headings, JetBrains Mono for data/codes/amounts, and sharp structural radii (rounded-sm throughout)."
+  },
   "typography": {
-    "headings": {
-      "fontFamily": "IBM Plex Sans, sans-serif",
-      "weights": ["600", "700"],
-      "usage": "Use IBM Plex Sans for all page titles, card headers, and modal titles. Do not use Inter or Roboto for headings."
+    "fonts": {
+      "heading": "Chivo, sans-serif (used via .font-heading)",
+      "sans": "IBM Plex Sans, sans-serif (used via .font-sans)",
+      "data": "JetBrains Mono, monospace (used via .font-data)"
     },
-    "body": {
-      "fontFamily": "IBM Plex Sans, sans-serif",
-      "size": "text-sm",
-      "usage": "Use for primary body text, form labels, and table data. Maintain dense sizing."
+    "scale": {
+      "page_title": "font-heading text-xl font-bold text-[#1D2939]",
+      "section_title": "font-heading text-sm font-bold uppercase tracking-wider text-[#344054]",
+      "card_title": "font-heading text-xs font-bold uppercase tracking-wider text-[#475467]",
+      "table_header": "font-heading text-xs font-bold uppercase tracking-wide text-[#344054]",
+      "body_primary": "font-sans text-[13px] text-[#101828]",
+      "body_muted": "font-sans text-xs text-[#475467]",
+      "data_cell": "font-data text-[13px] tabular-nums text-[#101828]",
+      "data_code_bold": "font-data text-[13px] font-bold tabular-nums text-[#004B87]",
+      "badge_text": "font-sans text-xs font-bold"
     },
-    "mono": {
-      "fontFamily": "IBM Plex Mono, monospace",
-      "size": "text-sm",
-      "usage": "Use for PO numbers, Document Codes (6-char doc code), Vendor Codes, and monetary values."
-    }
+    "rules": [
+      "Use font-heading (Chivo) for all page headers, section labels, card titles, and table column headers.",
+      "Use font-data (JetBrains Mono) for all PO numbers, Document Codes (e.g. 6-char shipment codes), Vendor Codes, Quantities, Prices, and Dates.",
+      "Use font-sans (IBM Plex Sans) for standard body copy, field descriptions, and notifications.",
+      "Never use Inter or generic system sans for headings or tabular data."
+    ]
   },
   "colors": {
-    "primary": {
-      "base": "#0076CC",
-      "hover": "#4DA3E0",
-      "active": "#005299",
-      "text_on_primary": "#FFFFFF"
+    "header": {
+      "bg": "#0E7C86",
+      "text": "#FFFFFF",
+      "icon_badge": "bg-white/15",
+      "subtitle": "text-white/70"
     },
-    "neutral": {
-      "n0": "#FFFFFF",
-      "n20": "#F5F6F7",
-      "n50": "#E2E8F0",
-      "n300": "#CBD3DB",
-      "n700": "#5B738B",
-      "n900": "#111827"
+    "page": {
+      "bg": "#F2F4F7",
+      "text": "#1D2939"
     },
-    "status": {
-      "success": "#10B981",
-      "error": "#E02424",
-      "processing": "#3F83F8",
-      "pending": "#E3A008"
+    "card": {
+      "bg": "#FFFFFF",
+      "border": "#D0D5DD",
+      "shadow": "shadow-[0_1px_2px_0_rgba(16,24,40,0.05)]"
     },
-    "background": "#F5F6F7"
+    "table": {
+      "header_bg": "#EAECF0",
+      "header_border": "#D0D5DD",
+      "header_text": "#344054",
+      "row_even": "#FFFFFF",
+      "row_odd": "#F9FAFB",
+      "row_hover": "#F0F4F8",
+      "cell_border": "#D0D5DD"
+    },
+    "buttons": {
+      "primary": {
+        "bg": "#004B87",
+        "hover": "#003A6A",
+        "active": "#00294D",
+        "text": "#FFFFFF"
+      },
+      "success": {
+        "bg": "#027A48",
+        "hover": "#02623A",
+        "text": "#FFFFFF"
+      },
+      "destructive": {
+        "bg": "#B42318",
+        "hover": "#912018",
+        "text": "#FFFFFF"
+      },
+      "warning": {
+        "bg": "#B54708",
+        "hover": "#93370D",
+        "text": "#FFFFFF"
+      },
+      "secondary_outline": {
+        "bg": "bg-white",
+        "border": "border-[#D0D5DD]",
+        "text": "text-[#344054]",
+        "hover": "hover:bg-[#F9FAFB]"
+      }
+    },
+    "badges": {
+      "success": "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6] rounded-sm",
+      "error": "bg-[#FEF3F2] text-[#B42318] border-[#FECDCA] rounded-sm",
+      "warning": "bg-[#FFFAEB] text-[#B54708] border-[#FEDF89] rounded-sm",
+      "info": "bg-[#E5F0FA] text-[#004B87] border-[#B8D4ED] rounded-sm",
+      "neutral": "bg-[#F2F4F7] text-[#344054] border-[#D0D5DD] rounded-sm"
+    },
+    "inputs": {
+      "border": "#D0D5DD",
+      "focus_border": "#004B87",
+      "focus_ring": "#004B87",
+      "text": "#101828",
+      "placeholder": "#98A2B3"
+    }
   },
   "visual enhancers": {
-    "borders": "1px solid #CBD3DB. Use rounded-sm for a corporate structural feel.",
-    "shadows": "shadow-sm. Flat UI design typical of modern Enterprise ERPs."
+    "borders": "Solid 1px #D0D5DD grid lines on all card containers, tables, and input controls.",
+    "border_radius": "Strict rounded-sm (2px/4px) across all buttons, inputs, badges, cards, and modal dialogs. Never use rounded-full for buttons or status badges.",
+    "shadows": "Utilitarian ERP style: shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] or flat border definition without heavy drop-shadows.",
+    "tables": "Full border-collapse with vertical and horizontal cell grid lines (border border-[#D0D5DD]). Sticky table headers with #EAECF0 background."
   },
   "component name": {
-    "SupplierSignupPage.jsx": "External page. Center-aligned card (N0 bg) over an N20 background. Form inputs must be dense with bordered fields. Primary button is #0076CC.",
-    "SupplierLoginPage.jsx": "External page. Center-aligned, clean, corporate login feel. Add Oracle Alta blue accents.",
-    "SupplierPendingPage.jsx": "External page. Status screen. Distinct status icon and a utilitarian message box.",
-    "SupplierDashboardPage.jsx": "External page. Tabular dashboard. Dense data-grid table styling for Open POs and Shipments. Tabs for navigation between sections. Action: Create Shipment modal.",
-    "SupplierPortalApprovalsPage.jsx": "Internal admin page. Full-width dense data table. Tab-based filtering (Pending, Approved, Rejected). Action buttons should be compact.",
-    "GrnApprovalPage.jsx": "Internal admin page. Search/lookup bar for 6-char shipment code. Data table for Pending shipments. Action: Approve/Reject shipment.",
-    "tables": "Border-collapse. Header row with #F5F6F7 background and #5B738B text. Data rows with #FFFFFF, bordered bottom. py-2 px-3 padding.",
-    "buttons": "Pill-shape not allowed. Stick to rounded-sm. Solid primary #0076CC.",
-    "badges": "Flat background with colored text (e.g. bg-green-100 text-green-800) and rounded-sm."
+    "GrnApprovalPage.jsx": {
+      "purpose": "Internal admin page for GRN shipment code lookup, line-item verification, actual quantity entry, site/warehouse derivation, and SAP receipt posting.",
+      "layout_guideline": "Full width responsive layout matching BomExplorerPage (h-screen flex flex-col overflow-hidden bg-[#F2F4F7]). Includes standard Teal Header (#0E7C86) with NavTabs and SapConnectionStatus.",
+      "toolbar_guideline": "Sub-header toolbar container in bg-white border-b border-[#D0D5DD] p-2.5 flex items-center gap-3. Code lookup input h-8 w-64 text-[13px] font-data rounded-sm border-[#D0D5DD]. Primary Lookup button bg-[#004B87] h-8.",
+      "tables_guideline": "Pending and detail tables must use border-collapse w-full text-[13px], thead th with bg-[#EAECF0] border border-[#D0D5DD] p-1.5 font-heading text-xs uppercase text-[#344054], tbody tr with zebra striping (even: bg-white, odd: bg-[#F9FAFB], hover: bg-[#F0F4F8]), tbody td with border border-[#D0D5DD] px-2 py-1.",
+      "actions_guideline": "Approve & Post button: bg-[#027A48] hover:bg-[#02623A] rounded-sm h-8 text-[13px] font-bold text-white. Reject button: bg-[#B42318] hover:bg-[#912018] rounded-sm h-8 text-[13px]. Mark Discrepancy button: bg-[#B54708] hover:bg-[#93370D] rounded-sm h-8 text-[13px]."
+    },
+    "SupplierDashboardPage.jsx": {
+      "purpose": "External vendor dashboard for open PO viewing, entity selection (RI/RT), cart line item selection, and shipment code generation.",
+      "layout_guideline": "Background bg-[#F2F4F7]. Header bar in bg-[#0E7C86] with Buildings icon, title 'Supplier Portal', entity dropdown, vendor info, and Sign Out button.",
+      "tables_guideline": "Open PO data table in bg-white border border-[#D0D5DD] rounded-sm overflow-x-auto. Header row with bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-xs font-bold text-[#344054] font-heading uppercase. Zebra rows. PO Numbers, Qtys, Prices, and Dates formatted in font-data (JetBrains Mono).",
+      "entity_switcher": "Muted enterprise entity pills: selected bg-[#004B87] text-white border-[#004B87] rounded-sm, unselected bg-white border-[#D0D5DD] text-[#344054] hover:bg-[#F9FAFB].",
+      "bottom_cart_bar": "Fixed bottom bar in bg-white border-t border-[#D0D5DD] shadow-[0_-2px_8px_0_rgba(16,24,40,0.08)] px-4 py-3. Primary Review button bg-[#004B87] hover:bg-[#003A6A] rounded-sm."
+    },
+    "SupplierShipmentsPage.jsx": {
+      "purpose": "External vendor shipment tracking and in-place edit dialog.",
+      "layout_guideline": "Background bg-[#F2F4F7]. Header in bg-[#0E7C86]. Page title font-heading text-xl font-bold text-[#1D2939]. Filter controls in bg-white border border-[#D0D5DD] rounded-sm p-2.5.",
+      "tables_guideline": "Shipments table in bg-white border border-[#D0D5DD] rounded-sm. Headers bg-[#EAECF0] border border-[#D0D5DD] p-1.5 font-heading text-xs uppercase. Doc codes and POs in font-data text-xs font-bold.",
+      "status_badges": "In Transit: bg-[#FFFAEB] text-[#B54708] border-[#FEDF89] rounded-sm. Discrepancy / Rejected: bg-[#FEF3F2] text-[#B42318] border-[#FECDCA] rounded-sm. Received: bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6] rounded-sm."
+    },
+    "SupplierLoginPage.jsx": {
+      "purpose": "External vendor login screen.",
+      "layout_guideline": "Centered login box in max-w-sm w-full bg-white rounded-sm border border-[#D0D5DD] shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] p-8 over bg-[#F2F4F7].",
+      "branding": "Header accent icon in #0E7C86 or #004B87, font-heading title, font-sans inputs with h-9 rounded-sm border-[#D0D5DD] focus:border-[#004B87] focus:ring-1 focus:ring-[#004B87].",
+      "submit_button": "bg-[#004B87] hover:bg-[#003A6A] active:bg-[#00294D] text-white rounded-sm h-9 text-sm font-bold w-full."
+    },
+    "SupplierSignupPage.jsx": {
+      "purpose": "External vendor registration form with GST/PAN upload.",
+      "layout_guideline": "Centered registration box in max-w-lg w-full bg-white rounded-sm border border-[#D0D5DD] shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] p-8 over bg-[#F2F4F7].",
+      "form_fields": "Inputs h-9 text-[13px] rounded-sm border-[#D0D5DD]. File upload dashed targets border border-dashed border-[#D0D5DD] hover:border-[#004B87] rounded-sm. Primary Submit button bg-[#004B87] h-9."
+    },
+    "SupplierPendingPage.jsx": {
+      "purpose": "Vendor onboarding status page (pending review or rejected).",
+      "layout_guideline": "Centered status card max-w-md bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] p-8 text-center over bg-[#F2F4F7]. Button bg-[#004B87] rounded-sm."
+    }
+  },
+  "page_by_page_recommendations": {
+    "GrnApprovalPage.jsx": {
+      "container_changes": {
+        "before": "className=\"min-h-screen bg-[#F5F6F7] font-sans\"",
+        "after": "className=\"h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]\""
+      },
+      "main_wrapper": {
+        "before": "className=\"max-w-4xl mx-auto p-4 md:p-6\"",
+        "after": "className=\"flex-1 overflow-auto max-w-[1400px] w-full mx-auto p-4 md:p-6 space-y-4\""
+      },
+      "page_title": {
+        "before": "<h1 className=\"font-sans text-base font-bold text-[#111827]\">GRN Approval</h1>",
+        "after": "<h1 className=\"font-heading text-xl font-bold text-[#1D2939]\">GRN Approval</h1>"
+      },
+      "search_bar": {
+        "before": "className=\"flex gap-2 mt-5\"",
+        "after": "className=\"bg-white border border-[#D0D5DD] rounded-sm p-3 flex items-center gap-3 shadow-[0_1px_2px_0_rgba(16,24,40,0.05)]\""
+      },
+      "code_input": {
+        "before": "className=\"font-data uppercase max-w-xs rounded-sm border-[#CBD3DB] focus:ring-2 focus:ring-[#4DA3E0] focus:outline-none\"",
+        "after": "className=\"h-8 font-data uppercase w-64 text-[13px] rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]\""
+      },
+      "lookup_button": {
+        "before": "className=\"rounded-sm bg-[#0076CC] hover:bg-[#4DA3E0] transition-colors duration-150\"",
+        "after": "className=\"h-8 bg-[#004B87] hover:bg-[#003A6A] active:bg-[#00294D] text-white rounded-sm px-4 text-[13px] font-bold transition-colors\""
+      },
+      "shipment_detail_card": {
+        "before": "className=\"mt-6 bg-white border border-[#CBD3DB] rounded-sm shadow-sm p-5\"",
+        "after": "className=\"bg-white border border-[#D0D5DD] rounded-sm p-5 shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] space-y-4\""
+      },
+      "shipment_table": {
+        "before": "className=\"w-full text-sm mt-4 border-collapse\"",
+        "after": "className=\"border-collapse w-full text-[13px] border border-[#D0D5DD] rounded-sm overflow-hidden\""
+      },
+      "shipment_table_header": {
+        "before": "className=\"text-[#5B738B] text-xs uppercase\"",
+        "after": "className=\"bg-[#EAECF0] border-b border-[#D0D5DD] text-[#344054] text-xs font-bold font-heading uppercase tracking-wide\""
+      },
+      "shipment_table_th": {
+        "before": "className=\"text-left py-1 font-semibold\"",
+        "after": "className=\"border border-[#D0D5DD] p-1.5 text-left text-xs font-bold font-heading uppercase text-[#344054]\""
+      },
+      "shipment_table_td": {
+        "before": "className=\"py-1.5 font-data\"",
+        "after": "className=\"border border-[#D0D5DD] px-2 py-1 font-data text-[13px] text-[#101828]\""
+      },
+      "approve_button": {
+        "before": "className=\"rounded-sm bg-[#10B981] hover:bg-[#0B7A56] transition-colors duration-150\"",
+        "after": "className=\"h-8 bg-[#027A48] hover:bg-[#02623A] text-white rounded-sm px-4 text-[13px] font-bold transition-colors\""
+      },
+      "reject_button": {
+        "before": "className=\"rounded-sm border-[#E02424]/40 text-[#B91C1C]\"",
+        "after": "className=\"h-8 bg-[#B42318] hover:bg-[#912018] text-white rounded-sm px-4 text-[13px] font-bold transition-colors\""
+      },
+      "discrepancy_button": {
+        "before": "className=\"rounded-sm border-[#E3A008]/50 text-[#8A6116]\"",
+        "after": "className=\"h-8 bg-[#B54708] hover:bg-[#93370D] text-white rounded-sm px-4 text-[13px] font-bold transition-colors\""
+      },
+      "pending_table_card": {
+        "before": "className=\"mt-3 bg-white border border-[#CBD3DB] rounded-sm shadow-sm overflow-hidden\"",
+        "after": "className=\"bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] overflow-x-auto\""
+      },
+      "pending_table_th": {
+        "before": "className=\"text-left px-3 py-2 font-semibold\"",
+        "after": "className=\"bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold font-heading uppercase tracking-wide text-[#344054]\""
+      },
+      "pending_table_tr": {
+        "before": "className=\"border-b border-[#CBD3DB] cursor-pointer hover:bg-[#F5F6F7] transition-colors duration-150\"",
+        "after": "className=\"border border-[#D0D5DD] cursor-pointer bg-white odd:bg-[#F9FAFB] hover:bg-[#F0F4F8] transition-colors duration-150\""
+      }
+    },
+    "SupplierDashboardPage.jsx": {
+      "header_bar": {
+        "before": "className=\"bg-[#0076CC] text-white px-6 py-3 flex items-center justify-between shadow-sm gap-4 flex-wrap\"",
+        "after": "className=\"h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-6 shrink-0 gap-4 flex-wrap\""
+      },
+      "page_title": {
+        "before": "<h1 className=\"font-sans text-lg font-bold text-[#111827]\">Your Open Purchase Orders</h1>",
+        "after": "<h1 className=\"font-heading text-xl font-bold text-[#1D2939]\">Your Open Purchase Orders</h1>"
+      },
+      "po_search_input": {
+        "before": "className=\"pl-8 rounded-sm border-[#CBD3DB] focus:ring-2 focus:ring-[#4DA3E0] focus:outline-none w-64\"",
+        "after": "className=\"h-8 pl-8 pr-2 w-72 text-[13px] rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]\""
+      },
+      "po_table_container": {
+        "before": "className=\"mt-4 bg-white border border-[#CBD3DB] rounded-sm shadow-sm overflow-x-auto\"",
+        "after": "className=\"bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] overflow-x-auto\""
+      },
+      "po_table_th": {
+        "before": "className=\"text-left px-3 py-2 font-semibold\"",
+        "after": "className=\"bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold font-heading uppercase tracking-wide text-[#344054]\""
+      },
+      "po_table_tr": {
+        "before": "className=\"border-b border-[#CBD3DB] hover:bg-[#F5F6F7]/60\"",
+        "after": "className=\"border border-[#D0D5DD] bg-white odd:bg-[#F9FAFB] hover:bg-[#F0F4F8] transition-colors duration-150\""
+      },
+      "po_table_td": {
+        "before": "className=\"px-3 py-2 font-data\"",
+        "after": "className=\"border border-[#D0D5DD] px-2 py-1 font-data text-[13px] text-[#101828]\""
+      },
+      "review_button": {
+        "before": "className=\"rounded-sm bg-[#0076CC] hover:bg-[#4DA3E0] transition-colors duration-150\"",
+        "after": "className=\"h-8 bg-[#004B87] hover:bg-[#003A6A] active:bg-[#00294D] text-white rounded-sm px-4 text-[13px] font-bold transition-colors\""
+      }
+    },
+    "SupplierShipmentsPage.jsx": {
+      "header_bar": {
+        "before": "className=\"bg-[#0076CC] text-white px-6 py-3 flex items-center justify-between shadow-sm gap-4 flex-wrap\"",
+        "after": "className=\"h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-6 shrink-0 gap-4 flex-wrap\""
+      },
+      "page_title": {
+        "before": "<h1 className=\"font-sans text-lg font-bold text-[#111827]\">Your Shipments</h1>",
+        "after": "<h1 className=\"font-heading text-xl font-bold text-[#1D2939]\">Your Shipments</h1>"
+      },
+      "filter_bar": {
+        "before": "className=\"mt-4 flex items-center gap-2 flex-wrap\"",
+        "after": "className=\"bg-white border border-[#D0D5DD] rounded-sm p-2.5 flex items-center gap-3 flex-wrap shadow-[0_1px_2px_0_rgba(16,24,40,0.05)]\""
+      },
+      "shipment_table": {
+        "before": "className=\"mt-4 bg-white border border-[#CBD3DB] rounded-sm shadow-sm overflow-hidden\"",
+        "after": "className=\"bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] overflow-x-auto\""
+      },
+      "shipment_th": {
+        "before": "className=\"text-left px-3 py-2 font-semibold\"",
+        "after": "className=\"bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold font-heading uppercase tracking-wide text-[#344054]\""
+      },
+      "shipment_tr": {
+        "before": "className=\"border-b border-[#CBD3DB] cursor-pointer hover:bg-[#F5F6F7]/60 transition-colors duration-150\"",
+        "after": "className=\"border border-[#D0D5DD] cursor-pointer bg-white odd:bg-[#F9FAFB] hover:bg-[#F0F4F8] transition-colors duration-150\""
+      }
+    },
+    "SupplierLoginPage.jsx": {
+      "card_wrapper": {
+        "before": "className=\"max-w-sm w-full bg-white rounded-sm border border-[#CBD3DB] shadow-sm p-8\"",
+        "after": "className=\"max-w-sm w-full bg-white rounded-sm border border-[#D0D5DD] shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] p-8\""
+      },
+      "header_icon": {
+        "before": "className=\"text-[#0076CC]\"",
+        "after": "className=\"text-[#0E7C86]\""
+      },
+      "heading": {
+        "before": "className=\"font-sans text-base font-bold text-[#111827] mt-4\"",
+        "after": "className=\"font-heading text-lg font-bold text-[#1D2939] mt-4\""
+      },
+      "input": {
+        "before": "className=\"mt-1 rounded-sm border-[#CBD3DB] focus:ring-2 focus:ring-[#4DA3E0] focus:outline-none\"",
+        "after": "className=\"h-9 mt-1 rounded-sm border-[#D0D5DD] text-[13px] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]\""
+      },
+      "submit_button": {
+        "before": "className=\"w-full rounded-sm bg-[#0076CC] hover:bg-[#4DA3E0] transition-colors duration-150\"",
+        "after": "className=\"w-full h-9 rounded-sm bg-[#004B87] hover:bg-[#003A6A] active:bg-[#00294D] text-white text-[13px] font-bold transition-colors\""
+      }
+    },
+    "SupplierSignupPage.jsx": {
+      "card_wrapper": {
+        "before": "className=\"max-w-lg w-full bg-white rounded-sm border border-[#CBD3DB] shadow-sm p-8\"",
+        "after": "className=\"max-w-lg w-full bg-white rounded-sm border border-[#D0D5DD] shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] p-8\""
+      },
+      "heading": {
+        "before": "className=\"font-sans text-base font-bold text-[#111827] mt-4\"",
+        "after": "className=\"font-heading text-lg font-bold text-[#1D2939] mt-4\""
+      },
+      "submit_button": {
+        "before": "className=\"w-full rounded-sm bg-[#0076CC] hover:bg-[#4DA3E0] transition-colors duration-150\"",
+        "after": "className=\"w-full h-9 rounded-sm bg-[#004B87] hover:bg-[#003A6A] active:bg-[#00294D] text-white text-[13px] font-bold transition-colors\""
+      }
+    },
+    "SupplierPendingPage.jsx": {
+      "card_wrapper": {
+        "before": "className=\"max-w-md w-full bg-white rounded-sm border border-[#CBD3DB] shadow-sm p-8 text-center\"",
+        "after": "className=\"max-w-md w-full bg-white rounded-sm border border-[#D0D5DD] shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] p-8 text-center\""
+      },
+      "logout_button": {
+        "before": "className=\"mt-6 w-full rounded-sm bg-[#0076CC] hover:bg-[#4DA3E0] transition-colors duration-150\"",
+        "after": "className=\"mt-6 w-full h-9 rounded-sm bg-[#004B87] hover:bg-[#003A6A] text-white text-[13px] font-bold transition-colors\""
+      }
+    }
   },
   "grids": {
-    "style": "Dense tabular data grids",
-    "spacing": "gap-4",
-    "columns": "12-column for forms. Tables take full width."
+    "style": "Dense JDE ERP tabular data grids",
+    "spacing": "gap-3 md:gap-4",
+    "columns": "Standard 12-column form grids or full-width data tables."
   },
   "layouts": {
     "page": {
-      "background": "bg-[#F5F6F7]",
+      "background": "bg-[#F2F4F7]",
       "spacing": "p-4 md:p-6",
-      "structure": "Tab-based navigation, high information density."
+      "structure": "Fixed top enterprise header (#0E7C86), compact toolbar/filters (#FFFFFF border-[#D0D5DD]), full-width grid tables."
     }
   },
   "motion": {
-    "transitions": "Subtle. transition-colors duration-150 on buttons/rows.",
-    "animations": "Minimal. Avoid decorative motion in ERP."
+    "transitions": "Subtle interactive transitions: transition-colors duration-150.",
+    "animations": "Minimal. Utilitarian ERP aesthetic without decorative entrance animations."
   },
   "accessibility": {
-    "contrast": "Ensure 4.5:1 ratio for text.",
-    "focus": "Use focus:ring-2 focus:ring-[#4DA3E0] focus:outline-none.",
-    "testing": "All interactive elements MUST include data-testid attribute."
+    "contrast": "Ensure 4.5:1 text contrast ratio (WCAG AA).",
+    "focus": "Use focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87].",
+    "testing": "All interactive and key informational elements MUST include data-testid attributes."
   },
   "media": {},
   "3d libraries": {},
   "image urls": {},
+  "instructions_to_main_agent": [
+    "Apply the JDE Enterprise ERP theme consistently across GrnApprovalPage.jsx and all Supplier Portal pages (SupplierDashboardPage.jsx, SupplierShipmentsPage.jsx, SupplierLoginPage.jsx, SupplierSignupPage.jsx, SupplierPendingPage.jsx).",
+    "Ensure all page headers match Materials Hub's #0E7C86 Teal Header with font-heading title and font-sans subtitle.",
+    "Replace all instances of bright SaaS blue #0076CC with JDE Enterprise Blue #004B87 (hover: #003A6A, active: #00294D).",
+    "Update table components to full grid borders (border-collapse w-full text-[13px], thead th with bg-[#EAECF0] border border-[#D0D5DD] p-1.5 font-heading text-xs uppercase text-[#344054], tbody td with border border-[#D0D5DD] px-2 py-1).",
+    "Apply zebra striping on table rows (even rows: bg-white, odd rows: bg-[#F9FAFB], hover state: bg-[#F0F4F8]).",
+    "Ensure all PO numbers, Document Codes, Vendor Codes, Quantities, Prices, and Dates are styled with font-data (JetBrains Mono).",
+    "Maintain strict rounded-sm border-radius on all cards, buttons, inputs, dialogs, and badges. Do not use rounded-full.",
+    "Preserve all data-testid attributes on interactive elements to ensure test suite compatibility."
+  ],
   "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
-    "Apply IBM Plex Sans for headings and body for a structured enterprise look.",
-    "Use Oracle Alta UI colors: Brand Base #0076CC, Hover #4DA3E0.",
-    "Design dense, information-heavy tables with border-b, minimal padding (py-2), and sticky headers.",
-    "Do NOT use rounded-full or heavy shadows; stick to rounded-sm and shadow-sm for utilitarian ERP aesthetic.",
-    "Forms should have clear borders (border-[#CBD3DB]), small labels (text-[#5B738B]), and compact inputs.",
-    "Tabs should have a bottom border indicator in #0076CC when active.",
-    "Use IBM Plex Mono for IDs, Codes, and PO Numbers to align tabular data vertically.",
-    "No heavy gradients or glassmorphism. Stick to flat, solid colors.",
-    "Do NOT apply universal transitions (e.g., transition: all). Add transitions for specific interactive elements.",
-    "Do NOT use transparent backgrounds for dropdowns, overlays, or surfaces containing content.",
-    "Add 'data-testid' attributes to all buttons, links, inputs, and functional UI components."
+    "Apply IBM Plex Sans for body text, Chivo for headings, and JetBrains Mono for data/codes.",
+    "Use JDE Enterprise ERP palette: Primary #004B87, Header #0E7C86, Page BG #F2F4F7, Table Header #EAECF0, Borders #D0D5DD.",
+    "Design dense, information-heavy tables with full grid cell borders (border border-[#D0D5DD]) and sticky headers.",
+    "Do NOT use rounded-full or heavy gradients; stick to rounded-sm and shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] for utilitarian ERP aesthetic.",
+    "Forms must have clear borders (border-[#D0D5DD]), compact inputs (h-8 or h-9), and clear labels.",
+    "Do NOT apply universal transitions (e.g. transition: all).",
+    "All interactive elements MUST include data-testid attributes."
   ]
 }

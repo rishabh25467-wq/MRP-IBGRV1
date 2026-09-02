@@ -18,10 +18,10 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
 const STATUS_BADGE = {
-  in_transit: { label: "In Transit", className: "bg-[#E3A008]/15 text-[#8A6116] rounded-sm" },
-  discrepancy: { label: "Discrepancy", className: "bg-[#E02424]/15 text-[#B91C1C] rounded-sm" },
-  approved: { label: "Received", className: "bg-[#10B981]/15 text-[#0B7A56] rounded-sm" },
-  rejected: { label: "Rejected", className: "bg-[#E02424]/10 text-[#B91C1C] rounded-sm" },
+  in_transit: { label: "In Transit", className: "bg-[#FFFAEB] text-[#B54708] border border-[#FEDF89] rounded-sm" },
+  discrepancy: { label: "Discrepancy", className: "bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA] rounded-sm" },
+  approved: { label: "Received", className: "bg-[#ECFDF3] text-[#027A48] border border-[#ABEFC6] rounded-sm" },
+  rejected: { label: "Rejected", className: "bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA] rounded-sm" },
 };
 
 export default function GrnApprovalPage() {
@@ -81,16 +81,50 @@ export default function GrnApprovalPage() {
     setWarehousesLoading(true);
     setWarehouseId("");
     axios.get(`${API}/admin/grn/warehouses/${siteId}`)
-      .then(({ data }) => setWarehouses(data.warehouses || []))
+      .then(({ data }) => {
+        const whs = data.warehouses || [];
+        setWarehouses(whs);
+        // "Warehouse should always be QC default" (mrp vendor side changes.docx,
+        // Sep 2026) - pre-select QC when this site actually has one, still
+        // editable since not every site has a QC logistics area today.
+        const qc = whs.find((w) => (w.warehouse_id || "").split("-").pop() === "QC");
+        if (qc) setWarehouseId(qc.warehouse_id);
+      })
       .catch((err) => toast.error("Could not load warehouses", { description: err?.response?.data?.detail || err.message }))
       .finally(() => setWarehousesLoading(false));
   }, [siteId]);
+
+  // "RI and RT Site should be non-editable and pre-fixed based on shipment
+  // code" (Sep 2026): the Site dropdown only ever offers sites that belong
+  // to THIS shipment's buying entity (RI/RT), returned by the lookup as
+  // `allowed_site_ids` - auto-locks (disabled) whenever that narrows to
+  // exactly one, same as the old single-site-binding auto-lock. A LEGACY
+  // shipment (no buyer_code at all) falls back to every known site since
+  // its entity is unknown - but once the entity IS known, an empty
+  // `allowed_site_ids` means "you're not bound to any of its sites", which
+  // must NOT silently fall back to showing every site (testing_agent,
+  // iteration_140 - the old `.length ? filter : sites` did exactly that).
+  const computeEligibleSites = (shipmentDoc, sitesList) => {
+    if (!shipmentDoc || !shipmentDoc.buyer_code) return sitesList;
+    return sitesList.filter((s) => (shipmentDoc.allowed_site_ids || []).includes(s));
+  };
+  const eligibleSites = computeEligibleSites(shipment, sites);
+  const siteAccessBlocked = !!shipment?.site_access_blocked;
+
+  // Recomputed whenever the looked-up shipment OR the site list itself
+  // changes (fixes a race where a lookup could resolve before loadSites()'s
+  // own async call landed, iteration_140) rather than only inside lookup().
+  useEffect(() => {
+    if (!shipment) return;
+    const eligible = computeEligibleSites(shipment, sites);
+    setSiteId(eligible.length === 1 ? eligible[0] : "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shipment, sites]);
 
   const resetApprovalForm = () => {
     setSupplierDocNum("");
     setWarehouseId("");
     setBillDate("");
-    if (sites.length !== 1) setSiteId("");
   };
 
   const initActualQtys = (items) => {
@@ -261,7 +295,7 @@ export default function GrnApprovalPage() {
   const isActionable = shipment && (shipment.status === "in_transit" || shipment.status === "discrepancy");
 
   return (
-    <div className="min-h-screen bg-[#F5F6F7] font-sans" data-testid="grn-approval-page">
+    <div className="min-h-screen bg-[#F2F4F7] font-sans" data-testid="grn-approval-page">
       <Toaster position="top-right" richColors />
       <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
         <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
@@ -279,38 +313,52 @@ export default function GrnApprovalPage() {
         </div>
         <SapConnectionStatus />
       </header>
-      <div className="max-w-4xl mx-auto p-4 md:p-6">
+      <div className="flex-1 overflow-auto max-w-[1400px] w-full mx-auto p-4 md:p-6 space-y-4">
         <div className="flex items-center gap-2 mb-1">
-          <Truck size={18} weight="fill" className="text-[#0076CC]" />
-          <h1 className="font-sans text-base font-bold text-[#111827]">GRN Approval</h1>
+          <Truck size={18} weight="fill" className="text-[#004B87]" />
+          <h1 className="font-heading text-xl font-bold text-[#1D2939]">GRN Approval</h1>
         </div>
-        <p className="text-sm text-[#5B738B]">Enter the 6-character shipment code from the delivery paperwork, physically match the goods and supplier invoice, then approve.</p>
+        <p className="text-sm text-[#475467]">Enter the 6-character shipment code from the delivery paperwork, physically match the goods and supplier invoice, then approve.</p>
 
-        <div className="flex gap-2 mt-5">
+        <div className="bg-white border border-[#D0D5DD] rounded-sm p-3 flex items-center gap-3 shadow-[0_1px_2px_0_rgba(16,24,40,0.05)]">
           <Input
             placeholder="e.g. A3F9K2"
             value={code}
             onChange={(e) => setCode(e.target.value.toUpperCase())}
             onKeyDown={(e) => e.key === "Enter" && lookup()}
-            className="font-data uppercase max-w-xs rounded-sm border-[#CBD3DB] focus:ring-2 focus:ring-[#4DA3E0] focus:outline-none"
+            className="h-8 font-data uppercase w-64 text-[13px] rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]"
             maxLength={6}
             data-testid="grn-code-input"
           />
-          <Button onClick={() => lookup()} disabled={searching} className="rounded-sm bg-[#0076CC] hover:bg-[#4DA3E0] transition-colors duration-150" data-testid="grn-code-search-button">
+          <Button onClick={() => lookup()} disabled={searching} className="h-8 rounded-sm bg-[#004B87] hover:bg-[#003A6A] active:bg-[#00294D] text-[13px] font-bold transition-colors" data-testid="grn-code-search-button">
             <MagnifyingGlass size={14} className="mr-1" /> {searching ? "Searching..." : "Lookup"}
           </Button>
         </div>
         {searchError && <div className="text-sm text-[#B91C1C] mt-2" data-testid="grn-search-error">{searchError}</div>}
 
         {shipment && (
-          <div className="mt-6 bg-white border border-[#CBD3DB] rounded-sm shadow-sm p-5" data-testid="grn-shipment-detail">
+          <div className="bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] p-5" data-testid="grn-shipment-detail">
             <div className="flex items-center justify-between">
               <div>
-                <div className="text-lg font-data font-bold text-[#0076CC]">{shipment._id}</div>
-                <div className="text-sm text-[#5B738B]">{shipment.company_name} ({shipment.vendor_code}) · {[...new Set(shipment.items.map((it) => it.po_number))].map((p) => `PO ${p}`).join(", ")}</div>
+                <div className="text-lg font-data font-bold text-[#004B87]">{shipment._id}</div>
+                <div className="text-sm text-[#475467]">{shipment.company_name} ({shipment.vendor_code}) · {[...new Set(shipment.items.map((it) => it.po_number))].map((p) => `PO ${p}`).join(", ")}</div>
               </div>
               <Badge className={STATUS_BADGE[shipment.status].className} data-testid="grn-status-badge">{STATUS_BADGE[shipment.status].label}</Badge>
             </div>
+
+            {shipment.buyer_entity_name && (
+              <div className="mt-2 text-xs text-[#475467]" data-testid="grn-buyer-entity">
+                Buyer entity: <span className="font-semibold text-[#1D2939]">{shipment.buyer_entity_name}</span>
+                {eligibleSites.length === 1 && <span> · Site locked to {eligibleSites[0]} for this entity</span>}
+              </div>
+            )}
+
+            {siteAccessBlocked && (
+              <div className="mt-3 text-sm px-3 py-2.5 rounded-sm border border-[#E02424]/30 bg-[#E02424]/5 text-[#B91C1C]" data-testid="grn-site-access-blocked-banner">
+                <div className="flex items-center gap-2 font-semibold"><WarningCircle size={16} weight="fill" /> You're not bound to any site for {shipment.buyer_entity_name}</div>
+                <div className="mt-1 text-xs">Ask a Super Admin to grant you Store Assignment access to one of this entity's sites before this shipment can be approved.</div>
+              </div>
+            )}
 
             {shipment.status === "discrepancy" && (
               <div className="mt-4 text-sm px-3 py-2.5 rounded-sm border border-[#E02424]/30 bg-[#E02424]/5 text-[#B91C1C]" data-testid="grn-discrepancy-banner">
@@ -319,38 +367,38 @@ export default function GrnApprovalPage() {
                 <div className="mt-1 text-xs">
                   Flagged items: {(shipment.discrepancy_items || []).map((it) => `${it.po_number}/${it.item_number}`).join(", ")}
                 </div>
-                <div className="mt-1 text-xs text-[#5B738B]">Ask the vendor to edit this shipment - saving their edit will automatically bring it back to "In Transit" for re-review.</div>
+                <div className="mt-1 text-xs text-[#475467]">Ask the vendor to edit this shipment - saving their edit will automatically bring it back to "In Transit" for re-review.</div>
               </div>
             )}
 
-            <table className="w-full text-sm mt-4 border-collapse">
-              <thead className="text-[#5B738B] text-xs uppercase">
+            <table className="border-collapse w-full text-[13px] mt-4 border border-[#D0D5DD] rounded-sm overflow-hidden">
+              <thead className="bg-[#EAECF0] text-[#344054] text-xs font-bold font-heading uppercase tracking-wide">
                 <tr>
-                  <th className="text-left py-1 font-semibold">PO Number</th>
-                  <th className="text-left py-1 font-semibold">Item</th>
-                  <th className="text-left py-1 font-semibold">Description</th>
-                  <th className="text-right py-1 font-semibold">Ship Qty</th>
-                  <th className="text-right py-1 font-semibold">PO Qty</th>
-                  <th className="text-right py-1 font-semibold">Actual Qty</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-left">PO Number</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-left">Item</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-left">Description</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-right">Ship Qty</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-right">PO Qty</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-right">Actual Qty</th>
                 </tr>
               </thead>
               <tbody>
                 {shipment.items.map((it, i) => {
                   const key = `${it.po_number}::${it.item_number}`;
                   return (
-                    <tr key={i} className="border-t border-[#CBD3DB]">
-                      <td className="py-1.5 font-data">{it.po_number}</td>
-                      <td className="py-1.5 font-data">{it.item_number}</td>
-                      <td className="py-1.5">{it.description}</td>
-                      <td className="py-1.5 text-right font-data font-semibold">{it.ship_qty} {it.unit_of_measure}</td>
-                      <td className="py-1.5 text-right font-data text-[#5B738B]">{it.po_qty}</td>
-                      <td className="py-1.5 text-right">
+                    <tr key={i} className="bg-white odd:bg-[#F9FAFB]">
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data">{it.po_number}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data">{it.item_number}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1">{it.description}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data font-semibold">{it.ship_qty} {it.unit_of_measure}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data text-[#475467]">{it.po_qty}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right">
                         {isActionable ? (
                           <Input
                             type="number"
                             value={actualQtys[key] ?? ""}
                             onChange={(e) => setActualQtys((prev) => ({ ...prev, [key]: e.target.value }))}
-                            className="w-24 h-7 text-right font-data rounded-sm border-[#CBD3DB] ml-auto"
+                            className="w-24 h-7 text-right font-data rounded-sm border-[#D0D5DD] ml-auto"
                             data-testid={`grn-actual-qty-input-${key}`}
                           />
                         ) : (
@@ -361,57 +409,57 @@ export default function GrnApprovalPage() {
                   );
                 })}
                 {isActionable && (
-                  <tr><td colSpan={6} className="py-1.5 text-xs text-[#5B738B]">Actual Qty defaults to Ship Qty - adjust only if the physical count differs.</td></tr>
+                  <tr><td colSpan={6} className="border border-[#D0D5DD] px-2 py-1 text-xs text-[#475467]">Actual Qty defaults to Ship Qty - adjust only if the physical count differs.</td></tr>
                 )}
               </tbody>
             </table>
 
             {busy && jobProgress && (
-              <div className="mt-3 text-xs text-[#5B738B] flex items-center gap-2 bg-[#F1F5F9] rounded-sm px-3 py-2" data-testid="grn-job-progress">
+              <div className="mt-3 text-xs text-[#475467] flex items-center gap-2 bg-[#F1F5F9] rounded-sm px-3 py-2" data-testid="grn-job-progress">
                 <ArrowsClockwise size={12} className="animate-spin" />
                 Posting to SAP... {jobProgress.progress_total > 1 ? `(PO ${Math.min(jobProgress.progress_current + 1, jobProgress.progress_total)}/${jobProgress.progress_total})` : ""}
               </div>
             )}
 
             {isActionable && (
-              <div className="mt-5 border-t border-[#CBD3DB] pt-4 space-y-3">
+              <div className="mt-5 border-t border-[#D0D5DD] pt-4 space-y-3">
                 <div className="grid sm:grid-cols-4 gap-3">
                   <div>
-                    <Label className="text-xs text-[#5B738B]">Supplier Invoice Number</Label>
+                    <Label className="text-xs text-[#475467]">Supplier Invoice Number</Label>
                     <Input
                       placeholder="e.g. INV-4521"
                       value={supplierDocNum}
                       onChange={(e) => setSupplierDocNum(e.target.value)}
-                      className="rounded-sm border-[#CBD3DB] mt-1"
+                      className="rounded-sm border-[#D0D5DD] mt-1"
                       data-testid="grn-supplier-doc-num-input"
                     />
                   </div>
                   <div>
-                    <Label className="text-xs text-[#5B738B]">Bill Date</Label>
+                    <Label className="text-xs text-[#475467]">Bill Date</Label>
                     <Input
                       type="date"
                       value={billDate}
                       onChange={(e) => setBillDate(e.target.value)}
-                      className="rounded-sm border-[#CBD3DB] mt-1"
+                      className="rounded-sm border-[#D0D5DD] mt-1"
                       data-testid="grn-bill-date-input"
                     />
                   </div>
                   <div>
-                    <Label className="text-xs text-[#5B738B]">Site</Label>
-                    <Select value={siteId} onValueChange={setSiteId} disabled={sites.length === 1}>
-                      <SelectTrigger className="rounded-sm border-[#CBD3DB] mt-1" data-testid="grn-site-select">
+                    <Label className="text-xs text-[#475467]">Site</Label>
+                    <Select value={siteId} onValueChange={setSiteId} disabled={siteAccessBlocked || eligibleSites.length === 1}>
+                      <SelectTrigger className="rounded-sm border-[#D0D5DD] mt-1" data-testid="grn-site-select">
                         <SelectValue placeholder="Select site" />
                       </SelectTrigger>
                       <SelectContent>
-                        {sites.map((s) => (<SelectItem key={s} value={s} data-testid={`grn-site-option-${s}`}>{s}</SelectItem>))}
+                        {eligibleSites.map((s) => (<SelectItem key={s} value={s} data-testid={`grn-site-option-${s}`}>{s}</SelectItem>))}
                       </SelectContent>
                     </Select>
                   </div>
                   <div>
-                    <Label className="text-xs text-[#5B738B]">Warehouse</Label>
-                    <Select value={warehouseId} onValueChange={setWarehouseId} disabled={!siteId || warehousesLoading}>
-                      <SelectTrigger className="rounded-sm border-[#CBD3DB] mt-1" data-testid="grn-warehouse-select">
-                        <SelectValue placeholder={warehousesLoading ? "Loading..." : "Select warehouse"} />
+                    <Label className="text-xs text-[#475467]">Warehouse</Label>
+                    <Select value={warehouseId} onValueChange={setWarehouseId} disabled={siteAccessBlocked || !siteId || warehousesLoading}>
+                      <SelectTrigger className="rounded-sm border-[#D0D5DD] mt-1" data-testid="grn-warehouse-select">
+                        <SelectValue placeholder={warehousesLoading ? "Loading..." : (siteId ? "Select warehouse" : "Select a site first")} />
                       </SelectTrigger>
                       <SelectContent>
                         {warehouses.map((w) => (
@@ -425,14 +473,14 @@ export default function GrnApprovalPage() {
                 </div>
 
                 <div className="flex gap-2">
-                  <Button onClick={approve} disabled={busy} className="rounded-sm bg-[#10B981] hover:bg-[#0B7A56] transition-colors duration-150" data-testid="grn-approve-button">
+                  <Button onClick={approve} disabled={busy || siteAccessBlocked} className="h-8 rounded-sm bg-[#027A48] hover:bg-[#02623A] text-white px-4 text-[13px] font-bold transition-colors" data-testid="grn-approve-button">
                     <CheckCircle size={14} className="mr-1" /> {busy ? "Posting..." : "Approve & Post to SAP"}
                   </Button>
-                  <Button variant="outline" onClick={() => setRejectOpen(true)} disabled={busy} className="rounded-sm border-[#E02424]/40 text-[#B91C1C]" data-testid="grn-reject-button">
+                  <Button onClick={() => setRejectOpen(true)} disabled={busy} className="h-8 rounded-sm bg-[#B42318] hover:bg-[#912018] text-white px-4 text-[13px] font-bold transition-colors" data-testid="grn-reject-button">
                     <XCircle size={14} className="mr-1" /> Reject
                   </Button>
                   {shipment.status === "in_transit" && (
-                    <Button variant="outline" onClick={openDiscrepancy} disabled={busy} className="rounded-sm border-[#E3A008]/50 text-[#8A6116]" data-testid="grn-mark-discrepancy-button">
+                    <Button onClick={openDiscrepancy} disabled={busy} className="h-8 rounded-sm bg-[#B54708] hover:bg-[#93370D] text-white px-4 text-[13px] font-bold transition-colors" data-testid="grn-mark-discrepancy-button">
                       <WarningCircle size={14} className="mr-1" /> Mark Discrepancy
                     </Button>
                   )}
@@ -483,27 +531,27 @@ export default function GrnApprovalPage() {
           </div>
         )}
 
-        <h2 className="font-sans text-sm font-bold text-[#111827] mt-8">Pending Shipments</h2>
-        <div className="mt-3 bg-white border border-[#CBD3DB] rounded-sm shadow-sm overflow-hidden">
-          <table className="w-full text-sm border-collapse">
-            <thead className="bg-[#F5F6F7] text-[#5B738B] text-xs uppercase">
+        <h2 className="font-heading text-sm font-bold uppercase tracking-wider text-[#344054] mt-8">Pending Shipments</h2>
+        <div className="mt-3 bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] overflow-x-auto">
+          <table className="w-full text-[13px] border-collapse">
+            <thead className="bg-[#EAECF0] text-[#344054] text-xs font-bold font-heading uppercase tracking-wide">
               <tr>
-                <th className="text-left px-3 py-2 font-semibold">Code</th>
-                <th className="text-left px-3 py-2 font-semibold">Vendor</th>
-                <th className="text-left px-3 py-2 font-semibold">PO Numbers</th>
-                <th className="text-left px-3 py-2 font-semibold">Created</th>
+                <th className="border border-[#D0D5DD] p-1.5 text-left">Code</th>
+                <th className="border border-[#D0D5DD] p-1.5 text-left">Vendor</th>
+                <th className="border border-[#D0D5DD] p-1.5 text-left">PO Numbers</th>
+                <th className="border border-[#D0D5DD] p-1.5 text-left">Created</th>
               </tr>
             </thead>
             <tbody>
               {pending.length === 0 && (
-                <tr><td colSpan={4} className="px-3 py-6 text-center text-[#5B738B]" data-testid="grn-pending-empty">No shipments awaiting GRN approval.</td></tr>
+                <tr><td colSpan={4} className="border border-[#D0D5DD] px-3 py-6 text-center text-[#475467]" data-testid="grn-pending-empty">No shipments awaiting GRN approval.</td></tr>
               )}
               {pending.map((s) => (
-                <tr key={s._id} className="border-b border-[#CBD3DB] cursor-pointer hover:bg-[#F5F6F7] transition-colors duration-150" onClick={() => lookup(s._id)} data-testid={`grn-pending-row-${s._id}`}>
-                  <td className="px-3 py-2 font-data font-bold">{s._id}</td>
-                  <td className="px-3 py-2">{s.company_name}</td>
-                  <td className="px-3 py-2 font-data">{[...new Set(s.items.map((it) => it.po_number))].join(", ")}</td>
-                  <td className="px-3 py-2 text-[#5B738B]">{new Date(s.created_at).toLocaleString()}</td>
+                <tr key={s._id} className="cursor-pointer bg-white odd:bg-[#F9FAFB] hover:bg-[#F0F4F8] transition-colors duration-150" onClick={() => lookup(s._id)} data-testid={`grn-pending-row-${s._id}`}>
+                  <td className="border border-[#D0D5DD] px-2 py-1 font-data font-bold text-[#004B87]">{s._id}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1">{s.company_name}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1 font-data">{[...new Set(s.items.map((it) => it.po_number))].join(", ")}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]">{new Date(s.created_at).toLocaleString()}</td>
                 </tr>
               ))}
             </tbody>
@@ -514,10 +562,10 @@ export default function GrnApprovalPage() {
       <Dialog open={rejectOpen} onOpenChange={setRejectOpen}>
         <DialogContent className="rounded-sm" data-testid="grn-reject-dialog">
           <DialogHeader>
-            <DialogTitle className="font-sans">Reject Shipment</DialogTitle>
+            <DialogTitle className="font-heading">Reject Shipment</DialogTitle>
             <DialogDescription>This reason will be shown to the vendor.</DialogDescription>
           </DialogHeader>
-          <Textarea placeholder="Reason" value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} className="rounded-sm border-[#CBD3DB]" data-testid="grn-reject-reason-input" />
+          <Textarea placeholder="Reason" value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} className="rounded-sm border-[#D0D5DD]" data-testid="grn-reject-reason-input" />
           <div className="flex justify-end gap-2 mt-2">
             <Button variant="outline" className="rounded-sm" onClick={() => setRejectOpen(false)}>Cancel</Button>
             <Button onClick={reject} disabled={busy} className="rounded-sm bg-[#E02424] hover:bg-[#B91C1C] transition-colors duration-150" data-testid="grn-reject-confirm-button">Confirm Reject</Button>
@@ -528,24 +576,24 @@ export default function GrnApprovalPage() {
       <Dialog open={discOpen} onOpenChange={setDiscOpen}>
         <DialogContent className="rounded-sm" data-testid="grn-discrepancy-dialog">
           <DialogHeader>
-            <DialogTitle className="font-sans">Mark Discrepancy</DialogTitle>
+            <DialogTitle className="font-heading">Mark Discrepancy</DialogTitle>
             <DialogDescription>Select the mismatched line item(s) and explain what doesn't match - the vendor will need to edit this shipment before it can be re-reviewed.</DialogDescription>
           </DialogHeader>
           <Textarea
             placeholder="e.g. Invoice shows 500 EA but only 480 EA physically received on item 2"
             value={discReason}
             onChange={(e) => setDiscReason(e.target.value)}
-            className="rounded-sm border-[#CBD3DB]"
+            className="rounded-sm border-[#D0D5DD]"
             data-testid="grn-discrepancy-reason-input"
           />
-          <div className="space-y-1.5 max-h-56 overflow-y-auto border border-[#CBD3DB] rounded-sm p-2">
+          <div className="space-y-1.5 max-h-56 overflow-y-auto border border-[#D0D5DD] rounded-sm p-2">
             {shipment?.items.map((it, i) => {
               const key = `${it.po_number}::${it.item_number}`;
               return (
                 <label key={i} className="flex items-center gap-2 text-sm cursor-pointer py-1" data-testid={`grn-discrepancy-item-label-${key}`}>
                   <Checkbox checked={!!discItems[key]} onCheckedChange={() => toggleDiscItem(it.po_number, it.item_number)} data-testid={`grn-discrepancy-item-checkbox-${key}`} />
                   <span className="font-data">{it.po_number}/{it.item_number}</span>
-                  <span className="text-[#5B738B]">{it.description} · {it.ship_qty} {it.unit_of_measure}</span>
+                  <span className="text-[#475467]">{it.description} · {it.ship_qty} {it.unit_of_measure}</span>
                 </label>
               );
             })}
