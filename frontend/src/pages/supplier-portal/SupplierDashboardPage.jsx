@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import {
   Buildings, SignOut, Package, PlugsConnected, Truck, MagnifyingGlass,
-  X, Eye, ListChecks, ArrowRight, Flask, CheckCircle,
+  X, Eye, ListChecks, ArrowRight, Flask, CheckCircle, CaretUp, CaretDown,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -78,6 +78,19 @@ export default function SupplierDashboardPage() {
   const [selectedEntity, setSelectedEntity] = useState(null);
 
   const [detailPoNumber, setDetailPoNumber] = useState(null);
+
+  // Sortable PO Date / Due Date columns (user's explicit ask).
+  const [sortColumn, setSortColumn] = useState(null); // "po_date" | "due_date" | null
+  const [sortDir, setSortDir] = useState("asc");
+
+  const toggleSort = (column) => {
+    if (sortColumn === column) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortColumn(column);
+      setSortDir("asc");
+    }
+  };
 
   // TESTING ONLY (user's explicit ask, Aug 28 2026) - impersonate any
   // vendor's data via a search box. Gated by account.testing_mode
@@ -166,6 +179,18 @@ export default function SupplierDashboardPage() {
     return entityPos.filter((po) => [po.po_number, po.item_number, po.description, po.product_id].some((v) => (v || "").toString().toLowerCase().includes(q)));
   }, [entityPos, search]);
 
+  const sortedPos = useMemo(() => {
+    if (!sortColumn) return filteredPos;
+    const withIndex = filteredPos.map((po, idx) => ({ po, idx }));
+    withIndex.sort((a, b) => {
+      const aTime = a.po[sortColumn] ? new Date(a.po[sortColumn]).getTime() : 0;
+      const bTime = b.po[sortColumn] ? new Date(b.po[sortColumn]).getTime() : 0;
+      if (aTime === bTime) return a.idx - b.idx; // stable - keeps same-PO rows grouped
+      return sortDir === "asc" ? aTime - bTime : bTime - aTime;
+    });
+    return withIndex.map((w) => w.po);
+  }, [filteredPos, sortColumn, sortDir]);
+
   // Bulk Cart Add - group by PO Number (open items only) so a single
   // "select all" toggle can act on the whole group; anchored to the
   // first OPEN row of each group (not just the first row overall) and
@@ -173,21 +198,21 @@ export default function SupplierDashboardPage() {
   // (code review feedback, iteration_124).
   const rowsWithPoGroup = useMemo(() => {
     const groups = {};
-    filteredPos.forEach((po) => {
+    sortedPos.forEach((po) => {
       if (po.remaining_qty > 0) {
         groups[po.po_number] = groups[po.po_number] || [];
         groups[po.po_number].push(po);
       }
     });
     const seenOpenPo = new Set();
-    return filteredPos.map((po) => {
+    return sortedPos.map((po) => {
       const isOpen = po.remaining_qty > 0;
       const isFirstOpenOfPo = isOpen && !seenOpenPo.has(po.po_number);
       if (isOpen) seenOpenPo.add(po.po_number);
       const openRows = groups[po.po_number] || [];
       return { ...po, _isFirstOpenOfPo: isFirstOpenOfPo, _poOpenRows: openRows };
     });
-  }, [filteredPos]);
+  }, [sortedPos]);
 
   const detailItems = useMemo(() => pos.filter((po) => po.po_number === detailPoNumber), [pos, detailPoNumber]);
 
@@ -397,11 +422,29 @@ export default function SupplierDashboardPage() {
                   <th className="border border-[#D0D5DD] p-1.5 text-left">PO Number</th>
                   <th className="border border-[#D0D5DD] p-1.5 text-left">Item</th>
                   <th className="border border-[#D0D5DD] p-1.5 text-left">PO From</th>
-                  <th className="border border-[#D0D5DD] p-1.5 text-left">PO Date</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-left">
+                    <button
+                      onClick={() => toggleSort("po_date")}
+                      className="flex items-center gap-1 hover:text-[#004B87]"
+                      data-testid="supplier-po-sort-po-date"
+                    >
+                      PO Date
+                      {sortColumn === "po_date" ? (sortDir === "asc" ? <CaretUp size={11} weight="bold" /> : <CaretDown size={11} weight="bold" />) : <CaretUp size={11} className="opacity-30" />}
+                    </button>
+                  </th>
                   <th className="border border-[#D0D5DD] p-1.5 text-right">Unit Price</th>
                   <th className="border border-[#D0D5DD] p-1.5 text-right">Subtotal</th>
                   <th className="border border-[#D0D5DD] p-1.5 text-right">Open Qty</th>
-                  <th className="border border-[#D0D5DD] p-1.5 text-left">Due Date</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-left">
+                    <button
+                      onClick={() => toggleSort("due_date")}
+                      className="flex items-center gap-1 hover:text-[#004B87]"
+                      data-testid="supplier-po-sort-due-date"
+                    >
+                      Due Date
+                      {sortColumn === "due_date" ? (sortDir === "asc" ? <CaretUp size={11} weight="bold" /> : <CaretDown size={11} weight="bold" />) : <CaretUp size={11} className="opacity-30" />}
+                    </button>
+                  </th>
                   <th className="border border-[#D0D5DD] p-1.5 text-right w-28">Ship Qty</th>
                   <th className="border border-[#D0D5DD] p-1.5 text-left">SAP Verified</th>
                 </tr>
