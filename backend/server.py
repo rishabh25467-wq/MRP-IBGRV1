@@ -6227,7 +6227,7 @@ def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> st
             )
             final = await asyncio.to_thread(
                 supplier_shipment_service.finalize_goods_receipt, db, doc_code, gr_result["results"],
-                sap_goods_movement_client, owner_party_id,
+                sap_goods_movement_client, sap_inventory_client, owner_party_id,
             )
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
         except Exception as e:
@@ -6255,7 +6255,7 @@ async def post_admin_grn_retry_movement(doc_code: str, request: Request):
             raise HTTPException(status_code=403, detail="You are not bound to this site")
         owner_party_id, _ = company_and_set_of_books_for_site(doc.get("site_id"))
         return await asyncio.to_thread(
-            supplier_shipment_service.retry_goods_movement, db, doc_code, sap_goods_movement_client, owner_party_id,
+            supplier_shipment_service.retry_goods_movement, db, doc_code, sap_goods_movement_client, sap_inventory_client, owner_party_id,
         )
     except supplier_shipment_service.ShipmentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

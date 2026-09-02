@@ -449,7 +449,35 @@ def mark_discrepancy(db, doc_code: str, marked_by: str, reason: str, items: list
     return get_shipment_by_code(db, doc_code)
 
 
-def _post_goods_movement_for_items(db, doc, goods_movement_client, owner_party_id: str, site_id: str, warehouse_id: str) -> dict:
+STOCK_STATUS_LABEL_TO_CODE = {"Inspection": "1", "Not Assigned": ""}
+
+
+def _resolve_source_stock_status(inventory_client, site_id: str, source_area_id: str, product_id: str, qty: float) -> str:
+    """Sep 2 2026 fix (real root cause of "Negative stock not permitted
+    in logistics area P1-RM" / "No inventory items found" on shipment
+    MU7DE2): the Goods Movement call below used to always leave
+    InventoryStockStatusCode blank (assuming "Not Assigned"/plain
+    stock), but a live check of this material's actual on-hand
+    inventory found it sits under "Inspection" status instead (SAP's
+    own QM/Inspection Plan routing for this material on PO receipt) -
+    the blank-status bucket usually has little to no matching balance,
+    so the move was rejected outright. This looks up which status the
+    source area's balance for this exact material/qty ACTUALLY sits
+    under right now and targets that (a plain relocation keeps the
+    same status on both ends - this is not a status-change posting,
+    see `_post_goods_movement_for_items`'s docstring). Falls back to
+    blank if nothing matches, same as the original behavior."""
+    try:
+        rows = inventory_client.get_inventory_detail(site_id=site_id, product_ids=[product_id])
+    except Exception:
+        return ""
+    for row in rows:
+        if row.get("logistics_area_id", "").rsplit("/", 1)[-1] == source_area_id and row.get("qty", 0) >= qty:
+            return STOCK_STATUS_LABEL_TO_CODE.get(row.get("stock_status"), "")
+    return ""
+
+
+def _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id: str, site_id: str, warehouse_id: str) -> dict:
     """Step 2 of the live SAP write - moves each shipment line's
     received qty into the receiver's chosen warehouse. Source area
     defaults to this app's own "{site}-RM" convention (same one used
@@ -471,17 +499,33 @@ def _post_goods_movement_for_items(db, doc, goods_movement_client, owner_party_i
     stock needs either the product's own SAP Inspection Plan config (so
     the GSA's own automatic receiving flow routes it there) or a
     different SAP service/config - flagged as a known open item, not
-    silently claimed as working."""
+    silently claimed as working.
+
+    Sep 2 2026 UPDATE (real root cause of "Negative stock not permitted
+    in logistics area P1-RM" / "No inventory items found" on shipment
+    MU7DE2): live-checked this exact material's ACTUAL on-hand stock at
+    P1-RM via `sap_inventory_client` after a real GR posted - it sits
+    under stock_status="Inspection" (SAP's own QM/Inspection Plan
+    routing for THIS material on receipt), not "Not Assigned"/blank.
+    The Aug 28 finding above is still correct in general (you can't use
+    this API to CHANGE a stock's status), but it doesn't apply here -
+    this isn't a status change, it's a plain relocation of stock that
+    is ALREADY at Inspection status, so the movement's OWN status code
+    must match reality (Inspection, "1") on both ends, not be left
+    blank/"Not Assigned" (which usually has little to no matching
+    balance there, hence the negative-stock/no-items-found errors)."""
     per_item = []
     all_ok = True
     for it in doc["items"]:
         qty = it.get("actual_qty", it["ship_qty"])
+        source_area = f"{site_id}-RM"
+        stock_status = _resolve_source_stock_status(inventory_client, site_id, source_area, it["product_id"], qty)
         try:
             result = goods_movement_client.goods_movement(
                 owner_party_id=owner_party_id, product_id=it["product_id"],
-                source_logistics_area_id=f"{site_id}-RM", target_logistics_area_id=warehouse_id,
+                source_logistics_area_id=source_area, target_logistics_area_id=warehouse_id,
                 quantity=qty, quantity_uom=it.get("unit_of_measure") or "EA", site_id=site_id,
-                dry_run=False,
+                dry_run=False, target_stock_status_code=stock_status,
             )
         except Exception as e:
             result = {"ok": False, "error": str(e)}
@@ -546,7 +590,7 @@ def prepare_approval(db, doc_code: str, approved_by: str, supplier_doc_num: str,
     return get_shipment_by_code(db, doc_code)
 
 
-def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_client, owner_party_id: str) -> dict:
+def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_client, inventory_client, owner_party_id: str) -> dict:
     """Called after sap_playwright_supplier_pgr_service.
     post_goods_receipt_via_ui returns - `gr_results` is its
     results list. All POs in the shipment must have posted for step 2
@@ -561,7 +605,7 @@ def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_c
     sap_movement_status = "not_applicable"
     sap_movement_result = None
     if sap_sync_status == "posted":
-        sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, owner_party_id, doc["site_id"], doc["warehouse_id"])
+        sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id, doc["site_id"], doc["warehouse_id"])
         sap_movement_status = "posted" if sap_movement_result.get("ok") else "pending"
     else:
         sap_movement_result = {"ok": False, "reason": "Skipped - Goods Receipt (step 1) did not succeed yet"}
@@ -590,7 +634,7 @@ def prepare_retry_goods_receipt(db, doc_code: str) -> dict:
 
 
 
-def retry_goods_movement(db, doc_code: str, goods_movement_client, owner_party_id: str) -> dict:
+def retry_goods_movement(db, doc_code: str, goods_movement_client, inventory_client, owner_party_id: str) -> dict:
     """Retries ONLY step 2 (the Goods Movement into the chosen warehouse)
     for a shipment whose Goods Receipt (step 1) already posted but the
     movement itself failed/is still pending - mirrors the retry-wip-
@@ -602,7 +646,7 @@ def retry_goods_movement(db, doc_code: str, goods_movement_client, owner_party_i
         raise ShipmentValidationError("The Goods Receipt (step 1) has not posted to SAP yet - nothing to retry")
     if not doc.get("site_id") or not doc.get("warehouse_id"):
         raise ShipmentValidationError("This shipment has no warehouse recorded to retry into")
-    sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, owner_party_id, doc["site_id"], doc["warehouse_id"])
+    sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id, doc["site_id"], doc["warehouse_id"])
     sap_movement_status = "posted" if sap_movement_result.get("ok") else "pending"
     db[SHIPMENTS_COLLECTION].update_one(
         {"_id": doc["_id"]},
