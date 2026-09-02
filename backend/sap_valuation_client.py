@@ -38,6 +38,28 @@ BATCH_SIZE = 15
 # should be treated as "still valid, no known end date".
 OPEN_ENDED_EPOCH_MS = 253402214400000
 
+# Site ID -> that site's PermanentEstablishmentUUID on
+# MaterialValuationDataValuationLevelCollection (Sep 2 2026 - there is no
+# SAP service in this app that exposes this mapping directly, so it was
+# discovered empirically: for products stocked at exactly one site per our
+# own inventory_cache, the SAME single ValuationLevel's PermanentEstablishmentUUID
+# was recorded across many products per site; P8/P2W (no single-site
+# product available) were resolved by elimination using a product shared
+# with an already-known site, e.g. P1+P8, P2+P2W). Used by get_standard_costs
+# to fix a real bug: a tied StartDate across two sites' valuation levels for
+# the same product used to let the WRONG site's Moving Average price win on
+# Stock Transfer prints/challans.
+SITE_TO_PERMANENT_ESTABLISHMENT_UUID = {
+    "P1": "635BA7F2-7D13-1EED-B8CE-CEBCAEB25CA5",
+    "P2": "635BA7F2-7D13-1EDD-B8D1-AD5E5DDCA263",
+    "P2W": "FA163E48-7A8A-1FE1-88A4-6FFF493D76F9",
+    "P3": "15A43E26-4017-1EEF-B78F-50D714FBEA79",
+    "P4": "635BA7F2-7D13-1EDD-B8D5-024941AA759D",
+    "P7": "635BA7F2-7D13-1EED-B8D5-8AF511A06182",
+    "P8": "635BA7F2-7D13-1EDD-B8D0-D5B7DCECF950",
+    "P9": "4D85C88B-953A-1EDF-8B8E-099F70CE3711",
+}
+
 
 def _object_id_to_uuid(object_id: str) -> str:
     """SAP's 32-char hex ObjectID is the same value as the record's own UUID,
@@ -89,7 +111,7 @@ class SAPValuationClient:
             yield items[i:i + size]
 
     def _fetch_valuation_level_ids(self, product_uuids):
-        """product_uuid -> list of ValuationLevel UUIDs (dashed)."""
+        """product_uuid -> list of (ValuationLevel UUID (dashed), PermanentEstablishmentUUID) tuples."""
         mapping = {uuid: [] for uuid in product_uuids}
 
         def fetch_chunk(chunk):
@@ -117,7 +139,8 @@ class SAPValuationClient:
                 material_uuid = (row.get("MaterialUUID") or "").upper()
                 object_id = row.get("ObjectID")
                 if material_uuid in mapping and object_id:
-                    mapping[material_uuid].append(_object_id_to_uuid(object_id))
+                    pe_uuid = (row.get("PermanentEstablishmentUUID") or "").upper() or None
+                    mapping[material_uuid].append((_object_id_to_uuid(object_id), pe_uuid))
         return mapping
 
     def _fetch_valuation_prices(self, valuation_level_uuids):
@@ -158,17 +181,29 @@ class SAPValuationClient:
     # app (BOM screen, Inventory, Purchasing Plan all route through here).
     MOVING_AVERAGE_PRICE_TYPE_CODE = "1"
 
-    def get_standard_costs(self, product_uuids):
+    def get_standard_costs(self, product_uuids, site_id: str = None):
         """Returns {product_uuid: {"amount": float, "currency": str} | None}
         - despite the method name (kept for callers), this returns the
-        Moving Average price (PriceTypeCode "1"), not Standard Cost."""
+        Moving Average price (PriceTypeCode "1"), not Standard Cost.
+
+        `site_id` (Sep 2 2026 fix): a material can have one valuation level
+        PER SITE, each with its own independent price history. Previously,
+        when two sites' currently-valid prices happened to tie on StartDate,
+        whichever one came first in SAP's response order silently won - so a
+        Stock Transfer print could show another site's rate instead of the
+        actual ship-from site's. Pass the ship-from/relevant site_id to only
+        ever consider that site's own valuation level. Omit it (existing
+        callers, unchanged) to keep the old "best across all sites"
+        behavior - not recommended for anything that displays a rate tied to
+        one specific site."""
         product_uuids = list({uuid.upper() for uuid in product_uuids if uuid})
         if not product_uuids:
             return {}
+        site_pe_uuid = SITE_TO_PERMANENT_ESTABLISHMENT_UUID.get((site_id or "").strip().upper())
 
         level_map = self._fetch_valuation_level_ids(product_uuids)
 
-        all_level_uuids = [lvl for levels in level_map.values() for lvl in levels]
+        all_level_uuids = [lvl for levels in level_map.values() for lvl, _pe in levels]
         price_map = self._fetch_valuation_prices(all_level_uuids) if all_level_uuids else {}
 
         now = datetime.now(timezone.utc)
@@ -183,9 +218,17 @@ class SAPValuationClient:
             # Prefer any currently-valid NON-ZERO Moving Average price; only
             # fall back to a zero Moving Average price if that's genuinely
             # the only option. Standard Cost ("2") rows are never considered.
+            levels = level_map.get(product_uuid, [])
+            if site_pe_uuid:
+                site_levels = [lvl for lvl, pe in levels if pe == site_pe_uuid]
+                # If this site genuinely has no valuation level of its own
+                # for this product, fall back to "all sites" rather than
+                # silently return nothing - better an approximate price than
+                # a blank rate on a print.
+                levels = site_levels or levels
             best_price, best_start = None, None
             best_nonzero_price, best_nonzero_start = None, None
-            for level_uuid in level_map.get(product_uuid, []):
+            for level_uuid in levels:
                 for price_row in price_map.get(level_uuid, []):
                     if str(price_row.get("PriceTypeCode")) != self.MOVING_AVERAGE_PRICE_TYPE_CODE:
                         continue

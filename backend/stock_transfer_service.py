@@ -453,7 +453,7 @@ def _price_hsn_for_note(db, doc: dict, sap_valuation_client) -> list:
         for c in db["component_master"].find({"_id": {"$in": product_ids}}, {"product_uuid": 1})
     }
     product_uuids = [u for u in product_uuid_by_id.values() if u]
-    costs = sap_valuation_client.get_standard_costs(product_uuids) if product_uuids else {}
+    costs = sap_valuation_client.get_standard_costs(product_uuids, site_id=doc.get("ship_from_site_id")) if product_uuids else {}
     entries = []
     for it in doc["items"]:
         product_uuid = product_uuid_by_id.get(it["product_id"])
@@ -1317,7 +1317,7 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str)
         for c in db["component_master"].find({"_id": {"$in": product_ids}}, {"product_uuid": 1})
     }
     product_uuids = [u for u in product_uuid_by_id.values() if u]
-    costs = sap_valuation_client.get_standard_costs(product_uuids) if product_uuids else {}
+    costs = sap_valuation_client.get_standard_costs(product_uuids, site_id=doc.get("ship_from_site_id")) if product_uuids else {}
 
     sale_date = datetime.strptime(doc["date_of_supply"], "%Y-%m-%d")
     line_items = []
