@@ -27,6 +27,18 @@ function fmtMoney(amount, currency) {
   }
 }
 
+// Sep 2 2026, user's explicit ask - Open Qty is now fetched live from
+// SAP (fetch_open_po_quantities, refreshed ~every 20 min in the
+// background) instead of only computed from this app's own shipment
+// records, so a receipt made outside this app still counts. This
+// shows the supplier/staff how fresh that SAP read is.
+function timeAgo(isoString) {
+  const diffMin = Math.max(0, Math.round((Date.now() - new Date(isoString).getTime()) / 60000));
+  if (diffMin < 1) return "just now";
+  if (diffMin < 60) return `${diffMin}m ago`;
+  return `${Math.round(diffMin / 60)}h ago`;
+}
+
 const cartKey = (po) => `${po.po_number}::${po.item_number}`;
 
 export default function SupplierDashboardPage() {
@@ -418,7 +430,12 @@ export default function SupplierDashboardPage() {
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data text-xs">{po.po_date || "-"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data text-xs">{fmtMoney(po.unit_price, po.currency)}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data text-xs">{fmtMoney(po.subtotal, po.currency)}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data">{po.remaining_qty} {po.unit_of_measure}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data">
+                        {po.remaining_qty} {po.unit_of_measure}
+                        <div className="text-[10px] text-[#98A2B3] font-sans" data-testid={`supplier-po-sap-verified-${po.po_number}-${po.item_number}`}>
+                          {po.sap_verified_at ? `SAP-verified ${timeAgo(po.sap_verified_at)}` : "not yet verified in SAP"}
+                        </div>
+                      </td>
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data text-xs">{po.due_date || "-"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right">
                         <Input

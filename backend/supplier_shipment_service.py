@@ -62,6 +62,7 @@ import sap_po_client
 from sap_wip_clearing_client import company_and_set_of_books_for_site
 
 PO_CACHE_COLLECTION = "supplier_portal_po_cache"
+SAP_OPEN_QTY_COLLECTION = "sap_po_open_qty_cache"
 SHIPMENTS_COLLECTION = "supplier_portal_shipments"
 DOC_CODE_ALPHABET = "".join(c for c in string.ascii_uppercase + string.digits if c not in "0O1I")
 DOC_CODE_LENGTH = 6
@@ -197,12 +198,60 @@ def _shipped_qty_so_far(db, vendor_code: str, po_number: str, item_number: str, 
     return result[0]["total"] if result else 0.0
 
 
+def get_sap_open_qty(db, po_number: str, item_number: str) -> dict:
+    """Sep 2 2026, user's explicit ask: "Open PO qty should be fetched
+    from SAP, not just maintained locally... to ensure if shipments
+    have been received outside this app, we keep count." Backed by
+    `sap_playwright_supplier_pgr_service.fetch_open_po_quantities()`
+    (read-only SAP UI read, refreshed periodically in the background -
+    see server.py's start_sap_open_qty_refresh_loop) into
+    SAP_OPEN_QTY_COLLECTION. Returns None if this PO/item hasn't been
+    read yet (never seen it, or read failed every cycle so far) - the
+    caller must fall back to the old locally-computed value, NEVER
+    treat "not cached yet" as zero-open."""
+    return db[SAP_OPEN_QTY_COLLECTION].find_one({"_id": f"{po_number}:{item_number}"})
+
+
+def list_active_po_numbers(db) -> list:
+    """Distinct PO numbers currently in the vendor PO cache (any vendor,
+    not expired) - the background refresh loop's own worklist."""
+    return [r["_id"] for r in db[PO_CACHE_COLLECTION].aggregate([
+        {"$match": {"expired": {"$ne": True}}},
+        {"$group": {"_id": "$po_number"}},
+    ])]
+
+
+def store_sap_open_qty_cache(db, results: dict) -> dict:
+    """results: {po_number: {item_number: {po_qty, delivered_qty,
+    open_qty, delivery_completed}}} - from fetch_open_po_quantities().
+    Upserts each PO/item pair with a fresh `fetched_at` - a PO that
+    couldn't be read this cycle simply keeps its last-known cached
+    value (see get_sap_open_qty's docstring)."""
+    now = datetime.now(timezone.utc)
+    updated = 0
+    for po_number, items in results.items():
+        for item_number, vals in items.items():
+            db[SAP_OPEN_QTY_COLLECTION].update_one(
+                {"_id": f"{po_number}:{item_number}"},
+                {"$set": {"po_number": po_number, "item_number": item_number, "fetched_at": now, **vals}},
+                upsert=True,
+            )
+            updated += 1
+    return {"pos_updated": len(results), "items_updated": updated}
+
+
 def get_cached_pos_with_remaining(db, vendor_code: str) -> list:
     items = list(db[PO_CACHE_COLLECTION].find({"vendor_code": vendor_code, "expired": {"$ne": True}}, {"_id": 0}).sort("po_number", 1))
     for it in items:
         shipped = _shipped_qty_so_far(db, vendor_code, it["po_number"], it["item_number"])
         it["already_shipped_qty"] = shipped
-        it["remaining_qty"] = round((it.get("po_qty") or 0) - shipped, 4)
+        sap_cached = get_sap_open_qty(db, it["po_number"], it["item_number"])
+        if sap_cached:
+            it["remaining_qty"] = sap_cached["open_qty"]
+            it["sap_verified_at"] = sap_cached["fetched_at"]
+        else:
+            it["remaining_qty"] = round((it.get("po_qty") or 0) - shipped, 4)
+            it["sap_verified_at"] = None
         it["buyer_entity_name"] = sap_po_client.buyer_entity_name(it.get("buyer_code"))
     return items
 
@@ -239,7 +288,14 @@ def _resolve_items(db, vendor_code: str, requested_items: list, exclude_doc_code
         if ship_qty <= 0:
             raise ShipmentValidationError(f"Ship quantity for item {item_number} on PO {po_number} must be greater than 0")
         already_shipped = _shipped_qty_so_far(db, vendor_code, po_number, item_number, exclude_doc_code=exclude_doc_code)
-        remaining = (cached.get("po_qty") or 0) - already_shipped
+        # Sep 2 2026, user's explicit ask: prefer SAP's own verified
+        # Open PO Quantity (accounts for ANY receipt, including ones
+        # posted outside this app) over the locally-computed figure -
+        # see get_sap_open_qty()'s docstring. Falls back to the old
+        # local computation only if SAP hasn't been read for this item
+        # yet.
+        sap_cached = get_sap_open_qty(db, po_number, item_number)
+        remaining = sap_cached["open_qty"] if sap_cached else (cached.get("po_qty") or 0) - already_shipped
         if ship_qty > remaining + 1e-6:
             raise ShipmentValidationError(f"Item {item_number} on PO {po_number}: cannot ship {ship_qty} - only {remaining:g} still open")
         resolved.append({

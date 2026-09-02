@@ -124,16 +124,30 @@ async def _search_po_exact(page, po_number: str) -> int:
             break
     if filter_btn is None:
         raise RuntimeError("Could not find the Filter icon on the Purchase Orders screen")
-    await filter_btn.click(force=True)
-    await page.wait_for_timeout(1500)
 
-    po_id_input = None
-    for lbl in await page.query_selector_all("label"):
-        if (await lbl.inner_text()).strip() == "Purchase Order ID":
-            for_id = await lbl.get_attribute("for")
-            if for_id:
-                po_id_input = await page.query_selector(f"#{for_id}")
-            break
+    def _find_po_id_label():
+        return page.query_selector_all("label")
+
+    async def _po_id_input():
+        for lbl in await _find_po_id_label():
+            if (await lbl.inner_text()).strip() == "Purchase Order ID" and await lbl.is_visible():
+                for_id = await lbl.get_attribute("for")
+                if for_id:
+                    return await page.query_selector(f"#{for_id}")
+        return None
+
+    # Sep 2 2026 fix (found while batch-reading multiple POs in one
+    # session for fetch_open_po_quantities): this toggle button CLOSES
+    # the panel if it's already open from a PREVIOUS PO's search in the
+    # same session (navigating into/out of a PO detail screen does NOT
+    # reset it) - clicking blindly every time is a coin flip. Checks
+    # for the real input first; only toggles (and re-checks) if it's
+    # not there yet, so this stays correct whichever state it starts in.
+    po_id_input = await _po_id_input()
+    if po_id_input is None:
+        await filter_btn.click(force=True)
+        await page.wait_for_timeout(1500)
+        po_id_input = await _po_id_input()
     if po_id_input is None:
         raise RuntimeError("Could not find the 'Purchase Order ID' filter field")
     await po_id_input.fill(po_number)
@@ -442,3 +456,13 @@ def total_progress_steps(total_pos: int) -> int:
     GR + the Goods Movement SOAP call after it) as one consistent
     sequence, not two separate counters."""
     return 2 + total_pos * STEPS_PER_PO + 1
+
+
+# Sep 2 2026: the Playwright-based `fetch_open_po_quantities` that used
+# to live here was CANCELLED per user's explicit ask ("we cannot go with
+# playwright for this") - it was live-hammering SAP's UI sequentially
+# for every active PO (10-20s each) with a ~100% failure rate (SAPUI5's
+# view-selector auto-closing on a re-click of an already-selected
+# value), and was found starving other concurrent SAP calls. Replaced
+# with `sap_po_analytics_client.py`'s single fast OData analytics query
+# - see that module's docstring.

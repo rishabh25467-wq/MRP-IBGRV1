@@ -39,6 +39,7 @@ from sap_material_physical_client import (
 )
 from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplierAuthError, SAPSupplierNotConfiguredError
 from sap_po_client import SAPPurchaseOrderClient, SAPPurchaseOrderError, SAPPurchaseOrderNotConfiguredError, WATERMARK_COLLECTION as SAP_PO_WATERMARK_COLLECTION
+from sap_po_analytics_client import SAPPOAnalyticsClient
 from sap_gsa_write_client import SAPGSAWriteClient
 from sap_po_write_client import SAPPurchaseOrderWriteClient, SAPPurchaseOrderWriteError, SAPPurchaseOrderWriteNotConfiguredError
 from sap_price_spec_client import SAPPriceSpecClient, SAPPriceSpecError, bulk_push_erp_prices_to_sap
@@ -426,6 +427,12 @@ sap_po_write_client = SAPPurchaseOrderWriteClient(
 
 sap_valuation_client = SAPValuationClient(
     base_url=os.environ['SAP_ODATA_BASE_URL'],
+    username=os.environ['SAP_ODATA_USERNAME'],
+    password=os.environ['SAP_ODATA_PASSWORD'],
+)
+
+sap_po_analytics_client = SAPPOAnalyticsClient(
+    instance_url=os.environ['SAP_INSTANCE_URL'],
     username=os.environ['SAP_ODATA_USERNAME'],
     password=os.environ['SAP_ODATA_PASSWORD'],
 )
@@ -6395,6 +6402,38 @@ async def start_supplier_po_cache_refresh_loop():
             except Exception as e:
                 logger.error(f"Supplier Portal PO cache background refresh failed: {e}")
             await asyncio.sleep(SUPPLIER_PO_CACHE_REFRESH_INTERVAL_SECONDS)
+
+    asyncio.create_task(loop())
+
+
+# Sep 2 2026: the ORIGINAL Playwright-based "Open PO Qty" background
+# refresh was CANCELLED per user's explicit ask ("we cannot go with
+# playwright for this") - it was found live-hammering SAP's UI
+# sequentially for every active PO (10-20s each, 30+ POs per cycle),
+# ~100% failing ("Element is not visible" - SAPUI5's view-selector
+# auto-closing on a re-click of an already-selected value) and starving
+# other concurrent SAP calls. Replaced same day with a single fast
+# OData analytics query (`sap_po_analytics_client.py` - user found the
+# actual report, `RPSRMPO_B02_Q0004QueryResults`, live-verified to
+# expose real PO Quantity/Delivery Quantity per item) - no browser
+# automation, no per-PO navigation, safe to run frequently.
+SAP_OPEN_QTY_CACHE_REFRESH_INTERVAL_SECONDS = 5 * 60
+
+
+@app.on_event("startup")
+async def start_sap_open_qty_refresh_loop():
+    async def loop():
+        await asyncio.sleep(60)
+        while True:
+            try:
+                po_numbers = await asyncio.to_thread(supplier_shipment_service.list_active_po_numbers, db)
+                if po_numbers:
+                    results = await asyncio.to_thread(sap_po_analytics_client.fetch_open_po_quantities, po_numbers)
+                    stats = await asyncio.to_thread(supplier_shipment_service.store_sap_open_qty_cache, db, results)
+                    logger.info(f"SAP Open PO Quantity cache refresh complete: {stats}")
+            except Exception as e:
+                logger.error(f"SAP Open PO Quantity cache refresh failed: {e}")
+            await asyncio.sleep(SAP_OPEN_QTY_CACHE_REFRESH_INTERVAL_SECONDS)
 
     asyncio.create_task(loop())
 

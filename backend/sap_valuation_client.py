@@ -225,7 +225,22 @@ class SAPValuationClient:
                 # for this product, fall back to "all sites" rather than
                 # silently return nothing - better an approximate price than
                 # a blank rate on a print.
-                levels = site_levels or levels
+                # Sep 2 2026 BUG FOUND + FIXED: the "all sites" fallback used
+                # to be the raw `levels` list of (lvl, pe) TUPLES (never
+                # flattened), and when `site_pe_uuid` was falsy (every
+                # non-site-aware caller: BOM Explorer, Inventory, Purchasing
+                # Plan) the `if site_pe_uuid:` branch never ran at all, so
+                # `levels` stayed as tuples in BOTH cases - `price_map.get
+                # (level_uuid, [])` below then always missed (price_map is
+                # keyed by plain UUID strings), silently returning None for
+                # EVERY product on any caller that doesn't pass site_id, and
+                # even for site-aware callers whenever a product has no
+                # valuation level at that specific site. Always flatten to
+                # plain lvl-string lists now, live-verified fixes "0 of N
+                # components have a live SAP cost" on BOM Explorer.
+                levels = site_levels or [lvl for lvl, _pe in levels]
+            else:
+                levels = [lvl for lvl, _pe in levels]
             best_price, best_start = None, None
             best_nonzero_price, best_nonzero_start = None, None
             for level_uuid in levels:
