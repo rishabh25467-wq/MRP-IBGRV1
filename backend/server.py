@@ -3947,9 +3947,21 @@ async def release_production_order(payload: ReleaseProductionOrderRequest, reque
         result = await asyncio.to_thread(sap_production_order_release_client.release_order, payload.production_order_id, True)
     except SAPProductionOrderReleaseError as e:
         raise HTTPException(status_code=502, detail=f"SAP error: {e}")
+    # Bug fix (Sep 1 2026, real incident order 71180): this order may have
+    # been created via the proposal flow earlier (left "In Preparation")
+    # and is only NOW being released via this standalone form - without
+    # looking up its own proposal_created row, log_order_release had no
+    # job_id/match_proposal_id to match on and always inserted a brand
+    # new, disconnected, blank ("Order Released", no model/site/qty) row
+    # instead of updating the existing "Proposal -> Order" row in place.
+    existing_proposal_row = await asyncio.to_thread(
+        db[production_confirmation_service.PROPOSAL_HISTORY_COLLECTION].find_one,
+        {"production_order_id": payload.production_order_id, "type": "proposal_created"},
+    )
     await asyncio.to_thread(
         production_confirmation_service.log_order_release, db, payload.actor, payload.production_order_id, result,
         None, request.state.user.get("_id"),
+        existing_proposal_row.get("production_proposal_id") if existing_proposal_row else None,
     )
     return result
 
