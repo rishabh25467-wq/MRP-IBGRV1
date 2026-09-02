@@ -6128,7 +6128,18 @@ async def get_admin_grn_lookup(doc_code: str, request: Request):
     # code" (mrp vendor side changes.docx, Sep 2026): narrow the Site choices
     # down to only the buying entity's own sites, further narrowed by this
     # user's own Store Assignment binding (if any).
-    allowed = await asyncio.to_thread(supplier_shipment_service.allowed_site_ids_for_buyer_code, db, doc.get("buyer_code"))
+    # Sep 2 2026 fix (user report: "why is SITE not fixed in GRN?"): prefer
+    # the EXACT real ship-to Site (SAP's own ShipToLocation on the PO) when
+    # it's resolvable - buyer_code alone can't fully pin a site since an
+    # entity can own more than one (RI = P1 AND P8), so falling back to the
+    # entity-level list left 2+ choices and never auto-locked. Only falls
+    # back to the coarser entity-wide list when the exact site is unknown
+    # (legacy PO cache row from before this fix, or a shipment spanning
+    # more than one site).
+    exact_site_id = await asyncio.to_thread(supplier_shipment_service.derive_ship_to_site_id, db, doc)
+    allowed = [exact_site_id] if exact_site_id else await asyncio.to_thread(
+        supplier_shipment_service.allowed_site_ids_for_buyer_code, db, doc.get("buyer_code"),
+    )
     doc["allowed_site_ids"] = _visible_sites_for_user(request.state.user, allowed)
     # Distinct from "legacy shipment, entity unknown" (allowed_site_ids falls
     # back to every site in that case) - this specifically means "we know the

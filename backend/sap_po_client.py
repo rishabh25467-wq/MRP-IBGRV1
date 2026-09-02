@@ -263,6 +263,15 @@ class SAPPurchaseOrderClient:
                     "currency": currency,
                     "unit_price": float(unit_price_el.text) if unit_price_el is not None and unit_price_el.text else None,
                     "subtotal": float(subtotal_el.text) if subtotal_el is not None and subtotal_el.text else None,
+                    # Sep 2 2026 fix (user report: "why is SITE not fixed in
+                    # GRN?"): the item's own real SAP ship-to Site/plant -
+                    # buyer_code (RI/RT) alone can't pin an exact site since
+                    # an entity owns MULTIPLE sites (e.g. RI = P1 and P8), so
+                    # GRN's Site field could only narrow to 2 choices, never
+                    # auto-lock to 1. This is the exact SAP field the PO
+                    # itself was actually placed against - confirmed live on
+                    # this tenant's real PurchaseOrderItem schema.
+                    "ship_to_site_id": item.findtext("ShipToLocation/LocationID"),
                 })
         self._advance_watermark(db, max_id_seen)
         return rows

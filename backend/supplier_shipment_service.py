@@ -258,6 +258,11 @@ def _resolve_items(db, vendor_code: str, requested_items: list, exclude_doc_code
             # this field existed.
             "buyer_code": cached.get("buyer_code"),
         })
+        # NOTE: `ship_to_site_id` deliberately NOT copied onto the shipment
+        # item here - see derive_ship_to_site_id() below, which re-reads it
+        # live from PO_CACHE_COLLECTION at GRN lookup time instead. That way
+        # a shipment created before this field existed still resolves to the
+        # exact site once the PO cache itself has been refreshed.
     buyer_codes = {r["buyer_code"] for r in resolved if r.get("buyer_code")}
     if len(buyer_codes) > 1:
         names = ", ".join(sorted(sap_po_client.buyer_entity_name(c) for c in buyer_codes))
@@ -278,6 +283,31 @@ def shipment_buyer_code(doc: dict) -> str:
         if it.get("buyer_code"):
             return it["buyer_code"]
     return None
+
+
+def derive_ship_to_site_id(db, doc: dict) -> str:
+    """The exact real SAP ship-to Site for this shipment (Sep 2 2026 fix,
+    user report: "why is SITE not fixed in GRN?" - buyer_code (RI/RT)
+    alone can't pin one site since an entity owns MULTIPLE sites, e.g.
+    RI = P1 AND P8, so the old entity-only narrowing left GRN's Site
+    field ambiguous between 2 choices, never auto-locked. Looked up
+    LIVE from PO_CACHE_COLLECTION (not stored on the shipment itself) so
+    even a shipment created before `ship_to_site_id` existed resolves
+    correctly once its PO's cache row has been refreshed at least once
+    since this fix shipped. Returns None (falls back to the coarser
+    entity-level allowed_site_ids_for_buyer_code below) if any line's
+    site is still unknown or the shipment's items span more than one
+    site."""
+    site_ids = set()
+    for it in doc.get("items", []):
+        cached = db[PO_CACHE_COLLECTION].find_one(
+            {"vendor_code": doc["vendor_code"], "po_number": it["po_number"], "item_number": it["item_number"]},
+            {"ship_to_site_id": 1},
+        )
+        if not cached or not cached.get("ship_to_site_id"):
+            return None
+        site_ids.add(cached["ship_to_site_id"])
+    return site_ids.pop() if len(site_ids) == 1 else None
 
 
 def allowed_site_ids_for_buyer_code(db, buyer_code: str) -> list:
