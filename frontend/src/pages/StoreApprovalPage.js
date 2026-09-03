@@ -104,7 +104,7 @@ const formatDateTime = (iso) => {
 // to the store, or the store can keep a paper record - same single
 // button/layout for both, content just reflects the request as-is.
 const RequestPrintSlip = ({ request }) => (
-  <div className="hidden print:block p-6 text-[13px] text-[#101828]" style={{ fontFamily: "'DM Sans', sans-serif" }} data-testid="store-request-print-slip">
+  <div className="hidden print:block p-10 text-[13px] text-[#101828]" style={{ fontFamily: "'DM Sans', sans-serif" }} data-testid="store-request-print-slip">
     <div className="text-center border-b-2 border-[#101828] pb-2">
       <h1 className="text-lg font-bold tracking-wide">Materials Hub</h1>
       <h2 className="text-sm font-bold uppercase mt-1">Material Requisition Slip</h2>
@@ -119,7 +119,7 @@ const RequestPrintSlip = ({ request }) => (
     <table className="w-full text-[12px] border-collapse mt-4">
       <thead>
         <tr>
-          {["Component", "Required Qty"].map((h) => (
+          {["Component", "Required Qty", "Issued Qty"].map((h) => (
             <th key={h} className="border border-[#101828] px-2 py-1 text-left font-bold">{h}</th>
           ))}
         </tr>
@@ -129,6 +129,7 @@ const RequestPrintSlip = ({ request }) => (
           <tr key={c.product_id}>
             <td className="border border-[#101828] px-2 py-1">{c.product_id}{c.description ? ` - ${c.description}` : ""}</td>
             <td className="border border-[#101828] px-2 py-1">{formatQty(c.required_qty)} {formatUnit(c.unit_of_measure)}</td>
+            <td className="border border-[#101828] px-2 py-1">{c.issued_qty == null ? "\u2014" : `${formatQty(c.issued_qty)} ${formatUnit(c.unit_of_measure)}`}</td>
           </tr>
         ))}
       </tbody>
@@ -992,7 +993,7 @@ export default function StoreApprovalPage() {
   return (
     <div className="min-h-screen bg-[#F2F4F7] text-[#1D2939]">
       <Toaster position="top-right" />
-      <style>{"@media print { @page { margin: 0.5in; size: auto; } }"}</style>
+      <style>{"@media print { @page { margin: 0; size: auto; } }"}</style>
       <RequestPrintSlip request={selected} />
       <header className="print:hidden h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
         <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
