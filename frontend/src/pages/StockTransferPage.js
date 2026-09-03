@@ -144,13 +144,15 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
     <>
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs text-[#667085]">Created {new Date(order.created_at).toLocaleString("en-IN")} by {order.created_by}</p>
-        <Button
-          size="sm" variant="outline" className="text-xs h-7 shrink-0"
-          onClick={() => window.open(`/inventory/inter-plant-transfer/${order.sto_id}/delivery-note`, "_blank")}
-          data-testid="stock-transfer-print-delivery-note-btn"
-        >
-          <Printer size={13} className="mr-1" /> Print Delivery Note
-        </Button>
+        {order.gi_status === "posted" && (
+          <Button
+            size="sm" variant="outline" className="text-xs h-7 shrink-0"
+            onClick={() => window.open(`/inventory/inter-plant-transfer/${order.sto_id}/delivery-note`, "_blank")}
+            data-testid="stock-transfer-print-delivery-note-btn"
+          >
+            <Printer size={13} className="mr-1" /> Print Delivery Note
+          </Button>
+        )}
       </div>
 
       {order.error_message ? (
@@ -308,6 +310,7 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
         <div><Label className="text-xs font-bold text-[#344054]">G.R No.</Label><p>{order.gr_no || "—"}</p></div>
         <div><Label className="text-xs font-bold text-[#344054]">Date Of Supply</Label><p>{order.date_of_supply || "—"}</p></div>
         <div><Label className="text-xs font-bold text-[#344054]">Freight Forwarder</Label><p data-testid="stock-transfer-detail-freight-forwarder">{order.freight_forwarder || "—"}</p></div>
+        <div><Label className="text-xs font-bold text-[#344054]">Remark</Label><p data-testid="stock-transfer-detail-remark">{order.remark || "—"}</p></div>
       </div>
 
       <div className="border border-[#EAECF0] rounded-sm overflow-auto">
@@ -385,6 +388,9 @@ export default function StockTransferPage() {
   // ask - mandatory) - written to the SAP GST Note AND the legacy ERP
   // portal's own `Trans` field, printed on the Delivery Note + Gate Pass.
   const [freightForwarder, setFreightForwarder] = useState("");
+  // Remark (Sep 2 2026, user's explicit ask) - optional free text, shown
+  // right after Freight Forwarder everywhere it appears.
+  const [remark, setRemark] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState(null);
 
@@ -801,7 +807,7 @@ export default function StockTransferPage() {
           toast.success(`Stock Transfer Order created in SAP (${formatSapId(data.result?.sap_order_id) || "—"}).`);
           setItems([]);
           setShipToSiteId(""); setShipToLocationId(""); setRequestedDeliveryDate(todayISO()); setFormError(null);
-          setVehicleNo(""); setPlaceOfSupply(""); setGrNo(""); setDateOfSupply(todayISO()); setTransportationMode("By Road"); setFreightForwarder("");
+          setVehicleNo(""); setPlaceOfSupply(""); setGrNo(""); setDateOfSupply(todayISO()); setTransportationMode("By Road"); setFreightForwarder(""); setRemark("");
           loadRecentOrders();
           if (data.sto_id) pollGiStatus(data.sto_id);
           return;
@@ -844,6 +850,7 @@ export default function StockTransferPage() {
         gr_no: grNo.trim(),
         date_of_supply: dateOfSupply,
         freight_forwarder: freightForwarder.trim(),
+        remark: remark.trim(),
         items: items.map((i) => ({
           product_id: i.product_id,
           source_warehouse_id: i.source_warehouse_id,
@@ -1207,6 +1214,10 @@ export default function StockTransferPage() {
             <Label className="text-xs font-bold text-[#344054]">Freight Forwarder*</Label>
             <Input value={freightForwarder} onChange={(e) => setFreightForwarder(e.target.value)} placeholder="e.g. Pooja Transport Company" data-testid="stock-transfer-freight-forwarder-input" />
           </div>
+          <div>
+            <Label className="text-xs font-bold text-[#344054]">Remark</Label>
+            <Input value={remark} onChange={(e) => setRemark(e.target.value)} placeholder="Optional note" data-testid="stock-transfer-remark-input" />
+          </div>
         </div>
 
 
@@ -1424,6 +1435,7 @@ export default function StockTransferPage() {
                 <div><Label className="text-xs font-bold text-[#344054]">G.R No.</Label><p>{grNo}</p></div>
                 <div><Label className="text-xs font-bold text-[#344054]">Date Of Supply</Label><p>{dateOfSupply}</p></div>
                 <div><Label className="text-xs font-bold text-[#344054]">Freight Forwarder</Label><p data-testid="stock-transfer-confirm-freight-forwarder">{freightForwarder}</p></div>
+                <div><Label className="text-xs font-bold text-[#344054]">Remark</Label><p data-testid="stock-transfer-confirm-remark">{remark || "—"}</p></div>
               </div>
               <div className="border border-[#EAECF0] rounded-sm overflow-auto">
                 <table className="w-full text-xs border-collapse" data-testid="stock-transfer-confirm-items-table">

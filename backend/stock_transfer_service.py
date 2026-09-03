@@ -271,6 +271,9 @@ def create_stock_transfer_order(db, payload: dict, created_by: str, sap_hsn_clie
     # plus printed on the Delivery Note's Transport box and the Gate
     # Pass's "Transport No" field.
     freight_forwarder = (payload.get("freight_forwarder") or "").strip()
+    # Remark (Sep 2 2026, user's explicit ask) - optional free text,
+    # positioned right after Freight Forwarder everywhere it's shown.
+    remark = (payload.get("remark") or "").strip()
     if not transportation_mode:
         raise StockTransferValidationError("Transportation Mode is required.")
     if not vehicle_no:
@@ -369,6 +372,7 @@ def create_stock_transfer_order(db, payload: dict, created_by: str, sap_hsn_clie
         "gr_no": gr_no,
         "date_of_supply": date_of_supply,
         "freight_forwarder": freight_forwarder,
+        "remark": remark,
         "items": resolved_items,
     }
     db[STO_COLLECTION].insert_one(sto_doc)
@@ -1466,6 +1470,7 @@ def get_delivery_note_data(db, erp_portal_client, sto_id: str) -> dict:
         "transportation_mode": doc.get("transportation_mode"),
         "place_of_supply": doc.get("place_of_supply"),
         "freight_forwarder": doc.get("freight_forwarder"),
+        "remark": doc.get("remark"),
         "items": items,
         "total_amount": round(total_amount, 2),
     }

@@ -5455,6 +5455,9 @@ class StockTransferOrderCreate(BaseModel):
     # ask - mandatory) - written to the SAP GST Note + ERP portal's
     # `Trans` field, printed on the Delivery Note/Gate Pass.
     freight_forwarder: str
+    # Remark (Sep 2 2026, user's explicit ask) - free text, optional,
+    # shown right after Freight Forwarder everywhere it appears.
+    remark: str = ""
     items: List[StockTransferItemCreate]
 
 
