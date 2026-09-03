@@ -34,6 +34,9 @@ export const PAGE_LABELS = {
   // Aug 27 2026, user's explicit ask: split out of "inventory" into its
   // own grantable right.
   stock_transfer: "Inter Plant Stock Transfer",
+  // Sep 3 2026, user's explicit ask: split out of "anyUser" into its own
+  // grantable right (was previously open to any logged-in user).
+  inbound_stock_transfer: "Inbound STO Receipt",
   supplier_master: "Supplier Master",
   quota_allocation: "Quota Allocation",
   admin: "Component Master (Admin)",
