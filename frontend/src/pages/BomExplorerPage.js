@@ -286,6 +286,7 @@ const collectExpandableKeys = (nodes, prefix = "") => {
 const flattenFullTree = (nodes, depth = 0, costs = null, costsLoaded = false) => {
   let out = [];
   nodes.forEach((node) => {
+    const hasChildren = node.children && node.children.length > 0;
     const row = {
       Level: depth + 1,
       "Product ID": node.product_id,
@@ -296,14 +297,23 @@ const flattenFullTree = (nodes, depth = 0, costs = null, costsLoaded = false) =>
       Active: node.active ? "Yes" : "No",
     };
     if (costsLoaded) {
-      const effective = getEffectiveCost(node, costs);
+      // Sep 3 2026, user's explicit ask: this export lists EVERY level
+      // (assembly rollup rows AND their own drill-down children) in one
+      // flat sheet. Showing a cost on an assembly row alongside its own
+      // children's costs double-counts if anyone sums the column -
+      // Total BOM Cost above only ever sums level-1 rows (see
+      // computeTotalCost), never the full flattened list. So: only leaf
+      // rows (no children) carry a cost here; assembly rows are blank -
+      // the authoritative TOTAL row appended in exportToExcel is the
+      // only number that should be trusted for a grand total.
+      const effective = hasChildren ? null : getEffectiveCost(node, costs);
       row["Std Cost"] = effective ? Number(effective.amount.toFixed(2)) : "";
       row["Currency"] = effective ? effective.currency || "" : "";
       row["Ext. Cost"] = effective && node.quantity != null ? Number((effective.amount * node.quantity).toFixed(2)) : "";
-      row["Cost Source"] = effective ? (effective.isRollup ? "Rolled-up from components" : "Direct SAP Standard Cost") : "No cost";
+      row["Cost Source"] = hasChildren ? "" : effective ? (effective.isRollup ? "Rolled-up from components" : "Direct SAP Standard Cost") : "No cost";
     }
     out.push(row);
-    if (node.children && node.children.length > 0) {
+    if (hasChildren) {
       out = out.concat(flattenFullTree(node.children, depth + 1, costs, costsLoaded));
     }
   });
@@ -456,6 +466,22 @@ export default function BomExplorerPage() {
   const exportToExcel = () => {
     if (!result) return;
     const data = flattenFullTree(result.tree, 0, costs, costsLoaded);
+    if (costsLoaded) {
+      // Sep 3 2026, user's explicit ask: one authoritative TOTAL row,
+      // computed exactly the same way as the "Total BOM Cost" stat card
+      // above (computeTotalCost sums ONLY level-1/root nodes - each
+      // already carries SAP's own fully-rolled-up cost for everything
+      // beneath it) - guaranteed to match the browser number, unlike a
+      // naive spreadsheet SUM() over every flattened row.
+      const totals = computeTotalCost(result.tree, costs);
+      Object.entries(totals).forEach(([currency, total], idx) => {
+        data.push({
+          Level: "", "Product ID": "", Description: idx === 0 ? "TOTAL BOM COST (matches browser, level-1 rollup only)" : "",
+          Quantity: "", UOM: "", ECO: "", Active: "",
+          "Std Cost": "", Currency: currency, "Ext. Cost": Number(total.toFixed(2)), "Cost Source": "",
+        });
+      });
+    }
     const worksheet = XLSX.utils.json_to_sheet(data);
     const baseCols = [{ wch: 7 }, { wch: 20 }, { wch: 40 }, { wch: 10 }, { wch: 8 }, { wch: 16 }, { wch: 8 }];
     worksheet["!cols"] = costsLoaded ? baseCols.concat([{ wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 24 }]) : baseCols;
