@@ -487,6 +487,13 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
         }
         onConfirmed(row);
       } else {
+        // Sep 3 2026 fix: the main confirmation can fail AFTER a
+        // by-product confirmation already succeeded (a real, irreversible
+        // SAP write) - surface that explicitly so it's never mistaken for
+        // "nothing happened" (see server.py's matching fix, Lot 71541).
+        if (data.byproduct_confirmation?.success) {
+          toast.warning(`By-product ${byproductMatch?.product_id || "quantity"} was posted to SAP, but the main confirmation failed below - retry once fixed (the by-product won't be re-posted).`);
+        }
         // clarified_error (Aug 2026, testing_agent iteration_105): a
         // normal SAP business rejection (no exception) now gets the same
         // readable guidance as an exception/timeout path instead of raw

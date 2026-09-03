@@ -2621,12 +2621,24 @@ async def _confirm_production_inner(job_id: str, payload: ConfirmProductionReque
             deviation_reason_code=payload.deviation_reason_code,
             confirmation_finished=payload.confirmation_finished,
         )
-    except SAPProductionLotAuthError as e:
-        job_store.update_job(db, job_id, {"status": "failed", "error": _clarify_confirm_error(str(e), payload.production_lot_id)})
-        return
-    except SAPProductionLotError as e:
-        job_store.update_job(db, job_id, {"status": "failed", "error": _clarify_confirm_error(str(e), payload.production_lot_id)})
-        return
+    except (SAPProductionLotAuthError, SAPProductionLotError) as e:
+        # Sep 3 2026 BUG FOUND + FIXED (live incident, Lot 71541): this used
+        # to return immediately here on any fault from the MAIN
+        # ReportingPoint call - discarding the fact that the by-product
+        # confirmation just above (if any) had ALREADY succeeded, a real,
+        # irreversible SAP write (confirmed live: SAP's own Confirmation
+        # Overview showed the CR-SCRAP by-product posted while the main
+        # output stayed at 0/open). Nothing was ever logged to
+        # production_confirmation_history in this path, so the by-product
+        # looked like it had vanished. Same class of bug as finish_task()'s
+        # Sep 2 fix, one step earlier in the pipeline - now this raised
+        # error is folded into a normal (logged) failure result instead of
+        # an early, unlogged return, so a successful by-product post is
+        # never silently lost.
+        result = {
+            "success": False,
+            "logs": [{"node_name": "PRODUCTION_LOT->CONFIRMATION_GROUP->REPORTING_POINT", "severity": "E", "note": str(e)}],
+        }
 
     if byproduct_confirmation is not None:
         result["byproduct_confirmation"] = byproduct_confirmation
