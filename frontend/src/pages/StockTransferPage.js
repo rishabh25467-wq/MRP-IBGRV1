@@ -138,8 +138,14 @@ const DebugScreenshotsViewer = ({ stoId }) => {
   );
 };
 
-export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingErpStoId, onRetryErpSync, retryingGiStoId, onRetryGoodsIssue, stoppingGiStoId, onForceStopGi, isAdmin }) => {
+export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingErpStoId, onRetryErpSync, retryingGiStoId, onRetryGoodsIssue, stoppingGiStoId, onForceStopGi, isAdmin, notifications, activateResults, activatingId, confirmActivateFor, setConfirmActivateFor, onActivate }) => {
   if (!order) return null;
+  // User's explicit ask (Sep 3 2026): the "Activate this site" fix action
+  // for a "No valid planning data..." rejection used to live ONLY in the
+  // separate "Action Needed" banner above the orders list - easy to miss
+  // when looking at this order's own detail modal instead. Surface the
+  // exact same action here too, for this specific order, when it applies.
+  const matchingNotification = (notifications || []).find((n) => n.sto_id === order.sto_id);
   return (
     <>
       <div className="flex items-center justify-between gap-3">
@@ -170,6 +176,52 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
               {retryingStoId === order.sto_id ? <CircleNotch size={14} className="animate-spin mr-1" /> : null}
               Retry this order
             </Button>
+
+            {isAdmin && matchingNotification && (
+              <div className="mt-3 bg-[#FFFAEB] border border-[#FEC84B] rounded-sm p-2 space-y-2" data-testid="stock-transfer-detail-activate-panel">
+                <p className="text-[#93370D]">
+                  Product <span className="font-bold">{matchingNotification.product_id}</span> has no Planning/Valuation data set up at site <span className="font-bold">{matchingNotification.site_id}</span> - this is why SAP rejected it.
+                </p>
+                {(() => {
+                  const result = activateResults?.[matchingNotification._id];
+                  if (result) {
+                    return (
+                      <div className="space-y-1" data-testid={`stock-transfer-detail-activate-result-${matchingNotification._id}`}>
+                        <p className={result.planning_logistics === "ok" ? "text-[#027A48] font-bold" : "text-[#B42318] font-bold"}>
+                          Planning / Availability / Logistics: {result.planning_logistics === "ok" ? "Activated successfully." : cleanSapMessage(result.planning_logistics)}
+                        </p>
+                        {result.valuation && (
+                          <p className={result.valuation === "ok" ? "text-[#027A48]" : "text-[#B42318]"}>
+                            Valuation: {result.valuation === "ok" ? "Activated successfully." : cleanSapMessage(result.valuation)}
+                          </p>
+                        )}
+                        {result.planning_logistics === "ok" && (
+                          <Button size="sm" variant="outline" onClick={() => onRetryOrder(matchingNotification.sto_id)} disabled={retryingStoId === matchingNotification.sto_id} data-testid={`stock-transfer-detail-activate-retry-${matchingNotification.sto_id}`}>
+                            {retryingStoId === matchingNotification.sto_id ? <CircleNotch size={14} className="animate-spin" /> : `Retry ${matchingNotification.sto_id}`}
+                          </Button>
+                        )}
+                      </div>
+                    );
+                  }
+                  if (confirmActivateFor === matchingNotification._id) {
+                    return (
+                      <div className="flex items-center gap-2 bg-white border border-[#FEC84B] rounded-sm p-2">
+                        <span className="text-[#93370D]">This writes directly to live SAP master data - are you sure?</span>
+                        <Button size="sm" onClick={() => onActivate(matchingNotification)} disabled={activatingId === matchingNotification._id} data-testid={`stock-transfer-detail-activate-confirm-${matchingNotification._id}`}>
+                          {activatingId === matchingNotification._id ? <CircleNotch size={14} className="animate-spin" /> : "Yes, activate"}
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setConfirmActivateFor(null)} data-testid={`stock-transfer-detail-activate-cancel-${matchingNotification._id}`}>Cancel</Button>
+                      </div>
+                    );
+                  }
+                  return (
+                    <Button size="sm" variant="outline" onClick={() => setConfirmActivateFor(matchingNotification._id)} data-testid={`stock-transfer-detail-activate-button-${matchingNotification._id}`}>
+                      Activate {matchingNotification.site_id} for {matchingNotification.product_id}
+                    </Button>
+                  );
+                })()}
+              </div>
+            )}
           </div>
         </div>
       ) : order.status === "created_in_sap" ? (
@@ -1417,6 +1469,8 @@ export default function StockTransferPage() {
                   retryingErpStoId={retryingErpStoId} onRetryErpSync={handleRetryErpSync}
                   retryingGiStoId={retryingGiStoId} onRetryGoodsIssue={handleRetryGoodsIssue}
                   stoppingGiStoId={stoppingGiStoId} onForceStopGi={handleForceStopGi} isAdmin={isAdmin}
+                  notifications={notifications} activateResults={activateResults} activatingId={activatingId}
+                  confirmActivateFor={confirmActivateFor} setConfirmActivateFor={setConfirmActivateFor} onActivate={handleActivate}
                 />
               )}
             </div>
@@ -1492,6 +1546,8 @@ export default function StockTransferPage() {
                 retryingErpStoId={retryingErpStoId} onRetryErpSync={handleRetryErpSync}
                 retryingGiStoId={retryingGiStoId} onRetryGoodsIssue={handleRetryGoodsIssue}
                 stoppingGiStoId={stoppingGiStoId} onForceStopGi={handleForceStopGi} isAdmin={isAdmin}
+                notifications={notifications} activateResults={activateResults} activatingId={activatingId}
+                confirmActivateFor={confirmActivateFor} setConfirmActivateFor={setConfirmActivateFor} onActivate={handleActivate}
               />
             </>
           )}
