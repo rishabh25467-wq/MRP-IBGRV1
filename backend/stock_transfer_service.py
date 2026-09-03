@@ -220,7 +220,7 @@ def _next_sto_id(db) -> str:
     return f"STO-{counter['seq']:06d}"
 
 
-def create_stock_transfer_order(db, payload: dict, created_by: str, sap_hsn_client=None) -> dict:
+def create_stock_transfer_order(db, payload: dict, created_by: str, sap_hsn_client=None, created_by_user_id: str = None) -> dict:
     """Full server-side re-validation (defense in depth - the frontend
     already enforces every one of these rules) against the CURRENT cache,
     since stock/site data can move between when the user opened the screen
@@ -359,6 +359,12 @@ def create_stock_transfer_order(db, payload: dict, created_by: str, sap_hsn_clie
         # never a raw stack trace/exception repr.
         "error_message": None,
         "created_by": created_by,
+        # Sep 3 2026, user's explicit ask (regression fix: a "user" role
+        # account could see EVERY plant's Stock Transfer Orders on the
+        # main page, not just their own) - stable identity to filter on,
+        # same id-OR-name pattern already used for Production
+        # Confirmation's open-lots (see get_stock_transfer_orders).
+        "created_by_user_id": created_by_user_id,
         "created_at": now,
         "ship_from_site_id": ship_from_site_id,
         "ship_to_site_id": ship_to_site_id,

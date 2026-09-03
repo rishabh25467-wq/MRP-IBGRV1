@@ -122,7 +122,7 @@ function InternalApp() {
             <Route path="/inventory/inter-plant-transfer" element={<ProtectedRoute page="stock_transfer"><StockTransferPage /></ProtectedRoute>} />
             <Route path="/inventory/inter-plant-transfer/:stoId/delivery-note" element={<ProtectedRoute page="stock_transfer"><DeliveryNotePage /></ProtectedRoute>} />
             <Route path="/inventory/inter-plant-transfer/:stoId/gate-pass" element={<ProtectedRoute page="stock_transfer"><GatePassPage /></ProtectedRoute>} />
-            <Route path="/inventory/inbound-receipts" element={<ProtectedRoute anyUser><InboundReceiptsPage /></ProtectedRoute>} />
+            <Route path="/inventory/inbound-receipts" element={<ProtectedRoute page="inbound_stock_transfer"><InboundReceiptsPage /></ProtectedRoute>} />
             <Route path="/purchasing-strategy/supplier-master" element={<ProtectedRoute page="supplier_master"><SupplierMasterPage /></ProtectedRoute>} />
             <Route path="/purchasing-strategy/quota-allocation" element={<ProtectedRoute page="quota_allocation"><QuotaAllocationPage /></ProtectedRoute>} />
             <Route path="/purchasing-strategy/purchase-order-create" element={<ProtectedRoute page="purchase_order"><PurchaseOrderPage /></ProtectedRoute>} />

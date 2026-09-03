@@ -81,6 +81,12 @@ PAGE_CATALOG = [
     # Stock Overview automatically also got Inter Plant Stock Transfer,
     # with no way to grant one without the other.
     {"key": "stock_transfer", "label": "Inter Plant Stock Transfer"},
+    # Sep 3 2026, user's explicit ask: Inbound STO Receipt used to be
+    # open to ANY logged-in user (no page key at all, see
+    # PAGE_ROUTE_RULES/ProtectedRoute's `anyUser` - Aug 28 2026 decision,
+    # "to start with") - now its own grantable right, separate from
+    # Inter Plant Stock Transfer above.
+    {"key": "inbound_stock_transfer", "label": "Inbound STO Receipt"},
     # Aug 2026: internal staff review/approval of external vendor
     # signups + (later phases) GRN approval for the new Supplier Portal.
     # Distinct from the Supplier Portal itself, which is NOT an Entra ID
@@ -120,6 +126,9 @@ PAGE_ROUTE_RULES = [
     # Aug 27 2026, user's explicit ask: Inter Plant Stock Transfer is now
     # its own grantable right, separate from Stock Overview above.
     ("/api/stock-transfer", {"stock_transfer"}),
+    # Sep 3 2026, user's explicit ask: see inbound_stock_transfer in
+    # PAGE_CATALOG above.
+    ("/api/inbound-receipts", {"inbound_stock_transfer"}),
     ("/api/suppliers/bulk-push-erp-to-sap", {"admin_sap_write"}),
     ("/api/suppliers/sap-price-specs", {"quota_allocation", "admin_sap_write"}),
     ("/api/suppliers/erp-prices/", {"quota_allocation"}),

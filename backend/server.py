@@ -5548,7 +5548,10 @@ async def get_stock_transfer_suggested_source(product_id: str, ship_to_site_id: 
 async def post_stock_transfer_order(payload: StockTransferOrderCreate, request: Request):
     actor = (request.state.user.get("name") or request.state.user.get("email") or "Unknown").strip()
     try:
-        doc = await asyncio.to_thread(stock_transfer_service.create_stock_transfer_order, db, payload.dict(), actor, sap_hsn_client)
+        doc = await asyncio.to_thread(
+            stock_transfer_service.create_stock_transfer_order, db, payload.dict(), actor, sap_hsn_client,
+            request.state.user.get("_id"),
+        )
     except stock_transfer_service.StockTransferValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     # Live SAP write (Aug 27 2026) - Check first (always-on safety net,
@@ -5656,8 +5659,24 @@ async def get_stock_transfer_sap_status(job_id: str):
 
 
 @api_router.get("/stock-transfer/orders")
-async def get_stock_transfer_orders():
+async def get_stock_transfer_orders(request: Request):
     docs = await asyncio.to_thread(stock_transfer_service.list_stock_transfer_orders, db)
+    # Sep 3 2026 BUG FOUND + FIXED (user-reported regression: "user now
+    # able to see all plant stock transfer" on the main page) -
+    # list_stock_transfer_orders never had ANY per-user restriction, so
+    # any account with the stock_transfer page permission saw every
+    # order across every plant. Same id-OR-name ownership pattern
+    # already used for Production Confirmation's open-lots (see
+    # get_open_production_lots) - admin/super_admin still see everything,
+    # a plain "user" now only sees Stock Transfer Orders THEY created.
+    user = request.state.user
+    if user.get("role") not in ("super_admin", "admin"):
+        my_id = user.get("_id")
+        my_name = (user.get("name") or "").strip().lower()
+        docs = [d for d in docs if (
+            (d.get("created_by_user_id") and d["created_by_user_id"] == my_id)
+            or (d.get("created_by") or "").strip().lower() == my_name
+        )]
     return [_sto_to_response(d) for d in docs]
 
 

@@ -39,11 +39,10 @@ const INVENTORY_SUBTABS = [
   // Aug 27 2026, user's explicit ask: own grantable right, separate from
   // Stock Overview above.
   { to: "/inventory/inter-plant-transfer", label: "Inter Plant Stock Transfer", testId: "nav-inventory-stock-transfer", page: "stock_transfer" },
-  // Aug 28 2026 - Inbound STO Receipt: no `page` key at all - visible to
-  // ANY logged-in user (see visibleInventorySubtabs filter below), per
-  // the user's explicit ask when pivoting away from combining outbound
-  // deliveries.
-  { to: "/inventory/inbound-receipts", label: "Inbound STO Receipt", testId: "nav-inventory-inbound-receipts" },
+  // Sep 3 2026, user's explicit ask: now its own grantable right
+  // (was: no `page` key at all, visible to any logged-in user, Aug 28
+  // 2026 "to start with" decision).
+  { to: "/inventory/inbound-receipts", label: "Inbound STO Receipt", testId: "nav-inventory-inbound-receipts", page: "inbound_stock_transfer" },
   // Aug 2026, user's explicit ask: links out to the existing Store
   // Approval screen (public/unauthenticated route, unchanged) - just a
   // shortcut into it from the main nav, no backend permission change.
