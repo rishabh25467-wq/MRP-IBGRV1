@@ -5770,9 +5770,12 @@ async def post_stock_transfer_order_retry_erp_sync(sto_id: str):
 
 @api_router.get("/admin/notifications")
 async def get_admin_notifications(request: Request):
+    # Sep 3 2026, user's explicit ask: any user who can create Stock
+    # Transfer Orders should be able to see + fix this blocker for their
+    # own orders, not just admins - they're the ones stuck waiting on it.
     user = await asyncio.to_thread(auth_service.get_current_user, request, db)
-    if not user or user.get("role") not in ("super_admin", "admin"):
-        raise HTTPException(status_code=403, detail="Admin access required")
+    if not user or not ({"stock_transfer"} & set(user.get("allowed_pages", [])) or user.get("role") in ("super_admin", "admin")):
+        raise HTTPException(status_code=403, detail="Access required")
     return {"notifications": await asyncio.to_thread(stock_transfer_service.list_open_admin_notifications, db)}
 
 
@@ -5785,8 +5788,8 @@ class ActivateMaterialSiteRequest(BaseModel):
 @api_router.post("/admin/material-sites/activate")
 async def post_activate_material_site(payload: ActivateMaterialSiteRequest, request: Request):
     user = await asyncio.to_thread(auth_service.get_current_user, request, db)
-    if not user or user.get("role") not in ("super_admin", "admin"):
-        raise HTTPException(status_code=403, detail="Admin access required")
+    if not user or not ({"stock_transfer"} & set(user.get("allowed_pages", [])) or user.get("role") in ("super_admin", "admin")):
+        raise HTTPException(status_code=403, detail="Access required")
     company_id, _ = company_and_set_of_books_for_site(payload.site_id)
     result = await asyncio.to_thread(sap_material_create_client.activate_site, payload.product_id, payload.site_id, company_id)
     if payload.notification_id and result.get("planning_logistics") == "ok":

@@ -177,7 +177,7 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
               Retry this order
             </Button>
 
-            {isAdmin && matchingNotification && (
+            {matchingNotification && (
               <div className="mt-3 bg-[#FFFAEB] border border-[#FEC84B] rounded-sm p-2 space-y-2" data-testid="stock-transfer-detail-activate-panel">
                 <p className="text-[#93370D]">
                   Product <span className="font-bold">{matchingNotification.product_id}</span> has no Planning/Valuation data set up at site <span className="font-bold">{matchingNotification.site_id}</span> - this is why SAP rejected it.
@@ -489,7 +489,10 @@ export default function StockTransferPage() {
     }
   };
 
-  useEffect(() => { if (isAdmin) loadNotifications(); }, [isAdmin]);
+  // Sep 3 2026, user's explicit ask: any user who can create Stock
+  // Transfer Orders should see + be able to fix a "site not activated"
+  // blocker for their own orders, not just admins.
+  useEffect(() => { loadNotifications(); }, []);
 
   const handleActivate = async (notification) => {
     setActivatingId(notification._id);
@@ -1283,7 +1286,7 @@ export default function StockTransferPage() {
           Review &amp; Create Stock Transfer Order <ArrowRight size={14} className="ml-1.5" />
         </Button>
 
-        {isAdmin && notifications.length > 0 && (
+        {notifications.length > 0 && (
           <div className="bg-[#FFFAEB] border border-[#FEC84B] rounded-sm overflow-hidden" data-testid="admin-action-needed-panel">
             <div className="px-3 py-2 border-b border-[#FEC84B] bg-[#FEF0C7] flex items-center gap-2">
               <Wrench size={14} className="text-[#93370D]" />
