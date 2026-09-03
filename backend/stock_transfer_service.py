@@ -1379,7 +1379,11 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str)
         "veh_no": doc.get("vehicle_no"),
         "gr_no": doc.get("gr_no"),
         "gr_date": doc.get("date_of_supply"),
-        "marks": doc.get("place_of_supply"),
+        # Sep 3 2026, user's explicit ask (was place_of_supply, no
+        # documented rationale, real Mark field mismatch found live) -
+        # this app's own "Remark" field on the STO form, not
+        # Place of Supply.
+        "marks": doc.get("remark"),
         "amount": round(total_amount, 2),
         "tdis_amt": 0,
         "ttaxable_amt": round(total_amount, 2),
