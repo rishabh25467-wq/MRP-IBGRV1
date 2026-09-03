@@ -191,7 +191,7 @@ export const MyStockRequestsTab = ({ actorName }) => {
 
   return (
     <div className="space-y-3" data-testid="my-stock-requests-tab">
-      {printTarget && createPortal(<RequestPrintSlip request={printTarget} />, document.body)}
+      {printTarget && createPortal(<RequestPrintSlip request={printTarget} heading="Request For Store" />, document.body)}
       <div className="flex flex-wrap items-end gap-3">
         <div>
           <Label className="text-xs font-bold text-[#344054]">Group By</Label>

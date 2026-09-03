@@ -22,7 +22,7 @@ const formatDateTime = (iso) => {
 // no real data source yet - user's explicit choice: show Site ID there
 // as a stand-in. "Issue For" from the reference is intentionally NOT
 // printed (user's explicit choice - meaning wasn't applicable here).
-export const RequestPrintSlip = ({ request }) => {
+export const RequestPrintSlip = ({ request, heading = "Goods Issue From Store" }) => {
   if (!request) return null;
   return (
     <div className="hidden print:block print:fixed print:top-0 print:left-0 print:w-full print:bg-white p-10 text-[13px] text-[#101828]" style={{ fontFamily: "'DM Sans', sans-serif" }} data-testid="store-request-print-slip">
@@ -30,7 +30,7 @@ export const RequestPrintSlip = ({ request }) => {
       <div className="flex justify-between items-start">
         <div />
         <div className="text-right">
-          <h1 className="text-2xl font-bold tracking-wide">Goods Issue From Store</h1>
+          <h1 className="text-2xl font-bold tracking-wide">{heading}</h1>
           <p className="text-xs text-[#667085] mt-1">Page 1 of 1</p>
         </div>
       </div>
