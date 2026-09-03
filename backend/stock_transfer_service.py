@@ -58,6 +58,24 @@ import sap_playwright_outbound_gi_service
 logger = logging.getLogger(__name__)
 
 STO_COLLECTION = "stock_transfer_orders"
+
+# Sep 3 2026, user's explicit ask (real incident: legacy ERP serial
+# number mismatch for Ship-from P1W/P2W): SAP's own Site ID and the
+# legacy ERP's `comp.Ccode` are identical for every site EXCEPT these
+# two - the ERP's `comp` table has no Ccode "P1W"/"P2W" at all (only
+# rows Ccode="W1"/"W2", each with "P1W"/"P2W" as THAT row's own `pcode`
+# column - confirmed live). sync_to_erp_portal was sending the raw SAP
+# site ID as CompCode, landing new Delivery Challans under an
+# unregistered "P1W"/"P2W" CompCode disconnected from the ERP's real
+# "W1"/"W2" Sale_No sequence. Only applies going forward - user's
+# explicit ask NOT to touch past synced orders (those keep whatever
+# CompCode they were actually written with).
+_ERP_COMP_CODE_OVERRIDE = {"P1W": "W1", "P2W": "W2"}
+
+
+def _erp_comp_code_for_ship_from(ship_from_site_id: str) -> str:
+    return _ERP_COMP_CODE_OVERRIDE.get(ship_from_site_id, ship_from_site_id)
+
 INVENTORY_CACHE_COLLECTION = "inventory_cache"
 # Real incident fix (Sep 2026, Order 30518/Delivery P1D1-492): a single
 # Playwright combine+GI attempt with NO outer bound could hang inside
@@ -1349,9 +1367,10 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str)
 
     ship_to_company = company_cache_service.get_cached_company_info(db, [doc["ship_to_site_id"]], erp_portal_client).get(doc["ship_to_site_id"])
     pcode = (ship_to_company or {}).get("pcode") or doc["ship_to_site_id"]
+    erp_comp_code = _erp_comp_code_for_ship_from(doc["ship_from_site_id"])
 
     header = {
-        "comp_code": doc["ship_from_site_id"],
+        "comp_code": erp_comp_code,
         "elec_ref_no": None,
         "sale_date": sale_date,
         "pcode": pcode,
@@ -1371,6 +1390,12 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str)
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
         "erp_portal_status": "synced", "erp_portal_error": None,
         "erp_sale_no": result["sale_no"], "erp_sale_noc": result["sale_noc"],
+        # Sep 3 2026: the CompCode actually written to the ERP for this
+        # order (see _erp_comp_code_for_ship_from above) - used by
+        # get_delivery_note_data's Serial Number instead of recomputing
+        # from ship_from_site_id, so pre-fix orders keep printing
+        # whatever CompCode they were really synced with.
+        "erp_comp_code": erp_comp_code,
         "items": stored_items,
     }})
 
@@ -1459,7 +1484,12 @@ def get_delivery_note_data(db, erp_portal_client, sto_id: str) -> dict:
     ship_to_company = _company_or_fallback(doc["ship_to_site_id"])
     session = ship_from_company.get("session")
     erp_sale_noc = doc.get("erp_sale_noc")
-    serial_number = f"{doc['ship_from_site_id']}-{erp_sale_noc}-{session}" if erp_sale_noc and session else (str(erp_sale_noc) if erp_sale_noc else None)
+    # Sep 3 2026: prefer the CompCode actually synced to the ERP
+    # (erp_comp_code) over ship_from_site_id - only present on orders
+    # synced after the P1W/P2W fix above; older orders fall back to the
+    # raw site ID exactly as before (unchanged).
+    serial_prefix = doc.get("erp_comp_code") or doc["ship_from_site_id"]
+    serial_number = f"{serial_prefix}-{erp_sale_noc}-{session}" if erp_sale_noc and session else (str(erp_sale_noc) if erp_sale_noc else None)
 
     return {
         "sto_id": sto_id,
