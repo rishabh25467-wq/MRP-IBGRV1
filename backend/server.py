@@ -15,7 +15,7 @@ from typing import List, Optional
 import requests
 from dotenv import load_dotenv
 from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import PlainTextResponse, Response, FileResponse
+from fastapi.responses import PlainTextResponse, Response, FileResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
@@ -77,6 +77,7 @@ import sap_playwright_supplier_pgr_service
 import sap_playwright_outbound_gi_service
 import supplier_service
 import stock_transfer_service
+import delivery_note_excel_service
 import inbound_receipt_service
 import company_cache_service
 import object_storage_service
@@ -5496,6 +5497,24 @@ async def get_stock_transfer_delivery_note(sto_id: str):
         return await asyncio.to_thread(stock_transfer_service.get_delivery_note_data, db, erp_portal_client, sto_id)
     except stock_transfer_service.StockTransferOrderNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@api_router.get("/stock-transfer/{sto_id}/delivery-note/excel")
+async def get_stock_transfer_delivery_note_excel(sto_id: str):
+    # Sep 3 2026, user's explicit ask ("downloaded excel is not printable
+    # for A4") - moved off client-side SheetJS (community edition drops
+    # page setup/fit-to-page on write) to server-side openpyxl, see
+    # delivery_note_excel_service.py.
+    try:
+        data = await asyncio.to_thread(stock_transfer_service.get_delivery_note_data, db, erp_portal_client, sto_id)
+    except stock_transfer_service.StockTransferOrderNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    buffer = await asyncio.to_thread(delivery_note_excel_service.build_delivery_note_excel, data)
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="delivery_challan_{sto_id}.xlsx"'},
+    )
 
 
 @api_router.post("/stock-transfer/refresh-site-stock")

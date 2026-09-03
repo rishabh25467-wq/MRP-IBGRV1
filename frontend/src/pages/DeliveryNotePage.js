@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import axios from "axios";
-import * as XLSX from "xlsx";
 import { Button } from "@/components/ui/button";
 import { Printer, CircleNotch, Ticket, DownloadSimple } from "@phosphor-icons/react";
 
@@ -212,55 +211,13 @@ export default function DeliveryNotePage() {
   const copiesToRender = copyType === "all" ? COPY_TYPES : COPY_TYPES.filter((c) => c.value === copyType);
 
   // Excel export (Sep 2 2026, user's explicit ask: "print of delivery
-  // note in excel same as pdf") - same fields/layout as the printed
-  // DeliveryNoteDocument above, just as rows instead of a page.
+  // note in excel same as pdf"; Sep 3 2026, user's explicit ask - "not
+  // printable for A4" - moved to a server-generated file via openpyxl,
+  // see delivery_note_excel_service.py, since the client-side xlsx
+  // (SheetJS community edition) library silently drops page setup on
+  // write).
   const exportExcel = () => {
-    const companyLines = (company, fallbackSiteId) => company
-      ? [
-        [company.company_name || ""],
-        [[company.address_line1, company.address_line2].filter(Boolean).join(", ")],
-        [`GSTIN: ${company.gstin || "—"}    PAN: ${company.pan || "—"}`],
-        [`State: ${company.state || "—"}    State Code: ${company.state_code || "—"}`],
-      ]
-      : [[fallbackSiteId]];
-    const rows = [
-      [companyName],
-      ...companyLines(data.ship_from_company, data.ship_from_site_id),
-      ["DELIVERY CHALLAN (Stock Transfer / Bill of Supply)"],
-      [],
-      [`Serial Number: ${data.serial_number || "—"}`],
-      [`Date of Issue: ${formatDateDMY(data.date_of_supply) || "—"}`],
-      [],
-      ["Transport Details"],
-      [`Vehicle No: ${data.vehicle_no || "—"}`],
-      [`G.R. No: ${data.gr_no || "—"}`],
-      [`Mode: ${data.transportation_mode || "—"}`],
-      [`Place of Supply: ${data.place_of_supply || "—"}`],
-      [`Freight Forwarder: ${data.freight_forwarder || "Self"}`],
-      [`Remark: ${data.remark || "—"}`],
-      [],
-      ["Details of Receiver | Billed to"],
-      ...companyLines(data.ship_to_company, data.ship_to_site_id),
-      [],
-      ["Details of Consignee | Shipped to"],
-      ...companyLines(data.ship_to_company, data.ship_to_site_id),
-      [],
-      ["Sr.", "Part Code", "Description", "HSN", "Qty", "Unit", "Rate", "Amount"],
-      ...data.items.map((it, idx) => [idx + 1, it.product_id, it.description || "—", it.hsn_code || "—", it.qty, it.unit, it.rate, it.amount]),
-      ["", "", "", "", "", "", "Total (INR)", data.total_amount],
-      [],
-      [`Total Amount (in words): ${amountInWords(data.total_amount)}`],
-      [],
-      ["Terms & Condition"],
-      ["1) This is a Stock Transfer document issued for e-way bill / GST purposes, not a Tax Invoice."],
-      ["2) Goods must be packed and inspected in good condition upon receipt."],
-      ["3) All disputes are subject to Aligarh Jurisdiction only."],
-    ];
-    const sheet = XLSX.utils.aoa_to_sheet(rows);
-    sheet["!cols"] = [{ wch: 14 }, { wch: 16 }, { wch: 30 }, { wch: 10 }, { wch: 8 }, { wch: 8 }, { wch: 12 }, { wch: 14 }];
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, sheet, "Delivery Challan");
-    XLSX.writeFile(workbook, `delivery_challan_${data.sto_id || stoId}.xlsx`);
+    window.open(`${API}/stock-transfer/${stoId}/delivery-note/excel`, "_blank");
   };
 
   return (
