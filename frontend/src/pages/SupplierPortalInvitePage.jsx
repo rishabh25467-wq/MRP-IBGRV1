@@ -1,17 +1,21 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import "@/App.css";
 import axios from "axios";
-import { PaperPlaneTilt, Buildings, Shield, EnvelopeSimple, Warning, ArrowsClockwise } from "@phosphor-icons/react";
+import { PaperPlaneTilt, Buildings, Shield, EnvelopeSimple, Warning, ArrowsClockwise, MagnifyingGlass, X, Plus } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Toaster, toast } from "@/components/ui/sonner";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const SIGNUP_STATUS_BADGE = {
   not_signed_up: { label: "Not signed up yet", className: "bg-[#98A2B3]/15 text-[#5B738B] rounded-sm" },
@@ -23,12 +27,22 @@ const SIGNUP_STATUS_BADGE = {
 export default function SupplierPortalInvitePage() {
   const [companyName, setCompanyName] = useState("");
   const [vendorCode, setVendorCode] = useState("");
-  const [email, setEmail] = useState("");
+  const [emails, setEmails] = useState([]);
+  const [emailInput, setEmailInput] = useState("");
   const [sending, setSending] = useState(false);
   const [invites, setInvites] = useState([]);
   const [loading, setLoading] = useState(true);
   const [resendingId, setResendingId] = useState(null);
   const [confirmedDuplicate, setConfirmedDuplicate] = useState(false);
+
+  // Sep 3 2026, user's explicit ask: "search SAP vendor code, autofill
+  // other details" - the local `suppliers` collection (synced from SAP,
+  // see SupplierMasterPage's "Sync from SAP") already has vendor
+  // code/name/email for ~3000 vendors, fetched once here the same way
+  // SupplierMasterPage does.
+  const [suppliers, setSuppliers] = useState([]);
+  const [vendorSearchOpen, setVendorSearchOpen] = useState(false);
+  const [vendorQuery, setVendorQuery] = useState("");
 
   const loadInvites = async () => {
     setLoading(true);
@@ -44,7 +58,26 @@ export default function SupplierPortalInvitePage() {
 
   useEffect(() => {
     loadInvites();
+    axios.get(`${API}/suppliers`).then(({ data }) => setSuppliers(data || [])).catch(() => setSuppliers([]));
   }, []);
+
+  const vendorMatches = useMemo(() => {
+    const q = vendorQuery.trim().toLowerCase();
+    if (!q) return [];
+    return suppliers
+      .filter((s) => s.sap_internal_id?.toLowerCase().includes(q) || s.name?.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [vendorQuery, suppliers]);
+
+  const selectVendor = (supplier) => {
+    setCompanyName(supplier.name);
+    setVendorCode(supplier.sap_internal_id || "");
+    if (supplier.email && emails.length === 0) {
+      setEmails([supplier.email.toLowerCase()]);
+    }
+    setVendorSearchOpen(false);
+    setVendorQuery("");
+  };
 
   // User's explicit ask: warn before re-inviting a vendor code that's
   // already been sent an invite before - avoids emailing the same
@@ -58,26 +91,58 @@ export default function SupplierPortalInvitePage() {
     setConfirmedDuplicate(false);
   }, [vendorCode]);
 
+  const addEmail = () => {
+    const candidate = emailInput.trim().toLowerCase();
+    if (!candidate) return;
+    if (!EMAIL_RE.test(candidate)) {
+      toast.error(`"${candidate}" doesn't look like a valid email`);
+      return;
+    }
+    if (emails.includes(candidate)) {
+      setEmailInput("");
+      return;
+    }
+    setEmails([...emails, candidate]);
+    setEmailInput("");
+  };
+
+  const removeEmail = (candidate) => setEmails(emails.filter((e) => e !== candidate));
+
   const sendInvite = async (e) => {
     e.preventDefault();
+    if (emails.length === 0) {
+      toast.error("Add at least one email address");
+      return;
+    }
     if (existingInviteForCode && !confirmedDuplicate) {
       setConfirmedDuplicate(true);
       return;
     }
     setSending(true);
-    try {
-      await axios.post(`${API}/admin/supplier-portal/invites`, { company_name: companyName, vendor_code: vendorCode, email });
-      toast.success(`Invite sent to ${email}`);
+    const succeeded = [];
+    const failed = [];
+    for (const recipient of emails) {
+      try {
+        await axios.post(`${API}/admin/supplier-portal/invites`, { company_name: companyName, vendor_code: vendorCode, email: recipient });
+        succeeded.push(recipient);
+      } catch (err) {
+        failed.push({ email: recipient, detail: err?.response?.data?.detail || err.message });
+      }
+    }
+    setSending(false);
+    if (succeeded.length > 0) {
+      toast.success(`Invite sent to ${succeeded.length} email${succeeded.length > 1 ? "s" : ""}: ${succeeded.join(", ")}`);
+    }
+    failed.forEach((f) => toast.error(`Could not invite ${f.email}`, { description: f.detail }));
+    if (failed.length === 0) {
       setCompanyName("");
       setVendorCode("");
-      setEmail("");
+      setEmails([]);
       setConfirmedDuplicate(false);
-      loadInvites();
-    } catch (err) {
-      toast.error("Could not send invite", { description: err?.response?.data?.detail || err.message });
-    } finally {
-      setSending(false);
+    } else {
+      setEmails(failed.map((f) => f.email));
     }
+    loadInvites();
   };
 
   const resendInvite = async (invite) => {
@@ -122,6 +187,51 @@ export default function SupplierPortalInvitePage() {
 
         <form onSubmit={sendInvite} className="mt-5 bg-white border border-[#CBD3DB] rounded-sm shadow-sm p-5 space-y-4">
           <div>
+            <Label htmlFor="invite-vendor-search" className="text-xs text-[#5B738B]">Search SAP Vendor</Label>
+            <Popover open={vendorSearchOpen} onOpenChange={setVendorSearchOpen}>
+              <PopoverTrigger asChild>
+                <div className="relative mt-1">
+                  <MagnifyingGlass size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
+                  <Input
+                    id="invite-vendor-search"
+                    value={vendorQuery}
+                    onChange={(e) => { setVendorQuery(e.target.value); setVendorSearchOpen(true); }}
+                    onFocus={() => setVendorSearchOpen(true)}
+                    placeholder="Type a vendor code or company name, e.g. H1330"
+                    className="rounded-sm border-[#CBD3DB] pl-8 font-data"
+                    data-testid="supplier-invite-vendor-search-input"
+                    autoComplete="off"
+                  />
+                </div>
+              </PopoverTrigger>
+              <PopoverContent className="p-0 w-[--radix-popover-trigger-width]" align="start" onOpenAutoFocus={(e) => e.preventDefault()}>
+                <Command shouldFilter={false}>
+                  <CommandList data-testid="supplier-invite-vendor-search-results">
+                    {vendorQuery.trim() && vendorMatches.length === 0 && (
+                      <CommandEmpty>No SAP vendor matches "{vendorQuery}"</CommandEmpty>
+                    )}
+                    <CommandGroup>
+                      {vendorMatches.map((s) => (
+                        <CommandItem
+                          key={s.id}
+                          value={s.sap_internal_id}
+                          onSelect={() => selectVendor(s)}
+                          className="cursor-pointer"
+                          data-testid={`supplier-invite-vendor-option-${s.sap_internal_id}`}
+                        >
+                          <span className="font-data font-semibold text-[#111827] mr-2">{s.sap_internal_id}</span>
+                          <span className="text-[#5B738B] truncate">{s.name}</span>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
+            <p className="text-[11px] text-[#98A2B3] mt-1">Selecting a vendor autofills Company Name and Vendor Code below.</p>
+          </div>
+
+          <div>
             <Label htmlFor="invite-company-name" className="text-xs text-[#5B738B]">Company Name</Label>
             <Input
               id="invite-company-name"
@@ -146,17 +256,45 @@ export default function SupplierPortalInvitePage() {
             />
           </div>
           <div>
-            <Label htmlFor="invite-email" className="text-xs text-[#5B738B]">Supplier Email</Label>
-            <Input
-              id="invite-email"
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="contact@supplier.com"
-              className="rounded-sm border-[#CBD3DB] mt-1"
-              data-testid="supplier-invite-email-input"
-            />
+            <Label htmlFor="invite-email" className="text-xs text-[#5B738B]">Supplier Email(s)</Label>
+            <div className="flex gap-2 mt-1">
+              <Input
+                id="invite-email"
+                type="email"
+                value={emailInput}
+                onChange={(e) => setEmailInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === ",") { e.preventDefault(); addEmail(); } }}
+                placeholder="contact@supplier.com - press Enter to add"
+                className="rounded-sm border-[#CBD3DB]"
+                data-testid="supplier-invite-email-input"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={addEmail}
+                className="rounded-sm border-[#0076CC]/40 text-[#0076CC] shrink-0"
+                data-testid="supplier-invite-add-email-button"
+              >
+                <Plus size={14} className="mr-1" /> Add
+              </Button>
+            </div>
+            {emails.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-2" data-testid="supplier-invite-email-chips">
+                {emails.map((em) => (
+                  <span
+                    key={em}
+                    className="inline-flex items-center gap-1 bg-[#0076CC]/10 text-[#0076CC] text-xs rounded-sm px-2 py-1"
+                    data-testid={`supplier-invite-email-chip-${em}`}
+                  >
+                    {em}
+                    <button type="button" onClick={() => removeEmail(em)} className="hover:text-[#B91C1C]" data-testid={`supplier-invite-remove-email-${em}`}>
+                      <X size={12} weight="bold" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            {emails.length === 0 && <p className="text-[11px] text-[#98A2B3] mt-1">Add one or more recipients - a separate invite is sent to each.</p>}
           </div>
 
           {existingInviteForCode && (
@@ -177,7 +315,7 @@ export default function SupplierPortalInvitePage() {
             data-testid="supplier-invite-send-button"
           >
             <PaperPlaneTilt size={14} className="mr-1.5" />
-            {sending ? "Sending..." : existingInviteForCode ? "Send Anyway" : "Send Invite"}
+            {sending ? "Sending..." : existingInviteForCode ? "Send Anyway" : `Send Invite${emails.length > 1 ? `s (${emails.length})` : ""}`}
           </Button>
         </form>
 
@@ -239,4 +377,3 @@ export default function SupplierPortalInvitePage() {
     </div>
   );
 }
-

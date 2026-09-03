@@ -135,7 +135,7 @@ PAGE_ROUTE_RULES = [
     ("/api/suppliers/sap-purchase-history/", {"quota_allocation"}),
     ("/api/suppliers/sap-receipt-dates/", {"quota_allocation"}),
     ("/api/suppliers/sync-from-sap", {"supplier_master"}),
-    ("/api/suppliers", {"supplier_master", "quota_allocation"}),
+    ("/api/suppliers", {"supplier_master", "quota_allocation", "supplier_portal_admin"}),
     ("/api/products/search", {"quota_allocation", "production_confirmation", "inventory", "stock_transfer"}),
     ("/api/quota-arrangements/", {"quota_allocation"}),
     ("/api/admin/components", {"admin"}),
