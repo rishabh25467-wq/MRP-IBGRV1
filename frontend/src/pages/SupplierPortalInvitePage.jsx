@@ -43,6 +43,15 @@ export default function SupplierPortalInvitePage() {
   const [suppliers, setSuppliers] = useState([]);
   const [vendorSearchOpen, setVendorSearchOpen] = useState(false);
   const [vendorQuery, setVendorQuery] = useState("");
+  // Sep 3 2026 BUG FOUND + FIXED (user report: "when I change supplier
+  // code, old email still shows of other vendor") - selectVendor only
+  // ever ADDED the new vendor's on-file email when the chip list was
+  // empty, so switching to a second vendor left the first vendor's
+  // auto-filled email sitting there unchanged. Track which email (if
+  // any) was auto-filled from the CURRENTLY selected vendor, so
+  // switching vendors removes exactly that one and adds the new
+  // vendor's - any email the user typed in manually is left alone.
+  const [autoFilledEmail, setAutoFilledEmail] = useState(null);
 
   const loadInvites = async () => {
     setLoading(true);
@@ -72,9 +81,13 @@ export default function SupplierPortalInvitePage() {
   const selectVendor = (supplier) => {
     setCompanyName(supplier.name);
     setVendorCode(supplier.sap_internal_id || "");
-    if (supplier.email && emails.length === 0) {
-      setEmails([supplier.email.toLowerCase()]);
-    }
+    const newEmail = supplier.email ? supplier.email.toLowerCase() : null;
+    setEmails((prev) => {
+      const withoutOld = autoFilledEmail ? prev.filter((e) => e !== autoFilledEmail) : prev;
+      if (!newEmail || withoutOld.includes(newEmail)) return withoutOld;
+      return [...withoutOld, newEmail];
+    });
+    setAutoFilledEmail(newEmail);
     setVendorSearchOpen(false);
     setVendorQuery("");
   };
@@ -138,6 +151,7 @@ export default function SupplierPortalInvitePage() {
       setCompanyName("");
       setVendorCode("");
       setEmails([]);
+      setAutoFilledEmail(null);
       setConfirmedDuplicate(false);
     } else {
       setEmails(failed.map((f) => f.email));
