@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import axios from "axios";
-import { ArrowClockwise, CaretUp, CaretDown, MagnifyingGlass } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretUp, CaretDown, MagnifyingGlass, Printer } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/components/ui/sonner";
 import { useAuth } from "@/contexts/AuthContext";
+import { RequestPrintSlip } from "@/components/RequestPrintSlip";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -63,6 +64,23 @@ export const MyStockRequestsTab = ({ actorName }) => {
   const [knownSites, setKnownSites] = useState([]);
   const [sortField, setSortField] = useState("created_at");
   const [sortDir, setSortDir] = useState("desc");
+  // Sep 2026, user's explicit ask: a requester should be able to print
+  // their own request as a paper slip for the store, without needing the
+  // store_approval page permission - shares RequestPrintSlip with
+  // StoreApprovalPage.js's detail view.
+  const [printTarget, setPrintTarget] = useState(null);
+
+  useEffect(() => {
+    if (!printTarget) return;
+    const t = setTimeout(() => window.print(), 50);
+    return () => clearTimeout(t);
+  }, [printTarget]);
+
+  useEffect(() => {
+    const clearPrintTarget = () => setPrintTarget(null);
+    window.addEventListener("afterprint", clearPrintTarget);
+    return () => window.removeEventListener("afterprint", clearPrintTarget);
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -172,6 +190,7 @@ export const MyStockRequestsTab = ({ actorName }) => {
 
   return (
     <div className="space-y-3" data-testid="my-stock-requests-tab">
+      <RequestPrintSlip request={printTarget} />
       <div className="flex flex-wrap items-end gap-3">
         <div>
           <Label className="text-xs font-bold text-[#344054]">Group By</Label>
@@ -242,6 +261,7 @@ export const MyStockRequestsTab = ({ actorName }) => {
               <SortTh label="Status" field="status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
               <SortTh label="Short Components" field="short_count" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
               <SortTh label="Requested At" field="created_at" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+              <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase whitespace-nowrap">Print</th>
             </tr></thead>
             <tbody>
               {filtered.map((r, i) => (
@@ -253,6 +273,11 @@ export const MyStockRequestsTab = ({ actorName }) => {
                   <td className="border border-[#D0D5DD] px-2 py-1.5"><Badge className={`${STATUS_BADGE[r.status]?.tone} border`}>{STATUS_BADGE[r.status]?.label || r.status}</Badge></td>
                   <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{r.short_count}</td>
                   <td className="border border-[#D0D5DD] px-2 py-1.5">{formatDate(r.created_at)}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1.5">
+                    <Button variant="outline" size="sm" className="h-6 px-2 text-[11px]" onClick={() => setPrintTarget(r)} data-testid={`myreq-print-button-${i}`}>
+                      <Printer size={12} className="mr-1" /> Print
+                    </Button>
+                  </td>
                 </tr>
               ))}
             </tbody>
