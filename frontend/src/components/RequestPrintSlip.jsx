@@ -30,7 +30,7 @@ export const RequestPrintSlip = ({ request }) => {
       <div className="flex justify-between items-start">
         <div />
         <div className="text-right">
-          <h1 className="text-2xl font-bold tracking-wide">Request For Store</h1>
+          <h1 className="text-2xl font-bold tracking-wide">Goods Issue From Store</h1>
           <p className="text-xs text-[#667085] mt-1">Page 1 of 1</p>
         </div>
       </div>
