@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import "@/App.css";
-import { Package, ArrowLeft, ArrowClockwise, WarningCircle, CaretUp, CaretDown, MagnifyingGlass, DownloadSimple, Shield, MapPin } from "@phosphor-icons/react";
+import { Package, ArrowLeft, ArrowClockwise, WarningCircle, CaretUp, CaretDown, MagnifyingGlass, DownloadSimple, Shield, MapPin, Printer } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -91,6 +91,58 @@ const AgeBadge = ({ fromIso, toIso, testId }) => {
   if (!age) return <span className="text-[#98A2B3]">\u2014</span>;
   return <span className={AGE_TIER_CLASS[age.tier]} data-testid={testId}>{age.label}{!toIso ? " ago" : ""}</span>;
 };
+
+const formatDateTime = (iso) => {
+  if (!iso) return "\u2014";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "\u2014" : d.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+};
+
+// Sep 2026, user's explicit ask: a plain "Print / Save as PDF" slip
+// (browser window.print(), matches GatePassPage's pattern - no backend
+// change, no new library) so a requester can hand-carry the requirement
+// to the store, or the store can keep a paper record - same single
+// button/layout for both, content just reflects the request as-is.
+const RequestPrintSlip = ({ request }) => (
+  <div className="hidden print:block p-6 text-[13px] text-[#101828]" style={{ fontFamily: "'DM Sans', sans-serif" }} data-testid="store-request-print-slip">
+    <div className="text-center border-b-2 border-[#101828] pb-2">
+      <h1 className="text-lg font-bold tracking-wide">Materials Hub</h1>
+      <h2 className="text-sm font-bold uppercase mt-1">Material Requisition Slip</h2>
+    </div>
+    <div className="grid grid-cols-2 gap-3 mt-4">
+      <div><span className="font-bold">Request ID:</span> {request._id}</div>
+      <div><span className="font-bold">Proposal / Lot Ref:</span> {request.production_proposal_id || "\u2014"}</div>
+      <div><span className="font-bold">Site:</span> {request.site_id}</div>
+      <div><span className="font-bold">Requester:</span> {request.requester}</div>
+      <div className="col-span-2"><span className="font-bold">Date &amp; Time:</span> {formatDateTime(request.created_at)}</div>
+    </div>
+    <table className="w-full text-[12px] border-collapse mt-4">
+      <thead>
+        <tr>
+          {["Component", "Required Qty"].map((h) => (
+            <th key={h} className="border border-[#101828] px-2 py-1 text-left font-bold">{h}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {request.components.map((c) => (
+          <tr key={c.product_id}>
+            <td className="border border-[#101828] px-2 py-1">{c.product_id}{c.description ? ` - ${c.description}` : ""}</td>
+            <td className="border border-[#101828] px-2 py-1">{formatQty(c.required_qty)} {formatUnit(c.unit_of_measure)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+    <div className="flex justify-between items-end mt-14 pt-6">
+      <div className="text-xs text-[#667085]">
+        <p className="border-t border-[#101828] pt-1 w-40">Requester Sign / Date</p>
+      </div>
+      <div className="text-xs text-[#667085]">
+        <p className="border-t border-[#101828] pt-1 w-40">Store Sign / Date</p>
+      </div>
+    </div>
+  </div>
+);
 
 const toCsv = (rows, columns) => {
   const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
@@ -940,7 +992,9 @@ export default function StoreApprovalPage() {
   return (
     <div className="min-h-screen bg-[#F2F4F7] text-[#1D2939]">
       <Toaster position="top-right" />
-      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
+      <style>{"@media print { @page { margin: 0.5in; size: auto; } }"}</style>
+      <RequestPrintSlip request={selected} />
+      <header className="print:hidden h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
         <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
           <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
             <Shield size={18} weight="fill" className="text-white" />
@@ -956,7 +1010,7 @@ export default function StoreApprovalPage() {
         </div>
         <div className="shrink-0 w-8" />
       </header>
-      <main className="max-w-6xl mx-auto p-4 sm:p-6 space-y-4">
+      <main className="print:hidden max-w-6xl mx-auto p-4 sm:p-6 space-y-4">
         <button onClick={backToQueue} className="flex items-center gap-1.5 text-sm text-[#344054] hover:text-[#0E7C86]" data-testid="store-back-to-queue-button">
           <ArrowLeft size={14} weight="bold" /> Back to queue
         </button>
@@ -975,6 +1029,9 @@ export default function StoreApprovalPage() {
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <Badge className={`${STATUS_BADGE[selected.status]?.tone || "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]"} border`}>{STATUS_BADGE[selected.status]?.label || selected.status}</Badge>
+              <Button variant="outline" size="sm" className="h-8 bg-white" onClick={() => window.print()} data-testid="store-print-request-button">
+                <Printer size={14} className="mr-1.5" /> Print / Save as PDF
+              </Button>
             </div>
           </div>
 
