@@ -920,6 +920,30 @@ async def get_qms_drawing_history(part_no: str):
     return data
 
 
+@api_router.get("/bom/qms-drawing-exists")
+async def get_qms_drawing_exists(product_ids: str = Query(..., description="Comma-separated product IDs")):
+    # Sep 3 2026, user's explicit ask: the "Latest Drawing" cell used to
+    # show an always-clickable "View Drawing" button for every row, even
+    # ones with no QMS drawing at all - only revealing "not found" after
+    # a click. QMS's API has no bulk endpoint, so this checks each part
+    # individually (server-side, in parallel) right after a BOM pull and
+    # returns just a lightweight true/false map - the cell then renders
+    # "Drawing not available" (not a button) for anything false/missing.
+    ids = [p.strip() for p in product_ids.split(",") if p.strip()]
+    if not ids:
+        return {}
+
+    async def check(part_no: str):
+        try:
+            data = await asyncio.to_thread(qms_drawings_client.get_latest, part_no)
+        except QMSDrawingsError:
+            return part_no, None  # unknown (QMS unreachable) - NOT the same as confirmed-absent
+        return part_no, data is not None
+
+    results = await asyncio.gather(*[check(p) for p in ids])
+    return {part_no: exists for part_no, exists in results if exists is not None}
+
+
 @api_router.get("/bom/comments")
 async def get_bom_comments(product_ids: str = Query(..., description="Comma-separated product IDs")):
     """Read-only lookup of SAP Material Attachment comments (e.g. ECR

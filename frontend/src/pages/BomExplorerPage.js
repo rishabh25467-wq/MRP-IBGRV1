@@ -413,6 +413,8 @@ export default function BomExplorerPage() {
   const [sortConfig, setSortConfig] = useState({ field: null, direction: "asc" });
   const [runningCostEstimate, setRunningCostEstimate] = useState(null);
   const [qmsDrawingPartNo, setQmsDrawingPartNo] = useState(null);
+  const [qmsDrawingExists, setQmsDrawingExists] = useState({});
+  const [loadingQmsDrawingExists, setLoadingQmsDrawingExists] = useState(false);
 
   const toggleSort = (field) => {
     setSortConfig((prev) =>
@@ -525,6 +527,20 @@ export default function BomExplorerPage() {
       setNetWeights(netWeightResponse.data || {});
     } catch {
       // Non-critical, read-only cache lookup - silently skip, drawings/comments just won't show this load.
+    }
+    // Sep 3 2026, user's explicit ask: check QMS drawing existence for
+    // every visible part up front (own request, separate from the
+    // Promise.all above - a slow/unreachable QMS shouldn't block the
+    // other three cached lookups) so the cell can show "Drawing not
+    // available" instead of an always-clickable button.
+    setLoadingQmsDrawingExists(true);
+    try {
+      const { data } = await axios.get(`${API}/bom/qms-drawing-exists`, { params: { product_ids: productIds.join(",") } });
+      setQmsDrawingExists(data || {});
+    } catch {
+      setQmsDrawingExists({});
+    } finally {
+      setLoadingQmsDrawingExists(false);
     }
   };
 
@@ -1054,15 +1070,23 @@ export default function BomExplorerPage() {
                         : <span className="text-[#98A2B3]">—</span>}
                     </td>
                     <td className="border border-[#D0D5DD] px-2 py-1 text-[13px]" data-testid={`bom-qms-drawing-${path}`}>
-                      <button
-                        type="button"
-                        onClick={() => setQmsDrawingPartNo(node.product_id)}
-                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm border border-[#B8D4ED] bg-[#E5F0FA] text-[10px] font-bold uppercase tracking-wide text-[#004B87] hover:bg-[#D3E5F5] transition-colors"
-                        title="View latest drawing from QMS"
-                        data-testid={`bom-qms-drawing-button-${path}`}
-                      >
-                        <FileImage size={11} weight="fill" /> View Drawing
-                      </button>
+                      {loadingQmsDrawingExists ? (
+                        <span className="text-[#98A2B3]">Checking…</span>
+                      ) : qmsDrawingExists[node.product_id] === false ? (
+                        <span className="text-[11px] text-[#98A2B3] italic" data-testid={`bom-qms-drawing-unavailable-${path}`}>
+                          Drawing not available
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setQmsDrawingPartNo(node.product_id)}
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm border border-[#B8D4ED] bg-[#E5F0FA] text-[10px] font-bold uppercase tracking-wide text-[#004B87] hover:bg-[#D3E5F5] transition-colors"
+                          title="View latest drawing from QMS"
+                          data-testid={`bom-qms-drawing-button-${path}`}
+                        >
+                          <FileImage size={11} weight="fill" /> View Drawing
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
