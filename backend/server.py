@@ -5661,22 +5661,12 @@ async def get_stock_transfer_sap_status(job_id: str):
 @api_router.get("/stock-transfer/orders")
 async def get_stock_transfer_orders(request: Request):
     docs = await asyncio.to_thread(stock_transfer_service.list_stock_transfer_orders, db)
-    # Sep 3 2026 BUG FOUND + FIXED (user-reported regression: "user now
-    # able to see all plant stock transfer" on the main page) -
-    # list_stock_transfer_orders never had ANY per-user restriction, so
-    # any account with the stock_transfer page permission saw every
-    # order across every plant. Same id-OR-name ownership pattern
-    # already used for Production Confirmation's open-lots (see
-    # get_open_production_lots) - admin/super_admin still see everything,
-    # a plain "user" now only sees Stock Transfer Orders THEY created.
-    user = request.state.user
-    if user.get("role") not in ("super_admin", "admin"):
-        my_id = user.get("_id")
-        my_name = (user.get("name") or "").strip().lower()
-        docs = [d for d in docs if (
-            (d.get("created_by_user_id") and d["created_by_user_id"] == my_id)
-            or (d.get("created_by") or "").strip().lower() == my_name
-        )]
+    # Sep 3 2026, user's explicit ask: revert the self-created-only
+    # filter added earlier today - every user with stock_transfer
+    # access should see ALL plants' orders on the main page (the
+    # "Action Needed" panel above it, which surfaces un-activated
+    # destination-plant items, was ALREADY unfiltered - see
+    # get_admin_notifications - so this alone doesn't affect that).
     return [_sto_to_response(d) for d in docs]
 
 
