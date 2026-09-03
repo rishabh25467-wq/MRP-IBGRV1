@@ -25,7 +25,7 @@ const formatDateTime = (iso) => {
 export const RequestPrintSlip = ({ request }) => {
   if (!request) return null;
   return (
-    <div className="hidden print:block p-10 text-[13px] text-[#101828]" style={{ fontFamily: "'DM Sans', sans-serif" }} data-testid="store-request-print-slip">
+    <div className="hidden print:block print:fixed print:top-0 print:left-0 print:w-full print:bg-white p-10 text-[13px] text-[#101828]" style={{ fontFamily: "'DM Sans', sans-serif" }} data-testid="store-request-print-slip">
       <style>{"@media print { @page { margin: 0; size: auto; } }"}</style>
       <div className="flex justify-between items-start">
         <div />

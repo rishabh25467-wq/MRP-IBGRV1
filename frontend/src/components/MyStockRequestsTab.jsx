@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
+import { createPortal } from "react-dom";
 import axios from "axios";
 import { ArrowClockwise, CaretUp, CaretDown, MagnifyingGlass, Printer } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
@@ -190,7 +191,7 @@ export const MyStockRequestsTab = ({ actorName }) => {
 
   return (
     <div className="space-y-3" data-testid="my-stock-requests-tab">
-      <RequestPrintSlip request={printTarget} />
+      {printTarget && createPortal(<RequestPrintSlip request={printTarget} />, document.body)}
       <div className="flex flex-wrap items-end gap-3">
         <div>
           <Label className="text-xs font-bold text-[#344054]">Group By</Label>
