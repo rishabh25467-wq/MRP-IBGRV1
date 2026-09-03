@@ -28,6 +28,7 @@ from sap_production_lot_client import SAPProductionLotClient, SAPProductionLotEr
 from sap_wip_clearing_client import SAPWipClearingClient, SAPWipClearingError, company_and_set_of_books_for_site
 from sap_production_proposal_client import SAPProductionProposalClient, SAPProductionProposalError
 from sap_sto_client import SAPSTOClient
+from qms_drawings_client import QMSDrawingsClient, QMSDrawingsError
 from sap_outbound_delivery_client import SAPOutboundDeliveryClient, SAPOutboundDeliveryError
 from erp_portal_client import ERPPortalClient
 from sap_production_model_client import SAPProductionModelClient, SAPProductionModelError, SAPProductionModelBomClient
@@ -297,6 +298,11 @@ sap_soap_client = SAPSoapBOMClient(
     endpoint=os.environ['SAP_SOAP_ENDPOINT'],
     username=os.environ['SAP_SOAP_USERNAME'],
     password=os.environ['SAP_SOAP_PASSWORD'],
+)
+
+qms_drawings_client = QMSDrawingsClient(
+    base_url=os.environ['QMS_DRAWINGS_BASE_URL'],
+    api_key=os.environ['QMS_DRAWINGS_API_KEY'],
 )
 
 # Direct Material ID -> UUID lookup (no BOM relationship required) - closes
@@ -884,6 +890,34 @@ async def get_drawing_urls(product_ids: str = Query(..., description="Comma-sepa
         return {}
     docs = db["component_master"].find({"_id": {"$in": ids}, "drawing_url": {"$ne": None}}, {"_id": 1, "drawing_url": 1})
     return {doc["_id"]: doc["drawing_url"] for doc in docs}
+
+
+@api_router.get("/bom/qms-drawing/{part_no}")
+async def get_qms_drawing(part_no: str, include_history: bool = False):
+    # Sep 3 2026, user's explicit ask - server-side proxy to the sister
+    # QMS app's External Drawings API (see qms_drawings_client.py) so
+    # its X-API-Key never reaches the browser, per that API's own design
+    # principle. Distinct from /bom/drawing-urls above (SAP attachments,
+    # cached) - this is a live, on-demand call for the new "Latest
+    # Drawing" column.
+    try:
+        data = await asyncio.to_thread(qms_drawings_client.get_latest, part_no, include_history)
+    except QMSDrawingsError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"No published drawing found for part '{part_no}'")
+    return data
+
+
+@api_router.get("/bom/qms-drawing/{part_no}/history")
+async def get_qms_drawing_history(part_no: str):
+    try:
+        data = await asyncio.to_thread(qms_drawings_client.get_history, part_no)
+    except QMSDrawingsError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"No templates found for part '{part_no}'")
+    return data
 
 
 @api_router.get("/bom/comments")

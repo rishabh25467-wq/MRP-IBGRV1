@@ -27,6 +27,7 @@ import {
   PlayCircle,
   ArrowsClockwise,
   Scales,
+  ArrowSquareOut,
 } from "@phosphor-icons/react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -35,8 +36,137 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
+
+// Sep 3 2026, user's explicit ask: "Latest Drawing" column, sourced from
+// the sister QMS Emergent app's External Drawings API (server-side
+// proxy at /bom/qms-drawing/*, see server.py + qms_drawings_client.py -
+// the API key never reaches the browser, per that API's own design
+// principle). Distinct from the existing drawingUrls pill next to the
+// Product ID above (SAP attachments, cached) - this is QMS's own
+// engineering drawing + revision history, fetched live on click.
+function QmsDrawingModal({ partNo, onClose }) {
+  const [state, setState] = useState({ loading: true, error: null, data: null });
+  const [history, setHistory] = useState({ open: false, loading: false, error: null, rows: [] });
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ loading: true, error: null, data: null });
+    axios.get(`${API}/bom/qms-drawing/${encodeURIComponent(partNo)}`)
+      .then(({ data }) => { if (!cancelled) setState({ loading: false, error: null, data }); })
+      .catch((e) => {
+        if (cancelled) return;
+        const msg = e?.response?.status === 404 ? "No drawing published in QMS for this part yet." : "Could not load this drawing.";
+        setState({ loading: false, error: msg, data: null });
+      });
+    return () => { cancelled = true; };
+  }, [partNo]);
+
+  const loadHistory = () => {
+    setHistory({ open: true, loading: true, error: null, rows: [] });
+    axios.get(`${API}/bom/qms-drawing/${encodeURIComponent(partNo)}/history`)
+      .then(({ data }) => setHistory({ open: true, loading: false, error: null, rows: data.revisions || [] }))
+      .catch(() => setHistory({ open: true, loading: false, error: "Could not load revision history.", rows: [] }));
+  };
+
+  const current = state.data?.current;
+  return (
+    <Dialog open onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-md" data-testid="qms-drawing-modal">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-[#101828]">
+            <FileImage size={18} weight="fill" className="text-[#004B87]" />
+            Drawing · {partNo}
+          </DialogTitle>
+        </DialogHeader>
+        <p className="text-xs text-[#667085] -mt-2">Sourced live from Radish QMS</p>
+        {state.loading && (
+          <div className="flex items-center gap-2 py-6 text-sm text-[#667085]" data-testid="qms-drawing-loading">
+            <ArrowsClockwise size={16} className="animate-spin" /> Fetching latest drawing…
+          </div>
+        )}
+        {state.error && (
+          <div className="flex items-start gap-2 rounded-sm border border-[#FDA29B] bg-[#FEF3F2] p-3 text-sm text-[#912018]" data-testid="qms-drawing-error">
+            <WarningCircle size={16} className="shrink-0 mt-0.5" /> {state.error}
+          </div>
+        )}
+        {current && (
+          <div className="space-y-3" data-testid="qms-drawing-current">
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <div>
+                <div className="text-[10px] uppercase tracking-wide font-bold text-[#667085]">Part name</div>
+                <div className="text-sm text-[#101828]">{current.part_name || "—"}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wide font-bold text-[#667085]">Revision</div>
+                <div className="text-sm text-[#101828] font-mono">{current.revision_number || "—"}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wide font-bold text-[#667085]">Inspection type</div>
+                <div className="text-sm text-[#101828] capitalize">{current.inspection_type || "—"}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wide font-bold text-[#667085]">Last updated</div>
+                <div className="text-sm text-[#101828]">{current.updated_at ? new Date(current.updated_at).toLocaleDateString("en-IN") : "—"}</div>
+              </div>
+            </div>
+            {current.drawing_filename && (
+              <p className="text-[11px] text-[#667085] font-mono truncate">{current.drawing_filename}</p>
+            )}
+            <div className="flex flex-wrap gap-2 justify-end pt-2 border-t border-[#EAECF0]">
+              <Button variant="outline" size="sm" onClick={loadHistory} data-testid="qms-drawing-see-history">
+                <ClockCounterClockwise size={14} className="mr-1.5" /> See previous versions
+              </Button>
+              <Button asChild size="sm" data-testid="qms-drawing-view-latest">
+                <a href={current.drawing_url} target="_blank" rel="noopener noreferrer">
+                  <ArrowSquareOut size={14} className="mr-1.5" /> View latest drawing
+                </a>
+              </Button>
+            </div>
+          </div>
+        )}
+        {history.open && (
+          <div className="mt-2 pt-3 border-t border-[#EAECF0] space-y-2" data-testid="qms-drawing-history-panel">
+            <p className="text-xs font-bold text-[#344054] uppercase tracking-wide">Previous Versions</p>
+            {history.loading && <p className="text-xs text-[#667085]">Loading revision history…</p>}
+            {history.error && <p className="text-xs text-[#912018]">{history.error}</p>}
+            {!history.loading && !history.error && history.rows.length === 0 && (
+              <p className="text-xs text-[#98A2B3]">No revisions recorded.</p>
+            )}
+            <ul className="divide-y divide-[#EAECF0] max-h-56 overflow-y-auto">
+              {history.rows.map((r) => (
+                <li key={r.template_id} className="flex items-center justify-between gap-2 py-2" data-testid={`qms-drawing-history-row-${r.template_id}`}>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-sm font-semibold text-[#101828] font-mono">Rev {r.revision_number || "—"}</span>
+                      <Badge variant="outline" className={
+                        r.status === "published" ? "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6] text-[10px] px-1.5 py-0"
+                        : r.status === "draft" ? "bg-[#FFFAEB] text-[#B54708] border-[#FEC84B] text-[10px] px-1.5 py-0"
+                        : "bg-[#F2F4F7] text-[#475467] border-[#D0D5DD] text-[10px] px-1.5 py-0"
+                      }>{r.status}</Badge>
+                      <span className="text-[11px] text-[#667085] capitalize">{r.inspection_type}</span>
+                    </div>
+                    <div className="text-[11px] text-[#667085]">{r.updated_at ? new Date(r.updated_at).toLocaleDateString("en-IN") : "—"}</div>
+                  </div>
+                  {r.has_drawing ? (
+                    <a href={r.drawing_url} target="_blank" rel="noopener noreferrer" className="shrink-0 text-xs font-semibold text-[#004B87] hover:underline inline-flex items-center gap-1">
+                      <ArrowSquareOut size={12} /> Open
+                    </a>
+                  ) : (
+                    <span className="shrink-0 text-[11px] text-[#98A2B3] italic">No file</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -282,6 +412,7 @@ export default function BomExplorerPage() {
   const [treeSearch, setTreeSearch] = useState("");
   const [sortConfig, setSortConfig] = useState({ field: null, direction: "asc" });
   const [runningCostEstimate, setRunningCostEstimate] = useState(null);
+  const [qmsDrawingPartNo, setQmsDrawingPartNo] = useState(null);
 
   const toggleSort = (field) => {
     setSortConfig((prev) =>
@@ -713,6 +844,7 @@ export default function BomExplorerPage() {
                     { label: "Active", field: null },
                     { label: "Std Cost", field: "std_cost" },
                     { label: "Ext Cost", field: "ext_cost" },
+                    { label: "Latest Drawing", field: null },
                   ].map(({ label, field }) => (
                     <th
                       key={label}
@@ -921,11 +1053,22 @@ export default function BomExplorerPage() {
                           })()
                         : <span className="text-[#98A2B3]">—</span>}
                     </td>
+                    <td className="border border-[#D0D5DD] px-2 py-1 text-[13px]" data-testid={`bom-qms-drawing-${path}`}>
+                      <button
+                        type="button"
+                        onClick={() => setQmsDrawingPartNo(node.product_id)}
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm border border-[#B8D4ED] bg-[#E5F0FA] text-[10px] font-bold uppercase tracking-wide text-[#004B87] hover:bg-[#D3E5F5] transition-colors"
+                        title="View latest drawing from QMS"
+                        data-testid={`bom-qms-drawing-button-${path}`}
+                      >
+                        <FileImage size={11} weight="fill" /> View Drawing
+                      </button>
+                    </td>
                   </tr>
                 ))}
                 {result.total_components === 0 && (
                   <tr>
-                    <td colSpan={10} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]">
+                    <td colSpan={11} className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]">
                       No components found for this BOM
                     </td>
                   </tr>
@@ -933,7 +1076,7 @@ export default function BomExplorerPage() {
                 {result.total_components > 0 && visibleRows.length === 0 && (
                   <tr>
                     <td
-                      colSpan={10}
+                      colSpan={11}
                       className="border border-[#D0D5DD] text-center py-8 text-[13px] text-[#475467]"
                       data-testid="bom-search-no-matches"
                     >
@@ -1000,6 +1143,9 @@ export default function BomExplorerPage() {
           </div>
         )}
       </main>
+      {qmsDrawingPartNo && (
+        <QmsDrawingModal partNo={qmsDrawingPartNo} onClose={() => setQmsDrawingPartNo(null)} />
+      )}
     </div>
   );
 }
