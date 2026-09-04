@@ -5048,6 +5048,32 @@ class PurchaseOrderCreateRequest(BaseModel):
         return self
 
 
+# Sep 4 2026, user's explicit ask: the external PR system's unit text
+# (e.g. "Pcs") doesn't match SAP's UN/CEFACT unit codes (e.g. "EA") -
+# QuantityUnitCode in sap_po_odata_client.py is sent to SAP as-is, so an
+# un-mapped PR unit would silently create a PO with a wrong/rejected UoM.
+# Codes on the right are confirmed real values already used in this SAP
+# tenant's own product master (see inventory_cache: EA/KGM/SET/XPA/MTR/XRO/FTK).
+PR_UOM_TO_SAP_CODE = {
+    "pcs": "EA", "pc": "EA", "piece": "EA", "pieces": "EA", "nos": "EA", "no": "EA",
+    "no.": "EA", "each": "EA", "ea": "EA", "unit": "EA", "units": "EA",
+    "kg": "KGM", "kgs": "KGM", "kg.": "KGM", "kilogram": "KGM", "kilograms": "KGM", "kgm": "KGM",
+    "mtr": "MTR", "mtrs": "MTR", "meter": "MTR", "meters": "MTR", "metre": "MTR", "m": "MTR",
+    "set": "SET", "sets": "SET",
+    "box": "XPA", "boxes": "XPA", "pack": "XPA", "pkt": "XPA", "packet": "XPA",
+    "roll": "XRO", "rolls": "XRO",
+    "ft": "FTK", "feet": "FTK", "foot": "FTK",
+}
+
+
+def _map_pr_unit_to_sap(raw_unit: Optional[str]) -> tuple[str, bool]:
+    key = (raw_unit or "").strip().lower()
+    mapped = PR_UOM_TO_SAP_CODE.get(key)
+    if mapped:
+        return mapped, True
+    return "EA", False
+
+
 class PRLookupLineItem(BaseModel):
     line_no: Optional[int] = None
     icode: Optional[str] = None
@@ -5058,6 +5084,8 @@ class PRLookupLineItem(BaseModel):
     matched_product_id: Optional[str] = None
     matched_description: Optional[str] = None
     matched_unit_of_measure: Optional[str] = None
+    sap_unit_of_measure: Optional[str] = None
+    unit_mapping_confident: bool = True
 
 
 class PRLookupResponse(BaseModel):
@@ -5115,12 +5143,14 @@ async def po_pr_lookup(voc_no: str):
     for it in raw_items:
         icode = it.get("icode") or None
         match = matched_map.get(icode) if icode else None
+        sap_uom, uom_confident = _map_pr_unit_to_sap(it.get("unit"))
         items.append(PRLookupLineItem(
             line_no=it.get("line_no"), icode=icode, iname=it.get("iname"),
             unit=it.get("unit"), qty=it.get("qty") or 0, rate=it.get("rate") or 0,
             matched_product_id=match.get("product_id") if match else None,
             matched_description=match.get("description") if match else None,
             matched_unit_of_measure=match.get("uom") if match else None,
+            sap_unit_of_measure=sap_uom, unit_mapping_confident=uom_confident,
         ))
 
     return PRLookupResponse(

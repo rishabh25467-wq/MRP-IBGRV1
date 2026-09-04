@@ -48,6 +48,8 @@ const emptyLine = () => ({
   product_id: "",
   description: "",
   unit_of_measure: "EA",
+  uomFromPr: null,
+  uomMappingConfident: true,
   quantity: "",
   unit_price: "",
   delivery_date: todayISO(),
@@ -128,7 +130,9 @@ export default function PurchaseOrderPage() {
         key: `line-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         product_id: it.matched_product_id || "",
         description: it.matched_description || it.iname || "",
-        unit_of_measure: it.matched_unit_of_measure || it.unit || "EA",
+        unit_of_measure: it.matched_unit_of_measure || it.sap_unit_of_measure || "EA",
+        uomFromPr: it.unit,
+        uomMappingConfident: it.matched_unit_of_measure ? true : it.unit_mapping_confident,
         quantity: it.qty,
         unit_price: it.rate,
         delivery_date: todayISO(),
@@ -188,7 +192,7 @@ export default function PurchaseOrderPage() {
 
   const pickProduct = (lineKey, p) => {
     setLines((prev) => prev.map((l) => (l.key === lineKey
-      ? { ...l, product_id: p.product_id, description: p.description, unit_of_measure: p.unit_of_measure || "EA", productQuery: `${p.product_id} - ${p.description || ""}`, showSuggestions: false }
+      ? { ...l, product_id: p.product_id, description: p.description, unit_of_measure: p.unit_of_measure || "EA", uomMappingConfident: true, productQuery: `${p.product_id} - ${p.description || ""}`, showSuggestions: false }
       : l)));
   };
 
@@ -532,8 +536,13 @@ export default function PurchaseOrderPage() {
                         <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[90px]">
                           <Input type="number" min="0" step="any" value={l.quantity} onChange={(e) => updateLine(l.key, "quantity", e.target.value)} className="h-8 text-xs font-data rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]" data-testid={`po-line-qty-input-${idx}`} />
                         </td>
-                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[70px]">
-                          <Input value={l.unit_of_measure} onChange={(e) => updateLine(l.key, "unit_of_measure", e.target.value)} className="h-8 text-xs font-data rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]" data-testid={`po-line-uom-input-${idx}`} />
+                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[90px]">
+                          <div className="relative">
+                            <Input value={l.unit_of_measure} onChange={(e) => updateLine(l.key, "unit_of_measure", e.target.value)} className="h-8 text-xs font-data rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]" data-testid={`po-line-uom-input-${idx}`} title={l.uomFromPr && !l.uomMappingConfident ? `PR said "${l.uomFromPr}" - please verify the SAP unit code` : undefined} />
+                            {l.uomFromPr && !l.uomMappingConfident && (
+                              <WarningCircle size={12} className="absolute -top-1.5 -right-1.5 text-[#B54708]" weight="fill" data-testid={`po-line-uom-warning-${idx}`} />
+                            )}
+                          </div>
                         </td>
                         <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[110px]">
                           <Input type="number" min="0" step="any" value={l.unit_price} onChange={(e) => updateLine(l.key, "unit_price", e.target.value)} className="h-8 text-xs font-data rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]" data-testid={`po-line-price-input-${idx}`} />
