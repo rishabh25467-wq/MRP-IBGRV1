@@ -1196,14 +1196,31 @@ def ensure_gi_job_stopped(db, sto_id: str, error: str) -> None:
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_status": "failed", "gi_error": error, "gi_job_running": False}})
 
 
-def mark_goods_issue_timed_out(db, sto_id: str, note: str, stock_note: str = None) -> None:
+def mark_goods_issue_timed_out(db, sto_id: str, note: str, stock_note: str = None, delivery_request_found_note: str = None) -> None:
     """`stock_note` (Aug 27 2026) - use a stock-specific message when the
     20-min window expires while gi_status was "insufficient_stock" (the
     delivery WAS found, stock was just short) instead of the generic
     "SAP hasn't produced the Outbound Delivery Request" message, which
-    would be factually wrong in that case."""
-    doc = db[STO_COLLECTION].find_one({"_id": sto_id}, {"gi_status": 1})
-    final_note = stock_note if (doc or {}).get("gi_status") == "insufficient_stock" and stock_note else note
+    would be factually wrong in that case.
+
+    `delivery_request_found_note` (Sep 2026, real incident STO-000074):
+    same problem, different real cause - the Outbound Delivery Request
+    itself WAS found (its display ID got cached as gi_delivery_request_id
+    in try_post_goods_issue, well before this timeout fires), it's the
+    LATER "combine into one Delivery Proposal" step
+    (_try_post_goods_issue_multiline's Playwright screen) that never saw
+    a matching row after 20 minutes. Saying "SAP hasn't produced the
+    Outbound Delivery Request" here is factually wrong and misleading -
+    the Request demonstrably exists (its own ID is shown to the user
+    elsewhere on this same order)."""
+    doc = db[STO_COLLECTION].find_one({"_id": sto_id}, {"gi_status": 1, "gi_delivery_request_id": 1})
+    doc = doc or {}
+    if doc.get("gi_status") == "insufficient_stock" and stock_note:
+        final_note = stock_note
+    elif doc.get("gi_delivery_request_id") and delivery_request_found_note:
+        final_note = delivery_request_found_note.format(delivery_request_id=doc["gi_delivery_request_id"])
+    else:
+        final_note = note
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"gi_status": "not_found_timeout", "gi_error": final_note, "gi_job_running": False}})
 
 

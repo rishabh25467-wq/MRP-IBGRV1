@@ -1,129 +1,141 @@
 {
-  "project_name": "SAP Business ByDesign - Purchase Order Creation Hub",
-  "archetype": "SWISS & HIGH-CONTRAST / TACTICAL ENTERPRISE (ARCHETYPE 4)",
-  "context_type": "DASHBOARDS & ADMIN PANELS / ENTERPRISE PROCUREMENT TOOL",
-  "theme": "Light / High-Contrast Industrial Studio",
+  "project_name": "SAP BOM Viewer & Enterprise Procurement Portal",
+  "theme_archetype": "Swiss Enterprise / JDE Tactical Density",
+  "app_type": "saas_app",
   "typography": {
-    "heading_font": "Chivo, sans-serif",
+    "headings_font": "Chivo, sans-serif",
     "body_font": "IBM Plex Sans, sans-serif",
     "data_font": "JetBrains Mono, monospace",
-    "h1_style": "text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight font-heading flex items-center gap-3",
-    "h2_style": "text-lg font-bold text-slate-900 tracking-tight font-heading flex items-center justify-between",
-    "section_title": "text-xs font-bold uppercase tracking-wider text-slate-500 font-heading mb-3 flex items-center gap-2",
-    "label_style": "text-xs font-medium text-slate-700 mb-1 block",
-    "data_text": "font-data text-xs tracking-tight text-slate-900 font-medium"
+    "anti_default_rule": "Do not default to Inter or Arial for headlines. Use Chivo for section titles and JetBrains Mono for monetary values and item codes.",
+    "hierarchy": {
+      "page_title": "text-xl sm:text-2xl font-bold tracking-tight font-heading (Chivo)",
+      "section_heading": "text-[11px] font-bold uppercase tracking-wide text-[#344054] font-heading (Chivo)",
+      "card_title": "text-sm font-semibold font-heading",
+      "table_header": "text-xs font-bold uppercase text-[#344054] font-heading bg-[#EAECF0]",
+      "table_data": "text-xs font-data (JetBrains Mono) text-[#101828]",
+      "body": "text-xs sm:text-sm font-sans (IBM Plex Sans) text-[#344054]",
+      "microcopy": "text-[11px] text-[#667085]"
+    }
   },
   "colors": {
-    "background": "#F8FAFC",
-    "surface": "#FFFFFF",
-    "surface_secondary": "#F1F5F9",
-    "border_default": "#E2E8F0",
-    "border_strong": "#CBD5E1",
-    "text_primary": "#0F172A",
-    "text_secondary": "#475569",
-    "text_muted": "#64748B",
-    "brand_primary": "#0284C7",
-    "brand_hover": "#0369A1",
-    "sap_cyan": "#0891B2",
-    "accent_indigo": "#4338CA",
-    "success": "#16A34A",
-    "warning": "#D97706",
-    "danger": "#DC2626",
-    "badge_bg_blue": "#E0F2FE",
-    "badge_text_blue": "#0369A1",
-    "badge_bg_amber": "#FEF3C7",
-    "badge_text_amber": "#92400E",
-    "badge_bg_green": "#DCFCE7",
-    "badge_text_green": "#15803D"
+    "primary": "#004B87",
+    "primary_hover": "#003A6A",
+    "primary_active": "#00294D",
+    "header_teal": "#0E7C86",
+    "background_app": "#F2F4F7",
+    "card_background": "#FFFFFF",
+    "card_border": "#D0D5DD",
+    "table_header_bg": "#EAECF0",
+    "zebra_bg": "#F9FAFB",
+    "status_success_bg": "#ECFDF3",
+    "status_success_border": "#ABEFC6",
+    "status_success_text": "#027A48",
+    "status_warning_bg": "#FFFAEB",
+    "status_warning_border": "#FEDF89",
+    "status_warning_text": "#B54708",
+    "status_danger_bg": "#FEF3F2",
+    "status_danger_border": "#FECDCA",
+    "status_danger_text": "#B42318",
+    "accent_blue_bg": "#EFF8FF",
+    "accent_blue_border": "#B2DDFF",
+    "accent_blue_text": "#175CD3",
+    "forbidden_colors": ["#7351B7", "#1B93A4"]
   },
-  "layout_and_spacing": {
-    "container_max_width": "max-w-[1380px]",
-    "page_padding": "px-4 sm:px-6 lg:px-8 py-6",
-    "grid_structure": "grid grid-cols-1 lg:grid-cols-12 gap-6",
-    "main_form_span": "lg:col-span-8 xl:col-span-9 space-y-6",
-    "summary_sidebar_span": "lg:col-span-4 xl:col-span-3 space-y-6",
-    "card_padding": "p-5 sm:p-6",
-    "table_density": "compact high-density ERP style (cell padding py-2 px-3)"
+  "visual_enhancers": {
+    "borders": "1px solid #D0D5DD with rounded-sm (2px/4px border radius)",
+    "shadows": "shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] for cards; no soft blurred floating glow",
+    "data_density": "Compact enterprise table padding (py-1.5 px-2.5) with direct grid borders",
+    "split_schedule_connector": "Left border accent (3px solid #004B87) or tree branch indicator (└─) for split delivery child rows"
   },
-  "key_sections": [
-    {
-      "id": "header_and_banner",
-      "title": "Page Header & SAP Live Sync Status",
-      "description": "Top breadcrumbs, live SAP system indicator, page title with badges indicating live SAP PO creation mode, and quick stats bar."
-    },
-    {
-      "id": "org_context",
-      "title": "1. Organization & Routing Context",
-      "description": "Purchase Unit (Site) selector which dynamically auto-derives Company (Business Residence: RI vs RT) with a clear explanation badge, and unlocks the scoped Bill-To party code options."
-    },
-    {
-      "id": "supplier_and_terms",
-      "title": "2. Supplier Master & Commercial Terms",
-      "description": "Live autocomplete search for SAP Supplier (code/name), showing auto-fetched read-only Payment Terms from Supplier Master (e.g. '0010 - 30 days from Invoice Date'), PO Date picker, optional Portal PR reference number, and Currency dropdown (INR default)."
-    },
-    {
-      "id": "line_items_engine",
-      "title": "3. Line Items Engine",
-      "description": "High-density multi-row table supporting Product ID autocomplete search, auto-filling description & standard UoM, editable Quantity, Unit of Measure (KGM, EA, MTR, etc.), Unit Price, per-line Delivery Date picker, line total calculation, duplicate row, and delete row."
-    },
-    {
-      "id": "live_summary_sidebar",
-      "title": "4. Order Summary & Pre-Flight Validation",
-      "description": "Sticky summary panel presenting total line count, total units, gross order value formatted in JetBrains Mono font, automated completeness checklist, and SAP safety warnings."
-    },
-    {
-      "id": "submission_flow",
-      "title": "5. Weight-of-Action Verification & Submit",
-      "description": "Primary 'Create Purchase Order in SAP' button triggering a detailed Modal Audit Recap before pushing to SAP. Success result dialog displays the returned SAP PO Number with a one-click CTA to 'View Created POs'."
+  "component_name": {
+    "page": "PurchaseOrderPage.jsx",
+    "sub_components": [
+      "PrLookupCard",
+      "OrgContextCard",
+      "SupplierTermsCard",
+      "LineItemsEngine",
+      "DeliveryScheduleSplitGroup",
+      "SplitAllocationProgressBar",
+      "InlineSplitGuidanceBanner",
+      "OrderSummarySidebar",
+      "ConfirmDialog"
+    ]
+  },
+  "grids": {
+    "layout_mode": "MODE B: High Density Grid (Enterprise Procurement / Analytics)",
+    "base_grid": "grid-cols-1 lg:grid-cols-12 gap-4",
+    "main_content_span": "lg:col-span-8 xl:col-span-9",
+    "sidebar_span": "lg:col-span-4 xl:col-span-3",
+    "card_inner_grid": "grid-cols-1 md:grid-cols-3 gap-3"
+  },
+  "layouts": {
+    "header": "Fixed h-16 bg-[#0E7C86] with logo, NavTabs, and SapConnectionStatus",
+    "body": "Max width 1400px centered with responsive padding px-4 sm:px-6 lg:px-8 py-4",
+    "line_items_table": "Dense border-collapsed table with sticky headers and explicit schedule split groupings"
+  },
+  "motion": {
+    "transitions": "transition-colors duration-150 ease-in-out for buttons and row hovers",
+    "micro_interactions": "Subtle scale or background highlight on split button click",
+    "no_universal_transition": "Do not use transition: all. Target specific CSS properties."
+  },
+  "accessibility": {
+    "wcag_level": "WCAG AA (minimum 4.5:1 text contrast)",
+    "data_testid_required": true,
+    "interactive_elements": "All buttons, inputs, selects, and status indicators must carry data-testid attributes formatted in kebab-case."
+  },
+  "media": {
+    "use_icons": "@phosphor-icons/react (Calendar, Truck, Plus, Trash, Copy, Split, CheckCircle, WarningCircle, ShieldCheck, ListChecks, FileMagnifyingGlass)",
+    "image_usage": "Functional enterprise icons and badges only. Stock photos are excluded for this backend ERP table view."
+  },
+  "3d_libraries": {
+    "enabled": false,
+    "reason": "Enterprise SAP procurement application requires flat high-density data tables for functional legibility."
+  },
+  "split_delivery_schedule_redesign": {
+    "feature_title": "Redesigned Split Delivery Schedule Flow",
+    "problem_addressed": "Buyers lacked clarity on how to split a Purchase Requisition item into multiple delivery dates. The action was represented by an ambiguous 'Duplicate row' copy icon button without context, labels, or allocation feedback.",
+    "proposed_solutions": {
+      "1_microcopy_and_action_button": {
+        "button_type": "Explicit Action Button with Label",
+        "desktop_text": "Split Schedule",
+        "button_icon": "Calendar/Truck icon with Plus (+)",
+        "tooltip_text": "Split this PR item into multiple delivery dates & partial quantities",
+        "data_testid": "po-line-split-schedule-button-{idx}"
+      },
+      "2_visual_grouping_treatment": {
+        "group_container": "Grouped table block with a distinct light blue accent background (#F0F7FF) and a 3px left border accent (#004B87)",
+        "group_header": "Header badge showing 'PR Line #{prLineNo} · {count} Scheduled Deliveries' with total PR quantity",
+        "child_row_indicator": "Tree-connector icon (└─) or 'Delivery #2' badge distinguishing child schedule rows from parent"
+      },
+      "3_allocation_progress_indicator": {
+        "badge_format": "Progress bar + counter badge",
+        "states": {
+          "under_allocated": "Yellow/Amber badge: '60 / 100 EA allocated (40 EA remaining)'",
+          "fully_allocated": "Green check badge: '100 / 100 EA fully scheduled'",
+          "over_allocated": "Red error alert: '120 / 100 EA - Exceeds PR qty by 20 EA'"
+        },
+        "visual_element": "Compact inline progress bar in the table cell under the Qty input"
+      },
+      "4_inline_guidance": {
+        "location": "Top of Line Items Engine card or sticky helper popup",
+        "content": "💡 Delivery Split Tip: To schedule staggered shipments for a single PR line item, click 'Split Schedule' on the row. Adjust quantities and target delivery dates for each batch until total matches approved PR quantity."
+      }
     }
-  ],
-  "components_to_use": [
-    "Shadcn Select & SelectContent for site and bill-to choices",
-    "Shadcn Dialog for audit confirm and success result modals",
-    "Shadcn Input & Label for text and date entries",
-    "Shadcn Button for primary/secondary actions",
-    "Shadcn Badge for status, payment terms, and company auto-derivation indicators",
-    "Phosphor Icons (@phosphor-icons/react) for icons (MagnifyingGlass, Plus, Trash, CheckCircle, WarningCircle, Buildings, CreditCard, Calendar, Truck, ArrowRight, ShieldCheck)"
-  ],
-  "data_testid_requirements": [
-    "po-page-title",
-    "po-purchase-unit-select",
-    "po-company-display",
-    "po-bill-to-select",
-    "po-supplier-search-input",
-    "po-supplier-suggestions",
-    "po-payment-terms-badge",
-    "po-date-input",
-    "po-pr-number-input",
-    "po-currency-select",
-    "po-add-line-button",
-    "po-line-items-table",
-    "po-line-row-{idx}",
-    "po-line-product-input-{idx}",
-    "po-line-product-suggestions-{idx}",
-    "po-line-qty-input-{idx}",
-    "po-line-uom-input-{idx}",
-    "po-line-price-input-{idx}",
-    "po-line-delivery-date-input-{idx}",
-    "po-line-total-{idx}",
-    "po-line-remove-button-{idx}",
-    "po-summary-total-value",
-    "po-summary-line-count",
-    "po-submit-button",
-    "po-confirm-dialog",
-    "po-confirm-cancel-button",
-    "po-confirm-submit-button",
-    "po-result-dialog",
-    "po-result-number",
-    "po-result-view-created-button",
-    "po-result-close-button"
-  ],
+  },
+  "image_urls": [],
   "instructions_to_main_agent": [
-    "Redesign `/app/frontend/src/pages/PurchaseOrderPage.jsx` into a high-density, rich enterprise procurement form with structured card panels, clear visual hierarchy, and an integrated sticky order summary sidebar.",
-    "Ensure all functional state handlers (sites API, supplier search, product search, company derivation, bill-to filtering, line item additions/deletions, date handling, validation logic, API submit payload) remain 100% operational and intact.",
-    "Display auto-fetched Payment Terms prominently once a supplier is selected (e.g. read-only badge/callout explaining it was loaded from the Supplier Master).",
-    "Calculate and display line item subtotals and grand order total formatted in currency (INR/USD) using `JetBrains Mono` font for precision.",
-    "Highlight auto-populated fields (Company, Payment Terms, Bill-To rules) with subtle blue/amber info badges so users understand SAP defaults.",
-    "Ensure every interactive input, button, select, dialog, and summary metric includes the specified `data-testid` attributes."
-  ]
+    "Implement the redesigned Split Delivery Schedule interaction in frontend/src/pages/PurchaseOrderPage.jsx.",
+    "Replace the plain Copy icon button with an explicitly labeled button: 'Split Schedule' with a Calendar or Truck icon and clear tooltip.",
+    "Add visual grouping for rows sharing the same prLineNo, using a 3px left border (#004B87), light background shading (#F0F7FF), and a schedule sub-header badge.",
+    "Redesign the allocation indicator below the quantity input into a clear progress bar & status badge (Green for exact match, Amber for remaining, Red for overflow).",
+    "Add an inline guidance banner above the line items table explaining how to split shipments into batches.",
+    "Ensure all new interactive elements contain role-based data-testid attributes for automated testing."
+  ],
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": {
+    "avoid_ai_slop": "Do not default to generic centered designs or unstyled tables. Use JDE enterprise table borders, high contrast headers, and strict typography hierarchy.",
+    "no_universal_transition": "Do not apply transition: all. Apply transitions specifically to hover and focus states.",
+    "data_testid": "Every button, input, tab, select, and status badge MUST have a data-testid attribute in kebab-case.",
+    "color_contrast": "Ensure all text meets WCAG AA contrast standards (minimum 4.5:1 ratio).",
+    "spacing": "Maintain 12px to 16px container padding for card containers to prevent text collisions with borders."
+  }
 }

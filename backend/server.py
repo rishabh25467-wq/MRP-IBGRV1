@@ -5981,6 +5981,10 @@ async def _run_goods_issue_job(sto_id: str):
         "The Stock Transfer Order itself is still valid in SAP - this only affects automatic Goods Issue posting.",
         "Stock at the source warehouse is still insufficient after 20 minutes of automatic checks. "
         "The Stock Transfer Order itself is still valid in SAP - retry Goods Issue once stock is replenished.",
+        "SAP already created the Outbound Delivery Request (ID {delivery_request_id}) for this order, but hasn't "
+        "generated the combined Delivery Proposal needed to post Goods Issue after 20 minutes of automatic checks. "
+        "This is a SAP-side delay, not a data problem - the Stock Transfer Order and its Delivery Request are both "
+        "valid in SAP. Try Retry Goods Issue again in a few minutes, or check the Delivery Proposals screen in SAP directly.",
     )
 
 

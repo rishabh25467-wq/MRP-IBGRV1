@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Fragment } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import {
   Plus, Trash, Copy, WarningCircle, CheckCircle, CircleNotch, MagnifyingGlass,
   Buildings, CreditCard, Calendar, Truck, ArrowRight, ShieldCheck, ListChecks,
-  FileMagnifyingGlass, XCircle,
+  FileMagnifyingGlass, XCircle, CalendarPlus, Lightbulb,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -248,6 +248,34 @@ export default function PurchaseOrderPage() {
 
   const prLineAllocated = (prLineNo) => lines.reduce((s, l) => (l.prLineNo === prLineNo ? s + (Number(l.quantity) || 0) : s), 0);
   const prLineGroupSize = (prLineNo) => lines.filter((l) => l.prLineNo === prLineNo).length;
+  const prLineHasBlankRow = (prLineNo) => lines.some((l) => l.prLineNo === prLineNo && (l.quantity === "" || l.quantity == null));
+  // Sep 5 2026, user's explicit ask: clearer "under/fully/over allocated"
+  // status for a split PR line, replacing the plain "X/Y split" text.
+  // testing_agent iteration_145: a freshly-split row starts with a blank
+  // qty, which sums to the SAME total as before splitting - showing a
+  // misleading Green "fully scheduled" for a row that still needs a
+  // value. Force Amber whenever any row in the group is still blank,
+  // regardless of what the numeric total happens to add up to.
+  const splitAllocationStatus = (prLineNo, prOriginalQty, unit) => {
+    const allocated = prLineAllocated(prLineNo);
+    const remaining = prOriginalQty - allocated;
+    const uom = unit || "EA";
+    if (allocated > prOriginalQty + 1e-6) {
+      return { tone: "over", label: `${allocated}/${prOriginalQty} ${uom} - exceeds by ${(allocated - prOriginalQty).toFixed(2).replace(/\.00$/, "")}` };
+    }
+    if (prLineHasBlankRow(prLineNo)) {
+      return { tone: "under", label: `${allocated}/${prOriginalQty} ${uom} allocated - enter a quantity for every scheduled delivery` };
+    }
+    if (allocated < prOriginalQty - 1e-6) {
+      return { tone: "under", label: `${allocated}/${prOriginalQty} ${uom} allocated (${remaining.toFixed(2).replace(/\.00$/, "")} remaining)` };
+    }
+    return { tone: "full", label: `${allocated}/${prOriginalQty} ${uom} fully scheduled` };
+  };
+  const isSplitGroupStart = (idx) => {
+    const l = lines[idx];
+    if (!l.fromPr || l.prLineNo == null || prLineGroupSize(l.prLineNo) <= 1) return false;
+    return idx === 0 || lines[idx - 1].prLineNo !== l.prLineNo;
+  };
 
   const lineTotal = (l) => (Number(l.quantity) || 0) * (Number(l.unit_price) || 0);
   const totalUnits = lines.reduce((s, l) => s + (Number(l.quantity) || 0), 0);
@@ -564,6 +592,12 @@ export default function PurchaseOrderPage() {
                   <Plus size={13} className="mr-1" /> Add Item
                 </Button>
               </div>
+              <div className="px-4 py-2 border-b border-[#D0D5DD] bg-[#EFF8FF] flex items-start gap-2" data-testid="po-split-schedule-guidance-banner">
+                <Lightbulb size={14} className="text-[#175CD3] mt-0.5 shrink-0" weight="fill" />
+                <p className="text-[11px] text-[#175CD3] leading-snug">
+                  <span className="font-semibold">Delivery Split Tip:</span> to schedule staggered shipments for one PR line item, click "Split" on that row - adjust the quantity and delivery date on each resulting row until the total matches the PR's approved quantity.
+                </p>
+              </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs border-collapse min-w-[980px]" data-testid="po-line-items-table">
                   <thead>
@@ -574,9 +608,46 @@ export default function PurchaseOrderPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {lines.map((l, idx) => (
-                      <tr key={l.key} className={idx % 2 === 1 ? "bg-[#F9FAFB]" : "bg-white"} data-testid={`po-line-row-${idx}`}>
+                    {lines.map((l, idx) => {
+                      const inSplitGroup = l.fromPr && l.prLineNo != null && prLineGroupSize(l.prLineNo) > 1;
+                      const groupStart = isSplitGroupStart(idx);
+                      const status = inSplitGroup ? splitAllocationStatus(l.prLineNo, l.prOriginalQty, l.unit_of_measure) : null;
+                      const deliveryNo = inSplitGroup ? lines.slice(0, idx + 1).filter((x) => x.prLineNo === l.prLineNo).length : null;
+                      return (
+                      <Fragment key={l.key}>
+                      {groupStart && (
+                        <tr key={`${l.key}-group-header`} className="bg-[#F0F7FF]" data-testid={`po-split-group-header-${l.prLineNo}`}>
+                          <td colSpan={7} className="border border-[#D0D5DD] border-l-[3px] border-l-[#004B87] py-1.5 px-2.5">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <CalendarPlus size={13} className="text-[#004B87]" />
+                              <span className="text-[11px] font-bold text-[#004B87] font-heading uppercase tracking-wide">
+                                PR Line #{l.prLineNo} - {prLineGroupSize(l.prLineNo)} Scheduled Deliveries
+                              </span>
+                              <span
+                                className={`text-[10px] font-data px-1.5 py-0.5 rounded-sm border ${
+                                  status.tone === "over" ? "bg-[#FEF3F2] border-[#FECDCA] text-[#B42318]"
+                                  : status.tone === "full" ? "bg-[#ECFDF3] border-[#ABEFC6] text-[#027A48]"
+                                  : "bg-[#FFFAEB] border-[#FEDF89] text-[#B54708]"
+                                }`}
+                                data-testid={`po-split-group-status-${l.prLineNo}`}
+                              >
+                                {status.label}
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      <tr
+                        key={l.key}
+                        className={`${inSplitGroup ? "bg-[#F9FCFF] border-l-[3px] border-l-[#004B87]" : idx % 2 === 1 ? "bg-[#F9FAFB]" : "bg-white"}`}
+                        data-testid={`po-line-row-${idx}`}
+                      >
                         <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[280px] relative">
+                          {inSplitGroup && (
+                            <span className="inline-block mb-1 text-[10px] font-data text-[#004B87]" data-testid={`po-line-delivery-no-${idx}`}>
+                              &#x2514;&#x2500; Delivery #{deliveryNo}
+                            </span>
+                          )}
                           {l.fromPr ? (
                             l.product_id ? (
                               <div className="h-8 flex items-center px-2 text-xs bg-[#F9FAFB] border border-[#D0D5DD] rounded-sm font-data text-[#101828] truncate" data-testid={`po-line-product-locked-${idx}`} title={`${l.product_id} - ${l.description}`}>
@@ -616,11 +687,19 @@ export default function PurchaseOrderPage() {
                             </>
                           )}
                         </td>
-                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[90px]">
+                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[110px]">
                           <Input type="number" min="0" step="any" value={l.quantity} onChange={(e) => updateLine(l.key, "quantity", e.target.value)} className="h-8 text-xs font-data rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]" data-testid={`po-line-qty-input-${idx}`} />
-                          {l.fromPr && l.prLineNo != null && prLineGroupSize(l.prLineNo) > 1 && (
-                            <div className={`text-[10px] mt-0.5 font-data ${prLineAllocated(l.prLineNo) > l.prOriginalQty + 1e-6 ? "text-[#B42318]" : "text-[#667085]"}`} data-testid={`po-line-split-allocated-${idx}`}>
-                              {prLineAllocated(l.prLineNo)}/{l.prOriginalQty} split
+                          {inSplitGroup && (
+                            <div className="mt-1" data-testid={`po-line-split-allocated-${idx}`}>
+                              <div className="h-1 w-full rounded-sm bg-[#EAECF0] overflow-hidden">
+                                <div
+                                  className={`h-full ${status.tone === "over" ? "bg-[#B42318]" : status.tone === "full" ? "bg-[#027A48]" : "bg-[#B54708]"}`}
+                                  style={{ width: `${Math.min(100, (prLineAllocated(l.prLineNo) / (l.prOriginalQty || 1)) * 100)}%` }}
+                                />
+                              </div>
+                              <span className={`text-[9px] font-data leading-tight block mt-0.5 ${status.tone === "over" ? "text-[#B42318]" : status.tone === "full" ? "text-[#027A48]" : "text-[#B54708]"}`}>
+                                {status.label}
+                              </span>
                             </div>
                           )}
                         </td>
@@ -641,16 +720,32 @@ export default function PurchaseOrderPage() {
                         <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[110px] font-data text-xs font-semibold text-[#101828] whitespace-nowrap" data-testid={`po-line-total-${idx}`}>
                           {fmtMoney(lineTotal(l), currency)}
                         </td>
-                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 text-center whitespace-nowrap">
-                          <Button type="button" variant="ghost" size="icon" className="h-7 w-7 rounded-sm hover:bg-[#F2F4F7]" onClick={() => duplicateLine(l.key)} data-testid={`po-line-duplicate-button-${idx}`} title="Duplicate row">
-                            <Copy size={13} className="text-[#667085]" />
-                          </Button>
+                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 text-center whitespace-nowrap min-w-[90px]">
+                          {l.fromPr ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 px-2 text-[10px] rounded-sm border-[#B2DDFF] bg-[#EFF8FF] text-[#175CD3] hover:bg-[#D1E9FF] mr-1"
+                              onClick={() => duplicateLine(l.key)}
+                              data-testid={`po-line-split-schedule-button-${idx}`}
+                              title="Split this PR item into multiple delivery dates & partial quantities"
+                            >
+                              <CalendarPlus size={12} className="mr-1" /> Split
+                            </Button>
+                          ) : (
+                            <Button type="button" variant="ghost" size="icon" className="h-7 w-7 rounded-sm hover:bg-[#F2F4F7]" onClick={() => duplicateLine(l.key)} data-testid={`po-line-duplicate-button-${idx}`} title="Duplicate row">
+                              <Copy size={13} className="text-[#667085]" />
+                            </Button>
+                          )}
                           <Button type="button" variant="ghost" size="icon" className="h-7 w-7 rounded-sm hover:bg-[#FEF3F2]" onClick={() => removeLine(l.key)} disabled={lines.length === 1} data-testid={`po-line-remove-button-${idx}`} title="Remove row">
                             <Trash size={13} className="text-[#B42318]" />
                           </Button>
                         </td>
                       </tr>
-                    ))}
+                      </Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

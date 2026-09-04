@@ -1,0 +1,31 @@
+{
+  "summary": "Frontend-only verification of this session's two changes: (1) the redesigned 'Split' delivery-schedule UX on /purchasing-strategy/purchase-order-create, and (2) the global --primary CSS variable fix (black hover regression). Split redesign: 100% functional - labeled 'Split' button (data-testid po-line-split-schedule-button-{idx}) with correct tooltip, group header row 'PR LINE #X - N SCHEDULED DELIVERIES' with allocation badge, per-row progress bar + color-coded status (verified Amber under / Green full / Red over with actual computed classes FFFAEB/ECFDF3/FEF3F2), Delivery #1/#2/#3 tree labels, group header count decrements on Trash and header disappears when only 1 row remains, non-PR lines keep the old icon-only Duplicate button (no Split), guidance banner renders on load. Over-allocation correctly flips checklist item 5 to warning (text-[#B54708]) and keeps 'Create Purchase Order in SAP' disabled (final submit was NEVER clicked; confirm dialog never opened). Hover regression sweep across 6 real pages (/inventory, /inventory/inter-plant-transfer, /admin/grn-approval, /admin/access-management, /purchasing-strategy/purchase-order-create, /purchasing-strategy/supplier-master, plus / and /bom-explorer in a first pass): --primary resolves to '206.7 100% 26.5%' everywhere, ~150 visible buttons hovered - zero near-black hover backgrounds; checked Checkbox components on Access Management now compute to rgb(0, 75, 135) = #004B87 (previously near-black). No console errors on the PO page.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "PurchaseOrderPage guidance banner", "issue": "Copy mismatch: banner instructs to click \"Split Schedule\" but the actual button label is just \"Split\" - align the wording", "selector": "[data-testid=\"po-split-schedule-guidance-banner\"]", "priority": "LOW"},
+      {"component": "PurchaseOrderPage split allocation badge", "issue": "Immediately after clicking Split, the new row's qty is blank (0) yet the group badge reads GREEN '2/2 EA fully scheduled' because the original row still holds the full qty. Misleading: a 0-qty row can never be submitted, and the blocking reason surfaces under an unrelated checklist item ('Every line matched to a real SAP product, with Qty & Price'). Consider treating a blank-qty row in a split group as under-allocated (Amber) or pre-splitting the qty.", "selector": "[data-testid^=\"po-split-group-status-\"]", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Purchase Order Creation - line items table", "issues": ["All 5 line items of real PR 124722 render as red 'Not matched in SAP (... CARTRIDGE REFILLED/REFILLING/BLADE) - remove this line to proceed', so the flow can never be completed for this PR (checklist item 4 stays red). Looks like genuine data (service/consumable items absent from SAP catalog) rather than a regression, but it means the documented 'known-good test PR' cannot exercise a full happy path - consider documenting a PR whose items do resolve.", "Line items table always shows a horizontal scrollbar (min-w-[980px] inside an ~815px column) and the Product column can scroll out of view while editing Qty/Price - acceptable but slightly awkward at 1920px width."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Align banner copy ('Split Schedule') with the button label ('Split')",
+    "Optional UX: make a blank-qty row inside a split group show Amber/under-allocated instead of Green 'fully scheduled'",
+    "Confirm whether PR 124722's 5 items being unmatched in SAP is expected; if so document a PR with resolvable products for future end-to-end tests"
+  ],
+  "critical_code_review_comments": [
+    "PurchaseOrderPage.jsx is 875 lines - consider extracting the line-items table / split-group rendering into its own component",
+    "splitAllocationStatus() hardcodes 'EA' in its label instead of using the row's unit_of_measure - wrong unit will display for non-EA PR lines"
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (frontend-only request)", "frontend": "100% of split-redesign + hover-regression assertions passed"},
+  "seed_data_creation": "None. Reused documented sessions: po.redesign.test (nLYX45...) for the PO page and the existing grn.oq.test super_admin session (pHzzThPvKnLpnBySXb4_SFzIgRgUaw36z8ly2QvFCMc, expires Sep 5 2026) for the multi-page hover sweep. No data mutated; no PO created.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Split redesign and the --primary hover fix are both verified good. Final 'Create Purchase Order in SAP' was never clicked (button is correctly disabled while the checklist has failures). PR 124722's 5 items do not match SAP products, so the PO happy path cannot be completed with it. The super_admin session used for the hover sweep expires Sep 5 2026 - reseed if needed.",
+  "rca_of_the_issue": "Hover-black regression root cause (index.css :root --primary left at 0 0% 9%) is confirmed fixed: computed --primary is now 206.7 100% 26.5% and shadcn default-variant surfaces (Checkbox checked) render rgb(0,75,135)."
+}
