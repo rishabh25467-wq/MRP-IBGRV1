@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { Plus, Trash, WarningCircle, CheckCircle, CircleNotch, MagnifyingGlass } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
@@ -22,6 +23,14 @@ const todayISO = () => new Date().toISOString().slice(0, 10);
 const RI_SITES = new Set(["P1", "P8", "P5", "P1W", "W1"]);
 const companyForSite = (site) => (RI_SITES.has((site || "").toUpperCase()) ? "RI" : "RT");
 
+// Sep 4 2026, user's explicit ask: Bill-To is a per-site Finance/Billing
+// unit ("{site}-FIN"), scoped to whichever company the Purchase Unit
+// site belongs to - mirrors backend's BILL_TO_OPTIONS_BY_COMPANY.
+const BILL_TO_OPTIONS_BY_COMPANY = {
+  RI: ["P1-FIN", "P8-FIN", "P1W-FIN", "P5-FIN"],
+  RT: ["P2-FIN", "P3-FIN", "P2W-FIN", "P7-FIN", "P9-FIN", "P4-FIN"],
+};
+
 const emptyLine = () => ({
   key: `line-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
   product_id: "",
@@ -36,6 +45,7 @@ const emptyLine = () => ({
 });
 
 export default function PurchaseOrderPage() {
+  const navigate = useNavigate();
   const [sites, setSites] = useState([]);
   const [purchaseUnitSite, setPurchaseUnitSite] = useState("");
   const [billToCompany, setBillToCompany] = useState("");
@@ -62,7 +72,7 @@ export default function PurchaseOrderPage() {
   }, []);
 
   useEffect(() => {
-    if (purchaseUnitSite) setBillToCompany(companyForSite(purchaseUnitSite));
+    setBillToCompany("");
   }, [purchaseUnitSite]);
 
   useEffect(() => {
@@ -220,14 +230,15 @@ export default function PurchaseOrderPage() {
             </div>
 
             <div className="space-y-1.5">
-              <Label className="text-xs text-[#344054]">Bill-To Company *</Label>
-              <Select value={billToCompany} onValueChange={setBillToCompany}>
+              <Label className="text-xs text-[#344054]">Bill-To *</Label>
+              <Select value={billToCompany} onValueChange={setBillToCompany} disabled={!purchaseUnitSite}>
                 <SelectTrigger className="h-9 text-sm" data-testid="po-bill-to-select">
-                  <SelectValue placeholder="Choose company" />
+                  <SelectValue placeholder={purchaseUnitSite ? "Choose Bill-To" : "Choose Purchase Unit first"} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="RI">RAY INTERNATIONAL (RI)</SelectItem>
-                  <SelectItem value="RT">RADISH TECHNOLOGIES (RT)</SelectItem>
+                  {(BILL_TO_OPTIONS_BY_COMPANY[companyForSite(purchaseUnitSite)] || []).map((opt) => (
+                    <SelectItem key={opt} value={opt}>{opt}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -403,6 +414,11 @@ export default function PurchaseOrderPage() {
             <p className="text-sm text-[#B42318]" data-testid="po-result-error-message">{result?.error}</p>
           )}
           <DialogFooter>
+            {result?.po_number && (
+              <Button type="button" variant="outline" onClick={() => navigate("/purchasing-strategy/created-purchase-orders")} data-testid="po-result-view-created-button">
+                View Created POs
+              </Button>
+            )}
             <Button type="button" onClick={resetForm} data-testid="po-result-close-button">
               {result?.po_number ? "Create Another" : "Close"}
             </Button>

@@ -1,0 +1,45 @@
+{
+  "summary": "Tested the two new Sep 4 2026 features: (1) per-site Finance Bill-To dropdown on /purchasing-strategy/purchase-order-create, (2) new Created POs viewer page at /purchasing-strategy/created-purchase-orders. Frontend verified with Playwright using the synthetic vms_session PO-tester cookie; backend verified only on read/validation paths (9/9 pytest passing). NO valid PO payload was ever submitted - nothing written to live production SAP. All 8 requested scenarios PASS; no functional defects found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/purchase-orders/*", "issue": "Transient HTTP 502s (ingress edge) on the first parallel (-n 2) pytest run against the preview URL; identical requests passed 100% on serial rerun and via curl. Not reproducible - preview-ingress flakiness, not app code. Flag only."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Created Purchase Orders", "issues": [
+        "Historical rows (POs 29174/29175/29181) show legacy bare Bill-To values 'RI'/'RT' rather than a *-FIN code - expected for pre-change data but may confuse users.",
+        "No refresh button / row count / pagination (limit hardcoded at 100 in the fetch) - fine for 3 rows, needed as volume grows.",
+        "axios .catch(() => {}) swallows fetch failures: a 401/500 renders the same 'No Purchase Orders have been created yet.' empty state as a genuinely empty list. Add an explicit error state."
+      ]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_po_billto_and_history_iter100.py",
+    "/app/test_reports/pytest/pytest_results_iter100.xml"
+  ],
+  "action_items": [
+    "Optional: add an error state (not silent empty state) to CreatedPurchaseOrdersPage's axios catch block.",
+    "Optional: add refresh/pagination to the Created POs table before PO volume grows.",
+    "No blocking fixes required - both new features work as specified."
+  ],
+  "critical_code_review_comments": [
+    "BILL_TO_OPTIONS_BY_COMPANY is duplicated in PurchaseOrderPage.jsx and server.py (~4975) and must stay in sync; consider returning the allowed bill-to list from the API (e.g. extend /api/purchase-orders/sites) to avoid drift.",
+    "RI_SITES is duplicated in the frontend (companyForSite) too. Note W1/P5/P1W are in the frontend RI set but /api/purchase-orders/sites returns only P1,P2,P2W,P3,P4,P7,P8,P9 - so P5-FIN/P1W-FIN are currently unreachable options in practice (harmless but dead choices).",
+    "CreatedPurchaseOrdersPage: empty catch hides API errors (see design issues); otherwise clean, data-testids present on all rows/buttons/dialog."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_po_billto_and_history_iter100.py",
+    "/app/test_reports/iteration_142.json"
+  ],
+  "success_rate": {"backend": "100% (9/9 read+validation tests)", "frontend": "100% (all 8 requested scenarios)"},
+  "seed_data_creation": "None. Reused the existing synthetic vms_session cookie aXpWl7XNHyKOvLVHeH4fh9I35zpQXhbUmDKPMAd1o5I (po.tester@rampgroup.co.in, allowed_pages=['purchase_order']) - still valid. All create attempts used fake refs ZZZTEST999 / ZZZNOTREAL and were rejected pre-SAP with 400/422.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "vms_session=aXpWl7XNHyKOvLVHeH4fh9I35zpQXhbUmDKPMAd1o5I (valid, verified this round)",
+  "context_for_next_testing_agent": "Verified PASS: (a) Bill-To select disabled with 'Choose Purchase Unit first' until a site is picked; (b) P1 -> Company 'RI' and Bill-To options exactly ['P1-FIN','P8-FIN','P1W-FIN','P5-FIN']; (c) P2 -> 'RT' and exactly ['P2-FIN','P3-FIN','P2W-FIN','P7-FIN','P9-FIN','P4-FIN']; (d) changing site after choosing P1-FIN resets state (useEffect PurchaseOrderPage.jsx:74-76) - confirmed visually (placeholder returns) and via validation toast 'Bill-To Company is required'; (e) Created POs page renders 3 rows (29181/29175/29174 = entire purchase_order_creation_history collection), correct 9 columns, eye icon opens detail dialog with header fields + line-items table, Escape closes; (f) nav dropdown trigger testid is 'nav-purchasing-strategy' (label reads 'Supplier Management'), item testid 'nav-purchasing-strategy-created-purchase-orders' navigates correctly. Backend: history 401 without cookie, 200 array with cookie, limit honored, _id stringified, raw_xml excluded; create -> 400 for P1+P2-FIN, P2+P1-FIN, legacy bare 'RI'/'RT', garbage codes; 422 for delivery_date < po_date. IMPORTANT: run this pytest file with -n 0 (parallel produced transient 502s). NEVER submit a valid PO payload - live production SAP.",
+  "rca_of_the_issue": "N/A - no functional defect. Only transient edge 502s on the first parallel pytest run, gone on serial rerun/curl retry (preview ingress flakiness)."
+}

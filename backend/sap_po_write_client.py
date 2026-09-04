@@ -86,6 +86,24 @@ fully fails (no partial/corrupt writes):
   - DirectMaterialIndicator=true for every item (these are real
     inventory materials, not services/expenses - the official example
     uses false because its sample item is a non-stock line).
+
+SEP 5 2026 FOLLOW-UP: user reported PO Date/Business Residence/Purchase
+Unit/Portal PR Number all still blank on the real created POs (29173/
+29174). The `<Date>`/`<BusinessResidenceID>` guess mentioned in a prior
+session's own notes was never actually correct (never confirmed, and
+this file's own history shows no trace of it - most likely lost/reverted
+between sessions). Root-caused for real this time by reading back 5 real
+SAP POs (both app-created and manually-created-in-SAP-UI reference
+examples the user made specifically for this, e.g. PO 29179) via
+`sap_po_client.py`'s read service - see `CUSTOM_FIELD_NAMESPACE` above
+for the confirmed fix (Business Residence + PO Date are this tenant's
+own one-off custom fields, not standard ones; Purchase Unit auto-derives
+from Business Residence, confirmed by PO 29176 which had BOTH already
+filled despite this client never sending Purchase Unit explicitly).
+`Portal PR Number` remains UNRESOLVED - it does not appear as a custom
+field on ANY of the 5 real POs read back (even ones with all other 3
+fields filled), so its real SAP tag name is still unknown; not sent by
+this client yet.
 """
 import re
 
@@ -98,6 +116,29 @@ from sap_rate_limiter import sap_semaphore
 
 NAMESPACE = "http://sap.com/xi/SAPGlobal20/Global"
 SOAP_ACTION = ""
+
+# Customer-specific extension fields (Sep 4/5 2026 finding) - this
+# tenant added 3 one-off custom fields to the PurchaseOrder root node
+# via SAP's own Business Configuration/Adaptation. Confirmed live by
+# reading back 5 real SAP POs (some app-created, some manually created
+# in SAP's own UI as reference examples) via the read-only
+# QueryPurchaseOrderQueryIn service - the exact tag names/namespace
+# below are copied verbatim from that real response XML, not guessed:
+#   <n1:BusinesResidence xmlns:n1="{CUSTOM_FIELD_NAMESPACE}">P1</n1:BusinesResidence>
+#   <n1:PoDate xmlns:n1="{CUSTOM_FIELD_NAMESPACE}">2026-09-04T00:00:00Z</n1:PoDate>
+#   <n1:BrNumber xmlns:n1="{CUSTOM_FIELD_NAMESPACE}">P1PO-00622/26-27</n1:BrNumber>
+# "BusinesResidence" is spelled with a single "s" in SAP's own field -
+# NOT a typo introduced here. BrNumber is SAP's own auto-generated
+# document number (site + running sequence + fiscal year) once
+# BusinesResidence is set - never sent by us, only ever read back.
+# Setting BusinesResidence alone was ALSO observed to auto-derive the
+# standard `PartyResponsiblePurchasingUnitPartyKey` ("Purchase Unit",
+# e.g. "P1-PUR") - confirmed on PO 29176 (BusinesResidence+PurchasingUnit
+# populated, PoDate still blank - an earlier partial attempt) - so
+# Purchase Unit is NOT sent explicitly either, same conclusion the
+# earlier Sep 4 2026 docstring note already reached, just now confirmed
+# to depend on BusinesResidence being set.
+CUSTOM_FIELD_NAMESPACE = "http://0012819041-one-off.sap.com/YPS7GEURY_"
 
 
 class SAPPurchaseOrderWriteError(Exception):
@@ -182,6 +223,10 @@ _ITEM_TEMPLATE = """  <Item actionCode="01">
   </Item>
 """
 
+_CUSTOM_FIELDS_TEMPLATE = """  <n1:BusinesResidence xmlns:n1="{ns}">{site_id}</n1:BusinesResidence>
+  <n1:PoDate xmlns:n1="{ns}">{po_date}T00:00:00Z</n1:PoDate>
+"""
+
 _ENVELOPE_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
 <soapenv:Body>
@@ -191,7 +236,7 @@ _ENVELOPE_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
   <ObjectNodeSenderTechnicalID>1</ObjectNodeSenderTechnicalID>
   <BusinessTransactionDocumentTypeCode>001</BusinessTransactionDocumentTypeCode>
   <CurrencyCode>{currency}</CurrencyCode>
-{buyer_party}{seller_party}{employee_responsible_party}{bill_to_party}{company_party}{ship_to_location}{items}</PurchaseOrderMaintainBundle>
+{buyer_party}{seller_party}{employee_responsible_party}{bill_to_party}{company_party}{ship_to_location}{items}{custom_fields}</PurchaseOrderMaintainBundle>
 </n0:PurchaseOrderBundleMaintainRequest_sync>
 </soapenv:Body>
 </soapenv:Envelope>"""
@@ -215,6 +260,10 @@ class SAPPurchaseOrderWriteClient:
         goods") - present in every single official SAP example without
         exception (Sep 4 2026 finding), so treated as effectively mandatory
         here even though not confirmed via a live PO read.
+        `po_date` (YYYY-MM-DD) is sent as the custom `PoDate` field (see
+        module docstring - Sep 5 2026 finding, corrects the earlier Sep 4
+        note that wrongly assumed it wasn't settable at all: it just
+        isn't a STANDARD field, it's this tenant's own custom one).
         Returns {"po_number": str|None, "po_uuid": str|None, "raw_xml": str}.
         Raises SAPPurchaseOrderWriteError on any rejection (transport,
         HTTP fault, or a Log-reported business error)."""
@@ -239,12 +288,15 @@ class SAPPurchaseOrderWriteClient:
                 site_id=escape(str(it["site_id"])),
             ) for idx, it in enumerate(items)
         )
+        custom_fields = _CUSTOM_FIELDS_TEMPLATE.format(
+            ns=CUSTOM_FIELD_NAMESPACE, site_id=escape(purchase_unit_site), po_date=escape(po_date),
+        )
         envelope = _ENVELOPE_TEMPLATE.format(
             namespace=NAMESPACE, currency=escape(currency),
             buyer_party=buyer_party, seller_party=seller_party,
             employee_responsible_party=employee_responsible_party,
             bill_to_party=bill_to_party, company_party=company_party,
-            ship_to_location=ship_to_location, items=items_xml,
+            ship_to_location=ship_to_location, items=items_xml, custom_fields=custom_fields,
         )
         headers = {"Content-Type": "text/xml; charset=utf-8", "SOAPAction": SOAP_ACTION}
         try:

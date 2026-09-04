@@ -54,6 +54,8 @@ const PURCHASING_STRATEGY_SUBTABS = [
   { to: "/purchasing-strategy/quota-allocation", label: "Quota Allocation", testId: "nav-purchasing-strategy-quota-allocation", page: "quota_allocation" },
   // Aug 2026: Purchase Order Creation automation - writes real POs into SAP ByDesign.
   { to: "/purchasing-strategy/purchase-order-create", label: "Create Purchase Order", testId: "nav-purchasing-strategy-purchase-order-create", page: "purchase_order" },
+  // Sep 4 2026, user's explicit ask: visibility into POs already created via this app.
+  { to: "/purchasing-strategy/created-purchase-orders", label: "Created POs", testId: "nav-purchasing-strategy-created-purchase-orders", page: "purchase_order" },
 ];
 
 const ADMIN_SUBTABS = [

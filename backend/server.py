@@ -4966,6 +4966,17 @@ class PurchaseOrderLineItemIn(BaseModel):
 # per-user SAP Employee ID mapping to pick a different one per creator).
 PO_EMPLOYEE_RESPONSIBLE_ID = "1"
 
+# Sep 4 2026, user's explicit ask: Bill-To is no longer the bare RI/RT
+# legal-entity code - it's a per-site Finance/Billing org unit (mirrors
+# the existing "{site}-PUR" Purchasing Unit convention, e.g. "P1-PUR",
+# confirmed live via a real SAP PO read), picked from a list scoped to
+# whichever company the chosen Purchase Unit site belongs to (same
+# SITE_TO_COMPANY grouping used everywhere else in this app).
+BILL_TO_OPTIONS_BY_COMPANY = {
+    "RI": ["P1-FIN", "P8-FIN", "P1W-FIN", "P5-FIN"],
+    "RT": ["P2-FIN", "P3-FIN", "P2W-FIN", "P7-FIN", "P9-FIN", "P4-FIN"],
+}
+
 
 class PurchaseOrderCreateRequest(BaseModel):
     supplier_code: str
@@ -5061,9 +5072,10 @@ async def get_purchase_order_history(limit: int = 50):
 
 @api_router.post("/purchase-orders/create")
 async def create_purchase_order(payload: PurchaseOrderCreateRequest, request: Request):
-    if payload.bill_to_company not in ("RI", "RT"):
-        raise HTTPException(status_code=400, detail="Bill-To Company must be RI or RT")
     company_code, _ = company_and_set_of_books_for_site(payload.purchase_unit_site)
+    allowed_bill_to = BILL_TO_OPTIONS_BY_COMPANY.get(company_code, [])
+    if payload.bill_to_company not in allowed_bill_to:
+        raise HTTPException(status_code=400, detail=f"Bill-To must be one of {allowed_bill_to} for company {company_code}")
     items = [
         {
             "product_id": it.product_id, "quantity": it.quantity, "unit_of_measure": it.unit_of_measure,
