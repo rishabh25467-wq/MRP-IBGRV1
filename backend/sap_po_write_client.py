@@ -245,6 +245,12 @@ _CUSTOM_FIELDS_TEMPLATE = """  <n1:PODate xmlns:n1="{ns}">{po_date}</n1:PODate>
 _PR_NUMBER_FIELD_TEMPLATE = """  <n1:PortalPRNumber xmlns:n1="{ns}">{pr_number}</n1:PortalPRNumber>
 """
 
+_CASH_DISCOUNT_TERMS_TEMPLATE = """  <CashDiscountTerms actionCode="01">
+   <ObjectNodeSenderTechnicalID>{tech_id}</ObjectNodeSenderTechnicalID>
+   <Code>{code}</Code>
+  </CashDiscountTerms>
+"""
+
 _ENVELOPE_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
 <soapenv:Body>
@@ -256,7 +262,7 @@ _ENVELOPE_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
   <CurrencyCode>{currency}</CurrencyCode>
   <Date>{po_date}</Date>
   <n2:BusinesResidence xmlns:n2="{old_namespace}">{business_residence_id}</n2:BusinesResidence>
-{buyer_party}{seller_party}{employee_responsible_party}{bill_to_party}{company_party}{ship_to_location}{items}{custom_fields} </PurchaseOrderMaintainBundle>
+{buyer_party}{seller_party}{employee_responsible_party}{bill_to_party}{company_party}{ship_to_location}{purchasing_unit_party}{items}{cash_discount_terms}{custom_fields} </PurchaseOrderMaintainBundle>
 </n0:PurchaseOrderBundleMaintainRequest_sync>
 </soapenv:Body>
 </soapenv:Envelope>"""
@@ -271,7 +277,7 @@ class SAPPurchaseOrderWriteClient:
     def create_purchase_order(
         self, company_code: str, purchase_unit_site: str, supplier_code: str,
         bill_to_company_code: str, po_date: str, currency: str, items: list,
-        employee_responsible_id: str, pr_number: str = None,
+        employee_responsible_id: str, pr_number: str = None, cash_discount_terms_code: str = None,
     ) -> dict:
         """items: [{"product_id", "quantity", "unit_of_measure",
         "unit_price", "delivery_date" (YYYY-MM-DD), "site_id"}, ...].
@@ -283,7 +289,14 @@ class SAPPurchaseOrderWriteClient:
         `po_date` (YYYY-MM-DD) is sent as both the standard `Date` header
         field AND the custom `PODate` field (see module docstring, Sep 5
         2026 finding). `pr_number` (optional) is sent as the custom
-        `PortalPRNumber` field if provided.
+        `PortalPRNumber` field if provided. `cash_discount_terms_code`
+        (optional, e.g. "0010") is the Supplier Master's own Payment Terms
+        code (`PurchasingData/CashDiscountTermsCode` from
+        `sap_supplier_client.py`) - the create web service does NOT
+        auto-derive Payment Terms from the Supplier Master like the
+        interactive UI does, so it stays blank unless sent explicitly
+        (Sep 5 2026 finding, official documented `CashDiscountTerms/Code`
+        node).
         Returns {"po_number": str|None, "po_uuid": str|None, "raw_xml": str}.
         Raises SAPPurchaseOrderWriteError on any rejection (transport,
         HTTP fault, or a Log-reported business error)."""
@@ -308,6 +321,16 @@ class SAPPurchaseOrderWriteClient:
                 site_id=escape(str(it["site_id"])),
             ) for idx, it in enumerate(items)
         )
+        next_tech_id = 8 + len(items) * 3
+        # Sep 5 2026: testing the reverse of the earlier hypothesis -
+        # sending this real, documented standard party explicitly
+        # (instead of relying on auto-derivation from Business
+        # Residence, which never worked) to see if IT drives Business
+        # Residence instead.
+        purchasing_unit_party = _PARTY_TEMPLATE.format(
+            tag="PurchasingUnitParty", tech_id=next_tech_id, party_id=escape(f"{purchase_unit_site}-PUR"),
+        )
+        next_tech_id += 1
         pr_number_field = (
             _PR_NUMBER_FIELD_TEMPLATE.format(ns=CUSTOM_FIELD_NAMESPACE, pr_number=escape(pr_number))
             if pr_number else ""
@@ -315,13 +338,19 @@ class SAPPurchaseOrderWriteClient:
         custom_fields = _CUSTOM_FIELDS_TEMPLATE.format(
             ns=CUSTOM_FIELD_NAMESPACE, po_date=escape(po_date), pr_number_field=pr_number_field,
         )
+        cash_discount_terms = (
+            _CASH_DISCOUNT_TERMS_TEMPLATE.format(tech_id=next_tech_id, code=escape(cash_discount_terms_code))
+            if cash_discount_terms_code else ""
+        )
         envelope = _ENVELOPE_TEMPLATE.format(
             namespace=NAMESPACE, currency=escape(currency), po_date=escape(po_date),
             old_namespace=OLD_CUSTOM_FIELD_NAMESPACE,
             buyer_party=buyer_party, seller_party=seller_party,
             employee_responsible_party=employee_responsible_party,
             bill_to_party=bill_to_party, company_party=company_party,
-            ship_to_location=ship_to_location, items=items_xml, custom_fields=custom_fields,
+            ship_to_location=ship_to_location, purchasing_unit_party=purchasing_unit_party,
+            items=items_xml, custom_fields=custom_fields,
+            cash_discount_terms=cash_discount_terms,
             business_residence_id=escape(purchase_unit_site),
         )
         headers = {"Content-Type": "text/xml; charset=utf-8", "SOAPAction": SOAP_ACTION}

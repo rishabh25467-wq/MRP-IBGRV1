@@ -91,6 +91,41 @@ Extend the existing SAP BOM viewer application: Production Plan page (OMS Open-P
 - **Bill-To Company changed to per-site Finance Bill-To dropdown (Sep 4 2026, user's explicit ask)**: `PurchaseOrderPage.jsx`'s "Bill-To Company" field (was a plain RI/RT selector) is now a dropdown of per-site Finance/Billing codes (mirrors the existing "{site}-PUR" Purchasing Unit convention), scoped to whichever company the chosen Purchase Unit site belongs to: Company=RI -> `P1-FIN`/`P8-FIN`/`P1W-FIN`/`P5-FIN`; Company=RT -> `P2-FIN`/`P3-FIN`/`P2W-FIN`/`P7-FIN`/`P9-FIN`/`P4-FIN` (disabled + resets whenever Purchase Unit site changes). Backend `BILL_TO_OPTIONS_BY_COMPANY` in `server.py` validates `bill_to_company` server-side against the derived company's list (400 if mismatched) before ever reaching SAP. Tested via `testing_agent` (iteration_142, 100% pass, 9/9 backend + 8/8 frontend scenarios) - zero live SAP writes during testing. Note (non-blocking, flagged by testing_agent): `P5`/`P1W` aren't in `GET /purchase-orders/sites`' real site list today, so `P5-FIN`/`P1W-FIN` are currently unreachable dead options - harmless, matches user's exact literal spec.
 - **"Created POs" viewer page added (Sep 4 2026, user's explicit ask, Task 1)**: new page `CreatedPurchaseOrdersPage.jsx` at `/purchasing-strategy/created-purchase-orders` (nav: "Created POs" under Purchasing Strategy, same `purchase_order` page permission), reads the pre-existing `GET /api/purchase-orders/history` endpoint (unchanged, already existed) - table of every PO created via this app (SAP PO #, Supplier, Site, Bill-To, PO Date, PR Number, Items count, Created By, Created At) with a per-row "eye" button opening a detail dialog (full header + line-items table). Also added a "View Created POs" button to the PO creation success dialog. Tested via `testing_agent` (iteration_142) - renders real history data (POs 29174/29175/29181), detail dialog works. Minor non-blocking suggestions from testing_agent (not yet done): add an explicit error state instead of silent empty-list on fetch failure; add pagination once volume grows beyond the hardcoded limit=100.
 
+## What's been implemented (Sep 4 2026 session, continued - PO Creation UI rebuild)
+- **Architecture note**: PO creation write path was migrated from SOAP (`sap_po_write_client.py`, the Business
+  Residence/PO Date SOAP struggle documented above) to OData (`sap_po_odata_client.py`, POST-then-PATCH
+  `BillToParty`/`BuyerParty`/Business Residence, mirroring a working C# reference the user provided) earlier
+  in this same session before the fork. This supersedes the "Business Residence STILL BLOCKED" SOAP finding
+  above - per handoff this is DONE via OData, but NOT re-verified with a fresh live PO in this continuation
+  (no live PO was created this session - only PR-lookup reads and UI testing).
+- **`PurchaseOrderPage.jsx` full redesign**: rewritten with 5 sections - PR Lookup (mandatory) -> Org Context
+  (Purchase Unit/Company/Bill-To) -> Supplier & Terms -> Line Items Engine (per-line delivery date, duplicate
+  row, live line totals) -> sticky Order Summary sidebar (checklist gates the submit button, Confirm dialog
+  audit recap, success dialog links to Created POs page). Header switched to match the app's standard teal
+  `h-16 bg-[#0E7C86]` Materials Hub bar (was a plain white one from an initial redesign pass) - user's explicit
+  ask "must also show the menu bar the same way as the app shows". Full color/spacing pass to the established
+  JDE palette (`#004B87` primary/`#003A6A` hover, `#F2F4F7` page bg, `#D0D5DD` borders, `#EAECF0` table headers,
+  `rounded-sm`, compact paddings) after user flagged the first pass used an unrelated blue/indigo "tactical"
+  palette from a design_agent run that didn't match the rest of the app - also fixed a currency-formatting bug
+  (`Intl.NumberFormat` always used `en-IN` lakh-grouping even for USD amounts) and an icon-button hover color.
+- **PR Number is now MANDATORY and drives autofill** (user's explicit ask): new `backend/pr_integration_client.py`
+  + `GET /api/purchase-orders/pr-lookup/{voc_no}` proxy the external SCM.AI "Smart Approvals" API (contract at
+  `https://smart-approve.preview.emergentagent.com/api/public/docs/po-integration.md`, static `X-Api-Key` auth).
+  Entering a PR voucher number and clicking "Fetch PR" auto-fills Vendor (matched against our own `suppliers`
+  collection by `sap_internal_id`, including cached payment terms), Purchase Unit/Site, and Line Items (Qty/
+  UoM/Unit Price from the PR; Product ID auto-matched against `inventory_cache` only if the PR's `icode` exists
+  there, else the PR's item description is prefilled as a starting search text since most of this PR system's
+  line items don't carry a code that matches our catalog - user must then pick a real Product ID from
+  suggestions). Delivery Date is explicitly NOT part of a PR - stays independently user-entered per line.
+  `POST /api/purchase-orders/create` re-validates the PR server-side right before writing to SAP (blocks if
+  it's already been used/status changed) and, after a successful SAP create, best-effort stamps the new PO
+  number back onto that PR via the same external API (failure here never fails the PO creation response - the
+  SAP PO is already real/permanent by that point, just logged as a warning).
+- Tested via `testing_agent` (iteration_144, 100% pass, zero live SAP writes, zero real PR stamp-backs -
+  `po-confirm-submit-button` was never clicked in any test). Two follow-up rounds of self-tested visual fixes
+  (screenshot-verified, no logic change) addressed direct user feedback: JDE theme/compact-layout pass, INR/USD
+  currency grouping fix, hover-color fix, removed "(SCM.AI Voucher No.)" label text.
+
 ## Known constraints / learnings
 - RI (RAY INTERNATIONAL) sites today: P1, P8 (also nominally P1W/W1 per SITE_TO_COMPANY map, but those have zero live inventory so never appear in `list_known_sites`). RT (RADISH TECHNOLOGIES) = everything else, including P2W.
 - QC warehouse does not exist at every site - the "default to QC" behavior is a soft pre-select, never a hard requirement.
@@ -100,3 +135,5 @@ Extend the existing SAP BOM viewer application: Production Plan page (OMS Open-P
 - SAP custom/one-off extension fields (namespace `http://0012819041-one-off.sap.com/YPS7GEURY_`, e.g. BusinesResidence/PoDate/BrNumber on PurchaseOrder) ARE readable via the Query web service but writes via the Maintain web service can be silently ignored (HTTP 200, no error, field just stays blank) if the field itself isn't enabled for web-service write access in SAP's own Business Configuration - always verify a write round-trip with a real read-back before declaring a custom field "fixed", don't trust a 200 response alone.
 - SAP ManagePurchaseOrderIn has a `PurchaseOrderBundleCheckMaintainRequest_sync` operation (same endpoint, swap the root element name from `...MaintainRequest_sync` to `...CheckMaintainRequest_sync`) that simulates a create with ZERO side effects (no PO created) - ALWAYS use this to isolate schema/structure bugs (wrong element position, wrong date format, etc.) before spending a real live PO creation to verify. BUT a 200 OK / no-fault Check response does NOT prove a field is correctly bound - SAP's schema has a lax trailing extension point that silently accepts and drops ANY well-formed-but-unrecognized element without complaint, so a real create + read-back (or user SAP UI screenshot) is still required to confirm persistence.
 - Extension fields under the tenant's `http://sap.com/xi/AP/CustomerExtension/BYD/A4CF6` namespace (PODate, PortalPRNumber - confirmed via SAP UI's own "Extension Field > Services" tab) must be placed right after `<Date>` at PurchaseOrder header level (NOT trailing after `<Item>`, which causes a full SOAP fault) - `PODate` specifically needs a plain `YYYY-MM-DD` value, a full ISO datetime there also faults the whole call.
+- The app's real established visual theme (JDE Enterprise) is `#004B87` primary/`#003A6A` hover/`#00294D` active, `#F2F4F7` page bg, `#D0D5DD` borders, `#EAECF0` table headers/`#344054` header text, `rounded-sm` everywhere, `h-16 bg-[#0E7C86]` teal header with NavTabs+SapConnectionStatus (see `GrnApprovalPage.jsx`) - always match this, don't invent a new palette for a single page even if a design_agent run suggests one.
+- `Intl.NumberFormat` locale must vary with currency (`en-US` for USD, `en-IN` for INR) - a fixed `en-IN` locale wrongly applies lakh-style digit grouping (7,61,840) to USD amounts too.

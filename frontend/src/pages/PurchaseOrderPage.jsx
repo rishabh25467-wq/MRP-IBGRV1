@@ -1,15 +1,21 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
-import { Plus, Trash, WarningCircle, CheckCircle, CircleNotch, MagnifyingGlass } from "@phosphor-icons/react";
+import {
+  Plus, Trash, Copy, WarningCircle, CheckCircle, CircleNotch, MagnifyingGlass,
+  Buildings, CreditCard, Calendar, Truck, ArrowRight, ShieldCheck, ListChecks,
+  FileMagnifyingGlass, XCircle,
+} from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
+import { Shield } from "@phosphor-icons/react";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -17,9 +23,9 @@ const API = `${BACKEND_URL}/api`;
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
 // Aug 2026, user's explicit rule: Business Residence (Company) is fixed
-// by the chosen Purchase Unit site, never picked independently -
-// mirrors the exact SITE_TO_COMPANY mapping already used elsewhere in
-// this app (sap_wip_clearing_client.py) - RI sites vs RT sites.
+// by the chosen Purchase Unit site, never picked independently - mirrors
+// the exact SITE_TO_COMPANY mapping already used elsewhere in this app
+// (sap_wip_clearing_client.py) - RI sites vs RT sites.
 const RI_SITES = new Set(["P1", "P8", "P5", "P1W", "W1"]);
 const companyForSite = (site) => (RI_SITES.has((site || "").toUpperCase()) ? "RI" : "RT");
 
@@ -30,6 +36,12 @@ const BILL_TO_OPTIONS_BY_COMPANY = {
   RI: ["P1-FIN", "P8-FIN", "P1W-FIN", "P5-FIN"],
   RT: ["P2-FIN", "P3-FIN", "P2W-FIN", "P7-FIN", "P9-FIN", "P4-FIN"],
 };
+
+// Sep 4 2026, user's explicit ask: currency grouping must match the
+// currency itself, not always Indian lakh-style grouping (e.g. USD
+// amounts must read $761,840.00, not $7,61,840.00).
+const fmtMoney = (amount, ccy) =>
+  new Intl.NumberFormat(ccy === "USD" ? "en-US" : "en-IN", { style: "currency", currency: ccy === "USD" ? "USD" : "INR", maximumFractionDigits: 2 }).format(amount || 0);
 
 const emptyLine = () => ({
   key: `line-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -50,8 +62,15 @@ export default function PurchaseOrderPage() {
   const [purchaseUnitSite, setPurchaseUnitSite] = useState("");
   const [billToCompany, setBillToCompany] = useState("");
   const [poDate, setPoDate] = useState(todayISO());
-  const [prNumber, setPrNumber] = useState("");
   const [currency, setCurrency] = useState("INR");
+
+  // Sep 4 2026, user's explicit ask: PR Number is now the MANDATORY entry
+  // point - it looks up an already-approved PR from the external SCM.AI
+  // "Smart Approvals" system and autofills Vendor/Purchase Unit/Line Items
+  // (Delivery Date is NOT part of a PR, stays user-entered per line).
+  const [prVocNo, setPrVocNo] = useState("");
+  const [prFetching, setPrFetching] = useState(false);
+  const [prFetched, setPrFetched] = useState(null);
 
   const [supplierQuery, setSupplierQuery] = useState("");
   const [supplierSuggestions, setSupplierSuggestions] = useState([]);
@@ -82,6 +101,55 @@ export default function PurchaseOrderPage() {
     document.addEventListener("mousedown", onClickOutside);
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, []);
+
+  const fetchPR = async () => {
+    const voc = prVocNo.trim();
+    if (!voc) { toast.error("Enter a PR Number first"); return; }
+    setPrFetching(true);
+    try {
+      const { data } = await axios.get(`${API}/purchase-orders/pr-lookup/${encodeURIComponent(voc)}`);
+      setPrFetched(data);
+      setCurrency(data.currency || "INR");
+      if (data.compcode && sites.includes(data.compcode)) setPurchaseUnitSite(data.compcode);
+      if (data.supplier_code) {
+        setSelectedSupplier({
+          supplier_code: data.supplier_code,
+          name: data.supplier_name || data.supplier_code,
+          cash_discount_terms_code: data.supplier_cash_discount_terms_code,
+          cash_discount_terms_text: data.supplier_cash_discount_terms_text,
+        });
+        setSupplierQuery(`${data.supplier_code} - ${data.supplier_name || ""}`);
+        if (!data.supplier_known) toast.warning("This PR's vendor isn't in the SAP Supplier Master yet - please confirm or search manually");
+      } else {
+        setSelectedSupplier(null);
+        setSupplierQuery("");
+      }
+      setLines((data.items || []).map((it) => ({
+        key: `line-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        product_id: it.matched_product_id || "",
+        description: it.matched_description || it.iname || "",
+        unit_of_measure: it.matched_unit_of_measure || it.unit || "EA",
+        quantity: it.qty,
+        unit_price: it.rate,
+        delivery_date: todayISO(),
+        productQuery: it.matched_product_id ? `${it.matched_product_id} - ${it.matched_description || ""}` : (it.iname || ""),
+        productSuggestions: [],
+        showSuggestions: false,
+      })));
+      toast.success(`PR ${data.voc_no} fetched - ${(data.items || []).length} line item(s) autofilled`);
+    } catch (e) {
+      setPrFetched(null);
+      const detail = e?.response?.data?.detail;
+      toast.error(typeof detail === "string" && detail.trim() ? detail : "Could not fetch PR");
+    } finally {
+      setPrFetching(false);
+    }
+  };
+
+  const clearPR = () => {
+    setPrFetched(null); setPrVocNo(""); setSelectedSupplier(null); setSupplierQuery("");
+    setPurchaseUnitSite(""); setBillToCompany(""); setLines([emptyLine()]);
+  };
 
   const onSupplierQueryChange = (v) => {
     setSupplierQuery(v);
@@ -130,9 +198,22 @@ export default function PurchaseOrderPage() {
 
   const addLine = () => setLines((prev) => [...prev, emptyLine()]);
   const removeLine = (lineKey) => setLines((prev) => (prev.length > 1 ? prev.filter((l) => l.key !== lineKey) : prev));
+  const duplicateLine = (lineKey) => setLines((prev) => {
+    const idx = prev.findIndex((l) => l.key === lineKey);
+    if (idx < 0) return prev;
+    const copy = { ...prev[idx], key: `line-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` };
+    const next = [...prev];
+    next.splice(idx + 1, 0, copy);
+    return next;
+  });
+
+  const lineTotal = (l) => (Number(l.quantity) || 0) * (Number(l.unit_price) || 0);
+  const totalUnits = lines.reduce((s, l) => s + (Number(l.quantity) || 0), 0);
+  const grandTotal = lines.reduce((s, l) => s + lineTotal(l), 0);
 
   const validationErrors = () => {
     const errors = [];
+    if (!prFetched) errors.push("A valid PR must be fetched first");
     if (!purchaseUnitSite) errors.push("Purchase Unit (Site) is required");
     if (!billToCompany) errors.push("Bill-To Company is required");
     if (!selectedSupplier) errors.push("Supplier must be selected from the list");
@@ -143,9 +224,19 @@ export default function PurchaseOrderPage() {
       if (!l.quantity || Number(l.quantity) <= 0) errors.push(`Line ${idx + 1}: Quantity must be greater than 0`);
       if (l.unit_price === "" || Number(l.unit_price) < 0) errors.push(`Line ${idx + 1}: Unit Price must be 0 or more`);
       if (!l.delivery_date) errors.push(`Line ${idx + 1}: Delivery Date is required`);
+      if (l.delivery_date && poDate && l.delivery_date < poDate) errors.push(`Line ${idx + 1}: Delivery Date cannot be before PO Date`);
     });
     return errors;
   };
+
+  const checklist = [
+    { label: "PR fetched & line items autofilled", ok: !!prFetched },
+    { label: "Purchase Unit & Bill-To selected", ok: !!purchaseUnitSite && !!billToCompany },
+    { label: "Supplier selected from SAP Master", ok: !!selectedSupplier },
+    { label: "Every line has Product, Qty & Price", ok: lines.every((l) => l.product_id && Number(l.quantity) > 0 && l.unit_price !== "") },
+    { label: "Delivery dates on/after PO Date", ok: lines.every((l) => !l.delivery_date || !poDate || l.delivery_date >= poDate) },
+  ];
+  const canSubmit = checklist.every((c) => c.ok);
 
   const openConfirm = () => {
     const errors = validationErrors();
@@ -165,7 +256,7 @@ export default function PurchaseOrderPage() {
         bill_to_company: billToCompany,
         po_date: poDate,
         currency,
-        pr_number: prNumber || null,
+        pr_number: prFetched.voc_no,
         items: lines.map((l) => ({
           product_id: l.product_id, description: l.description || null,
           quantity: Number(l.quantity), unit_of_measure: l.unit_of_measure || "EA",
@@ -185,212 +276,383 @@ export default function PurchaseOrderPage() {
   };
 
   const resetForm = () => {
-    setPurchaseUnitSite(""); setBillToCompany(""); setPoDate(todayISO()); setPrNumber("");
-    setSupplierQuery(""); setSelectedSupplier(null); setLines([emptyLine()]); setResult(null);
+    setPurchaseUnitSite(""); setBillToCompany(""); setPoDate(todayISO());
+    clearPR();
+    setResult(null);
   };
 
+  const company = companyForSite(purchaseUnitSite);
+  const inputCls = "h-9 text-[13px] rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]";
+  const cardCls = "bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] p-4 space-y-3";
+  const sectionHeadingCls = "text-[11px] font-bold uppercase tracking-wide text-[#344054] font-heading mb-1 flex items-center gap-2";
+
   return (
-    <div className="min-h-screen bg-[#F5F6F7] flex flex-col font-sans">
+    <div className="min-h-screen bg-[#F2F4F7] flex flex-col font-sans">
       <Toaster position="top-right" />
-      <header className="bg-white border-b border-[#D0D5DD] px-6 py-3 flex items-center justify-between gap-4 flex-wrap">
-        <NavTabs />
+      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
+        <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
+          <div className="w-8 h-8 rounded-sm bg-white/15 flex items-center justify-center shrink-0">
+            <Shield size={18} weight="fill" className="text-white" />
+          </div>
+          <div className="flex flex-col leading-tight">
+            <span className="font-heading text-[16px] font-bold text-white tracking-tight">Materials Hub</span>
+            <span className="font-sans text-[12px] text-white/70 hidden sm:inline">Purchase Order Creation</span>
+          </div>
+        </div>
+        <div className="w-px h-7 bg-white/25 shrink-0" />
+        <div className="flex items-center gap-3 flex-1 justify-start min-w-0">
+          <NavTabs />
+        </div>
         <SapConnectionStatus />
       </header>
 
-      <main className="flex-1 overflow-auto max-w-[1200px] w-full mx-auto px-6 py-6 space-y-4">
-        <div>
-          <h1 className="font-heading text-xl font-bold text-[#1D2939]" data-testid="po-page-title">Create Purchase Order</h1>
-          <p className="text-sm text-[#667085] mt-0.5">Builds and pushes a real Purchase Order into SAP ByDesign - submitted live the moment you confirm below.</p>
+      <main className="flex-1 overflow-auto w-full max-w-[1380px] mx-auto px-4 sm:px-6 lg:px-8 py-4">
+        <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
+          <div>
+            <h1 className="font-heading text-xl sm:text-2xl font-extrabold text-[#101828] tracking-tight flex items-center gap-2" data-testid="po-page-title">
+              <ShieldCheck size={22} className="text-[#004B87]" weight="fill" />
+              Purchase Order Creation
+            </h1>
+            <p className="text-[13px] text-[#667085] mt-0.5">Builds and pushes a live Purchase Order into SAP Business ByDesign - submitted the moment you confirm below.</p>
+          </div>
+          <Badge className="bg-[#EFF8FF] text-[#175CD3] border border-[#B2DDFF] rounded-sm font-data text-xs px-3 py-1.5" data-testid="po-live-sap-badge">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#175CD3] mr-2 inline-block animate-pulse" />
+            LIVE SAP OData Write Mode
+          </Badge>
         </div>
 
-        {/* Header fields */}
-        <div className="bg-white border border-[#D0D5DD] rounded-sm p-4 space-y-4" data-testid="po-header-card">
-          <h3 className="font-heading text-xs font-bold text-[#1D2939] uppercase tracking-wide">1. Order Details</h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="space-y-1.5">
-              <Label className="text-xs text-[#344054]">Purchase Unit (Site) *</Label>
-              <Select value={purchaseUnitSite} onValueChange={setPurchaseUnitSite}>
-                <SelectTrigger className="h-9 text-sm" data-testid="po-purchase-unit-select">
-                  <SelectValue placeholder="Choose site" />
-                </SelectTrigger>
-                <SelectContent>
-                  {sites.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-1.5">
-              <Label className="text-xs text-[#344054]">Company (Business Residence)</Label>
-              <div
-                className="h-9 flex items-center px-3 rounded-sm border border-[#D0D5DD] bg-[#F9FAFB] text-sm font-semibold text-[#1D2939]"
-                data-testid="po-company-display"
-              >
-                {purchaseUnitSite ? companyForSite(purchaseUnitSite) : <span className="text-[#98A2B3] font-normal">Auto-set from Purchase Unit</span>}
-              </div>
-            </div>
-
-            <div className="space-y-1.5">
-              <Label className="text-xs text-[#344054]">Bill-To *</Label>
-              <Select value={billToCompany} onValueChange={setBillToCompany} disabled={!purchaseUnitSite}>
-                <SelectTrigger className="h-9 text-sm" data-testid="po-bill-to-select">
-                  <SelectValue placeholder={purchaseUnitSite ? "Choose Bill-To" : "Choose Purchase Unit first"} />
-                </SelectTrigger>
-                <SelectContent>
-                  {(BILL_TO_OPTIONS_BY_COMPANY[companyForSite(purchaseUnitSite)] || []).map((opt) => (
-                    <SelectItem key={opt} value={opt}>{opt}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-1.5 relative" ref={supplierWrapperRef}>
-              <Label className="text-xs text-[#344054]">Supplier *</Label>
-              <div className="relative">
-                <MagnifyingGlass size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
-                <Input
-                  value={supplierQuery}
-                  onChange={(e) => onSupplierQueryChange(e.target.value)}
-                  onFocus={() => setShowSupplierSuggestions(true)}
-                  placeholder="Search supplier name or code..."
-                  className="h-9 text-sm pl-8"
-                  data-testid="po-supplier-search-input"
-                />
-              </div>
-              {showSupplierSuggestions && supplierSuggestions.length > 0 && (
-                <div className="absolute z-20 mt-1 w-full bg-white border border-[#D0D5DD] rounded-sm shadow-lg max-h-56 overflow-y-auto" data-testid="po-supplier-suggestions">
-                  {supplierSuggestions.map((s) => (
-                    <button
-                      key={s.supplier_code}
-                      type="button"
-                      className="w-full text-left px-3 py-2 text-xs hover:bg-[#F9FAFB] border-b border-[#EAECF0] last:border-0"
-                      onClick={() => pickSupplier(s)}
-                      data-testid={`po-supplier-suggestion-${s.supplier_code}`}
-                    >
-                      <span className="font-medium text-[#344054]">{s.supplier_code}</span>
-                      <span className="text-[#667085]"> - {s.name}</span>
-                    </button>
-                  ))}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+          {/* MAIN FORM */}
+          <div className="lg:col-span-8 xl:col-span-9 space-y-4">
+            {/* 1. PR Lookup - mandatory entry point */}
+            <div className={cardCls} data-testid="po-pr-lookup-card">
+              <h2 className={sectionHeadingCls}>
+                <FileMagnifyingGlass size={14} /> 1. Purchase Requisition Lookup (Mandatory)
+              </h2>
+              {!prFetched ? (
+                <div className="flex flex-col sm:flex-row gap-3 items-end">
+                  <div className="space-y-1.5 flex-1 w-full">
+                    <Label className="text-xs font-medium text-[#344054]">PR Number *</Label>
+                    <Input
+                      value={prVocNo}
+                      onChange={(e) => setPrVocNo(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && fetchPR()}
+                      placeholder="e.g. 124722"
+                      className={`${inputCls} font-data`}
+                      data-testid="po-pr-number-input"
+                    />
+                  </div>
+                  <Button type="button" className="h-9 rounded-sm bg-[#004B87] hover:bg-[#003A6A] active:bg-[#00294D] shrink-0" onClick={fetchPR} disabled={prFetching} data-testid="po-pr-fetch-button">
+                    {prFetching ? <><CircleNotch size={14} className="mr-1.5 animate-spin" /> Fetching...</> : <><FileMagnifyingGlass size={14} className="mr-1.5" /> Fetch PR</>}
+                  </Button>
+                </div>
+              ) : (
+                <div className="bg-[#ECFDF3] border border-[#ABEFC6] rounded-sm p-3 flex items-start justify-between gap-4" data-testid="po-pr-summary">
+                  <div className="space-y-1 text-xs">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle size={15} className="text-[#027A48]" weight="fill" />
+                      <span className="font-data font-bold text-[#101828]">PR {prFetched.voc_no}</span>
+                      <Badge className="bg-[#ECFDF3] text-[#027A48] border border-[#ABEFC6] rounded-sm text-[10px]">Approved</Badge>
+                    </div>
+                    <p className="text-[#344054] font-data">
+                      Vendor: <b>{prFetched.supplier_name || "-"}</b> ({prFetched.supplier_code || "-"}) · Purchase Unit: <b>{prFetched.compcode}</b> · {(prFetched.items || []).length} line item(s) · {fmtMoney(prFetched.amount, prFetched.currency)}
+                    </p>
+                  </div>
+                  <Button type="button" variant="ghost" size="sm" className="h-8 text-xs text-[#667085] hover:bg-[#D0D5DD]/40 hover:text-[#344054] rounded-sm" onClick={clearPR} data-testid="po-pr-clear-button">
+                    <XCircle size={14} className="mr-1" /> Change PR
+                  </Button>
                 </div>
               )}
+              <p className="text-[11px] text-[#98A2B3]">Vendor, Purchase Unit and Line Items are autofilled from the PR. Delivery Date isn't part of a PR - enter it per line below.</p>
             </div>
 
-            <div className="space-y-1.5">
-              <Label className="text-xs text-[#344054]">PO Date *</Label>
-              <Input type="date" value={poDate} onChange={(e) => setPoDate(e.target.value)} className="h-9 text-sm" data-testid="po-date-input" />
-            </div>
+            {/* 2. Org context */}
+            <div className={cardCls} data-testid="po-org-context-card">
+              <h2 className={sectionHeadingCls}>
+                <Buildings size={14} /> 2. Organization &amp; Routing Context
+              </h2>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-[#344054]">Purchase Unit (Site) *</Label>
+                  <Select value={purchaseUnitSite} onValueChange={setPurchaseUnitSite}>
+                    <SelectTrigger className={inputCls} data-testid="po-purchase-unit-select">
+                      <SelectValue placeholder="Choose site" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {sites.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
 
-            <div className="space-y-1.5">
-              <Label className="text-xs text-[#344054]">PR Number (reference only, optional)</Label>
-              <Input
-                value={prNumber} onChange={(e) => setPrNumber(e.target.value)}
-                placeholder="e.g. PR-2026-0001" className="h-9 text-sm" data-testid="po-pr-number-input"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label className="text-xs text-[#344054]">Currency</Label>
-              <Select value={currency} onValueChange={setCurrency}>
-                <SelectTrigger className="h-9 text-sm" data-testid="po-currency-select">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="INR">INR</SelectItem>
-                  <SelectItem value="USD">USD</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-        </div>
-
-        {/* Line items */}
-        <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-x-auto" data-testid="po-line-items-card">
-          <div className="px-3 py-2 border-b border-[#D0D5DD] bg-[#F9FAFB] flex items-center justify-between">
-            <h3 className="font-heading text-xs font-bold text-[#1D2939] uppercase tracking-wide">2. Line Items</h3>
-            <Button type="button" size="sm" variant="outline" className="h-7 text-xs" onClick={addLine} data-testid="po-add-line-button">
-              <Plus size={13} className="mr-1" /> Add Item
-            </Button>
-          </div>
-          <table className="w-full text-xs border-collapse min-w-[900px]" data-testid="po-line-items-table">
-            <thead>
-              <tr>
-                {["Product", "Qty", "UoM", "Unit Price", "Delivery Date", ""].map((h) => (
-                  <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {lines.map((l, idx) => (
-                <tr key={l.key} data-testid={`po-line-row-${idx}`}>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5 min-w-[280px] relative">
-                    <Input
-                      value={l.productQuery}
-                      onChange={(e) => onProductQueryChange(l.key, e.target.value)}
-                      onFocus={() => setLines((prev) => prev.map((x) => (x.key === l.key ? { ...x, showSuggestions: true } : x)))}
-                      placeholder="Search Product ID or description..."
-                      className="h-8 text-xs"
-                      data-testid={`po-line-product-input-${idx}`}
-                    />
-                    {l.showSuggestions && l.productSuggestions.length > 0 && (
-                      <div className="absolute z-20 mt-1 w-full bg-white border border-[#D0D5DD] rounded-sm shadow-lg max-h-56 overflow-y-auto" data-testid={`po-line-product-suggestions-${idx}`}>
-                        {l.productSuggestions.map((p) => (
-                          <button
-                            key={p.product_id}
-                            type="button"
-                            className="w-full text-left px-3 py-2 text-xs hover:bg-[#F9FAFB] border-b border-[#EAECF0] last:border-0"
-                            onClick={() => pickProduct(l.key, p)}
-                            data-testid={`po-line-product-suggestion-${idx}-${p.product_id}`}
-                          >
-                            <span className="font-medium text-[#344054]">{p.product_id}</span>
-                            {p.description && <span className="text-[#667085]"> - {p.description}</span>}
-                          </button>
-                        ))}
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-[#344054]">Company (Business Residence)</Label>
+                  <div data-testid="po-company-display">
+                    {purchaseUnitSite ? (
+                      <Badge className="h-9 w-full flex items-center justify-center bg-[#F2F4F7] text-[#004B87] border border-[#D0D5DD] rounded-sm font-data text-sm">
+                        {company} · Auto-derived
+                      </Badge>
+                    ) : (
+                      <div className="h-9 flex items-center px-3 rounded-sm border border-dashed border-[#D0D5DD] bg-[#F9FAFB] text-sm text-[#98A2B3]">
+                        Auto-set from Purchase Unit
                       </div>
                     )}
-                  </td>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5 min-w-[90px]">
-                    <Input type="number" min="0" step="any" value={l.quantity} onChange={(e) => updateLine(l.key, "quantity", e.target.value)} className="h-8 text-xs" data-testid={`po-line-qty-input-${idx}`} />
-                  </td>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5 min-w-[70px]">
-                    <Input value={l.unit_of_measure} onChange={(e) => updateLine(l.key, "unit_of_measure", e.target.value)} className="h-8 text-xs" data-testid={`po-line-uom-input-${idx}`} />
-                  </td>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5 min-w-[110px]">
-                    <Input type="number" min="0" step="any" value={l.unit_price} onChange={(e) => updateLine(l.key, "unit_price", e.target.value)} className="h-8 text-xs" data-testid={`po-line-price-input-${idx}`} />
-                  </td>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5 min-w-[140px]">
-                    <Input type="date" value={l.delivery_date} onChange={(e) => updateLine(l.key, "delivery_date", e.target.value)} className="h-8 text-xs" data-testid={`po-line-delivery-date-input-${idx}`} />
-                  </td>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5 text-center">
-                    <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={() => removeLine(l.key)} disabled={lines.length === 1} data-testid={`po-line-remove-button-${idx}`}>
-                      <Trash size={13} className="text-[#B42318]" />
-                    </Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                  </div>
+                </div>
 
-        <div className="flex justify-end">
-          <Button type="button" onClick={openConfirm} data-testid="po-submit-button">Create Purchase Order</Button>
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-[#344054]">Bill-To *</Label>
+                  <Select value={billToCompany} onValueChange={setBillToCompany} disabled={!purchaseUnitSite}>
+                    <SelectTrigger className={inputCls} data-testid="po-bill-to-select">
+                      <SelectValue placeholder={purchaseUnitSite ? "Choose Bill-To" : "Choose Purchase Unit first"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(BILL_TO_OPTIONS_BY_COMPANY[company] || []).map((opt) => (
+                        <SelectItem key={opt} value={opt}>{opt}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </div>
+
+            {/* 3. Supplier & commercial terms */}
+            <div className={cardCls} data-testid="po-supplier-terms-card">
+              <h2 className={sectionHeadingCls}>
+                <CreditCard size={14} /> 3. Supplier Master &amp; Commercial Terms
+              </h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="space-y-1.5 relative md:col-span-2" ref={supplierWrapperRef}>
+                  <Label className="text-xs font-medium text-[#344054]">Supplier *</Label>
+                  <div className="relative">
+                    <MagnifyingGlass size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
+                    <Input
+                      value={supplierQuery}
+                      onChange={(e) => onSupplierQueryChange(e.target.value)}
+                      onFocus={() => setShowSupplierSuggestions(true)}
+                      placeholder="Search SAP supplier by name or code..."
+                      className={`${inputCls} pl-9`}
+                      data-testid="po-supplier-search-input"
+                    />
+                  </div>
+                  {showSupplierSuggestions && supplierSuggestions.length > 0 && (
+                    <div className="absolute z-20 mt-1 w-full bg-white border border-[#D0D5DD] rounded-sm shadow-lg max-h-56 overflow-y-auto" data-testid="po-supplier-suggestions">
+                      {supplierSuggestions.map((s) => (
+                        <button
+                          key={s.supplier_code}
+                          type="button"
+                          className="w-full text-left px-3 py-2 text-xs hover:bg-[#F2F4F7] border-b border-[#EAECF0] last:border-0"
+                          onClick={() => pickSupplier(s)}
+                          data-testid={`po-supplier-suggestion-${s.supplier_code}`}
+                        >
+                          <span className="font-semibold text-[#101828] font-data">{s.supplier_code}</span>
+                          <span className="text-[#667085]"> - {s.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {selectedSupplier && (
+                    <div className="pt-1">
+                      <Badge className="bg-[#FFFAEB] text-[#B54708] border border-[#FEDF89] rounded-sm font-data text-xs px-3 py-1.5" data-testid="po-payment-terms-badge">
+                        Payment Terms (from Supplier Master): {selectedSupplier.cash_discount_terms_code
+                          ? `${selectedSupplier.cash_discount_terms_code} - ${selectedSupplier.cash_discount_terms_text || "Unmapped code"}`
+                          : "Not on file - SAP default will apply"}
+                      </Badge>
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-[#344054] flex items-center gap-1"><Calendar size={12} /> PO Date *</Label>
+                  <Input type="date" value={poDate} onChange={(e) => setPoDate(e.target.value)} className={`${inputCls} font-data`} data-testid="po-date-input" />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-[#344054]">Currency</Label>
+                  <Select value={currency} onValueChange={setCurrency}>
+                    <SelectTrigger className={inputCls} data-testid="po-currency-select">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="INR">INR</SelectItem>
+                      <SelectItem value="USD">USD</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </div>
+
+            {/* 4. Line items */}
+            <div className="bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] overflow-hidden" data-testid="po-line-items-card">
+              <div className="px-4 py-2.5 border-b border-[#D0D5DD] bg-[#F9FAFB] flex items-center justify-between">
+                <h2 className="text-[11px] font-bold uppercase tracking-wide text-[#344054] font-heading flex items-center gap-2">
+                  <Truck size={14} /> 4. Line Items Engine
+                </h2>
+                <Button type="button" size="sm" className="h-7 text-xs rounded-sm bg-[#004B87] hover:bg-[#003A6A] active:bg-[#00294D]" onClick={addLine} data-testid="po-add-line-button">
+                  <Plus size={13} className="mr-1" /> Add Item
+                </Button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs border-collapse min-w-[980px]" data-testid="po-line-items-table">
+                  <thead>
+                    <tr>
+                      {["Product", "Qty", "UoM", "Unit Price", "Delivery Date", "Line Total", ""].map((h) => (
+                        <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] py-1.5 px-2.5 text-left text-xs font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lines.map((l, idx) => (
+                      <tr key={l.key} className={idx % 2 === 1 ? "bg-[#F9FAFB]" : "bg-white"} data-testid={`po-line-row-${idx}`}>
+                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[280px] relative">
+                          <Input
+                            value={l.productQuery}
+                            onChange={(e) => onProductQueryChange(l.key, e.target.value)}
+                            onFocus={() => setLines((prev) => prev.map((x) => (x.key === l.key ? { ...x, showSuggestions: true } : x)))}
+                            placeholder="Search Product ID or description..."
+                            className={`h-8 text-xs rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]`}
+                            data-testid={`po-line-product-input-${idx}`}
+                          />
+                          {l.showSuggestions && l.productSuggestions.length > 0 && (
+                            <div className="absolute z-20 mt-1 w-full bg-white border border-[#D0D5DD] rounded-sm shadow-lg max-h-56 overflow-y-auto" data-testid={`po-line-product-suggestions-${idx}`}>
+                              {l.productSuggestions.map((p) => (
+                                <button
+                                  key={p.product_id}
+                                  type="button"
+                                  className="w-full text-left px-3 py-2 text-xs hover:bg-[#F2F4F7] border-b border-[#EAECF0] last:border-0"
+                                  onClick={() => pickProduct(l.key, p)}
+                                  data-testid={`po-line-product-suggestion-${idx}-${p.product_id}`}
+                                >
+                                  <span className="font-semibold text-[#101828] font-data">{p.product_id}</span>
+                                  {p.description && <span className="text-[#667085]"> - {p.description}</span>}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </td>
+                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[90px]">
+                          <Input type="number" min="0" step="any" value={l.quantity} onChange={(e) => updateLine(l.key, "quantity", e.target.value)} className="h-8 text-xs font-data rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]" data-testid={`po-line-qty-input-${idx}`} />
+                        </td>
+                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[70px]">
+                          <Input value={l.unit_of_measure} onChange={(e) => updateLine(l.key, "unit_of_measure", e.target.value)} className="h-8 text-xs font-data rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]" data-testid={`po-line-uom-input-${idx}`} />
+                        </td>
+                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[110px]">
+                          <Input type="number" min="0" step="any" value={l.unit_price} onChange={(e) => updateLine(l.key, "unit_price", e.target.value)} className="h-8 text-xs font-data rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]" data-testid={`po-line-price-input-${idx}`} />
+                        </td>
+                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[140px]">
+                          <Input type="date" value={l.delivery_date} onChange={(e) => updateLine(l.key, "delivery_date", e.target.value)} className="h-8 text-xs font-data rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]" data-testid={`po-line-delivery-date-input-${idx}`} />
+                        </td>
+                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[110px] font-data text-xs font-semibold text-[#101828] whitespace-nowrap" data-testid={`po-line-total-${idx}`}>
+                          {fmtMoney(lineTotal(l), currency)}
+                        </td>
+                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 text-center whitespace-nowrap">
+                          <Button type="button" variant="ghost" size="icon" className="h-7 w-7 rounded-sm hover:bg-[#F2F4F7]" onClick={() => duplicateLine(l.key)} data-testid={`po-line-duplicate-button-${idx}`} title="Duplicate row">
+                            <Copy size={13} className="text-[#667085]" />
+                          </Button>
+                          <Button type="button" variant="ghost" size="icon" className="h-7 w-7 rounded-sm hover:bg-[#FEF3F2]" onClick={() => removeLine(l.key)} disabled={lines.length === 1} data-testid={`po-line-remove-button-${idx}`} title="Remove row">
+                            <Trash size={13} className="text-[#B42318]" />
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          {/* SUMMARY SIDEBAR */}
+          <div className="lg:col-span-4 xl:col-span-3 space-y-4">
+            <div className="sticky top-4 space-y-4">
+              <div className={cardCls} data-testid="po-summary-card">
+                <h2 className={sectionHeadingCls}>
+                  <ListChecks size={14} /> 5. Order Summary
+                </h2>
+                <div className="space-y-1.5 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#667085] text-[13px]">Line Items</span>
+                    <span className="font-data font-semibold text-[#101828]" data-testid="po-summary-line-count">{lines.length}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#667085] text-[13px]">Total Units</span>
+                    <span className="font-data font-semibold text-[#101828]" data-testid="po-summary-total-units">{totalUnits}</span>
+                  </div>
+                  <div className="h-px bg-[#EAECF0] my-1" />
+                  <div className="flex items-center justify-between">
+                    <span className="text-[#344054] font-semibold text-[13px]">Gross Order Value</span>
+                    <span className="font-data font-extrabold text-base text-[#004B87]" data-testid="po-summary-total-value">{fmtMoney(grandTotal, currency)}</span>
+                  </div>
+                </div>
+
+                <div className="h-px bg-[#EAECF0]" />
+
+                <div className="space-y-1.5" data-testid="po-summary-checklist">
+                  {checklist.map((c, i) => (
+                    <div key={i} className="flex items-start gap-2 text-xs" data-testid={`po-checklist-item-${i}`}>
+                      {c.ok ? <CheckCircle size={14} className="text-[#027A48] mt-0.5 shrink-0" weight="fill" /> : <WarningCircle size={14} className="text-[#B54708] mt-0.5 shrink-0" weight="fill" />}
+                      <span className={c.ok ? "text-[#344054]" : "text-[#B54708]"}>{c.label}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <Button
+                  type="button"
+                  className="w-full h-10 rounded-sm bg-[#004B87] hover:bg-[#003A6A] active:bg-[#00294D] font-semibold"
+                  onClick={openConfirm}
+                  disabled={!canSubmit}
+                  data-testid="po-submit-button"
+                >
+                  Create Purchase Order in SAP <ArrowRight size={15} className="ml-1.5" />
+                </Button>
+                <p className="text-[11px] text-[#98A2B3] text-center">This creates a real, live SAP document. Review the audit recap carefully.</p>
+              </div>
+            </div>
+          </div>
         </div>
       </main>
 
-      {/* Confirm dialog */}
+      {/* Confirm dialog - audit recap */}
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent data-testid="po-confirm-dialog">
+        <DialogContent className="max-w-2xl" data-testid="po-confirm-dialog">
           <DialogHeader>
-            <DialogTitle>Confirm Purchase Order</DialogTitle>
+            <DialogTitle className="flex items-center gap-2"><WarningCircle size={18} className="text-[#B54708]" /> Audit Recap - Confirm Purchase Order</DialogTitle>
             <DialogDescription>This will submit a real Purchase Order to SAP ByDesign - it cannot be undone from this app.</DialogDescription>
           </DialogHeader>
-          <div className="text-sm space-y-1 text-[#344054]">
-            <p><b>Company:</b> {companyForSite(purchaseUnitSite)} · <b>Purchase Unit:</b> {purchaseUnitSite} · <b>Bill-To:</b> {billToCompany}</p>
-            <p><b>Supplier:</b> {selectedSupplier ? `${selectedSupplier.supplier_code} - ${selectedSupplier.name}` : "—"}</p>
-            <p><b>PO Date:</b> {poDate} {prNumber ? <>· <b>PR Number:</b> {prNumber}</> : null}</p>
-            <p><b>Line Items:</b> {lines.length}</p>
+          <div className="text-sm space-y-3 text-[#344054]">
+            <div className="grid grid-cols-2 gap-2 bg-[#F9FAFB] rounded-sm p-3 font-data text-xs">
+              <div><span className="text-[#667085]">PR Number:</span> <b>{prFetched?.voc_no}</b></div>
+              <div><span className="text-[#667085]">Company:</span> <b>{company}</b></div>
+              <div><span className="text-[#667085]">Purchase Unit:</span> <b>{purchaseUnitSite}</b></div>
+              <div><span className="text-[#667085]">Bill-To:</span> <b>{billToCompany}</b></div>
+              <div><span className="text-[#667085]">PO Date:</span> <b>{poDate}</b></div>
+              <div className="col-span-2"><span className="text-[#667085]">Supplier:</span> <b>{selectedSupplier ? `${selectedSupplier.supplier_code} - ${selectedSupplier.name}` : "-"}</b></div>
+            </div>
+            <div className="border border-[#D0D5DD] rounded-sm overflow-hidden">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-[#EAECF0]">
+                    <th className="text-left p-2 font-heading uppercase text-[#344054]">Product</th>
+                    <th className="text-right p-2 font-heading uppercase text-[#344054]">Qty</th>
+                    <th className="text-left p-2 font-heading uppercase text-[#344054]">Delivery</th>
+                    <th className="text-right p-2 font-heading uppercase text-[#344054]">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lines.map((l, i) => (
+                    <tr key={l.key} className="border-t border-[#D0D5DD]">
+                      <td className="p-2 font-data">{l.product_id}</td>
+                      <td className="p-2 text-right font-data">{l.quantity} {l.unit_of_measure}</td>
+                      <td className="p-2 font-data">{l.delivery_date}</td>
+                      <td className="p-2 text-right font-data font-semibold">{fmtMoney(lineTotal(l), currency)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex justify-end font-data text-sm font-bold text-[#004B87]">Grand Total: {fmtMoney(grandTotal, currency)}</div>
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setConfirmOpen(false)} disabled={submitting} data-testid="po-confirm-cancel-button">Cancel</Button>
-            <Button type="button" onClick={submit} disabled={submitting} data-testid="po-confirm-submit-button">
+            <Button type="button" variant="outline" className="rounded-sm" onClick={() => setConfirmOpen(false)} disabled={submitting} data-testid="po-confirm-cancel-button">Cancel</Button>
+            <Button type="button" className="rounded-sm bg-[#004B87] hover:bg-[#003A6A] active:bg-[#00294D]" onClick={submit} disabled={submitting} data-testid="po-confirm-submit-button">
               {submitting ? <><CircleNotch size={13} className="mr-1.5 animate-spin" /> Submitting to SAP...</> : "Confirm & Submit"}
             </Button>
           </DialogFooter>
@@ -402,24 +664,24 @@ export default function PurchaseOrderPage() {
         <DialogContent data-testid="po-result-dialog">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              {result?.po_number ? <CheckCircle size={18} className="text-[#0E7C86]" /> : <WarningCircle size={18} className="text-[#B42318]" />}
+              {result?.po_number ? <CheckCircle size={18} className="text-[#027A48]" weight="fill" /> : <WarningCircle size={18} className="text-[#B42318]" weight="fill" />}
               {result?.po_number ? "Purchase Order Created" : "Purchase Order Failed"}
             </DialogTitle>
           </DialogHeader>
           {result?.po_number ? (
             <p className="text-sm text-[#344054]" data-testid="po-result-success-message">
-              SAP Purchase Order <b data-testid="po-result-number">{result.po_number}</b> was created successfully.
+              SAP Purchase Order <b className="font-data text-[#004B87]" data-testid="po-result-number">{result.po_number}</b> was created successfully.
             </p>
           ) : (
             <p className="text-sm text-[#B42318]" data-testid="po-result-error-message">{result?.error}</p>
           )}
           <DialogFooter>
             {result?.po_number && (
-              <Button type="button" variant="outline" onClick={() => navigate("/purchasing-strategy/created-purchase-orders")} data-testid="po-result-view-created-button">
+              <Button type="button" variant="outline" className="rounded-sm" onClick={() => navigate("/purchasing-strategy/created-purchase-orders")} data-testid="po-result-view-created-button">
                 View Created POs
               </Button>
             )}
-            <Button type="button" onClick={resetForm} data-testid="po-result-close-button">
+            <Button type="button" className="rounded-sm bg-[#004B87] hover:bg-[#003A6A] active:bg-[#00294D]" onClick={resetForm} data-testid="po-result-close-button">
               {result?.po_number ? "Create Another" : "Close"}
             </Button>
           </DialogFooter>

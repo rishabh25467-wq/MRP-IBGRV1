@@ -1,0 +1,25 @@
+{
+  "summary": "Frontend-only test of the Purchase Order Creation page (/purchasing-strategy/purchase-order-create) covering (a) the new standard teal 'Materials Hub' header and (b) the new mandatory PR-driven autofill flow. All 10 requested scenarios passed. Header verified as h-16 bg rgb(14,124,134) with app icon, 'Materials Hub' + 'Purchase Order Creation' subtitle, NavTabs dropdown and 'SAP PRD Connected' status. PR lookup card renders first (y=172) above Org Context (y=380). Fetch of PR 124722 (~8s, verified backend latency via curl too) shows 'Fetching...' spinner then green summary banner: 'PR 124722 · Approved · Vendor HI TECH AUTOMATION (H1341) · Purchase Unit P1 · 5 line item(s) · Rs2,150.00' + Change PR button. Autofill correct: Purchase Unit=P1, Company badge 'RI · Auto-derived', Supplier 'H1341 - HI TECH AUTOMATION' with Payment Terms badge 'Not on file - SAP default will apply' (expected), exactly 5 line rows pre-filled with PR qty/rate/UoM ('Pcs') and PR descriptions in the Product box (matched_product_id null for all 5), Delivery Date defaulted to today and independently editable (set row0 to 2026-09-20, other rows unchanged). Checklist behaved exactly as specified: 'PR fetched & line items autofilled' green immediately, 'Every line has Product/Qty/Price' stayed orange until a real Product ID was picked on all 5 lines, then all 5 items green and submit enabled. Change PR fully reset PR input/PU/Company/Bill-To/Supplier/line items to defaults and re-disabled submit. Failed fetch (999999999) showed a red toast 'PR 999999999 was not found' (backend 422), no green banner, no other field touched. Submit button stayed disabled until checklist all-green. Confirm dialog audit recap shows 'PR Number: 124722' first in the recap grid alongside Company RI / Purchase Unit P1 / Bill-To P1-FIN / PO Date 2026-09-04 / Supplier H1341, 5-line table and Grand Total Rs2,150.00; Cancel closed it. Confirm & Submit was NEVER clicked. Regression math OK: line totals = qty*price (2x250=Rs500, 3x250=Rs750, 1x150=Rs150), Total Units 9, Gross Rs2,150.00; duplicate (5->6, copy keeps qty/total), Add Item (->7), remove (->5) all recompute units/gross correctly (verified 13 units/Rs3,150 after qty edit, 11 units/Rs2,650 after removals).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Line Items after picking a catalog product", "issues": ["Selecting a product from suggestions overwrites the PR-supplied UoM (e.g. 'Pcs' -> product master 'EA') and replaces the PR item description in the Product box with the catalog code/description. Likely intentional (SAP master must win) but worth confirming with the user since the PR's original text/UoM is then no longer visible anywhere."]},
+      {"screen": "Purchase Order Creation (carry-over from iteration_143)", "issues": ["PO Date / Delivery Date still use native browser date inputs rather than the shadcn calendar (previously accepted by user)."]}
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_144.json"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "PurchaseOrderPage.jsx is 687 lines and close to the 700-line split threshold - consider extracting the PR lookup card, line items table and confirm dialog into sub-components before further growth.",
+    "Product catalog search has no results for the PR's item text (e.g. 'TONER'/'CARTRIDGE' return []), so users must guess an unrelated code for these PR lines; consider surfacing a hint that no catalog match exists (informational, not blocking)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (2 curl spot-checks of /api/purchase-orders/pr-lookup passed: 124722 -> 200 with 5 items, 999999999 -> 422 'PR ... was not found')", "frontend": "100%"},
+  "seed_data_creation": "None. Read-only PR lookups on voucher 124722 only; no PO was created (po-confirm-submit-button never clicked).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Session cookie vms_session=nLYX45TjPjf9-nB5g4kOv5XkaB9n3Ata15cKcBHK9K0 (po.redesign.test@rampgroup.co.in) is still valid; attach via add_cookies with url='https://sap-data-sync.preview.emergentagent.com'. PR fetch takes ~8s - use 25s waits. Product catalog has NO toner/cartridge items; use query 'BOLT' or 'STEEL' to get suggestions (e.g. 100936-23). NEVER click po-confirm-submit-button (live SAP + stamps PO back onto real PR 124722).",
+  "rca_of_the_issue": "No defects found. Two initial test-script failures were my own: (1) f-string with escaped quotes syntax error, (2) product search query 'TONER' legitimately returns [] from the catalog so no suggestion dropdown rendered - re-ran with 'BOLT' and all 5 lines picked successfully."
+}

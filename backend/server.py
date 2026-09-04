@@ -43,6 +43,8 @@ from sap_po_client import SAPPurchaseOrderClient, SAPPurchaseOrderError, SAPPurc
 from sap_po_analytics_client import SAPPOAnalyticsClient
 from sap_gsa_write_client import SAPGSAWriteClient
 from sap_po_write_client import SAPPurchaseOrderWriteClient, SAPPurchaseOrderWriteError, SAPPurchaseOrderWriteNotConfiguredError
+from sap_po_odata_client import SAPPurchaseOrderODataClient, SAPPurchaseOrderODataError, SAPPurchaseOrderODataNotConfiguredError
+from pr_integration_client import PRIntegrationClient, PRIntegrationError
 from sap_price_spec_client import SAPPriceSpecClient, SAPPriceSpecError, bulk_push_erp_prices_to_sap
 from sap_supplier_invoice_client import SAPSupplierInvoiceClient, SAPSupplierInvoiceError
 from sap_cost_estimate_client import SAPCostEstimateClient, SAPCostEstimateError
@@ -436,6 +438,20 @@ sap_po_write_client = SAPPurchaseOrderWriteClient(
     password=os.environ['SAP_SOAP_PASSWORD'],
 )
 
+# Sep 5 2026: switched PO creation to this OData service (see
+# sap_po_odata_client.py docstring) - the SOAP client above is kept
+# only for its still-used history/docs, no longer called for creation.
+# MUST use the "itadmin" SAP user (SAP_USERNAME/SAP_PASSWORD) here, NOT
+# the generic SAP_ODATA_USERNAME - confirmed live: SAP only
+# auto-creates/defaults the BillToParty/BuyerParty nested entities
+# (Company/Bill-To) correctly when the create request's login user is
+# itadmin; with the generic OData user those two stayed 404/unset.
+sap_po_odata_client = SAPPurchaseOrderODataClient(
+    base_url=os.environ.get('SAP_ODATA_PO_BASE_URL'),
+    username=os.environ['SAP_USERNAME'],
+    password=os.environ['SAP_PASSWORD'],
+)
+
 sap_valuation_client = SAPValuationClient(
     base_url=os.environ['SAP_ODATA_BASE_URL'],
     username=os.environ['SAP_ODATA_USERNAME'],
@@ -479,6 +495,13 @@ price_explorer_client = PriceExplorerClient(
     base_url=os.environ['PRICE_EXPLORER_BASE_URL'],
     username=os.environ['PRICE_EXPLORER_USERNAME'],
     password=os.environ['PRICE_EXPLORER_PASSWORD'],
+)
+
+# Sep 4 2026: external SCM.AI "Smart Approvals" PO Integration API - PR
+# lookup/autofill on Purchase Order Creation, see pr_integration_client.py.
+pr_integration_client = PRIntegrationClient(
+    base_url=os.environ['PR_INTEGRATION_BASE_URL'],
+    api_key=os.environ['PR_INTEGRATION_API_KEY'],
 )
 
 sap_supplier_invoice_client = SAPSupplierInvoiceClient(
@@ -4929,6 +4952,8 @@ async def search_products(q: str = Query(..., min_length=1), limit: int = 10):
 class PurchaseOrderSupplierSuggestion(BaseModel):
     supplier_code: str
     name: str
+    cash_discount_terms_code: Optional[str] = None
+    cash_discount_terms_text: Optional[str] = None
 
 
 class PurchaseOrderProductSuggestion(BaseModel):
@@ -4977,6 +5002,22 @@ BILL_TO_OPTIONS_BY_COMPANY = {
     "RT": ["P2-FIN", "P3-FIN", "P2W-FIN", "P7-FIN", "P9-FIN", "P4-FIN"],
 }
 
+# Sep 5 2026: SAP's own PaymentTermsPaymentTermsCodeCollection value-help
+# list (fetched once via the khpurchaseorder OData service) - static
+# codelist, safe to hardcode rather than an extra live SAP call on every
+# supplier search.
+PAYMENT_TERMS_CODE_TEXT = {
+    "0001": "Due net payable immediately", "0002": "7 days due net", "0003": "14 days due net",
+    "0004": "30 days due net", "0005": "14 days 2%, 30 days due net", "0006": "14 days 3%, 30 days due net",
+    "0007": "14 days 3%, 30 days 2%, 60 days due net", "0008": "45 days from Invoice Date",
+    "0009": "End of Month of Invoice Date, 45 days", "0010": "30 days from Invoice Date",
+    "0011": "End of Month of Invoice Date, 30 days", "0012": "60 days from Invoice Date",
+    "0013": "End of Month of Invoice Date, 60 days", "0014": "75 days from Invoice Date",
+    "0015": "End of Month of Invoice Date, 75 days", "Z001": "10 days from invoice date",
+    "Z002": "15 days from invoice date", "Z003": "2 days from invoice date", "Z004": "3 days from invoice date",
+    "Z005": "4 days from invoice date", "Z006": "5 days from invoice date", "Z007": "90 days from invoice date",
+}
+
 
 class PurchaseOrderCreateRequest(BaseModel):
     supplier_code: str
@@ -4984,7 +5025,10 @@ class PurchaseOrderCreateRequest(BaseModel):
     bill_to_company: str
     po_date: str
     currency: str = "INR"
-    pr_number: Optional[str] = None
+    # Sep 4 2026, user's explicit ask: PR Number is now MANDATORY - it is
+    # the SCM.AI "Smart Approvals" voucher number (voc_no) this PO was
+    # drafted from, re-validated against that system below before create.
+    pr_number: str = Field(min_length=1)
     items: List[PurchaseOrderLineItemIn] = Field(min_length=1)
 
     @field_validator("po_date")
@@ -5004,10 +5048,90 @@ class PurchaseOrderCreateRequest(BaseModel):
         return self
 
 
+class PRLookupLineItem(BaseModel):
+    line_no: Optional[int] = None
+    icode: Optional[str] = None
+    iname: Optional[str] = None
+    unit: Optional[str] = None
+    qty: float
+    rate: float
+    matched_product_id: Optional[str] = None
+    matched_description: Optional[str] = None
+    matched_unit_of_measure: Optional[str] = None
+
+
+class PRLookupResponse(BaseModel):
+    voc_no: str
+    vdate: Optional[str] = None
+    compcode: Optional[str] = None
+    supplier_code: Optional[str] = None
+    supplier_name: Optional[str] = None
+    supplier_known: bool = False
+    supplier_cash_discount_terms_code: Optional[str] = None
+    supplier_cash_discount_terms_text: Optional[str] = None
+    currency: str = "INR"
+    amount: Optional[float] = None
+    po_status: Optional[str] = None
+    items: List[PRLookupLineItem] = []
+
+
 @api_router.get("/purchase-orders/sites")
 async def po_list_sites():
     sites = await asyncio.to_thread(list_known_sites, db)
     return {"sites": sites}
+
+
+@api_router.get("/purchase-orders/pr-lookup/{voc_no}", response_model=PRLookupResponse)
+async def po_pr_lookup(voc_no: str):
+    try:
+        data = await asyncio.to_thread(pr_integration_client.get_pr_detail, voc_no)
+    except PRIntegrationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if data.get("po_status") == "created":
+        raise HTTPException(status_code=409, detail=f"PR {voc_no} already has PO {data.get('po_number')} created against it - use a different PR")
+
+    supplier = data.get("supplier") or {}
+    supplier_code = supplier.get("pcode") or None
+    supplier_doc = None
+    if supplier_code:
+        supplier_doc = await asyncio.to_thread(
+            db["suppliers"].find_one, {"sap_internal_id": supplier_code}, {"name": 1, "cash_discount_terms_code": 1},
+        )
+
+    raw_items = data.get("items", [])
+    icodes = [it.get("icode") for it in raw_items if it.get("icode")]
+    matched_map = {}
+    if icodes:
+        def _match():
+            pipeline = [
+                {"$match": {"_id": "latest"}},
+                {"$project": {"items": {"$filter": {"input": "$items", "as": "i", "cond": {"$in": ["$$i.product_id", icodes]}}}}},
+            ]
+            result = list(db["inventory_cache"].aggregate(pipeline))
+            return result[0]["items"] if result else []
+        matched_map = {m["product_id"]: m for m in await asyncio.to_thread(_match)}
+
+    items = []
+    for it in raw_items:
+        icode = it.get("icode") or None
+        match = matched_map.get(icode) if icode else None
+        items.append(PRLookupLineItem(
+            line_no=it.get("line_no"), icode=icode, iname=it.get("iname"),
+            unit=it.get("unit"), qty=it.get("qty") or 0, rate=it.get("rate") or 0,
+            matched_product_id=match.get("product_id") if match else None,
+            matched_description=match.get("description") if match else None,
+            matched_unit_of_measure=match.get("uom") if match else None,
+        ))
+
+    return PRLookupResponse(
+        voc_no=str(data["voc_no"]), vdate=data.get("vdate"), compcode=data.get("compcode"),
+        supplier_code=supplier_code, supplier_name=supplier.get("name"),
+        supplier_known=bool(supplier_doc),
+        supplier_cash_discount_terms_code=supplier_doc.get("cash_discount_terms_code") if supplier_doc else None,
+        supplier_cash_discount_terms_text=PAYMENT_TERMS_CODE_TEXT.get(supplier_doc.get("cash_discount_terms_code")) if supplier_doc else None,
+        currency=data.get("currency") or "INR",
+        amount=data.get("amount"), po_status=data.get("po_status"), items=items,
+    )
 
 
 @api_router.get("/purchase-orders/suppliers/search", response_model=List[PurchaseOrderSupplierSuggestion])
@@ -5023,12 +5147,19 @@ async def po_search_suppliers(q: str = Query(..., min_length=1), limit: int = 15
                     {"sap_internal_id": {"$regex": f"^{q_escaped}", "$options": "i"}},
                 ],
             },
-            {"sap_internal_id": 1, "name": 1},
+            {"sap_internal_id": 1, "name": 1, "cash_discount_terms_code": 1},
         ).limit(limit)
         return list(cursor)
 
     docs = await asyncio.to_thread(_search)
-    return [PurchaseOrderSupplierSuggestion(supplier_code=d["sap_internal_id"], name=d["name"]) for d in docs]
+    return [
+        PurchaseOrderSupplierSuggestion(
+            supplier_code=d["sap_internal_id"], name=d["name"],
+            cash_discount_terms_code=d.get("cash_discount_terms_code"),
+            cash_discount_terms_text=PAYMENT_TERMS_CODE_TEXT.get(d.get("cash_discount_terms_code")),
+        )
+        for d in docs
+    ]
 
 
 @api_router.get("/purchase-orders/products/search", response_model=List[PurchaseOrderProductSuggestion])
@@ -5076,23 +5207,39 @@ async def create_purchase_order(payload: PurchaseOrderCreateRequest, request: Re
     allowed_bill_to = BILL_TO_OPTIONS_BY_COMPANY.get(company_code, [])
     if payload.bill_to_company not in allowed_bill_to:
         raise HTTPException(status_code=400, detail=f"Bill-To must be one of {allowed_bill_to} for company {company_code}")
+
+    # Sep 4 2026: PR is mandatory - re-validate against the live PR system
+    # right before creating the SAP PO (defends against a stale frontend
+    # state, e.g. the PR getting stamped by someone else in the meantime).
+    try:
+        pr_data = await asyncio.to_thread(pr_integration_client.get_pr_detail, payload.pr_number)
+    except PRIntegrationError as e:
+        raise HTTPException(status_code=422, detail=f"PR re-validation failed: {e}")
+    if pr_data.get("po_status") == "created":
+        raise HTTPException(status_code=409, detail=f"PR {payload.pr_number} already has PO {pr_data.get('po_number')} created against it")
+
     items = [
         {
-            "product_id": it.product_id, "quantity": it.quantity, "unit_of_measure": it.unit_of_measure,
-            "unit_price": it.unit_price, "delivery_date": it.delivery_date, "site_id": payload.purchase_unit_site,
+            "product_id": it.product_id, "description": it.description, "quantity": it.quantity,
+            "unit_of_measure": it.unit_of_measure, "unit_price": it.unit_price,
+            "delivery_date": it.delivery_date, "site_id": payload.purchase_unit_site,
         }
         for it in payload.items
     ]
+    supplier_doc = await asyncio.to_thread(
+        db["suppliers"].find_one, {"sap_internal_id": payload.supplier_code}, {"cash_discount_terms_code": 1},
+    )
+    cash_discount_terms_code = supplier_doc.get("cash_discount_terms_code") if supplier_doc else None
     try:
         result = await asyncio.to_thread(
-            sap_po_write_client.create_purchase_order,
+            sap_po_odata_client.create_purchase_order,
             company_code, payload.purchase_unit_site, payload.supplier_code,
             payload.bill_to_company, payload.po_date, payload.currency, items,
-            PO_EMPLOYEE_RESPONSIBLE_ID, payload.pr_number,
+            payload.pr_number, cash_discount_terms_code,
         )
-    except SAPPurchaseOrderWriteNotConfiguredError as e:
+    except SAPPurchaseOrderODataNotConfiguredError as e:
         raise HTTPException(status_code=503, detail=str(e))
-    except SAPPurchaseOrderWriteError as e:
+    except SAPPurchaseOrderODataError as e:
         logger.error(f"Purchase Order creation rejected by SAP for supplier {payload.supplier_code}: {e}")
         # Aug 2026 fix (testing_agent iteration_126): SAP business
         # rejections must NOT be 502/503 - the k8s ingress/Cloudflare edge
@@ -5119,11 +5266,24 @@ async def create_purchase_order(payload: PurchaseOrderCreateRequest, request: Re
         "po_date": payload.po_date,
         "currency": payload.currency,
         "pr_number": payload.pr_number,
+        "cash_discount_terms_code": cash_discount_terms_code,
         "items": items_with_desc,
         "created_by": user.get("name"),
         "created_by_user_id": f"{user.get('tid')}:{user.get('oid')}",
         "created_at": now,
     })
+
+    # Best-effort stamp-back to the PR system - never fails the PO
+    # creation response, the SAP PO is already real/permanent by this point.
+    try:
+        await asyncio.to_thread(
+            pr_integration_client.stamp_po_created,
+            payload.pr_number, result["po_number"], payload.po_date,
+            sum(it.quantity * it.unit_price for it in payload.items), "Auto-created via Materials Hub",
+        )
+    except PRIntegrationError as e:
+        logger.warning(f"PO {result['po_number']} created in SAP but PR {payload.pr_number} stamp-back failed: {e}")
+
     return {"po_number": result["po_number"], "po_uuid": result["po_uuid"]}
 
 

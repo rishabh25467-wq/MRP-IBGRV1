@@ -83,7 +83,7 @@ class SAPSupplierClient:
     <QueryHitsUnlimitedIndicator>false</QueryHitsUnlimitedIndicator>
    </ProcessingConditions>
    <RequestedElements supplierTransmissionRequestCode="2">
-    <Supplier addressInformationTransmissionRequestCode="1" contactPersonTransmissionRequestCode="1"/>
+    <Supplier addressInformationTransmissionRequestCode="1" contactPersonTransmissionRequestCode="1" purchasingDataTransmissionRequestCode="1"/>
    </RequestedElements>
   </glob:SupplierByElementsQuery_sync>
  </soapenv:Body></soapenv:Envelope>"""
@@ -157,6 +157,13 @@ class SAPSupplierClient:
                 "contact_person": contact_name,
                 "email": _first_tag(block, "EMailURI") or contact_email,
                 "phone": _first_tag(block, "CompleteNumberDescription") or _first_tag(block, "NormalisedNumberDescription") or contact_phone,
+                # Sep 5 2026: PO Creation needs this to fill the PO's
+                # "Payment Terms" field (else it saves blank even when
+                # the Supplier Master has it set - SAP's create web
+                # service doesn't auto-derive it like the interactive UI
+                # does) - confirmed live via SupplierByElementsQuery_sync
+                # with purchasingDataTransmissionRequestCode="1".
+                "cash_discount_terms_code": _first_tag(block, "CashDiscountTermsCode"),
             })
         return results
 

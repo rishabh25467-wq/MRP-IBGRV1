@@ -48,7 +48,8 @@ def sync_suppliers_from_sap(db, sap_suppliers: list) -> dict:
                 {"$set": {
                     "name": s["name"], "contact_person": s.get("contact_person"),
                     "email": s.get("email"), "phone": s.get("phone"),
-                    "sap_uuid": s.get("uuid"), "updated_at": _now(),
+                    "sap_uuid": s.get("uuid"), "cash_discount_terms_code": s.get("cash_discount_terms_code"),
+                    "updated_at": _now(),
                 }},
             )
             updated += 1
@@ -61,6 +62,7 @@ def sync_suppliers_from_sap(db, sap_suppliers: list) -> dict:
                 "phone": s.get("phone"),
                 "sap_internal_id": s["internal_id"],
                 "sap_uuid": s.get("uuid"),
+                "cash_discount_terms_code": s.get("cash_discount_terms_code"),
                 "source": "sap",
                 "created_at": _now(),
                 "updated_at": _now(),
