@@ -135,16 +135,23 @@ _ITEM_TEMPLATE = """  <Item actionCode="01">
     <EndDateTime timeZoneCode="UTC">{delivery_date}T23:59:59Z</EndDateTime>
    </DeliveryPeriod>
    <DirectMaterialIndicator>true</DirectMaterialIndicator>
+   <ThirdPartyDealIndicator>false</ThirdPartyDealIndicator>
    <FollowUpPurchaseOrderConfirmation>
     <RequirementCode>04</RequirementCode>
    </FollowUpPurchaseOrderConfirmation>
    <FollowUpDelivery>
     <RequirementCode>01</RequirementCode>
+    <EmployeeTimeConfirmationRequiredIndicator>false</EmployeeTimeConfirmationRequiredIndicator>
    </FollowUpDelivery>
    <FollowUpInvoice>
+    <BusinessTransactionDocumentSettlementRelevanceIndicator>false</BusinessTransactionDocumentSettlementRelevanceIndicator>
     <RequirementCode>01</RequirementCode>
+    <EvaluatedReceiptSettlementIndicator>false</EvaluatedReceiptSettlementIndicator>
+    <DeliveryBasedInvoiceVerificationIndicator>false</DeliveryBasedInvoiceVerificationIndicator>
    </FollowUpInvoice>
    <ItemProduct actionCode="01">
+    <ObjectNodePartyTechnicalID>{item_product_tech_id}</ObjectNodePartyTechnicalID>
+    <CashDiscountDeductibleIndicator>true</CashDiscountDeductibleIndicator>
     <ProductKey>
      <ProductTypeCode>1</ProductTypeCode>
      <ProductIdentifierTypeCode>1</ProductIdentifierTypeCode>
@@ -152,6 +159,7 @@ _ITEM_TEMPLATE = """  <Item actionCode="01">
     </ProductKey>
    </ItemProduct>
    <ShipToLocation actionCode="01">
+    <ObjectNodePartyTechnicalID>{item_ship_to_tech_id}</ObjectNodePartyTechnicalID>
     <LocationID>{site_id}</LocationID>
    </ShipToLocation>
   </Item>
@@ -165,9 +173,8 @@ _ENVELOPE_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
  <PurchaseOrderMaintainBundle actionCode="01" ItemListCompleteTransmissionIndicator="true">
   <ObjectNodeSenderTechnicalID>1</ObjectNodeSenderTechnicalID>
   <BusinessTransactionDocumentTypeCode>001</BusinessTransactionDocumentTypeCode>
-  <Date>{po_date}</Date>
   <CurrencyCode>{currency}</CurrencyCode>
-{buyer_party}{purchasing_unit_party}{seller_party}{bill_to_party}{company_party}{ship_to_location}{items}</PurchaseOrderMaintainBundle>
+{buyer_party}{seller_party}{employee_responsible_party}{bill_to_party}{company_party}{ship_to_location}{items}</PurchaseOrderMaintainBundle>
 </n0:PurchaseOrderBundleMaintainRequest_sync>
 </soapenv:Body>
 </soapenv:Envelope>"""
@@ -182,9 +189,15 @@ class SAPPurchaseOrderWriteClient:
     def create_purchase_order(
         self, company_code: str, purchase_unit_site: str, supplier_code: str,
         bill_to_company_code: str, po_date: str, currency: str, items: list,
+        employee_responsible_id: str,
     ) -> dict:
         """items: [{"product_id", "quantity", "unit_of_measure",
         "unit_price", "delivery_date" (YYYY-MM-DD), "site_id"}, ...].
+        `employee_responsible_id`: SAP Employee ID for EmployeeResponsibleParty
+        (PartyTypeCode 167, "the Purchaser who is requesting the purchase of
+        goods") - present in every single official SAP example without
+        exception (Sep 4 2026 finding), so treated as effectively mandatory
+        here even though not confirmed via a live PO read.
         Returns {"po_number": str|None, "po_uuid": str|None, "raw_xml": str}.
         Raises SAPPurchaseOrderWriteError on any rejection (transport,
         HTTP fault, or a Log-reported business error)."""
@@ -193,26 +206,27 @@ class SAPPurchaseOrderWriteClient:
                 "SAP Purchase Order creation isn't wired up yet - SAP_SOAP_PO_MANAGE_ENDPOINT is not set."
             )
         buyer_party = _PARTY_TEMPLATE.format(tag="BuyerParty", tech_id=2, party_id=escape(company_code))
-        purchasing_unit_party = _PARTY_TEMPLATE.format(
-            tag="PartyResponsiblePurchasingUnitParty", tech_id=3,
-            party_id=escape(f"{purchase_unit_site}-PUR"),
+        seller_party = _PARTY_TEMPLATE.format(tag="SellerParty", tech_id=3, party_id=escape(supplier_code))
+        employee_responsible_party = _PARTY_TEMPLATE.format(
+            tag="EmployeeResponsibleParty", tech_id=4, party_id=escape(employee_responsible_id),
         )
-        seller_party = _PARTY_TEMPLATE.format(tag="SellerParty", tech_id=4, party_id=escape(supplier_code))
         bill_to_party = _PARTY_TEMPLATE.format(tag="BillToParty", tech_id=5, party_id=escape(bill_to_company_code))
         company_party = _PARTY_TEMPLATE.format(tag="Company", tech_id=6, party_id=escape(company_code))
         ship_to_location = _SHIP_TO_LOCATION_TEMPLATE.format(tech_id=7, site_id=escape(purchase_unit_site))
         items_xml = "".join(
             _ITEM_TEMPLATE.format(
-                tech_id=8 + idx, unit_code=escape(it["unit_of_measure"] or "EA"), quantity=it["quantity"],
+                tech_id=8 + idx * 3, item_product_tech_id=9 + idx * 3, item_ship_to_tech_id=10 + idx * 3,
+                unit_code=escape(it["unit_of_measure"] or "EA"), quantity=it["quantity"],
                 currency=escape(currency), unit_price=it["unit_price"],
                 delivery_date=it["delivery_date"], product_id=escape(str(it["product_id"])),
                 site_id=escape(str(it["site_id"])),
             ) for idx, it in enumerate(items)
         )
         envelope = _ENVELOPE_TEMPLATE.format(
-            namespace=NAMESPACE, po_date=po_date, currency=escape(currency),
-            buyer_party=buyer_party, purchasing_unit_party=purchasing_unit_party,
-            seller_party=seller_party, bill_to_party=bill_to_party, company_party=company_party,
+            namespace=NAMESPACE, currency=escape(currency),
+            buyer_party=buyer_party, seller_party=seller_party,
+            employee_responsible_party=employee_responsible_party,
+            bill_to_party=bill_to_party, company_party=company_party,
             ship_to_location=ship_to_location, items=items_xml,
         )
         headers = {"Content-Type": "text/xml; charset=utf-8", "SOAPAction": SOAP_ACTION}
