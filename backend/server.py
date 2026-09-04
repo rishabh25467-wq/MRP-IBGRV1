@@ -5068,6 +5068,7 @@ async def create_purchase_order(payload: PurchaseOrderCreateRequest, request: Re
     except SAPPurchaseOrderWriteNotConfiguredError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except SAPPurchaseOrderWriteError as e:
+        logger.error(f"Purchase Order creation rejected by SAP for supplier {payload.supplier_code}: {e}")
         # Aug 2026 fix (testing_agent iteration_126): SAP business
         # rejections must NOT be 502/503 - the k8s ingress/Cloudflare edge
         # discards the response BODY for a 502 and substitutes its own

@@ -4,34 +4,71 @@ this tenant's LIVE production SAP system from the app's own PO Creation
 form (Company, Supplier, Purchase Unit, Bill-To, PO Date, line items).
 
 Service: `ManagePurchaseOrderIn`, operation `MAINTAIN_BUNDLE`
-(`PurchaseOrderBundleMaintainRequest_sync`), same envelope shape/
-namespace (`http://sap.com/xi/A1S/Global`) as the sibling GSA write
-client (sap_gsa_write_client.py). Endpoint already configured/reachable:
-`SAP_SOAP_PO_MANAGE_ENDPOINT`.
+(`PurchaseOrderBundleMaintainRequest_sync`). Namespace CORRECTED Sep 4
+2026 to `http://sap.com/xi/SAPGlobal20/Global` (confirmed via SAP's own
+published ManagePurchaseOrderIn docs) - the original `A1S/Global`
+namespace (copied from the sibling read-only `sap_po_client.py`, a
+genuinely different Query* service) reproduced the exact same generic
+"Web service processing error" already seen and root-caused for the
+sibling GSA write client (sap_gsa_write_client.py) - SAP parses the
+envelope fine but can't route it to the right ABSL handler. Endpoint
+already configured/reachable: `SAP_SOAP_PO_MANAGE_ENDPOINT`.
+
+Envelope/party/item shape REWRITTEN Sep 4 2026 to match SAP's OFFICIAL
+published Maintain/Check/Upload examples exactly (help.sap.com
+PSM_ISI_R_II_SRM_PO_MBO) - the earlier version was inferred from a READ
+call's response shape, which the docstring already flagged as
+"UNVERIFIED" and different from the write schema. Real, structural bugs
+found by diffing against the official examples (still the same generic
+"Web service processing error" symptom - SAP's ABSL handler throws
+internally on a malformed request rather than returning a clean
+business-validation fault):
+  - `PartyKey` must contain ONLY `<PartyID>` on a write - no
+    `<PartyTypeCode>` child at all (that shape only appears on READ
+    responses, where PartyKey doc's OWN PartyTypeCode is a different,
+    always-200, sub-code - never send it on a Maintain request).
+  - A header-level `<ShipToLocation>` and `<Company>` party (mirrors
+    BuyerParty) are both present in every official example and missing
+    here before.
+  - `ObjectNodeSenderTechnicalID` (header + each Item) and
+    `ObjectNodePartyTechnicalID` (each Party) are present in every
+    official example - arbitrary sequential integers, never
+    interpreted by SAP beyond echoing them back in the response Log.
+  - `ItemListCompleteTransmissionIndicator="true"` attribute on
+    `PurchaseOrderMaintainBundle` and the Item-level FollowUpXxx/
+    DirectMaterialIndicator elements are present in every official
+    example for a Material (TypeCode 18) item.
+  - Price element is `ListUnitPrice`, not `NetUnitPrice`, on a write
+    (NetUnitPrice only appears on READ responses as a computed value).
+`EmployeeResponsibleParty` (PartyTypeCode 167, the requesting
+purchaser) appears in every official example too, but this app has no
+such SAP Employee ID captured anywhere - left out per the "Empty and
+Missing Elements" doc section (untransmitted optional elements are
+simply not set) rather than guessing a wrong ID; add it if SAP's very
+first real fault message (now readable, not generic, once the
+structural fixes above land) asks for it.
 
 Real field values CONFIRMED by reading a live PO (28792) via the
 existing read-only sap_po_client.py (QueryPurchaseOrderQueryIn):
-  - Company/Buyer party: PartyTypeCode 200, PartyID = "RI" or "RT"
-    (this tenant's 2 legal entities - confirmed literal strings, not
-    numeric SAP IDs).
-  - Purchasing Unit: PartyTypeCode 200, PartyID = "{site}-PUR" (e.g.
-    "P1-PUR").
-  - Supplier/Seller: PartyTypeCode 147, PartyID = the supplier's
-    `sap_internal_id` (confirmed identical to the Supplier Portal's own
-    `vendor_code`, e.g. "H1330").
+  - Company/Buyer party: PartyID = "RI" or "RT" (this tenant's 2 legal
+    entities - confirmed literal strings, not numeric SAP IDs).
+  - Purchasing Unit: PartyID = "{site}-PUR" (e.g. "P1-PUR").
+  - Supplier/Seller: PartyID = the supplier's `sap_internal_id`
+    (confirmed identical to the Supplier Portal's own `vendor_code`,
+    e.g. "H1330").
   - Product: ProductTypeCode 1, ProductIdentifierTypeCode 1, ProductID =
     the plain product_id string (same as inventory_cache/component_master).
-  - Ship-to site: LocationID = the plain site code (e.g. "P1"), set at
-    item level, no "-PUR" suffix.
+  - Ship-to site: LocationID = the plain site code (e.g. "P1").
 
-UNVERIFIED, best-effort (no real historical PO exposed these on a READ
-call - ByD's query schema differs from its write/maintain schema; per
-SAP's own "Manage Purchase Orders" documentation) - will be corrected
-from the very first real SAP fault message if wrong, since a create
-either fully succeeds or fully fails (no partial/corrupt writes):
-  - BillToParty: PartyTypeCode 200, PartyID = "RI"/"RT" (mirrors
-    Company's shape - this tenant only has these 2 legal entities).
+UNVERIFIED, best-effort - will be corrected from the very first real
+SAP fault message if wrong, since a create either fully succeeds or
+fully fails (no partial/corrupt writes):
+  - BillToParty: PartyID = "RI"/"RT" (mirrors Company's shape - this
+    tenant only has these 2 legal entities).
   - Header `<Date>` = the PO Date.
+  - DirectMaterialIndicator=true for every item (these are real
+    inventory materials, not services/expenses - the official example
+    uses false because its sample item is a non-stock line).
 """
 import re
 
@@ -42,7 +79,7 @@ from requests.auth import HTTPBasicAuth
 
 from sap_rate_limiter import sap_semaphore
 
-NAMESPACE = "http://sap.com/xi/A1S/Global"
+NAMESPACE = "http://sap.com/xi/SAPGlobal20/Global"
 SOAP_ACTION = ""
 
 
@@ -72,25 +109,42 @@ def _extract_log_errors(raw_xml: str) -> list:
 
 
 _PARTY_TEMPLATE = """  <{tag} actionCode="01">
+   <ObjectNodePartyTechnicalID>{tech_id}</ObjectNodePartyTechnicalID>
    <PartyKey>
-    <PartyTypeCode>{party_type}</PartyTypeCode>
     <PartyID>{party_id}</PartyID>
    </PartyKey>
   </{tag}>
 """
 
+_SHIP_TO_LOCATION_TEMPLATE = """  <ShipToLocation actionCode="01">
+   <ObjectNodePartyTechnicalID>{tech_id}</ObjectNodePartyTechnicalID>
+   <LocationID>{site_id}</LocationID>
+  </ShipToLocation>
+"""
+
 _ITEM_TEMPLATE = """  <Item actionCode="01">
+   <ObjectNodeSenderTechnicalID>{tech_id}</ObjectNodeSenderTechnicalID>
    <BusinessTransactionDocumentItemTypeCode>18</BusinessTransactionDocumentItemTypeCode>
    <Quantity unitCode="{unit_code}">{quantity}</Quantity>
-   <NetUnitPrice>
+   <ListUnitPrice>
     <Amount currencyCode="{currency}">{unit_price}</Amount>
     <BaseQuantity unitCode="{unit_code}">1</BaseQuantity>
-   </NetUnitPrice>
+   </ListUnitPrice>
    <DeliveryPeriod>
     <StartDateTime timeZoneCode="UTC">{delivery_date}T00:00:00Z</StartDateTime>
     <EndDateTime timeZoneCode="UTC">{delivery_date}T23:59:59Z</EndDateTime>
    </DeliveryPeriod>
-   <ItemProduct>
+   <DirectMaterialIndicator>true</DirectMaterialIndicator>
+   <FollowUpPurchaseOrderConfirmation>
+    <RequirementCode>04</RequirementCode>
+   </FollowUpPurchaseOrderConfirmation>
+   <FollowUpDelivery>
+    <RequirementCode>01</RequirementCode>
+   </FollowUpDelivery>
+   <FollowUpInvoice>
+    <RequirementCode>01</RequirementCode>
+   </FollowUpInvoice>
+   <ItemProduct actionCode="01">
     <ProductKey>
      <ProductTypeCode>1</ProductTypeCode>
      <ProductIdentifierTypeCode>1</ProductIdentifierTypeCode>
@@ -108,11 +162,12 @@ _ENVELOPE_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Body>
 <n0:PurchaseOrderBundleMaintainRequest_sync xmlns:n0="{namespace}">
  <BasicMessageHeader/>
- <PurchaseOrderMaintainBundle actionCode="01">
+ <PurchaseOrderMaintainBundle actionCode="01" ItemListCompleteTransmissionIndicator="true">
+  <ObjectNodeSenderTechnicalID>1</ObjectNodeSenderTechnicalID>
   <BusinessTransactionDocumentTypeCode>001</BusinessTransactionDocumentTypeCode>
   <Date>{po_date}</Date>
   <CurrencyCode>{currency}</CurrencyCode>
-{buyer_party}{purchasing_unit_party}{seller_party}{bill_to_party}{items}</PurchaseOrderMaintainBundle>
+{buyer_party}{purchasing_unit_party}{seller_party}{bill_to_party}{company_party}{ship_to_location}{items}</PurchaseOrderMaintainBundle>
 </n0:PurchaseOrderBundleMaintainRequest_sync>
 </soapenv:Body>
 </soapenv:Envelope>"""
@@ -137,25 +192,28 @@ class SAPPurchaseOrderWriteClient:
             raise SAPPurchaseOrderWriteNotConfiguredError(
                 "SAP Purchase Order creation isn't wired up yet - SAP_SOAP_PO_MANAGE_ENDPOINT is not set."
             )
-        buyer_party = _PARTY_TEMPLATE.format(tag="BuyerParty", party_type="200", party_id=escape(company_code))
+        buyer_party = _PARTY_TEMPLATE.format(tag="BuyerParty", tech_id=2, party_id=escape(company_code))
         purchasing_unit_party = _PARTY_TEMPLATE.format(
-            tag="PartyResponsiblePurchasingUnitParty", party_type="200",
+            tag="PartyResponsiblePurchasingUnitParty", tech_id=3,
             party_id=escape(f"{purchase_unit_site}-PUR"),
         )
-        seller_party = _PARTY_TEMPLATE.format(tag="SellerParty", party_type="147", party_id=escape(supplier_code))
-        bill_to_party = _PARTY_TEMPLATE.format(tag="BillToParty", party_type="200", party_id=escape(bill_to_company_code))
+        seller_party = _PARTY_TEMPLATE.format(tag="SellerParty", tech_id=4, party_id=escape(supplier_code))
+        bill_to_party = _PARTY_TEMPLATE.format(tag="BillToParty", tech_id=5, party_id=escape(bill_to_company_code))
+        company_party = _PARTY_TEMPLATE.format(tag="Company", tech_id=6, party_id=escape(company_code))
+        ship_to_location = _SHIP_TO_LOCATION_TEMPLATE.format(tech_id=7, site_id=escape(purchase_unit_site))
         items_xml = "".join(
             _ITEM_TEMPLATE.format(
-                unit_code=escape(it["unit_of_measure"] or "EA"), quantity=it["quantity"],
+                tech_id=8 + idx, unit_code=escape(it["unit_of_measure"] or "EA"), quantity=it["quantity"],
                 currency=escape(currency), unit_price=it["unit_price"],
                 delivery_date=it["delivery_date"], product_id=escape(str(it["product_id"])),
                 site_id=escape(str(it["site_id"])),
-            ) for it in items
+            ) for idx, it in enumerate(items)
         )
         envelope = _ENVELOPE_TEMPLATE.format(
             namespace=NAMESPACE, po_date=po_date, currency=escape(currency),
             buyer_party=buyer_party, purchasing_unit_party=purchasing_unit_party,
-            seller_party=seller_party, bill_to_party=bill_to_party, items=items_xml,
+            seller_party=seller_party, bill_to_party=bill_to_party, company_party=company_party,
+            ship_to_location=ship_to_location, items=items_xml,
         )
         headers = {"Content-Type": "text/xml; charset=utf-8", "SOAPAction": SOAP_ACTION}
         try:
