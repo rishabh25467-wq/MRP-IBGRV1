@@ -437,6 +437,42 @@ def _build_gst_note_text(doc: dict, item_price_hsn: list = None) -> str:
 
 
 NOTIFICATIONS_COLLECTION = "admin_notifications"
+DAILY_RATE_CACHE_COLLECTION = "daily_valuation_cache"
+
+
+def _get_daily_cached_costs(db, sap_valuation_client, product_uuids, site_id):
+    """Fetches SAP's live Moving Average price at most ONCE PER CALENDAR
+    DAY per (site, product) - user's explicit ask (Sep 2026): creating a
+    second STO for the same product/site on the same day should reuse
+    today's already-fetched rate instead of hitting SAP again. Cached in
+    `daily_valuation_cache`, keyed by site+product+date; a fresh SAP call
+    only happens for products with no cache entry for today yet. A missing
+    price (None - genuinely no valuation found) is never cached, so it's
+    retried on the next call rather than silently stuck for the day."""
+    product_uuids = list({u.upper() for u in product_uuids if u})
+    if not product_uuids:
+        return {}
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    cached_docs = list(db[DAILY_RATE_CACHE_COLLECTION].find({
+        "_id": {"$in": [f"{site_id}:{u}:{today}" for u in product_uuids]}
+    }))
+    costs = {d["product_uuid"]: {"amount": d["amount"], "currency": d.get("currency")} for d in cached_docs}
+    missing = [u for u in product_uuids if u not in costs]
+    if missing:
+        fresh = sap_valuation_client.get_standard_costs(missing, site_id=site_id)
+        for product_uuid, cost in fresh.items():
+            costs[product_uuid] = cost
+            if cost:
+                db[DAILY_RATE_CACHE_COLLECTION].update_one(
+                    {"_id": f"{site_id}:{product_uuid}:{today}"},
+                    {"$set": {
+                        "product_uuid": product_uuid, "site_id": site_id, "date": today,
+                        "amount": cost["amount"], "currency": cost.get("currency"),
+                        "fetched_at": datetime.now(timezone.utc),
+                    }},
+                    upsert=True,
+                )
+    return costs
 _MISSING_PLANNING_RE = re.compile(r"No valid planning data exists for product (\S+) in site (\S+)")
 
 
@@ -481,7 +517,7 @@ def _price_hsn_for_note(db, doc: dict, sap_valuation_client) -> list:
         for c in db["component_master"].find({"_id": {"$in": product_ids}}, {"product_uuid": 1})
     }
     product_uuids = [u for u in product_uuid_by_id.values() if u]
-    costs = sap_valuation_client.get_standard_costs(product_uuids, site_id=doc.get("ship_from_site_id")) if product_uuids else {}
+    costs = _get_daily_cached_costs(db, sap_valuation_client, product_uuids, doc.get("ship_from_site_id")) if product_uuids else {}
     entries = []
     for it in doc["items"]:
         product_uuid = product_uuid_by_id.get(it["product_id"])
@@ -1316,12 +1352,14 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str)
         no pcode registered in `comp` at all (site P6 today - user's
         explicit choice for this gap).
       Rate/Amt/Amount/TaxableAmt = SAP's live Moving Average price x
-        quantity (never Standard Cost - see sap_valuation_client.py). This
-        is the ONE place this price is ever fetched live - also persisted
-        onto this order's own `items` here (Aug 27 2026, user's explicit
-        ask: "should be stored in mongo per record since u write to erp
-        anyway"), so get_delivery_note_data below never needs to re-fetch
-        it live on every single print.
+        quantity (never Standard Cost - see sap_valuation_client.py),
+        fetched at most once per calendar day per site+product (Sep 2026,
+        user's explicit ask - see _get_daily_cached_costs) rather than
+        live on every single sync. Also persisted onto this order's own
+        `items` here (Aug 27 2026, user's explicit ask: "should be stored
+        in mongo per record since u write to erp anyway"), so
+        get_delivery_note_data below never needs to re-fetch it live on
+        every single print.
       HSN_no = reuses the `hsn_code` ALREADY resolved and stored on each
         item at create_stock_transfer_order time (hsn_cache_service) -
         never a fresh SAP call here.
@@ -1345,7 +1383,7 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str)
         for c in db["component_master"].find({"_id": {"$in": product_ids}}, {"product_uuid": 1})
     }
     product_uuids = [u for u in product_uuid_by_id.values() if u]
-    costs = sap_valuation_client.get_standard_costs(product_uuids, site_id=doc.get("ship_from_site_id")) if product_uuids else {}
+    costs = _get_daily_cached_costs(db, sap_valuation_client, product_uuids, doc.get("ship_from_site_id")) if product_uuids else {}
 
     sale_date = datetime.strptime(doc["date_of_supply"], "%Y-%m-%d")
     line_items = []
