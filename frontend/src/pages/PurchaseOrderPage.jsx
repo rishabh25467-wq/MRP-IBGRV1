@@ -359,14 +359,14 @@ export default function PurchaseOrderPage() {
         <SapConnectionStatus />
       </header>
 
-      <main className="flex-1 overflow-auto w-full max-w-[1380px] mx-auto px-4 sm:px-6 lg:px-8 py-4">
+      <main className="flex-1 overflow-auto w-full max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-4">
         <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
           <div>
-            <h1 className="font-heading text-xl sm:text-2xl font-extrabold text-[#101828] tracking-tight flex items-center gap-2" data-testid="po-page-title">
-              <ShieldCheck size={22} className="text-[#004B87]" weight="fill" />
+            <h1 className="font-heading text-xl sm:text-2xl font-bold text-[#101828] tracking-tight flex items-center gap-2" data-testid="po-page-title">
+              <ShieldCheck size={20} className="text-[#004B87]" weight="fill" />
               Purchase Order Creation
             </h1>
-            <p className="text-[13px] text-[#667085] mt-0.5">Builds and pushes a live Purchase Order into SAP Business ByDesign - submitted the moment you confirm below.</p>
+            <p className="text-sm text-[#475467] mt-0.5">Builds and pushes a live Purchase Order into SAP Business ByDesign - submitted the moment you confirm below.</p>
           </div>
           <Badge className="bg-[#EFF8FF] text-[#175CD3] border border-[#B2DDFF] rounded-sm font-data text-xs px-3 py-1.5" data-testid="po-live-sap-badge">
             <span className="w-1.5 h-1.5 rounded-full bg-[#175CD3] mr-2 inline-block animate-pulse" />

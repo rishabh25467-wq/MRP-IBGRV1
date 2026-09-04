@@ -96,13 +96,13 @@ export default function OpenPurchaseOrdersPage() {
         <SapConnectionStatus />
       </header>
 
-      <main className="flex-1 overflow-auto w-full max-w-[1200px] mx-auto px-4 sm:px-6 lg:px-8 py-4 space-y-4">
+      <main className="flex-1 overflow-auto w-full max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-4 space-y-4">
         <div>
-          <h1 className="font-heading text-xl sm:text-2xl font-extrabold text-[#101828] tracking-tight flex items-center gap-2" data-testid="open-pos-page-title">
-            <ShieldCheck size={22} className="text-[#004B87]" weight="fill" />
+          <h1 className="font-heading text-xl font-bold text-[#101828] tracking-tight flex items-center gap-2" data-testid="open-pos-page-title">
+            <ShieldCheck size={18} className="text-[#004B87]" weight="fill" />
             Open Purchase Orders
           </h1>
-          <p className="text-[13px] text-[#667085] mt-0.5">Pick a vendor to see every PO line still open against them - SAP-verified where available.</p>
+          <p className="text-sm text-[#475467] mt-0.5">Pick a vendor to see every PO line still open against them - SAP-verified where available.</p>
         </div>
 
         <div className="bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] p-4 space-y-2 relative" ref={wrapperRef} data-testid="open-pos-supplier-card">

@@ -337,7 +337,7 @@ export default function InboundReceiptsPage() {
         <div className="flex items-center gap-3 flex-1 justify-start min-w-0"><NavTabs /></div>
         <SapConnectionStatus />
       </header>
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
+      <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-8">
         <div className="flex items-start justify-between gap-4 flex-wrap mb-6">
           <div>
             <h1 className="font-heading text-2xl sm:text-3xl font-bold text-[#101828] flex items-center gap-2">

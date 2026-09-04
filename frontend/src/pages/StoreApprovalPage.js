@@ -516,7 +516,7 @@ export default function StoreApprovalPage() {
       return (
         <div className="min-h-screen bg-[#F2F4F7] text-[#1D2939]">
           <Toaster position="top-right" />
-          <main className="max-w-6xl mx-auto p-4 sm:p-6" data-testid="store-request-loading">
+          <main className="max-w-[1400px] mx-auto p-4 sm:p-6" data-testid="store-request-loading">
             <p className="text-sm text-[#667085] flex items-center gap-1.5"><ArrowClockwise size={14} className="animate-spin" /> Loading request {requestId}...</p>
           </main>
         </div>
@@ -541,7 +541,7 @@ export default function StoreApprovalPage() {
           </div>
           <SapConnectionStatus />
         </header>
-        <main className="max-w-6xl mx-auto p-4 sm:p-6 space-y-4">
+        <main className="max-w-[1400px] mx-auto p-4 sm:p-6 space-y-4">
           <div className="flex flex-wrap items-end gap-3">
             <div className="flex gap-1 bg-white border border-[#D0D5DD] rounded-sm p-1">
               <button
@@ -958,7 +958,7 @@ export default function StoreApprovalPage() {
         </div>
         <div className="shrink-0 w-8" />
       </header>
-      <main className="print:hidden max-w-6xl mx-auto p-4 sm:p-6 space-y-4">
+      <main className="print:hidden max-w-[1400px] mx-auto p-4 sm:p-6 space-y-4">
         <button onClick={backToQueue} className="flex items-center gap-1.5 text-sm text-[#344054] hover:text-[#0E7C86]" data-testid="store-back-to-queue-button">
           <ArrowLeft size={14} weight="bold" /> Back to queue
         </button>

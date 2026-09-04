@@ -376,7 +376,7 @@ export default function InventoryPage() {
         <SapConnectionStatus />
       </header>
 
-      <main className="flex-1 overflow-auto max-w-[1600px] w-full mx-auto px-6 py-6 space-y-4">
+      <main className="flex-1 overflow-auto max-w-[1400px] w-full mx-auto px-6 py-6 space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <h1 className="font-heading text-xl font-bold text-[#1D2939]">Inventory</h1>

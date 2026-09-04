@@ -192,7 +192,7 @@ export default function SupplierPortalInvitePage() {
         <SapConnectionStatus />
       </header>
 
-      <div className="max-w-3xl mx-auto p-4 md:p-6">
+      <div className="max-w-[1400px] mx-auto p-4 md:p-6">
         <div className="flex items-center gap-2 mb-1">
           <Buildings size={18} weight="fill" className="text-[#0076CC]" />
           <h1 className="font-sans text-base font-bold text-[#111827]">Invite Supplier</h1>
@@ -334,8 +334,8 @@ export default function SupplierPortalInvitePage() {
         </form>
 
         <h2 className="font-sans text-sm font-bold text-[#111827] mt-8 mb-2">Invite History</h2>
-        <div className="bg-white border border-[#CBD3DB] rounded-sm shadow-sm overflow-hidden">
-          <table className="w-full text-sm border-collapse">
+        <div className="bg-white border border-[#CBD3DB] rounded-sm shadow-sm overflow-x-auto">
+          <table className="w-full text-sm border-collapse min-w-[900px]">
             <thead className="bg-[#F5F6F7] text-[#5B738B] text-xs uppercase">
               <tr>
                 <th className="text-left px-3 py-2 font-semibold">Company</th>

@@ -30,7 +30,7 @@ export default function CreatedPurchaseOrdersPage() {
         <SapConnectionStatus />
       </header>
 
-      <main className="flex-1 overflow-auto max-w-[1200px] w-full mx-auto px-6 py-6 space-y-4">
+      <main className="flex-1 overflow-auto max-w-[1400px] w-full mx-auto px-6 py-6 space-y-4">
         <div>
           <h1 className="font-heading text-xl font-bold text-[#1D2939]" data-testid="created-pos-page-title">Created Purchase Orders</h1>
           <p className="text-sm text-[#667085] mt-0.5">Every Purchase Order pushed to SAP ByDesign from this app, with its live SAP reference number.</p>

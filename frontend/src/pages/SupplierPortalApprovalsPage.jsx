@@ -90,7 +90,7 @@ export default function SupplierPortalApprovalsPage() {
         </div>
         <SapConnectionStatus />
       </header>
-      <div className="max-w-6xl mx-auto p-4 md:p-6">
+      <div className="max-w-[1400px] mx-auto p-4 md:p-6">
         <div className="flex items-center gap-2 mb-1">
           <Buildings size={18} weight="fill" className="text-[#0076CC]" />
           <h1 className="font-sans text-base font-bold text-[#111827]">Supplier Portal Approvals</h1>
