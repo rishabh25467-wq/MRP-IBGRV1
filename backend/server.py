@@ -6542,6 +6542,20 @@ async def get_admin_grn_lookup(doc_code: str, request: Request):
         doc = await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
     except supplier_shipment_service.ShipmentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    # Sep 4 2026, user's explicit ask: "PO Qty" on this screen must be the
+    # OPEN (still-outstanding) quantity on that PO line, not the line's full
+    # original ordered quantity - prefers SAP's own verified Open PO Qty
+    # (same source as the Supplier Portal dashboard), falling back to the
+    # locally-computed figure (po_qty minus already shipped before this
+    # shipment) only if SAP hasn't been read for that item yet.
+    def _attach_open_po_qty():
+        for it in doc.get("items", []):
+            sap_cached = supplier_shipment_service.get_sap_open_qty(db, it.get("po_number"), it.get("item_number"))
+            if sap_cached:
+                it["open_po_qty"] = sap_cached["open_qty"]
+            else:
+                it["open_po_qty"] = round((it.get("po_qty") or 0) - (it.get("already_shipped_qty") or 0), 4)
+    await asyncio.to_thread(_attach_open_po_qty)
     # "RI and RT Site should be non-editable and pre-fixed based on shipment
     # code" (mrp vendor side changes.docx, Sep 2026): narrow the Site choices
     # down to only the buying entity's own sites, further narrowed by this

@@ -50,6 +50,7 @@ const emptyLine = () => ({
   unit_of_measure: "EA",
   uomFromPr: null,
   uomMappingConfident: true,
+  fromPr: false,
   quantity: "",
   unit_price: "",
   delivery_date: todayISO(),
@@ -133,6 +134,7 @@ export default function PurchaseOrderPage() {
         unit_of_measure: it.matched_unit_of_measure || it.sap_unit_of_measure || "EA",
         uomFromPr: it.unit,
         uomMappingConfident: it.matched_unit_of_measure ? true : it.unit_mapping_confident,
+        fromPr: true,
         quantity: it.qty,
         unit_price: it.rate,
         delivery_date: todayISO(),
@@ -205,7 +207,7 @@ export default function PurchaseOrderPage() {
   const duplicateLine = (lineKey) => setLines((prev) => {
     const idx = prev.findIndex((l) => l.key === lineKey);
     if (idx < 0) return prev;
-    const copy = { ...prev[idx], key: `line-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` };
+    const copy = { ...prev[idx], key: `line-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, fromPr: false };
     const next = [...prev];
     next.splice(idx + 1, 0, copy);
     return next;
@@ -224,7 +226,7 @@ export default function PurchaseOrderPage() {
     if (!poDate) errors.push("PO Date is required");
     if (lines.length === 0) errors.push("At least one line item is required");
     lines.forEach((l, idx) => {
-      if (!l.product_id) errors.push(`Line ${idx + 1}: Product must be selected from the list`);
+      if (!l.product_id) errors.push(l.fromPr ? `Line ${idx + 1}: PR item "${l.description || l.iname || ""}" did not match a SAP product - remove this line or fix the catalog and re-fetch` : `Line ${idx + 1}: Product must be selected from the list`);
       if (!l.quantity || Number(l.quantity) <= 0) errors.push(`Line ${idx + 1}: Quantity must be greater than 0`);
       if (l.unit_price === "" || Number(l.unit_price) < 0) errors.push(`Line ${idx + 1}: Unit Price must be 0 or more`);
       if (!l.delivery_date) errors.push(`Line ${idx + 1}: Delivery Date is required`);
@@ -237,7 +239,7 @@ export default function PurchaseOrderPage() {
     { label: "PR fetched & line items autofilled", ok: !!prFetched },
     { label: "Purchase Unit & Bill-To selected", ok: !!purchaseUnitSite && !!billToCompany },
     { label: "Supplier selected from SAP Master", ok: !!selectedSupplier },
-    { label: "Every line has Product, Qty & Price", ok: lines.every((l) => l.product_id && Number(l.quantity) > 0 && l.unit_price !== "") },
+    { label: "Every line matched to a real SAP product, with Qty & Price", ok: lines.every((l) => l.product_id && Number(l.quantity) > 0 && l.unit_price !== "") },
     { label: "Delivery dates on/after PO Date", ok: lines.every((l) => !l.delivery_date || !poDate || l.delivery_date >= poDate) },
   ];
   const canSubmit = checklist.every((c) => c.ok);
@@ -508,29 +510,43 @@ export default function PurchaseOrderPage() {
                     {lines.map((l, idx) => (
                       <tr key={l.key} className={idx % 2 === 1 ? "bg-[#F9FAFB]" : "bg-white"} data-testid={`po-line-row-${idx}`}>
                         <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[280px] relative">
-                          <Input
-                            value={l.productQuery}
-                            onChange={(e) => onProductQueryChange(l.key, e.target.value)}
-                            onFocus={() => setLines((prev) => prev.map((x) => (x.key === l.key ? { ...x, showSuggestions: true } : x)))}
-                            placeholder="Search Product ID or description..."
-                            className={`h-8 text-xs rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]`}
-                            data-testid={`po-line-product-input-${idx}`}
-                          />
-                          {l.showSuggestions && l.productSuggestions.length > 0 && (
-                            <div className="absolute z-20 mt-1 w-full bg-white border border-[#D0D5DD] rounded-sm shadow-lg max-h-56 overflow-y-auto" data-testid={`po-line-product-suggestions-${idx}`}>
-                              {l.productSuggestions.map((p) => (
-                                <button
-                                  key={p.product_id}
-                                  type="button"
-                                  className="w-full text-left px-3 py-2 text-xs hover:bg-[#F2F4F7] border-b border-[#EAECF0] last:border-0"
-                                  onClick={() => pickProduct(l.key, p)}
-                                  data-testid={`po-line-product-suggestion-${idx}-${p.product_id}`}
-                                >
-                                  <span className="font-semibold text-[#101828] font-data">{p.product_id}</span>
-                                  {p.description && <span className="text-[#667085]"> - {p.description}</span>}
-                                </button>
-                              ))}
-                            </div>
+                          {l.fromPr ? (
+                            l.product_id ? (
+                              <div className="h-8 flex items-center px-2 text-xs bg-[#F9FAFB] border border-[#D0D5DD] rounded-sm font-data text-[#101828] truncate" data-testid={`po-line-product-locked-${idx}`} title={`${l.product_id} - ${l.description}`}>
+                                {l.product_id} - {l.description}
+                              </div>
+                            ) : (
+                              <div className="h-8 flex items-center px-2 text-xs bg-[#FEF3F2] border border-[#FECDCA] rounded-sm text-[#B42318] truncate" data-testid={`po-line-product-unresolved-${idx}`} title={l.description}>
+                                <WarningCircle size={12} className="mr-1.5 shrink-0" weight="fill" /> Not matched in SAP ({l.description}) - remove this line to proceed
+                              </div>
+                            )
+                          ) : (
+                            <>
+                              <Input
+                                value={l.productQuery}
+                                onChange={(e) => onProductQueryChange(l.key, e.target.value)}
+                                onFocus={() => setLines((prev) => prev.map((x) => (x.key === l.key ? { ...x, showSuggestions: true } : x)))}
+                                placeholder="Search Product ID or description..."
+                                className={`h-8 text-xs rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]`}
+                                data-testid={`po-line-product-input-${idx}`}
+                              />
+                              {l.showSuggestions && l.productSuggestions.length > 0 && (
+                                <div className="absolute z-20 mt-1 w-full bg-white border border-[#D0D5DD] rounded-sm shadow-lg max-h-56 overflow-y-auto" data-testid={`po-line-product-suggestions-${idx}`}>
+                                  {l.productSuggestions.map((p) => (
+                                    <button
+                                      key={p.product_id}
+                                      type="button"
+                                      className="w-full text-left px-3 py-2 text-xs hover:bg-[#F2F4F7] border-b border-[#EAECF0] last:border-0"
+                                      onClick={() => pickProduct(l.key, p)}
+                                      data-testid={`po-line-product-suggestion-${idx}-${p.product_id}`}
+                                    >
+                                      <span className="font-semibold text-[#101828] font-data">{p.product_id}</span>
+                                      {p.description && <span className="text-[#667085]"> - {p.description}</span>}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </>
                           )}
                         </td>
                         <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[90px]">

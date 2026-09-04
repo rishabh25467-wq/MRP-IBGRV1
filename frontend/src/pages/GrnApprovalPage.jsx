@@ -417,7 +417,7 @@ export default function GrnApprovalPage() {
                   <th className="border border-[#D0D5DD] p-1.5 text-left">Item</th>
                   <th className="border border-[#D0D5DD] p-1.5 text-left">Description</th>
                   <th className="border border-[#D0D5DD] p-1.5 text-right">Ship Qty</th>
-                  <th className="border border-[#D0D5DD] p-1.5 text-right">PO Qty</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-right">Open PO Qty</th>
                   <th className="border border-[#D0D5DD] p-1.5 text-right">Actual Qty</th>
                 </tr>
               </thead>
@@ -430,7 +430,7 @@ export default function GrnApprovalPage() {
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data">{it.item_number}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1">{it.description}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data font-semibold">{it.ship_qty} {it.unit_of_measure}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data text-[#475467]">{it.po_qty}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data text-[#475467]" data-testid={`grn-item-open-po-qty-${i}`}>{it.open_po_qty ?? it.po_qty}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right">
                         {isActionable ? (
                           <Input
