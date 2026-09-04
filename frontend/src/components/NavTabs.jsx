@@ -25,13 +25,41 @@ import { useAuth } from "@/contexts/AuthContext";
 
 // Labels follow global MRP/ERP naming conventions (SAP/Oracle/Infor-style
 // module names) - renamed Feb 2026 as part of the "Materials Hub" rebrand.
-// Routes are unchanged; only the displayed label changed. `page` matches
-// backend/auth_service.py's PAGE_CATALOG keys - a tab only renders if the
-// signed-in user has that page.
+// Reorganized Sep 4 2026, user's explicit ask: menu groups now match real
+// ERP module boundaries (Procurement vs Supplier/Vendor lifecycle vs true
+// Master Data vs Administration) instead of dumping supplier-portal admin
+// actions under "Master Data" just because that's where they happened to
+// land first. Routes are unchanged; only labels/grouping changed. `page`
+// matches backend/auth_service.py's PAGE_CATALOG keys - a tab only
+// renders if the signed-in user has that page.
 const TABS = [
   { to: "/", label: "BOM Management", testId: "nav-bom-explorer", page: "bom_explorer" },
-  { to: "/purchasing-plan", label: "Procurement Planning", testId: "nav-purchasing-plan", page: "purchasing_plan" },
   { to: "/production-confirmation", label: "Production Confirmation", testId: "nav-production-confirmation", page: "production_confirmation" },
+];
+
+const PROCUREMENT_SUBTABS = [
+  { to: "/purchasing-plan", label: "Procurement Planning", testId: "nav-procurement-planning", page: "purchasing_plan" },
+  // Aug 2026: Purchase Order Creation automation - writes real POs into SAP ByDesign.
+  { to: "/purchasing-strategy/purchase-order-create", label: "Create Purchase Order", testId: "nav-procurement-purchase-order-create", page: "purchase_order" },
+  // Sep 4 2026, user's explicit ask: visibility into POs already created via this app.
+  { to: "/purchasing-strategy/created-purchase-orders", label: "Created POs", testId: "nav-procurement-created-purchase-orders", page: "purchase_order" },
+  // Sep 4 2026, user's explicit ask: pick any vendor, see their open PO lines.
+  { to: "/purchasing-strategy/open-purchase-orders", label: "Open Purchase Orders", testId: "nav-procurement-open-purchase-orders", page: "purchase_order" },
+  { to: "/purchasing-strategy/quota-allocation", label: "Quota Allocation", testId: "nav-procurement-quota-allocation", page: "quota_allocation" },
+];
+
+const SUPPLIER_MANAGEMENT_SUBTABS = [
+  { to: "/purchasing-strategy/supplier-master", label: "Supplier Master", testId: "nav-supplier-management-supplier-master", page: "supplier_master" },
+  { to: "/admin/supplier-portal-invite", label: "Invite Supplier", testId: "nav-supplier-management-supplier-portal-invite", page: "supplier_portal_admin" },
+  { to: "/admin/supplier-portal-approvals", label: "Supplier Portal Approvals", testId: "nav-supplier-management-supplier-portal-approvals", page: "supplier_portal_admin" },
+  // Sep 4 2026, user's explicit ask: renamed from "GRN Approval" + moved
+  // out of Master Data - it's vendor goods receipt, not reference data.
+  { to: "/admin/grn-approval", label: "Vendor Goods Receipt", testId: "nav-supplier-management-vendor-goods-receipt", page: "supplier_portal_admin" },
+  // Sep 2 2026, user's explicit ask: quick shortcut into the Supplier
+  // Portal (separate vendor-JWT auth, not `vms_session`) so staff can log
+  // in and use its vendor-impersonation search to view/act on any
+  // vendor's own shipment-creation dashboard.
+  { to: "/supplier-portal/login", label: "Supplier Dashboard", testId: "nav-supplier-management-supplier-dashboard", page: "supplier_portal_admin" },
 ];
 
 const INVENTORY_SUBTABS = [
@@ -49,40 +77,42 @@ const INVENTORY_SUBTABS = [
   { to: "/storeapproval", label: "Goods Issue", testId: "nav-inventory-goods-issue", page: "store_approval" },
 ];
 
-const PURCHASING_STRATEGY_SUBTABS = [
-  { to: "/purchasing-strategy/supplier-master", label: "Supplier Master", testId: "nav-purchasing-strategy-supplier-master", page: "supplier_master" },
-  { to: "/purchasing-strategy/quota-allocation", label: "Quota Allocation", testId: "nav-purchasing-strategy-quota-allocation", page: "quota_allocation" },
-  // Aug 2026: Purchase Order Creation automation - writes real POs into SAP ByDesign.
-  { to: "/purchasing-strategy/purchase-order-create", label: "Create Purchase Order", testId: "nav-purchasing-strategy-purchase-order-create", page: "purchase_order" },
-  // Sep 4 2026, user's explicit ask: visibility into POs already created via this app.
-  { to: "/purchasing-strategy/created-purchase-orders", label: "Created POs", testId: "nav-purchasing-strategy-created-purchase-orders", page: "purchase_order" },
+// Sep 4 2026, user's explicit ask: only true reference/master data left
+// here now - transactional supplier-portal actions moved to Supplier
+// Management above, raw admin tools moved to Administration below.
+const MASTER_DATA_SUBTABS = [
+  { to: "/admin", label: "Component Master", testId: "nav-master-data-component-master", page: "admin" },
+  { to: "/admin/create-material", label: "Create Material", testId: "nav-master-data-create-material", page: "admin_create_material" },
+  { to: "/admin/l1-l2-report", label: "L1/L2 Item Report", testId: "nav-master-data-l1l2-report", page: "admin" },
 ];
 
-const ADMIN_SUBTABS = [
-  { to: "/admin", label: "Component Master", testId: "nav-admin-component-master", page: "admin" },
-  { to: "/admin/sap-write", label: "SAP Write", testId: "nav-admin-sap-write", page: "admin_sap_write" },
-  { to: "/admin/l1-l2-report", label: "L1/L2 Item Report", testId: "nav-admin-l1l2-report", page: "admin" },
-  { to: "/admin/create-material", label: "Create Material", testId: "nav-admin-create-material", page: "admin_create_material" },
-  { to: "/admin/supplier-portal-approvals", label: "Supplier Portal Approvals", testId: "nav-admin-supplier-portal-approvals", page: "supplier_portal_admin" },
-  { to: "/admin/supplier-portal-invite", label: "Invite Supplier", testId: "nav-admin-supplier-portal-invite", page: "supplier_portal_admin" },
-  { to: "/admin/grn-approval", label: "GRN Approval", testId: "nav-admin-grn-approval", page: "supplier_portal_admin" },
-  // Sep 2 2026, user's explicit ask: quick shortcut into the Supplier
-  // Portal (separate vendor-JWT auth, not `vms_session`) so staff can log
-  // in and use its vendor-impersonation search to view/act on any
-  // vendor's own shipment-creation dashboard.
-  { to: "/supplier-portal/login", label: "Supplier Dashboard", testId: "nav-admin-supplier-dashboard", page: "supplier_portal_admin" },
+const ADMINISTRATION_SUBTABS = [
+  { to: "/admin/sap-write", label: "SAP Write", testId: "nav-administration-sap-write", page: "admin_sap_write" },
 ];
 
 export const NavTabs = () => {
   const { pathname } = useLocation();
   const { user, hasPageAccess, logout } = useAuth();
   const visibleTabs = TABS.filter((t) => hasPageAccess(t.page));
-  const visiblePurchasingStrategySubtabs = PURCHASING_STRATEGY_SUBTABS.filter((t) => hasPageAccess(t.page));
+  const visibleProcurementSubtabs = PROCUREMENT_SUBTABS.filter((t) => hasPageAccess(t.page));
+  const visibleSupplierManagementSubtabs = SUPPLIER_MANAGEMENT_SUBTABS.filter((t) => hasPageAccess(t.page));
   const visibleInventorySubtabs = INVENTORY_SUBTABS.filter((t) => !t.page || hasPageAccess(t.page));
-  const visibleAdminSubtabs = ADMIN_SUBTABS.filter((t) => hasPageAccess(t.page));
-  const adminActive = ADMIN_SUBTABS.some((t) => t.to === pathname);
-  const purchasingStrategyActive = PURCHASING_STRATEGY_SUBTABS.some((t) => t.to === pathname);
+  const visibleMasterDataSubtabs = MASTER_DATA_SUBTABS.filter((t) => hasPageAccess(t.page));
+  const visibleAdministrationSubtabs = ADMINISTRATION_SUBTABS.filter((t) => hasPageAccess(t.page));
+  const procurementActive = PROCUREMENT_SUBTABS.some((t) => t.to === pathname);
+  const supplierManagementActive = SUPPLIER_MANAGEMENT_SUBTABS.some((t) => t.to === pathname);
   const inventoryActive = pathname === "/inventory" || pathname === "/inventory/inter-plant-transfer" || pathname === "/inventory/inbound-receipts" || pathname.startsWith("/storeapproval");
+  const masterDataActive = MASTER_DATA_SUBTABS.some((t) => t.to === pathname);
+  const administrationActive = ADMINISTRATION_SUBTABS.some((t) => t.to === pathname);
+
+  const dropdownGroups = [
+    { key: "procurement", label: "Procurement", testId: "nav-procurement", active: procurementActive, tabs: visibleProcurementSubtabs },
+    { key: "supplier-management", label: "Supplier Management", testId: "nav-supplier-management", active: supplierManagementActive, tabs: visibleSupplierManagementSubtabs },
+    { key: "inventory", label: "Inventory Management", testId: "nav-inventory", active: inventoryActive, tabs: visibleInventorySubtabs },
+    { key: "master-data", label: "Master Data", testId: "nav-master-data", active: masterDataActive, tabs: visibleMasterDataSubtabs },
+    { key: "administration", label: "Administration", testId: "nav-administration", active: administrationActive, tabs: visibleAdministrationSubtabs },
+  ];
+
   return (
     <>
       {/* Desktop / large tablet nav - unchanged pill tabs */}
@@ -102,19 +132,19 @@ export const NavTabs = () => {
           </Link>
         );
       })}
-      {visiblePurchasingStrategySubtabs.length > 0 && (
-        <DropdownMenu>
+      {dropdownGroups.map((group) => group.tabs.length > 0 && (
+        <DropdownMenu key={group.key}>
           <DropdownMenuTrigger
             className={`flex items-center gap-1 px-3.5 py-1.5 rounded-full text-[13px] font-bold font-heading transition-colors duration-150 outline-none ${
-              purchasingStrategyActive ? "bg-white text-[#0B6B74]" : "text-white/85 hover:bg-white/15 hover:text-white"
+              group.active ? "bg-white text-[#0B6B74]" : "text-white/85 hover:bg-white/15 hover:text-white"
             }`}
-            data-testid="nav-purchasing-strategy"
+            data-testid={group.testId}
           >
-            Supplier Management
+            {group.label}
             <CaretDown size={10} weight="bold" />
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="min-w-[180px] bg-white border border-[#D0D5DD]" data-testid="nav-purchasing-strategy-dropdown-content">
-            {visiblePurchasingStrategySubtabs.map((tab) => (
+          <DropdownMenuContent align="start" className="min-w-[200px] bg-white border border-[#D0D5DD]" data-testid={`${group.testId}-dropdown-content`}>
+            {group.tabs.map((tab) => (
               <DropdownMenuItem key={tab.to} asChild>
                 <Link to={tab.to} className="w-full cursor-pointer" data-testid={tab.testId}>
                   {tab.label}
@@ -123,51 +153,7 @@ export const NavTabs = () => {
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
-      )}
-      {visibleInventorySubtabs.length > 0 && (
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            className={`flex items-center gap-1 px-3.5 py-1.5 rounded-full text-[13px] font-bold font-heading transition-colors duration-150 outline-none ${
-              inventoryActive ? "bg-white text-[#0B6B74]" : "text-white/85 hover:bg-white/15 hover:text-white"
-            }`}
-            data-testid="nav-inventory"
-          >
-            Inventory Management
-            <CaretDown size={10} weight="bold" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="min-w-[180px] bg-white border border-[#D0D5DD]" data-testid="nav-inventory-dropdown-content">
-            {visibleInventorySubtabs.map((tab) => (
-              <DropdownMenuItem key={tab.to} asChild>
-                <Link to={tab.to} className="w-full cursor-pointer" data-testid={tab.testId}>
-                  {tab.label}
-                </Link>
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      )}
-      {visibleAdminSubtabs.length > 0 && (
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            className={`flex items-center gap-1 px-3.5 py-1.5 rounded-full text-[13px] font-bold font-heading transition-colors duration-150 outline-none ${
-              adminActive ? "bg-white text-[#0B6B74]" : "text-white/85 hover:bg-white/15 hover:text-white"
-            }`}
-            data-testid="nav-admin"
-          >
-            Master Data
-            <CaretDown size={10} weight="bold" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="min-w-[180px] bg-white border border-[#D0D5DD]" data-testid="nav-admin-dropdown-content">
-            {visibleAdminSubtabs.map((tab) => (
-              <DropdownMenuItem key={tab.to} asChild>
-                <Link to={tab.to} className="w-full cursor-pointer" data-testid={tab.testId}>
-                  {tab.label}
-                </Link>
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      )}
+      ))}
 
       {user && (
         <DropdownMenu>
@@ -251,20 +237,20 @@ export const NavTabs = () => {
                 );
               })}
 
-              {(visiblePurchasingStrategySubtabs.length > 0 || visibleInventorySubtabs.length > 0 || visibleAdminSubtabs.length > 0) && (
+              {dropdownGroups.some((g) => g.tabs.length > 0) && (
                 <Accordion type="multiple" className="mt-1">
-                  {visiblePurchasingStrategySubtabs.length > 0 && (
-                    <AccordionItem value="purchasing-strategy" className="border-b-0">
+                  {dropdownGroups.map((group) => group.tabs.length > 0 && (
+                    <AccordionItem key={group.key} value={group.key} className="border-b-0">
                       <AccordionTrigger
                         className={`px-3 min-h-11 text-[14px] font-bold font-heading no-underline hover:no-underline ${
-                          purchasingStrategyActive ? "text-[#0B6B74]" : "text-[#344054]"
+                          group.active ? "text-[#0B6B74]" : "text-[#344054]"
                         }`}
-                        data-testid="mobile-nav-purchasing-strategy"
+                        data-testid={`mobile-${group.testId}`}
                       >
-                        Supplier Management
+                        {group.label}
                       </AccordionTrigger>
                       <AccordionContent className="pl-3">
-                        {visiblePurchasingStrategySubtabs.map((tab) => (
+                        {group.tabs.map((tab) => (
                           <SheetClose asChild key={tab.to}>
                             <Link
                               to={tab.to}
@@ -277,57 +263,7 @@ export const NavTabs = () => {
                         ))}
                       </AccordionContent>
                     </AccordionItem>
-                  )}
-                  {visibleInventorySubtabs.length > 0 && (
-                    <AccordionItem value="inventory" className="border-b-0">
-                      <AccordionTrigger
-                        className={`px-3 min-h-11 text-[14px] font-bold font-heading no-underline hover:no-underline ${
-                          inventoryActive ? "text-[#0B6B74]" : "text-[#344054]"
-                        }`}
-                        data-testid="mobile-nav-inventory"
-                      >
-                        Inventory Management
-                      </AccordionTrigger>
-                      <AccordionContent className="pl-3">
-                        {visibleInventorySubtabs.map((tab) => (
-                          <SheetClose asChild key={tab.to}>
-                            <Link
-                              to={tab.to}
-                              className="flex items-center min-h-11 px-3 rounded-lg text-[14px] font-medium text-[#475467] hover:bg-slate-100"
-                              data-testid={`mobile-${tab.testId}`}
-                            >
-                              {tab.label}
-                            </Link>
-                          </SheetClose>
-                        ))}
-                      </AccordionContent>
-                    </AccordionItem>
-                  )}
-                  {visibleAdminSubtabs.length > 0 && (
-                    <AccordionItem value="admin" className="border-b-0">
-                      <AccordionTrigger
-                        className={`px-3 min-h-11 text-[14px] font-bold font-heading no-underline hover:no-underline ${
-                          adminActive ? "text-[#0B6B74]" : "text-[#344054]"
-                        }`}
-                        data-testid="mobile-nav-admin"
-                      >
-                        Master Data
-                      </AccordionTrigger>
-                      <AccordionContent className="pl-3">
-                        {visibleAdminSubtabs.map((tab) => (
-                          <SheetClose asChild key={tab.to}>
-                            <Link
-                              to={tab.to}
-                              className="flex items-center min-h-11 px-3 rounded-lg text-[14px] font-medium text-[#475467] hover:bg-slate-100"
-                              data-testid={`mobile-${tab.testId}`}
-                            >
-                              {tab.label}
-                            </Link>
-                          </SheetClose>
-                        ))}
-                      </AccordionContent>
-                    </AccordionItem>
-                  )}
+                  ))}
                 </Accordion>
               )}
             </div>

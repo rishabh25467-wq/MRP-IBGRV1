@@ -5109,6 +5109,47 @@ async def po_list_sites():
     return {"sites": sites}
 
 
+@api_router.get("/purchase-orders/open")
+async def po_open_orders(supplier_code: str = Query(..., description="SAP supplier/vendor code")):
+    """Sep 4 2026, user's explicit ask: internal staff pick ANY vendor
+    and see that vendor's open PO lines - reuses the exact same
+    SAP-verified cache (`get_cached_pos_with_remaining`) the Supplier
+    Portal dashboard already shows to the vendor themselves."""
+    items = await asyncio.to_thread(supplier_shipment_service.get_cached_pos_with_remaining, db, supplier_code)
+    return {"supplier_code": supplier_code, "items": items}
+
+
+@api_router.get("/purchase-orders/pr-available")
+async def po_pr_available(search: str = Query("", description="Filter by PR number, supplier name or code"), limit: int = Query(30, le=100)):
+    """Sep 4 2026, user's explicit ask: let the buyer pick a PR from a
+    filterable list (by PR number/vendor name/code) instead of typing a
+    voc_no blind - backed by the external system's `/approved` listing
+    (pending PRs only, i.e. not already turned into a PO)."""
+    try:
+        data = await asyncio.to_thread(pr_integration_client.list_approved, 200, 0, "pending", None)
+    except PRIntegrationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    items = data.get("items", [])
+    q = search.strip().lower()
+    if q:
+        items = [
+            it for it in items
+            if q in str(it.get("voc_no", "")).lower()
+            or q in ((it.get("supplier") or {}).get("pcode") or "").lower()
+            or q in ((it.get("supplier") or {}).get("name") or "").lower()
+        ]
+    items.sort(key=lambda it: it.get("vdate") or "", reverse=True)
+    return [
+        {
+            "voc_no": str(it["voc_no"]), "vdate": it.get("vdate"), "compcode": it.get("compcode"),
+            "supplier_code": (it.get("supplier") or {}).get("pcode"),
+            "supplier_name": (it.get("supplier") or {}).get("name"),
+            "amount": it.get("amount"), "currency": it.get("currency") or "INR",
+        }
+        for it in items[:limit]
+    ]
+
+
 @api_router.get("/purchase-orders/pr-lookup/{voc_no}", response_model=PRLookupResponse)
 async def po_pr_lookup(voc_no: str):
     try:

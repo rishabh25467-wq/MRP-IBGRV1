@@ -51,6 +51,8 @@ const emptyLine = () => ({
   uomFromPr: null,
   uomMappingConfident: true,
   fromPr: false,
+  prLineNo: null,
+  prOriginalQty: null,
   quantity: "",
   unit_price: "",
   delivery_date: todayISO(),
@@ -74,6 +76,12 @@ export default function PurchaseOrderPage() {
   const [prVocNo, setPrVocNo] = useState("");
   const [prFetching, setPrFetching] = useState(false);
   const [prFetched, setPrFetched] = useState(null);
+  // Sep 4 2026, user's explicit ask: let the buyer FIND a PR by number,
+  // vendor name or vendor code instead of typing a voc_no blind.
+  const [prSuggestions, setPrSuggestions] = useState([]);
+  const [showPrSuggestions, setShowPrSuggestions] = useState(false);
+  const prWrapperRef = useRef(null);
+  const prDebounceRef = useRef(null);
 
   const [supplierQuery, setSupplierQuery] = useState("");
   const [supplierSuggestions, setSupplierSuggestions] = useState([]);
@@ -100,14 +108,29 @@ export default function PurchaseOrderPage() {
   useEffect(() => {
     const onClickOutside = (e) => {
       if (supplierWrapperRef.current && !supplierWrapperRef.current.contains(e.target)) setShowSupplierSuggestions(false);
+      if (prWrapperRef.current && !prWrapperRef.current.contains(e.target)) setShowPrSuggestions(false);
     };
     document.addEventListener("mousedown", onClickOutside);
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, []);
 
-  const fetchPR = async () => {
-    const voc = prVocNo.trim();
+  const onPrQueryChange = (v) => {
+    setPrVocNo(v);
+    setShowPrSuggestions(true);
+    clearTimeout(prDebounceRef.current);
+    if (!v.trim()) { setPrSuggestions([]); return; }
+    prDebounceRef.current = setTimeout(async () => {
+      try {
+        const { data } = await axios.get(`${API}/purchase-orders/pr-available`, { params: { search: v, limit: 20 } });
+        setPrSuggestions(data);
+      } catch { /* silent - user can keep typing or press Fetch PR */ }
+    }, 300);
+  };
+
+  const fetchPR = async (vocOverride) => {
+    const voc = (vocOverride ?? prVocNo).trim();
     if (!voc) { toast.error("Enter a PR Number first"); return; }
+    setShowPrSuggestions(false);
     setPrFetching(true);
     try {
       const { data } = await axios.get(`${API}/purchase-orders/pr-lookup/${encodeURIComponent(voc)}`);
@@ -135,6 +158,12 @@ export default function PurchaseOrderPage() {
         uomFromPr: it.unit,
         uomMappingConfident: it.matched_unit_of_measure ? true : it.unit_mapping_confident,
         fromPr: true,
+        // Sep 4 2026, user's explicit ask: allow splitting one PR line's
+        // qty across several PO lines (a delivery schedule) - grouped by
+        // prLineNo, capped at prOriginalQty so the split can never exceed
+        // what the PR actually approved for that item.
+        prLineNo: it.line_no,
+        prOriginalQty: it.qty,
         quantity: it.qty,
         unit_price: it.rate,
         delivery_date: todayISO(),
@@ -207,11 +236,18 @@ export default function PurchaseOrderPage() {
   const duplicateLine = (lineKey) => setLines((prev) => {
     const idx = prev.findIndex((l) => l.key === lineKey);
     if (idx < 0) return prev;
-    const copy = { ...prev[idx], key: `line-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, fromPr: false };
+    // Sep 4 2026, user's explicit ask: duplicating a PR-sourced line is
+    // how a buyer SPLITS that PR item's qty into a delivery schedule -
+    // keep it linked to the same PR line (fromPr/prLineNo/prOriginalQty)
+    // and same product, but blank the qty so the split amount is explicit.
+    const copy = { ...prev[idx], key: `line-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, quantity: "" };
     const next = [...prev];
     next.splice(idx + 1, 0, copy);
     return next;
   });
+
+  const prLineAllocated = (prLineNo) => lines.reduce((s, l) => (l.prLineNo === prLineNo ? s + (Number(l.quantity) || 0) : s), 0);
+  const prLineGroupSize = (prLineNo) => lines.filter((l) => l.prLineNo === prLineNo).length;
 
   const lineTotal = (l) => (Number(l.quantity) || 0) * (Number(l.unit_price) || 0);
   const totalUnits = lines.reduce((s, l) => s + (Number(l.quantity) || 0), 0);
@@ -232,6 +268,16 @@ export default function PurchaseOrderPage() {
       if (!l.delivery_date) errors.push(`Line ${idx + 1}: Delivery Date is required`);
       if (l.delivery_date && poDate && l.delivery_date < poDate) errors.push(`Line ${idx + 1}: Delivery Date cannot be before PO Date`);
     });
+    const seenPrLines = new Set();
+    lines.forEach((l) => {
+      if (l.fromPr && l.prLineNo != null && !seenPrLines.has(l.prLineNo)) {
+        seenPrLines.add(l.prLineNo);
+        const allocated = prLineAllocated(l.prLineNo);
+        if (allocated > l.prOriginalQty + 1e-6) {
+          errors.push(`PR line ${l.prLineNo}: split total ${allocated} exceeds the PR's ordered qty of ${l.prOriginalQty}`);
+        }
+      }
+    });
     return errors;
   };
 
@@ -241,6 +287,7 @@ export default function PurchaseOrderPage() {
     { label: "Supplier selected from SAP Master", ok: !!selectedSupplier },
     { label: "Every line matched to a real SAP product, with Qty & Price", ok: lines.every((l) => l.product_id && Number(l.quantity) > 0 && l.unit_price !== "") },
     { label: "Delivery dates on/after PO Date", ok: lines.every((l) => !l.delivery_date || !poDate || l.delivery_date >= poDate) },
+    { label: "No split line exceeds its PR's ordered quantity", ok: lines.every((l) => !l.fromPr || l.prLineNo == null || prLineAllocated(l.prLineNo) <= l.prOriginalQty + 1e-6) },
   ];
   const canSubmit = checklist.every((c) => c.ok);
 
@@ -337,18 +384,38 @@ export default function PurchaseOrderPage() {
               </h2>
               {!prFetched ? (
                 <div className="flex flex-col sm:flex-row gap-3 items-end">
-                  <div className="space-y-1.5 flex-1 w-full">
-                    <Label className="text-xs font-medium text-[#344054]">PR Number *</Label>
+                  <div className="space-y-1.5 flex-1 w-full relative" ref={prWrapperRef}>
+                    <Label className="text-xs font-medium text-[#344054]">PR Number, Vendor Name or Code *</Label>
                     <Input
                       value={prVocNo}
-                      onChange={(e) => setPrVocNo(e.target.value)}
+                      onChange={(e) => onPrQueryChange(e.target.value)}
+                      onFocus={() => setShowPrSuggestions(true)}
                       onKeyDown={(e) => e.key === "Enter" && fetchPR()}
-                      placeholder="e.g. 124722"
+                      placeholder="e.g. 124722, or search by vendor..."
                       className={`${inputCls} font-data`}
                       data-testid="po-pr-number-input"
                     />
+                    {showPrSuggestions && prSuggestions.length > 0 && (
+                      <div className="absolute z-20 mt-1 w-full bg-white border border-[#D0D5DD] rounded-sm shadow-lg max-h-64 overflow-y-auto" data-testid="po-pr-suggestions">
+                        {prSuggestions.map((pr) => (
+                          <button
+                            key={pr.voc_no}
+                            type="button"
+                            className="w-full text-left px-3 py-2 text-xs hover:bg-[#F2F4F7] border-b border-[#EAECF0] last:border-0 flex items-center justify-between gap-2"
+                            onClick={() => { setPrVocNo(pr.voc_no); fetchPR(pr.voc_no); }}
+                            data-testid={`po-pr-suggestion-${pr.voc_no}`}
+                          >
+                            <span>
+                              <span className="font-semibold text-[#101828] font-data">PR {pr.voc_no}</span>
+                              <span className="text-[#667085]"> · {pr.supplier_name || "-"} ({pr.supplier_code || "-"}) · {pr.compcode}</span>
+                            </span>
+                            <span className="font-data font-semibold text-[#004B87] shrink-0">{fmtMoney(pr.amount, pr.currency)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  <Button type="button" className="h-9 rounded-sm bg-[#004B87] hover:bg-[#003A6A] active:bg-[#00294D] shrink-0" onClick={fetchPR} disabled={prFetching} data-testid="po-pr-fetch-button">
+                  <Button type="button" className="h-9 rounded-sm bg-[#004B87] hover:bg-[#003A6A] active:bg-[#00294D] shrink-0" onClick={() => fetchPR()} disabled={prFetching} data-testid="po-pr-fetch-button">
                     {prFetching ? <><CircleNotch size={14} className="mr-1.5 animate-spin" /> Fetching...</> : <><FileMagnifyingGlass size={14} className="mr-1.5" /> Fetch PR</>}
                   </Button>
                 </div>
@@ -551,6 +618,11 @@ export default function PurchaseOrderPage() {
                         </td>
                         <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[90px]">
                           <Input type="number" min="0" step="any" value={l.quantity} onChange={(e) => updateLine(l.key, "quantity", e.target.value)} className="h-8 text-xs font-data rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]" data-testid={`po-line-qty-input-${idx}`} />
+                          {l.fromPr && l.prLineNo != null && prLineGroupSize(l.prLineNo) > 1 && (
+                            <div className={`text-[10px] mt-0.5 font-data ${prLineAllocated(l.prLineNo) > l.prOriginalQty + 1e-6 ? "text-[#B42318]" : "text-[#667085]"}`} data-testid={`po-line-split-allocated-${idx}`}>
+                              {prLineAllocated(l.prLineNo)}/{l.prOriginalQty} split
+                            </div>
+                          )}
                         </td>
                         <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[90px]">
                           <div className="relative">

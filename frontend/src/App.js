@@ -14,6 +14,7 @@ import SupplierMasterPage from "@/pages/SupplierMasterPage";
 import QuotaAllocationPage from "@/pages/QuotaAllocationPage";
 import PurchaseOrderPage from "@/pages/PurchaseOrderPage";
 import CreatedPurchaseOrdersPage from "@/pages/CreatedPurchaseOrdersPage";
+import OpenPurchaseOrdersPage from "@/pages/OpenPurchaseOrdersPage";
 import SapWritePage from "@/pages/SapWritePage";
 import CreateMaterialPage from "@/pages/CreateMaterialPage";
 import L1L2ReportPage from "@/pages/L1L2ReportPage";
@@ -128,6 +129,7 @@ function InternalApp() {
             <Route path="/purchasing-strategy/quota-allocation" element={<ProtectedRoute page="quota_allocation"><QuotaAllocationPage /></ProtectedRoute>} />
             <Route path="/purchasing-strategy/purchase-order-create" element={<ProtectedRoute page="purchase_order"><PurchaseOrderPage /></ProtectedRoute>} />
             <Route path="/purchasing-strategy/created-purchase-orders" element={<ProtectedRoute page="purchase_order"><CreatedPurchaseOrdersPage /></ProtectedRoute>} />
+            <Route path="/purchasing-strategy/open-purchase-orders" element={<ProtectedRoute page="purchase_order"><OpenPurchaseOrdersPage /></ProtectedRoute>} />
             <Route path="/admin" element={<ProtectedRoute page="admin"><AdminPage /></ProtectedRoute>} />
             <Route path="/admin/sap-write" element={<ProtectedRoute page="admin_sap_write"><SapWritePage /></ProtectedRoute>} />
             <Route path="/admin/create-material" element={<ProtectedRoute page="admin_create_material"><CreateMaterialPage /></ProtectedRoute>} />

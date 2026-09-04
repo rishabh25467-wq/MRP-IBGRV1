@@ -24,6 +24,23 @@ class PRIntegrationClient:
     def _headers(self):
         return {"X-Api-Key": self.api_key}
 
+    def list_approved(self, limit: int = 50, offset: int = 0, po_status: str = None, supplier_pcode: str = None) -> dict:
+        params = {"limit": limit, "offset": offset}
+        if po_status:
+            params["po_status"] = po_status
+        if supplier_pcode:
+            params["supplier_pcode"] = supplier_pcode
+        try:
+            resp = requests.get(
+                f"{self.base_url}/api/po-integration/approved",
+                params=params, headers=self._headers(), timeout=(5, 15),
+            )
+        except requests.exceptions.RequestException as e:
+            raise PRIntegrationError(f"Could not reach the PR system: {e}")
+        if resp.status_code != 200:
+            raise PRIntegrationError(f"PR list failed (HTTP {resp.status_code}): {resp.text[:200]}")
+        return resp.json()
+
     def get_pr_detail(self, voc_no: str) -> dict:
         try:
             resp = requests.get(
