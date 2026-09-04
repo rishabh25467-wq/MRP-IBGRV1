@@ -3,56 +3,74 @@ Creation automation (Aug 2026). Creates a brand new Purchase Order in
 this tenant's LIVE production SAP system from the app's own PO Creation
 form (Company, Supplier, Purchase Unit, Bill-To, PO Date, line items).
 
-Service: `ManagePurchaseOrderIn`, operation `MAINTAIN_BUNDLE`
-(`PurchaseOrderBundleMaintainRequest_sync`). Namespace CORRECTED Sep 4
-2026 to `http://sap.com/xi/SAPGlobal20/Global` (confirmed via SAP's own
-published ManagePurchaseOrderIn docs) - the original `A1S/Global`
-namespace (copied from the sibling read-only `sap_po_client.py`, a
-genuinely different Query* service) reproduced the exact same generic
-"Web service processing error" already seen and root-caused for the
-sibling GSA write client (sap_gsa_write_client.py) - SAP parses the
-envelope fine but can't route it to the right ABSL handler. Endpoint
-already configured/reachable: `SAP_SOAP_PO_MANAGE_ENDPOINT`.
+CONFIRMED WORKING LIVE Sep 4 2026 (real PO 29173 created, UUID
+fa163e47-9469-1fe1-aa84-e93dc20ed1f9, empty Log = zero errors/warnings)
+after 3 real, confirmed root causes were found and fixed - all 3
+produced the exact same generic, useless SAP fault
+("Web service processing error; more details in the web service error
+log on provider side") with no indication of which one was wrong, so
+each had to be isolated one at a time against the LIVE tenant (a Check/
+simulate call reproduces the identical failure, ruling out anything
+data-specific and confirming it's a payload/schema-shape bug, not an
+authorization or Communication Arrangement gap - both were verified
+separately: the Communication Arrangement shows all 4 operations
+Released, and even the full-admin ItAdmin credentials hit the same
+error the technical user did):
 
-Envelope/party/item shape REWRITTEN Sep 4 2026 to match SAP's OFFICIAL
-published Maintain/Check/Upload examples exactly (help.sap.com
-PSM_ISI_R_II_SRM_PO_MBO) - the earlier version was inferred from a READ
-call's response shape, which the docstring already flagged as
-"UNVERIFIED" and different from the write schema. Real, structural bugs
-found by diffing against the official examples (still the same generic
-"Web service processing error" symptom - SAP's ABSL handler throws
-internally on a malformed request rather than returning a clean
-business-validation fault):
-  - `PartyKey` must contain ONLY `<PartyID>` on a write - no
-    `<PartyTypeCode>` child at all (that shape only appears on READ
-    responses, where PartyKey doc's OWN PartyTypeCode is a different,
-    always-200, sub-code - never send it on a Maintain request).
-  - A header-level `<ShipToLocation>` and `<Company>` party (mirrors
-    BuyerParty) are both present in every official example and missing
-    here before.
-  - `ObjectNodeSenderTechnicalID` (header + each Item) and
-    `ObjectNodePartyTechnicalID` (each Party) are present in every
-    official example - arbitrary sequential integers, never
-    interpreted by SAP beyond echoing them back in the response Log.
-  - `ItemListCompleteTransmissionIndicator="true"` attribute on
-    `PurchaseOrderMaintainBundle` and the Item-level FollowUpXxx/
-    DirectMaterialIndicator elements are present in every official
-    example for a Material (TypeCode 18) item.
-  - Price element is `ListUnitPrice`, not `NetUnitPrice`, on a write
-    (NetUnitPrice only appears on READ responses as a computed value).
-`EmployeeResponsibleParty` (PartyTypeCode 167, the requesting
-purchaser) appears in every official example too, but this app has no
-such SAP Employee ID captured anywhere - left out per the "Empty and
-Missing Elements" doc section (untransmitted optional elements are
-simply not set) rather than guessing a wrong ID; add it if SAP's very
-first real fault message (now readable, not generic, once the
-structural fixes above land) asks for it.
+1. Namespace: `http://sap.com/xi/A1S/Global` (copied from the sibling
+   read-only `sap_po_client.py`, a genuinely different Query* service)
+   -> corrected to `http://sap.com/xi/SAPGlobal20/Global` (confirmed via
+   SAP's own published ManagePurchaseOrderIn docs at help.sap.com,
+   PSM_ISI_R_II_SRM_PO_MBO). Same exact mistake already found once for
+   the sibling GSA write client (sap_gsa_write_client.py).
+2. Envelope/party/item shape didn't match SAP's OFFICIAL published
+   Maintain/Check/Upload examples (the original version was inferred
+   from a READ call's response shape, which is a different schema):
+     - `PartyKey` must contain ONLY `<PartyID>` on a write - no
+       `<PartyTypeCode>` child (that only appears on READ responses).
+     - Header-level `<Company>` party (mirrors BuyerParty) and
+       `<ShipToLocation>` are both required.
+     - `ObjectNodeSenderTechnicalID` (header + each Item) and
+       `ObjectNodePartyTechnicalID` (each Party/ItemProduct/item
+       ShipToLocation) are required - arbitrary sequential integers,
+       only ever echoed back, never interpreted by SAP.
+     - `ItemListCompleteTransmissionIndicator="true"` attribute, plus
+       Item-level `DirectMaterialIndicator`/`ThirdPartyDealIndicator`/
+       `FollowUpPurchaseOrderConfirmation`/`FollowUpDelivery`/
+       `FollowUpInvoice` (each with their own sub-indicators) are all
+       required for a Material (TypeCode 18) item.
+     - Price element is `ListUnitPrice`, not `NetUnitPrice` (NetUnitPrice
+       only appears on READ responses as a computed value).
+3. `EmployeeResponsibleParty` (PartyTypeCode 167, "the Purchaser who is
+   requesting the purchase of goods") was missing entirely - present in
+   every single official example with no exception, but this app never
+   captured a per-user SAP Employee ID anywhere. Confirmed as the last
+   real blocker: adding it with an obviously-wrong PartyID ("RT", a
+   company code) immediately turned the generic crash into a real,
+   readable business fault ("Employee responsible missing; Buyer
+   Responsible RT is not valid") - proof the element itself was the
+   fix, only the value was wrong. The user then confirmed live in SAP's
+   own "New Purchase Order" UI that logging in as `ItAdmin` auto-fills
+   "Buyer Responsible: 1 - Admin Ramp" - PartyID `"1"` is that same
+   confirmed-real Employee ID, now hardcoded in server.py as
+   `PO_EMPLOYEE_RESPONSIBLE_ID` (fixed system responsible party for
+   every PO created via Emergent - no per-creator SAP Employee mapping
+   exists in this app).
+
+`Purchasing Unit` (`PartyResponsiblePurchasingUnitParty`, tried as a
+header party in an earlier attempt) is NOT in any official Maintain
+example and was removed - SAP derives it automatically from the Company/
+BuyerParty's org structure.
+
+Response parsing: a real success uses `<BusinessTransactionDocumentID>`
++ `<UUID>` (confirmed live, PO 29173) - NOT `<PurchaseOrderID>`/
+`<PurchaseOrderUUID>` (that was a guess based on the sibling read
+client's differently-named fields).
 
 Real field values CONFIRMED by reading a live PO (28792) via the
 existing read-only sap_po_client.py (QueryPurchaseOrderQueryIn):
   - Company/Buyer party: PartyID = "RI" or "RT" (this tenant's 2 legal
     entities - confirmed literal strings, not numeric SAP IDs).
-  - Purchasing Unit: PartyID = "{site}-PUR" (e.g. "P1-PUR").
   - Supplier/Seller: PartyID = the supplier's `sap_internal_id`
     (confirmed identical to the Supplier Portal's own `vendor_code`,
     e.g. "H1330").
@@ -65,7 +83,6 @@ SAP fault message if wrong, since a create either fully succeeds or
 fully fails (no partial/corrupt writes):
   - BillToParty: PartyID = "RI"/"RT" (mirrors Company's shape - this
     tenant only has these 2 legal entities).
-  - Header `<Date>` = the PO Date.
   - DirectMaterialIndicator=true for every item (these are real
     inventory materials, not services/expenses - the official example
     uses false because its sample item is a non-stock line).
@@ -242,8 +259,16 @@ class SAPPurchaseOrderWriteClient:
             raise SAPPurchaseOrderWriteError(
                 f"SAP rejected the Purchase Order (HTTP {resp.status_code}): {_extract_fault_message(resp.text)}"
             )
-        po_id_match = re.search(r"<PurchaseOrderID>([^<]+)</PurchaseOrderID>", resp.text)
-        po_uuid_match = re.search(r"<PurchaseOrderUUID>([^<]+)</PurchaseOrderUUID>", resp.text)
+        # A real success response looks like:
+        # <PurchaseOrder><ReferenceObjectNodeSenderTechnicalID>1</...>
+        # <ChangeStateID>...</ChangeStateID>
+        # <BusinessTransactionDocumentID>29173</BusinessTransactionDocumentID>
+        # <UUID>fa163e47-...</UUID></PurchaseOrder><Log/>
+        # (confirmed live Sep 4 2026, PO 29173) - NOT <PurchaseOrderID>/
+        # <PurchaseOrderUUID> like the sibling read-only client's response
+        # shape; this is the write confirmation's own distinct tag names.
+        po_id_match = re.search(r"<BusinessTransactionDocumentID>([^<]+)</BusinessTransactionDocumentID>", resp.text)
+        po_uuid_match = re.search(r"<UUID>([^<]+)</UUID>", resp.text)
         if not po_id_match:
             errors = _extract_log_errors(resp.text)
             raise SAPPurchaseOrderWriteError(

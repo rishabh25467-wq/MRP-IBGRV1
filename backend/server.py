@@ -4955,6 +4955,18 @@ class PurchaseOrderLineItemIn(BaseModel):
         return v
 
 
+# Sep 4 2026: SAP requires EmployeeResponsibleParty ("the Purchaser who
+# is requesting the purchase of goods") on every PO - confirmed live
+# this was the actual cause of the generic "Web service processing
+# error" (missing element -> unhandled SAP-side exception, not a
+# readable validation fault). PartyID "1" ("Admin Ramp") is the real,
+# confirmed-working Employee ID the SAP UI itself auto-fills as "Buyer
+# Responsible" when logged in as ItAdmin - used as the fixed system
+# responsible party for every PO created via Emergent (this app has no
+# per-user SAP Employee ID mapping to pick a different one per creator).
+PO_EMPLOYEE_RESPONSIBLE_ID = "1"
+
+
 class PurchaseOrderCreateRequest(BaseModel):
     supplier_code: str
     purchase_unit_site: str
@@ -5064,6 +5076,7 @@ async def create_purchase_order(payload: PurchaseOrderCreateRequest, request: Re
             sap_po_write_client.create_purchase_order,
             company_code, payload.purchase_unit_site, payload.supplier_code,
             payload.bill_to_company, payload.po_date, payload.currency, items,
+            PO_EMPLOYEE_RESPONSIBLE_ID,
         )
     except SAPPurchaseOrderWriteNotConfiguredError as e:
         raise HTTPException(status_code=503, detail=str(e))
