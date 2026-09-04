@@ -5088,7 +5088,7 @@ async def create_purchase_order(payload: PurchaseOrderCreateRequest, request: Re
             sap_po_write_client.create_purchase_order,
             company_code, payload.purchase_unit_site, payload.supplier_code,
             payload.bill_to_company, payload.po_date, payload.currency, items,
-            PO_EMPLOYEE_RESPONSIBLE_ID,
+            PO_EMPLOYEE_RESPONSIBLE_ID, payload.pr_number,
         )
     except SAPPurchaseOrderWriteNotConfiguredError as e:
         raise HTTPException(status_code=503, detail=str(e))
