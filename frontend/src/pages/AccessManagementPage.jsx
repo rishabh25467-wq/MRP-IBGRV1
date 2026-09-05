@@ -16,6 +16,21 @@ const API = `${BACKEND_URL}/api`;
 
 const PAGE_KEYS = Object.keys(PAGE_LABELS);
 
+// Sep 5 2026, user's explicit ask: group the permission checkboxes by the
+// same "Work Center" menu sections the nav uses (NavTabs.jsx), instead of
+// one long flat list, so a specific right is easy to find. Any key not
+// listed below (e.g. a page not linked into the nav yet) falls into "Other".
+const WORK_CENTER_GROUPS = [
+  { label: "BOM & Production", keys: ["bom_explorer", "production_plan", "production_confirmation"] },
+  { label: "Procurement", keys: ["purchasing_plan", "purchase_order", "created_purchase_orders", "open_purchase_orders", "quota_allocation", "vendor_goods_receipt"] },
+  { label: "Supplier Management", keys: ["supplier_master", "supplier_portal_invite", "supplier_portal_admin", "supplier_dashboard"] },
+  { label: "Inventory Management", keys: ["inventory", "stock_transfer", "inbound_stock_transfer", "store_approval"] },
+  { label: "Master Data", keys: ["admin", "admin_create_material"] },
+  { label: "Administration", keys: ["admin_sap_write"] },
+];
+const GROUPED_PAGE_KEYS = new Set(WORK_CENTER_GROUPS.flatMap((g) => g.keys));
+const OTHER_PAGE_KEYS = PAGE_KEYS.filter((k) => !GROUPED_PAGE_KEYS.has(k));
+
 // Aug 2026, user's explicit ask: a new "admin" tier between "user" and
 // "super_admin" - full page access automatically like super_admin, can
 // grant/revoke pages and set someone's role, but can NEVER hand out
@@ -34,9 +49,10 @@ export default function AccessManagementPage() {
   const [loading, setLoading] = useState(true);
   const [drafts, setDrafts] = useState({});
   const [savingId, setSavingId] = useState(null);
-  // Sep 5 2026, user's explicit ask: filter the User Access list by role
-  // (e.g. "Only Admin User") so a long user list is easy to scan.
-  const [roleFilter, setRoleFilter] = useState("all");
+  // Sep 5 2026, user's explicit ask ("filter by Access right, not role"):
+  // filter the User Access list down to only people who currently hold a
+  // specific permission - "all" shows everyone.
+  const [accessFilter, setAccessFilter] = useState("all");
 
   // Store Binding (Aug 2026, user's explicit ask): restricts a "store
   // user" to only the site(s) bound here on the Store Assignment tab -
@@ -179,17 +195,17 @@ export default function AccessManagementPage() {
               automatically with no access until you grant it.
             </p>
 
-            <div className="flex items-center gap-2" data-testid="access-management-role-filter-bar">
-              <span className="text-xs font-bold text-[#344054] uppercase font-heading">Filter by Role</span>
-              <Select value={roleFilter} onValueChange={setRoleFilter}>
-                <SelectTrigger className="h-8 w-[160px] text-xs bg-white" data-testid="access-management-role-filter-select">
+            <div className="flex items-center gap-2" data-testid="access-management-access-filter-bar">
+              <span className="text-xs font-bold text-[#344054] uppercase font-heading">Filter by Access Right</span>
+              <Select value={accessFilter} onValueChange={setAccessFilter}>
+                <SelectTrigger className="h-8 w-[220px] text-xs bg-white" data-testid="access-management-access-filter-select">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Roles</SelectItem>
-                  <SelectItem value="user">Only User</SelectItem>
-                  <SelectItem value="admin">Only Admin</SelectItem>
-                  <SelectItem value="super_admin">Only Super Admin</SelectItem>
+                  <SelectItem value="all">All Users</SelectItem>
+                  {WORK_CENTER_GROUPS.flatMap((group) => group.keys).concat(OTHER_PAGE_KEYS).map((pageKey) => (
+                    <SelectItem key={pageKey} value={pageKey}>{PAGE_LABELS[pageKey] || pageKey}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -201,7 +217,13 @@ export default function AccessManagementPage() {
             ) : (
               <div className="bg-white border border-[#E4E7EC] rounded-xl overflow-hidden">
                 {users
-                  .filter((u) => roleFilter === "all" || (drafts[u._id]?.role || u.role || "user") === roleFilter)
+                  .filter((u) => {
+                    if (accessFilter === "all") return true;
+                    const d = drafts[u._id];
+                    const role = d?.role || u.role || "user";
+                    if (role === "admin" || role === "super_admin") return true;
+                    return (d?.allowed_pages || u.allowed_pages || []).includes(accessFilter);
+                  })
                   .map((u) => {
                   const draft = drafts[u._id] || { role: "user", allowed_pages: [] };
                   const hasAllPages = draft.role === "admin" || draft.role === "super_admin";
@@ -256,20 +278,29 @@ export default function AccessManagementPage() {
                       </div>
 
                       {!hasAllPages ? (
-                        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2">
-                          {PAGE_KEYS.map((pageKey) => (
-                            <label
-                              key={pageKey}
-                              className="flex items-center gap-2 text-sm text-[#344054] cursor-pointer"
-                              data-testid={`access-management-page-checkbox-label-${u._id}-${pageKey}`}
-                            >
-                              <Checkbox
-                                checked={draft.allowed_pages.includes(pageKey)}
-                                onCheckedChange={() => togglePage(u._id, pageKey)}
-                                data-testid={`access-management-page-checkbox-${u._id}-${pageKey}`}
-                              />
-                              {PAGE_LABELS[pageKey]}
-                            </label>
+                        <div className="mt-3 space-y-3">
+                          {WORK_CENTER_GROUPS.concat(OTHER_PAGE_KEYS.length ? [{ label: "Other", keys: OTHER_PAGE_KEYS }] : []).map((group) => (
+                            <div key={group.label} data-testid={`access-management-group-${u._id}-${group.label.replace(/\s+/g, "-").toLowerCase()}`}>
+                              <div className="text-[11px] font-bold text-[#98A2B3] uppercase font-heading mb-1.5 tracking-wide">
+                                {group.label}
+                              </div>
+                              <div className="flex flex-wrap gap-x-5 gap-y-2">
+                                {group.keys.map((pageKey) => (
+                                  <label
+                                    key={pageKey}
+                                    className="flex items-center gap-2 text-sm text-[#344054] cursor-pointer"
+                                    data-testid={`access-management-page-checkbox-label-${u._id}-${pageKey}`}
+                                  >
+                                    <Checkbox
+                                      checked={draft.allowed_pages.includes(pageKey)}
+                                      onCheckedChange={() => togglePage(u._id, pageKey)}
+                                      data-testid={`access-management-page-checkbox-${u._id}-${pageKey}`}
+                                    />
+                                    {PAGE_LABELS[pageKey] || pageKey}
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
                           ))}
                         </div>
                       ) : (
