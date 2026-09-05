@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, Fragment } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import {
-  Plus, Trash, Copy, WarningCircle, CheckCircle, CircleNotch, MagnifyingGlass,
+  Trash, WarningCircle, CheckCircle, CircleNotch, MagnifyingGlass,
   Buildings, CreditCard, Calendar, Truck, ArrowRight, ShieldCheck, ListChecks,
   FileMagnifyingGlass, XCircle, CalendarPlus, Lightbulb,
 } from "@phosphor-icons/react";
@@ -102,10 +102,6 @@ export default function PurchaseOrderPage() {
   }, []);
 
   useEffect(() => {
-    setBillToCompany("");
-  }, [purchaseUnitSite]);
-
-  useEffect(() => {
     const onClickOutside = (e) => {
       if (supplierWrapperRef.current && !supplierWrapperRef.current.contains(e.target)) setShowSupplierSuggestions(false);
       if (prWrapperRef.current && !prWrapperRef.current.contains(e.target)) setShowPrSuggestions(false);
@@ -113,6 +109,15 @@ export default function PurchaseOrderPage() {
     document.addEventListener("mousedown", onClickOutside);
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, []);
+
+  // Sep 5 2026, user's explicit ask: manually changing Purchase Unit
+  // resets Bill-To (was previously a separate useEffect) - PR-driven
+  // autofill in fetchPR sets both together instead, so this only fires
+  // on a deliberate manual override.
+  const onPurchaseUnitChange = (v) => {
+    setPurchaseUnitSite(v);
+    setBillToCompany("");
+  };
 
   const onPrQueryChange = (v) => {
     setPrVocNo(v);
@@ -136,7 +141,18 @@ export default function PurchaseOrderPage() {
       const { data } = await axios.get(`${API}/purchase-orders/pr-lookup/${encodeURIComponent(voc)}`);
       setPrFetched(data);
       setCurrency(data.currency || "INR");
-      if (data.compcode && sites.includes(data.compcode)) setPurchaseUnitSite(data.compcode);
+      // Sep 5 2026, user's explicit ask: Purchase Unit auto-fills from the
+      // PR's own site, and Bill-To auto-fills to that same site's Finance
+      // unit ("{site}-FIN") so the buyer never has to fill either manually.
+      const prSite = (data.compcode && sites.includes(data.compcode)) ? data.compcode : "";
+      setPurchaseUnitSite(prSite);
+      if (prSite) {
+        const prCompany = companyForSite(prSite);
+        const billToOpt = `${prSite}-FIN`;
+        setBillToCompany((BILL_TO_OPTIONS_BY_COMPANY[prCompany] || []).includes(billToOpt) ? billToOpt : "");
+      } else {
+        setBillToCompany("");
+      }
       if (data.supplier_code) {
         setSelectedSupplier({
           supplier_code: data.supplier_code,
@@ -231,7 +247,6 @@ export default function PurchaseOrderPage() {
     setLines((prev) => prev.map((l) => (l.key === lineKey ? { ...l, [field]: value } : l)));
   };
 
-  const addLine = () => setLines((prev) => [...prev, emptyLine()]);
   const removeLine = (lineKey) => setLines((prev) => (prev.length > 1 ? prev.filter((l) => l.key !== lineKey) : prev));
   const duplicateLine = (lineKey) => setLines((prev) => {
     const idx = prev.findIndex((l) => l.key === lineKey);
@@ -464,7 +479,7 @@ export default function PurchaseOrderPage() {
                   </Button>
                 </div>
               )}
-              <p className="text-[11px] text-[#98A2B3]">Vendor, Purchase Unit and Line Items are autofilled from the PR. Delivery Date isn't part of a PR - enter it per line below.</p>
+              <p className="text-[11px] text-[#98A2B3]">Vendor, Purchase Unit, Bill-To and Line Items are autofilled from the PR. Delivery Date isn't part of a PR - enter it per line below.</p>
             </div>
 
             {/* 2. Org context */}
@@ -475,7 +490,7 @@ export default function PurchaseOrderPage() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div className="space-y-1.5">
                   <Label className="text-xs font-medium text-[#344054]">Purchase Unit (Site) *</Label>
-                  <Select value={purchaseUnitSite} onValueChange={setPurchaseUnitSite}>
+                  <Select value={purchaseUnitSite} onValueChange={onPurchaseUnitChange}>
                     <SelectTrigger className={inputCls} data-testid="po-purchase-unit-select">
                       <SelectValue placeholder="Choose site" />
                     </SelectTrigger>
@@ -588,9 +603,6 @@ export default function PurchaseOrderPage() {
                 <h2 className="text-[11px] font-bold uppercase tracking-wide text-[#344054] font-heading flex items-center gap-2">
                   <Truck size={14} /> 4. Line Items Engine
                 </h2>
-                <Button type="button" size="sm" className="h-7 text-xs rounded-sm bg-[#004B87] hover:bg-[#003A6A] active:bg-[#00294D]" onClick={addLine} data-testid="po-add-line-button">
-                  <Plus size={13} className="mr-1" /> Add Item
-                </Button>
               </div>
               <div className="px-4 py-2 border-b border-[#D0D5DD] bg-[#EFF8FF] flex items-start gap-2" data-testid="po-split-schedule-guidance-banner">
                 <Lightbulb size={14} className="text-[#175CD3] mt-0.5 shrink-0" weight="fill" />
@@ -721,7 +733,7 @@ export default function PurchaseOrderPage() {
                           {fmtMoney(lineTotal(l), currency)}
                         </td>
                         <td className="border border-[#D0D5DD] py-1.5 px-2.5 text-center whitespace-nowrap min-w-[90px]">
-                          {l.fromPr ? (
+                          {l.fromPr && (
                             <Button
                               type="button"
                               variant="outline"
@@ -732,10 +744,6 @@ export default function PurchaseOrderPage() {
                               title="Split this PR item into multiple delivery dates & partial quantities"
                             >
                               <CalendarPlus size={12} className="mr-1" /> Split
-                            </Button>
-                          ) : (
-                            <Button type="button" variant="ghost" size="icon" className="h-7 w-7 rounded-sm hover:bg-[#F2F4F7]" onClick={() => duplicateLine(l.key)} data-testid={`po-line-duplicate-button-${idx}`} title="Duplicate row">
-                              <Copy size={13} className="text-[#667085]" />
                             </Button>
                           )}
                           <Button type="button" variant="ghost" size="icon" className="h-7 w-7 rounded-sm hover:bg-[#FEF3F2]" onClick={() => removeLine(l.key)} disabled={lines.length === 1} data-testid={`po-line-remove-button-${idx}`} title="Remove row">
