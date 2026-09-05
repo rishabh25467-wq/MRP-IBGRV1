@@ -143,3 +143,38 @@ class SAPMaterialClient:
         over resolve_material_info() kept for existing callers that only
         need the UUID (e.g. the Inventory page's deep backfill)."""
         return self.resolve_material_info(internal_id)["uuid"]
+
+    def get_existing_procurement_type_code(self, internal_id: str):
+        """Sep 5 2026, real incident (STO-135, SPLICE @ site P8): the
+        "Activate this site" fix (sap_material_create_client.activate_site)
+        always hardcoded ProcurementTypeCode=2 ("External procurement") for
+        every new site, which works for raw materials bought externally
+        (e.g. FLAT-BK50/FLAT-BK21, code 2 at EVERY site), but SAP flat-out
+        rejects it - with the misleading "Supply planning ID P8; does not
+        exist" - for in-house-manufactured Semi-Finished Goods, which need
+        code 1 ("In-house production") at manufacturing sites (confirmed
+        live: SPLICE/AB24/P41551 - all ProductCategoryID "SFG" - use code 1
+        at P1/P2/P4/P6/P7/P8, only code 2 at the P1W/P5 trading sites).
+        Rather than guess from ProductCategoryID (only 2 values seen so
+        far, not exhaustively confirmed), this reads the material's OWN
+        existing SupplyPlanning entries at any OTHER site and reuses
+        whichever ProcurementTypeCode already appears most often - the
+        material's own established sourcing strategy is the one ground
+        truth that generalizes to any future material/site combination.
+        Returns None if this material has no existing SupplyPlanning
+        entries at all (caller falls back to the old default "2")."""
+        with sap_semaphore:
+            resp = requests.post(
+                self.endpoint,
+                data=self._request_xml(internal_id).encode("utf-8"),
+                auth=self.auth,
+                headers={"Content-Type": "text/xml; charset=utf-8", "Accept": "text/xml", "SOAPAction": '""'},
+                timeout=45,
+            )
+        xml = resp.text
+        if resp.status_code >= 400 or "<Fault" in xml or ":Fault" in xml:
+            return None
+        codes = re.findall(r"<(?:\w+:)?SupplyPlanning(?:\s[^>]*)?>.*?<ProcurementTypeCode>([^<]*)</ProcurementTypeCode>.*?</(?:\w+:)?SupplyPlanning>", xml, re.S)
+        if not codes:
+            return None
+        return max(set(codes), key=codes.count)

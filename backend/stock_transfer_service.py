@@ -474,6 +474,15 @@ def _get_daily_cached_costs(db, sap_valuation_client, product_uuids, site_id):
                 )
     return costs
 _MISSING_PLANNING_RE = re.compile(r"No valid planning data exists for product (\S+) in site (\S+)")
+# Sep 5 2026, real incident (STO-135, ship-to P8) - SAP returns a
+# SECOND, differently-worded message for the exact same underlying
+# "product never set up at this site" problem: "Planning /
+# Availability / Logistics: Supply planning ID P8; does not exist".
+# Unlike the message above, this one never names the product at all
+# (just the site) - so every item on the order is treated as a
+# candidate and gets its own notification (harmless if a couple turn
+# out to already be activated - activate_site() is idempotent).
+_MISSING_SUPPLY_PLANNING_RE = re.compile(r"Supply planning ID (\S+); does not exist", re.IGNORECASE)
 
 
 def _create_missing_planning_notification_if_matched(db, sto_id: str, error_message: str) -> None:
@@ -486,9 +495,19 @@ def _create_missing_planning_notification_if_matched(db, sto_id: str, error_mess
     (product_id, site_id) so a repeatedly-failing order doesn't spam
     duplicate notifications."""
     m = _MISSING_PLANNING_RE.search(error_message)
-    if not m:
+    if m:
+        _upsert_missing_planning_notification(db, sto_id, m.group(1), m.group(2), error_message)
         return
-    product_id, site_id = m.group(1), m.group(2)
+    m2 = _MISSING_SUPPLY_PLANNING_RE.search(error_message)
+    if not m2:
+        return
+    site_id = m2.group(1)
+    doc = db[STO_COLLECTION].find_one({"_id": sto_id}, {"items": 1})
+    for item in (doc or {}).get("items", []):
+        _upsert_missing_planning_notification(db, sto_id, item["product_id"], site_id, error_message)
+
+
+def _upsert_missing_planning_notification(db, sto_id: str, product_id: str, site_id: str, error_message: str) -> None:
     db[NOTIFICATIONS_COLLECTION].update_one(
         {"type": "missing_planning_data", "product_id": product_id, "site_id": site_id, "resolved": False},
         {"$set": {"message": error_message, "sto_id": sto_id},

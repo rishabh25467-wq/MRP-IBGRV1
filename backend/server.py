@@ -6150,7 +6150,11 @@ async def post_activate_material_site(payload: ActivateMaterialSiteRequest, requ
     if not user or not ({"stock_transfer"} & set(user.get("allowed_pages", [])) or user.get("role") in ("super_admin", "admin")):
         raise HTTPException(status_code=403, detail="Access required")
     company_id, _ = company_and_set_of_books_for_site(payload.site_id)
-    result = await asyncio.to_thread(sap_material_create_client.activate_site, payload.product_id, payload.site_id, company_id)
+    # Sep 5 2026 fix (STO-135): derive the material's own established
+    # ProcurementTypeCode from its existing sites instead of always
+    # hardcoding "2" - see sap_material_client.get_existing_procurement_type_code.
+    procurement_type_code = await asyncio.to_thread(sap_material_client.get_existing_procurement_type_code, payload.product_id) or "2"
+    result = await asyncio.to_thread(sap_material_create_client.activate_site, payload.product_id, payload.site_id, company_id, procurement_type_code)
     if payload.notification_id and result.get("planning_logistics") == "ok":
         await asyncio.to_thread(stock_transfer_service.resolve_admin_notification, db, payload.notification_id)
     return result

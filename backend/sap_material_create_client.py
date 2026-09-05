@@ -102,11 +102,19 @@ class SAPMaterialCreateClient:
 </n0:MaterialBundleMaintainRequest_sync_V1>"""
         self._post(body)
 
-    def activate_site(self, material_id: str, site_id: str, company_id: str) -> dict:
+    def activate_site(self, material_id: str, site_id: str, company_id: str, procurement_type_code: str = "2") -> dict:
         """Admin "Activate this site for this product" action (Aug 2026,
         user's explicit ask) - fixes the live "No valid planning data
         exists for product X in site Y" Stock Transfer failure by adding
         the missing site to an EXISTING material.
+
+        `procurement_type_code` (Sep 5 2026 fix, real incident STO-135) -
+        used to hardcode "2" ("External procurement") unconditionally,
+        which SAP rejects for in-house-manufactured materials at
+        manufacturing sites (needs "1") - see
+        sap_material_client.get_existing_procurement_type_code, which the
+        caller (server.py) now uses to derive the right value from the
+        material's own existing sites before calling this.
 
         Two SEPARATE SOAP calls, not one bundle - confirmed live this
         service commits a bundle atomically (all-or-nothing), and
@@ -125,7 +133,7 @@ class SAPMaterialCreateClient:
             <SupplyPlanning actionCode="01">
                 <SupplyPlanningAreaID>{site_id}</SupplyPlanningAreaID>
                 <LifeCycleStatusCode>2</LifeCycleStatusCode>
-                <ProcurementTypeCode>2</ProcurementTypeCode>
+                <ProcurementTypeCode>{procurement_type_code}</ProcurementTypeCode>
             </SupplyPlanning>
         </Planning>
         <AvailabilityConfirmation actionCode="01">
@@ -142,7 +150,13 @@ class SAPMaterialCreateClient:
             self._post(planning_body)
             result["planning_logistics"] = "ok"
         except SAPMaterialCreateError as e:
-            result["planning_logistics"] = str(e)
+            # Sep 5 2026: clicking Activate on a site that's already been
+            # activated (e.g. a retry, or 2 admins racing on the same
+            # notification) hits SAP's own "already exists" guard on this
+            # actionCode="01" create - functionally a success (the site
+            # IS active), just not spelled "ok" the way our caller checks
+            # for it.
+            result["planning_logistics"] = "ok" if "already exists" in str(e).lower() else str(e)
 
         valuation_body = f"""<n0:MaterialBundleMaintainRequest_sync_V1>
     <BasicMessageHeader><ID>{uuid.uuid4().hex.upper()}</ID></BasicMessageHeader>
@@ -159,5 +173,5 @@ class SAPMaterialCreateClient:
             self._post(valuation_body)
             result["valuation"] = "ok"
         except SAPMaterialCreateError as e:
-            result["valuation"] = str(e)
+            result["valuation"] = "ok" if "already exists" in str(e).lower() else str(e)
         return result
