@@ -42,7 +42,7 @@ export const PAGE_LABELS = {
   admin: "Component Master (Admin)",
   admin_sap_write: "SAP Write (Admin)",
   admin_create_material: "Create Material (Admin)",
-  store_approval: "Goods Issue",
+  store_approval: "Store Goods Issue",
   supplier_portal_admin: "Supplier Portal Approvals",
   purchase_order: "Purchase Order Creation",
   // Sep 5 2026, user's explicit ask: split out of the "supplier_portal_admin"/

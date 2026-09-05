@@ -75,7 +75,7 @@ PAGE_CATALOG = [
     # Aug 2026 - Store Approval moved from unauthenticated/public to
     # requiring Entra ID login (user's explicit ask), so it now needs its
     # own grantable page permission like every other page.
-    {"key": "store_approval", "label": "Goods Issue"},
+    {"key": "store_approval", "label": "Store Goods Issue"},
     # Aug 27 2026, user's explicit ask: split out of "inventory" (Stock
     # Overview) into its own grantable right - previously anyone with
     # Stock Overview automatically also got Inter Plant Stock Transfer,

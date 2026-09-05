@@ -46,15 +46,15 @@ const PROCUREMENT_SUBTABS = [
   // Sep 4 2026, user's explicit ask: pick any vendor, see their open PO lines.
   { to: "/purchasing-strategy/open-purchase-orders", label: "Open Purchase Orders", testId: "nav-procurement-open-purchase-orders", page: "open_purchase_orders" },
   { to: "/purchasing-strategy/quota-allocation", label: "Quota Allocation", testId: "nav-procurement-quota-allocation", page: "quota_allocation" },
+  // Sep 5 2026, user's explicit ask: moved out of Supplier Management -
+  // it's a procurement/receiving action, not a supplier-record one.
+  { to: "/admin/grn-approval", label: "Vendor Goods Receipt", testId: "nav-procurement-vendor-goods-receipt", page: "vendor_goods_receipt" },
 ];
 
 const SUPPLIER_MANAGEMENT_SUBTABS = [
   { to: "/purchasing-strategy/supplier-master", label: "Supplier Master", testId: "nav-supplier-management-supplier-master", page: "supplier_master" },
   { to: "/admin/supplier-portal-invite", label: "Invite Supplier", testId: "nav-supplier-management-supplier-portal-invite", page: "supplier_portal_invite" },
   { to: "/admin/supplier-portal-approvals", label: "Supplier Portal Approvals", testId: "nav-supplier-management-supplier-portal-approvals", page: "supplier_portal_admin" },
-  // Sep 4 2026, user's explicit ask: renamed from "GRN Approval" + moved
-  // out of Master Data - it's vendor goods receipt, not reference data.
-  { to: "/admin/grn-approval", label: "Vendor Goods Receipt", testId: "nav-supplier-management-vendor-goods-receipt", page: "vendor_goods_receipt" },
   // Sep 2 2026, user's explicit ask: quick shortcut into the Supplier
   // Portal (separate vendor-JWT auth, not `vms_session`) so staff can log
   // in and use its vendor-impersonation search to view/act on any
@@ -74,7 +74,9 @@ const INVENTORY_SUBTABS = [
   // Aug 2026, user's explicit ask: links out to the existing Store
   // Approval screen (public/unauthenticated route, unchanged) - just a
   // shortcut into it from the main nav, no backend permission change.
-  { to: "/storeapproval", label: "Goods Issue", testId: "nav-inventory-goods-issue", page: "store_approval" },
+  // Sep 5 2026, user's explicit ask: relabeled "Goods Issue" -> "Store
+  // Goods Issue" for clarity (still the same store_approval page/route).
+  { to: "/storeapproval", label: "Store Goods Issue", testId: "nav-inventory-goods-issue", page: "store_approval" },
 ];
 
 // Sep 4 2026, user's explicit ask: only true reference/master data left

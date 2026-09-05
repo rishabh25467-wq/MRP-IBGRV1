@@ -5260,14 +5260,59 @@ async def po_search_products(q: str = Query(..., min_length=1), limit: int = 15)
 
 
 @api_router.get("/purchase-orders/history")
-async def get_purchase_order_history(limit: int = 50):
+async def get_purchase_order_history(
+    limit: int = 50,
+    supplier_code: str = None,
+    site_id: str = None,
+    product_id: str = None,
+    created_by: str = None,
+    po_date_from: str = None,
+    po_date_to: str = None,
+):
+    # Sep 5 2026, user's explicit ask: filter the Created POs list -
+    # Supplier/Plant/Item/Created By/PO Date, so admins don't have to
+    # scroll a long list to find a specific creator's or vendor's POs.
     def _fetch():
-        docs = list(db["purchase_order_creation_history"].find({}, {"raw_xml": 0}).sort("created_at", -1).limit(limit))
+        query = {}
+        if supplier_code:
+            query["supplier_code"] = supplier_code
+        if site_id:
+            query["purchase_unit_site"] = site_id
+        if product_id:
+            query["items.product_id"] = product_id
+        if created_by:
+            query["created_by"] = created_by
+        if po_date_from or po_date_to:
+            date_query = {}
+            if po_date_from:
+                date_query["$gte"] = po_date_from
+            if po_date_to:
+                date_query["$lte"] = po_date_to
+            query["po_date"] = date_query
+        docs = list(db["purchase_order_creation_history"].find(query, {"raw_xml": 0}).sort("created_at", -1).limit(limit))
         for d in docs:
             d["_id"] = str(d["_id"])
             if isinstance(d.get("created_at"), datetime):
                 d["created_at"] = d["created_at"].isoformat()
         return docs
+
+    return await asyncio.to_thread(_fetch)
+
+
+@api_router.get("/purchase-orders/history/filter-options")
+async def get_purchase_order_history_filter_options():
+    """Distinct Supplier/Created By values already used in the Created
+    POs history, to populate the filter dropdowns (Plant reuses the
+    existing /purchase-orders/sites list)."""
+    def _fetch():
+        suppliers = db["purchase_order_creation_history"].distinct("supplier_code")
+        created_by = db["purchase_order_creation_history"].distinct("created_by")
+        supplier_docs = list(db["suppliers"].find({"sap_internal_id": {"$in": suppliers}}, {"sap_internal_id": 1, "name": 1}))
+        name_by_code = {d["sap_internal_id"]: d.get("name") for d in supplier_docs}
+        return {
+            "suppliers": sorted([{"code": s, "name": name_by_code.get(s, s)} for s in suppliers if s], key=lambda x: x["code"]),
+            "created_by": sorted([c for c in created_by if c]),
+        }
 
     return await asyncio.to_thread(_fetch)
 
