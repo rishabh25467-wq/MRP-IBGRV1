@@ -97,6 +97,17 @@ PAGE_CATALOG = [
     # purchasing_plan/supplier_master (planning/master-data pages, no
     # SAP write capability) since this one directly commits live data.
     {"key": "purchase_order", "label": "Purchase Order Creation"},
+    # Sep 5 2026, user's explicit ask: split out of the single
+    # "supplier_portal_admin"/"purchase_order" catch-alls above into their
+    # own independently-grantable rights, same pattern as the earlier
+    # stock_transfer/inbound_stock_transfer split. "Create Purchase Order"
+    # (the write-to-SAP form) intentionally stays under "purchase_order"
+    # above - user's explicit choice, since it's the more sensitive one.
+    {"key": "supplier_portal_invite", "label": "Invite Supplier"},
+    {"key": "vendor_goods_receipt", "label": "Vendor Goods Receipt"},
+    {"key": "supplier_dashboard", "label": "Supplier Dashboard"},
+    {"key": "created_purchase_orders", "label": "Created POs"},
+    {"key": "open_purchase_orders", "label": "Open Purchase Orders"},
 ]
 PAGE_KEYS = {p["key"] for p in PAGE_CATALOG}
 
@@ -161,9 +172,19 @@ PAGE_ROUTE_RULES = [
     # external supplier routes below). Both the vendor-onboarding
     # approvals AND the Phase 4 GRN approval screen share this same page
     # permission - one internal team, one page.
+    ("/api/admin/supplier-portal/invites", {"supplier_portal_invite"}),
     ("/api/admin/supplier-portal", {"supplier_portal_admin"}),
-    ("/api/admin/grn", {"supplier_portal_admin"}),
+    ("/api/admin/grn", {"vendor_goods_receipt"}),
     # Aug 2026: Purchase Order Creation automation page.
+    # Sep 5 2026, user's explicit ask: "Created POs" (history/list) and
+    # "Open Purchase Orders" (vendor open-PO viewer) split out of
+    # "purchase_order" into their own rights - checked BEFORE the general
+    # /api/purchase-orders catch-all below so they don't also require the
+    # (more sensitive) Create Purchase Order permission. suppliers/search
+    # is shared by both the Create form and the Open PO viewer.
+    ("/api/purchase-orders/history", {"created_purchase_orders"}),
+    ("/api/purchase-orders/open", {"open_purchase_orders"}),
+    ("/api/purchase-orders/suppliers/search", {"purchase_order", "open_purchase_orders"}),
     ("/api/purchase-orders", {"purchase_order"}),
 ]
 

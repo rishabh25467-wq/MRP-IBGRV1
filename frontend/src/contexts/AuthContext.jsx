@@ -45,6 +45,13 @@ export const PAGE_LABELS = {
   store_approval: "Goods Issue",
   supplier_portal_admin: "Supplier Portal Approvals",
   purchase_order: "Purchase Order Creation",
+  // Sep 5 2026, user's explicit ask: split out of the "supplier_portal_admin"/
+  // "purchase_order" catch-alls above into their own grantable rights.
+  supplier_portal_invite: "Invite Supplier",
+  vendor_goods_receipt: "Vendor Goods Receipt",
+  supplier_dashboard: "Supplier Dashboard",
+  created_purchase_orders: "Created POs",
+  open_purchase_orders: "Open Purchase Orders",
 };
 
 const AuthContext = createContext(null);

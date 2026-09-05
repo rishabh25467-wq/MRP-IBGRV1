@@ -70,6 +70,14 @@ const FIRST_ACCESSIBLE_PAGE_ROUTES = [
   ["admin_create_material", "/admin/create-material"],
   ["store_approval", "/storeapproval"],
   ["supplier_portal_admin", "/admin/supplier-portal-approvals"],
+  // Sep 5 2026, same bug-fix pattern for the newly split-out permissions.
+  ["supplier_portal_invite", "/admin/supplier-portal-invite"],
+  ["vendor_goods_receipt", "/admin/grn-approval"],
+  ["created_purchase_orders", "/purchasing-strategy/created-purchase-orders"],
+  ["open_purchase_orders", "/purchasing-strategy/open-purchase-orders"],
+  ["purchase_order", "/purchasing-strategy/purchase-order-create"],
+  ["stock_transfer", "/inventory/inter-plant-transfer"],
+  ["inbound_stock_transfer", "/inventory/inbound-receipts"],
 ];
 
 function HomeRoute() {
@@ -128,17 +136,17 @@ function InternalApp() {
             <Route path="/purchasing-strategy/supplier-master" element={<ProtectedRoute page="supplier_master"><SupplierMasterPage /></ProtectedRoute>} />
             <Route path="/purchasing-strategy/quota-allocation" element={<ProtectedRoute page="quota_allocation"><QuotaAllocationPage /></ProtectedRoute>} />
             <Route path="/purchasing-strategy/purchase-order-create" element={<ProtectedRoute page="purchase_order"><PurchaseOrderPage /></ProtectedRoute>} />
-            <Route path="/purchasing-strategy/created-purchase-orders" element={<ProtectedRoute page="purchase_order"><CreatedPurchaseOrdersPage /></ProtectedRoute>} />
-            <Route path="/purchasing-strategy/open-purchase-orders" element={<ProtectedRoute page="purchase_order"><OpenPurchaseOrdersPage /></ProtectedRoute>} />
+            <Route path="/purchasing-strategy/created-purchase-orders" element={<ProtectedRoute page="created_purchase_orders"><CreatedPurchaseOrdersPage /></ProtectedRoute>} />
+            <Route path="/purchasing-strategy/open-purchase-orders" element={<ProtectedRoute page="open_purchase_orders"><OpenPurchaseOrdersPage /></ProtectedRoute>} />
             <Route path="/admin" element={<ProtectedRoute page="admin"><AdminPage /></ProtectedRoute>} />
             <Route path="/admin/sap-write" element={<ProtectedRoute page="admin_sap_write"><SapWritePage /></ProtectedRoute>} />
             <Route path="/admin/create-material" element={<ProtectedRoute page="admin_create_material"><CreateMaterialPage /></ProtectedRoute>} />
             <Route path="/admin/l1-l2-report" element={<ProtectedRoute page="admin"><L1L2ReportPage /></ProtectedRoute>} />
             <Route path="/admin/access-management" element={<ProtectedRoute superAdminOnly><AccessManagementPage /></ProtectedRoute>} />
             <Route path="/admin/supplier-portal-approvals" element={<ProtectedRoute page="supplier_portal_admin"><SupplierPortalApprovalsPage /></ProtectedRoute>} />
-            <Route path="/admin/supplier-portal-invite" element={<ProtectedRoute page="supplier_portal_admin"><SupplierPortalInvitePage /></ProtectedRoute>} />
+            <Route path="/admin/supplier-portal-invite" element={<ProtectedRoute page="supplier_portal_invite"><SupplierPortalInvitePage /></ProtectedRoute>} />
             <Route path="/playwrightrate" element={<ProtectedRoute superAdminOnly><PlaywrightReliabilityReportPage /></ProtectedRoute>} />
-            <Route path="/admin/grn-approval" element={<ProtectedRoute page="supplier_portal_admin"><GrnApprovalPage /></ProtectedRoute>} />
+            <Route path="/admin/grn-approval" element={<ProtectedRoute page="vendor_goods_receipt"><GrnApprovalPage /></ProtectedRoute>} />
             <Route path="/storeapproval" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
             <Route path="/storeapproval/journal" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
             <Route path="/storeapproval/balance" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />

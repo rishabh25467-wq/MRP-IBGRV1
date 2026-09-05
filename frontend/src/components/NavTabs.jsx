@@ -42,24 +42,24 @@ const PROCUREMENT_SUBTABS = [
   // Aug 2026: Purchase Order Creation automation - writes real POs into SAP ByDesign.
   { to: "/purchasing-strategy/purchase-order-create", label: "Create Purchase Order", testId: "nav-procurement-purchase-order-create", page: "purchase_order" },
   // Sep 4 2026, user's explicit ask: visibility into POs already created via this app.
-  { to: "/purchasing-strategy/created-purchase-orders", label: "Created POs", testId: "nav-procurement-created-purchase-orders", page: "purchase_order" },
+  { to: "/purchasing-strategy/created-purchase-orders", label: "Created POs", testId: "nav-procurement-created-purchase-orders", page: "created_purchase_orders" },
   // Sep 4 2026, user's explicit ask: pick any vendor, see their open PO lines.
-  { to: "/purchasing-strategy/open-purchase-orders", label: "Open Purchase Orders", testId: "nav-procurement-open-purchase-orders", page: "purchase_order" },
+  { to: "/purchasing-strategy/open-purchase-orders", label: "Open Purchase Orders", testId: "nav-procurement-open-purchase-orders", page: "open_purchase_orders" },
   { to: "/purchasing-strategy/quota-allocation", label: "Quota Allocation", testId: "nav-procurement-quota-allocation", page: "quota_allocation" },
 ];
 
 const SUPPLIER_MANAGEMENT_SUBTABS = [
   { to: "/purchasing-strategy/supplier-master", label: "Supplier Master", testId: "nav-supplier-management-supplier-master", page: "supplier_master" },
-  { to: "/admin/supplier-portal-invite", label: "Invite Supplier", testId: "nav-supplier-management-supplier-portal-invite", page: "supplier_portal_admin" },
+  { to: "/admin/supplier-portal-invite", label: "Invite Supplier", testId: "nav-supplier-management-supplier-portal-invite", page: "supplier_portal_invite" },
   { to: "/admin/supplier-portal-approvals", label: "Supplier Portal Approvals", testId: "nav-supplier-management-supplier-portal-approvals", page: "supplier_portal_admin" },
   // Sep 4 2026, user's explicit ask: renamed from "GRN Approval" + moved
   // out of Master Data - it's vendor goods receipt, not reference data.
-  { to: "/admin/grn-approval", label: "Vendor Goods Receipt", testId: "nav-supplier-management-vendor-goods-receipt", page: "supplier_portal_admin" },
+  { to: "/admin/grn-approval", label: "Vendor Goods Receipt", testId: "nav-supplier-management-vendor-goods-receipt", page: "vendor_goods_receipt" },
   // Sep 2 2026, user's explicit ask: quick shortcut into the Supplier
   // Portal (separate vendor-JWT auth, not `vms_session`) so staff can log
   // in and use its vendor-impersonation search to view/act on any
   // vendor's own shipment-creation dashboard.
-  { to: "/supplier-portal/login", label: "Supplier Dashboard", testId: "nav-supplier-management-supplier-dashboard", page: "supplier_portal_admin" },
+  { to: "/supplier-portal/login", label: "Supplier Dashboard", testId: "nav-supplier-management-supplier-dashboard", page: "supplier_dashboard" },
 ];
 
 const INVENTORY_SUBTABS = [
