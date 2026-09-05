@@ -110,15 +110,6 @@ export default function PurchaseOrderPage() {
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, []);
 
-  // Sep 5 2026, user's explicit ask: manually changing Purchase Unit
-  // resets Bill-To (was previously a separate useEffect) - PR-driven
-  // autofill in fetchPR sets both together instead, so this only fires
-  // on a deliberate manual override.
-  const onPurchaseUnitChange = (v) => {
-    setPurchaseUnitSite(v);
-    setBillToCompany("");
-  };
-
   const onPrQueryChange = (v) => {
     setPrVocNo(v);
     setShowPrSuggestions(true);
@@ -490,14 +481,17 @@ export default function PurchaseOrderPage() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div className="space-y-1.5">
                   <Label className="text-xs font-medium text-[#344054]">Purchase Unit (Site) *</Label>
-                  <Select value={purchaseUnitSite} onValueChange={onPurchaseUnitChange}>
-                    <SelectTrigger className={inputCls} data-testid="po-purchase-unit-select">
-                      <SelectValue placeholder="Choose site" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {sites.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
+                  <div data-testid="po-purchase-unit-select">
+                    {purchaseUnitSite ? (
+                      <Badge className="h-9 w-full flex items-center justify-center bg-[#F2F4F7] text-[#004B87] border border-[#D0D5DD] rounded-sm font-data text-sm">
+                        {purchaseUnitSite} · Auto-derived
+                      </Badge>
+                    ) : (
+                      <div className="h-9 flex items-center px-3 rounded-sm border border-dashed border-[#D0D5DD] bg-[#F9FAFB] text-sm text-[#98A2B3]">
+                        Auto-set from PR
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <div className="space-y-1.5">
@@ -517,16 +511,17 @@ export default function PurchaseOrderPage() {
 
                 <div className="space-y-1.5">
                   <Label className="text-xs font-medium text-[#344054]">Bill-To *</Label>
-                  <Select value={billToCompany} onValueChange={setBillToCompany} disabled={!purchaseUnitSite}>
-                    <SelectTrigger className={inputCls} data-testid="po-bill-to-select">
-                      <SelectValue placeholder={purchaseUnitSite ? "Choose Bill-To" : "Choose Purchase Unit first"} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {(BILL_TO_OPTIONS_BY_COMPANY[company] || []).map((opt) => (
-                        <SelectItem key={opt} value={opt}>{opt}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <div data-testid="po-bill-to-select">
+                    {billToCompany ? (
+                      <Badge className="h-9 w-full flex items-center justify-center bg-[#F2F4F7] text-[#004B87] border border-[#D0D5DD] rounded-sm font-data text-sm">
+                        {billToCompany} · Auto-derived
+                      </Badge>
+                    ) : (
+                      <div className="h-9 flex items-center px-3 rounded-sm border border-dashed border-[#D0D5DD] bg-[#F9FAFB] text-sm text-[#98A2B3]">
+                        Auto-set from Purchase Unit
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
