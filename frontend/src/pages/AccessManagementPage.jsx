@@ -34,6 +34,9 @@ export default function AccessManagementPage() {
   const [loading, setLoading] = useState(true);
   const [drafts, setDrafts] = useState({});
   const [savingId, setSavingId] = useState(null);
+  // Sep 5 2026, user's explicit ask: filter the User Access list by role
+  // (e.g. "Only Admin User") so a long user list is easy to scan.
+  const [roleFilter, setRoleFilter] = useState("all");
 
   // Store Binding (Aug 2026, user's explicit ask): restricts a "store
   // user" to only the site(s) bound here on the Store Assignment tab -
@@ -176,13 +179,30 @@ export default function AccessManagementPage() {
               automatically with no access until you grant it.
             </p>
 
+            <div className="flex items-center gap-2" data-testid="access-management-role-filter-bar">
+              <span className="text-xs font-bold text-[#344054] uppercase font-heading">Filter by Role</span>
+              <Select value={roleFilter} onValueChange={setRoleFilter}>
+                <SelectTrigger className="h-8 w-[160px] text-xs bg-white" data-testid="access-management-role-filter-select">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Roles</SelectItem>
+                  <SelectItem value="user">Only User</SelectItem>
+                  <SelectItem value="admin">Only Admin</SelectItem>
+                  <SelectItem value="super_admin">Only Super Admin</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
             {loading ? (
               <div className="text-sm text-[#667085]" data-testid="access-management-loading">Loading users...</div>
             ) : users.length === 0 ? (
               <div className="text-sm text-[#667085]" data-testid="access-management-empty">No one has signed in yet.</div>
             ) : (
               <div className="bg-white border border-[#E4E7EC] rounded-xl overflow-hidden">
-                {users.map((u) => {
+                {users
+                  .filter((u) => roleFilter === "all" || (drafts[u._id]?.role || u.role || "user") === roleFilter)
+                  .map((u) => {
                   const draft = drafts[u._id] || { role: "user", allowed_pages: [] };
                   const hasAllPages = draft.role === "admin" || draft.role === "super_admin";
                   const isSelf = currentUser && u.email === currentUser.email;
