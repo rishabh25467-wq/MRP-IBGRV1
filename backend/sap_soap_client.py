@@ -321,6 +321,7 @@ class SAPSoapBOMClient:
         # (ECO "P26675_1", ValidFrom 2023-06-01) just because that ECO name
         # happened to match the parent product's own ID convention.
         valid_from_by_key = {}
+        released_by_key = {}
         for flat_match in re.finditer(
             r"<ProductionBillOfMaterialVariantItemChangeState>(.*?)</ProductionBillOfMaterialVariantItemChangeState>",
             variant_block_text, re.S,
@@ -332,6 +333,13 @@ class SAPSoapBOMClient:
             date_match = re.search(r"<EngineeringChangeOrderValidFromDate>([^<]*)</EngineeringChangeOrderValidFromDate>", flat_block)
             if g_match and i_match and eco_match2 and date_match:
                 valid_from_by_key[(g_match.group(1), i_match.group(1), eco_match2.group(1))] = date_match.group(1).strip()
+            # Sep 2026 fix - see is_released usage below: this flat list is
+            # also the only place carrying EngineeringChangeOrderEcoStatus
+            # (the nested ItemGroupItem ChangeState blocks used further down
+            # don't have it either, same as ValidFromDate above).
+            status_match = re.search(r"<EngineeringChangeOrderEcoStatus>.*?<LifeCycleStatusCode>([^<]*)</LifeCycleStatusCode>", flat_block, re.S)
+            if g_match and i_match and eco_match2 and status_match:
+                released_by_key[(g_match.group(1), i_match.group(1), eco_match2.group(1))] = status_match.group(1).strip() == "5"
 
         bom = {
             "bom_id": best_id, "product_uuid": root_uuid_match.group(1) if root_uuid_match else None,
@@ -380,7 +388,22 @@ class SAPSoapBOMClient:
                     revision = cls._revision_number(eco_id) if eco_id else -1.0
                     valid_from = valid_from_by_key.get((group_id, item_group_item_id, eco_id), "")
                     self_matched = cls._eco_matches_own_product(eco_id, pid_match.group(1) if pid_match else None)
-                    state_key = (valid_from, self_matched, revision)
+                    # Sep 2026 fix (live incident: BOM line for CRCOIL1.5X264.8
+                    # on 100162759-1_4 has 2 change-states with the SAME
+                    # valid_from month - ECO "1162759_7" (LifeCycleStatusCode 2,
+                    # never actually released, UoM wrongly "EA") has a LATER
+                    # ValidFromDate than the genuinely released ECO
+                    # "1001627596" (status 5, correct UoM "MASS"/kg) - picking
+                    # purely by date let the unreleased draft win, caching the
+                    # wrong unit and later causing SAP to reject the goods
+                    # movement with "Quantity conversion failed". A released
+                    # ECO (status "5") now always outranks a non-released one,
+                    # ahead of date/revision, matching what SAP's own UI shows
+                    # as the current effective BOM line. Defaults to True
+                    # (unknown status never demotes a state that has no
+                    # status info at all, e.g. older tenants/lines).
+                    is_released = released_by_key.get((group_id, item_group_item_id, eco_id), True)
+                    state_key = (is_released, valid_from, self_matched, revision)
                     if pid_match:
                         # Every change-state's input product ID (not just the
                         # winning one) - a line whose input product itself
