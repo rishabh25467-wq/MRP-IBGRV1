@@ -139,21 +139,30 @@ def _split_phones(raw_phone):
 
 
 def _first_email(raw_email):
-    """Excel sometimes has multiple emails separated by comma/space - SAP's
-    WorkplaceEMailURI is a single value and rejects multi-address strings."""
+    """Excel sometimes has multiple emails separated by comma/space, or
+    junk text with no real address - SAP's WorkplaceEMailURI is a single
+    value and rejects multi-address strings and anything without an '@'."""
     if not raw_email:
         return ""
     parts = re.split(r"[,\s]+", raw_email.strip())
-    return parts[0] if parts else ""
+    for p in parts:
+        if "@" in p:
+            return p
+    return ""
 
 
-def build_update_xml(code, contact_uuid, contact_internal_id, contact_name, phone, email):
+def build_update_xml(code, contact_uuid, contact_internal_id, contact_name, phone, email, create_new=False):
     code = code.upper()
-    contact_id_xml = (
-        f"<BusinessPartnerContactUUID>{html.escape(contact_uuid)}</BusinessPartnerContactUUID>"
-        if contact_uuid
-        else f"<BusinessPartnerContactInternalID>{html.escape(contact_internal_id)}</BusinessPartnerContactInternalID>"
-    )
+    if create_new:
+        contact_action = "01"
+        contact_id_xml = "<DefaultContactPersonIndicator>true</DefaultContactPersonIndicator>"
+    else:
+        contact_action = "02"
+        contact_id_xml = (
+            f"<BusinessPartnerContactUUID>{html.escape(contact_uuid)}</BusinessPartnerContactUUID>"
+            if contact_uuid
+            else f"<BusinessPartnerContactInternalID>{html.escape(contact_internal_id)}</BusinessPartnerContactInternalID>"
+        )
     name_xml = f"<FamilyName>{html.escape(contact_name)}</FamilyName>" if contact_name else ""
     email_xml = f"<WorkplaceEMailURI>{html.escape(_first_email(email))}</WorkplaceEMailURI>" if _first_email(email) else ""
     phones = _split_phones(phone) if phone else []
@@ -178,7 +187,7 @@ def build_update_xml(code, contact_uuid, contact_internal_id, contact_name, phon
    <BasicMessageHeader><ID>SUPUPD-{html.escape(code)}</ID></BasicMessageHeader>
    <Supplier actionCode="02">
     <InternalID>{html.escape(code)}</InternalID>
-    <ContactPerson actionCode="02"{telephone_complete_attr}>
+    <ContactPerson actionCode="{contact_action}"{telephone_complete_attr}>
      {contact_id_xml}
      {name_xml}
      {email_xml}
@@ -189,8 +198,8 @@ def build_update_xml(code, contact_uuid, contact_internal_id, contact_name, phon
  </soapenv:Body></soapenv:Envelope>"""
 
 
-def build_check_xml(code, contact_uuid, contact_internal_id, contact_name, phone, email):
-    live = build_update_xml(code, contact_uuid, contact_internal_id, contact_name, phone, email)
+def build_check_xml(code, contact_uuid, contact_internal_id, contact_name, phone, email, create_new=False):
+    live = build_update_xml(code, contact_uuid, contact_internal_id, contact_name, phone, email, create_new)
     return live.replace(
         "SupplierBundleMaintainRequest_sync_V1", "SupplierBundleMaintenanceCheckRequest_sync_V1"
     )
@@ -248,39 +257,64 @@ def run(mode, only_code=None):
         rows = [r for r in rows if r["code"].upper() == only_code.upper()]
         print(f"Filtered to code {only_code}: {len(rows)} row(s).")
 
-    results = {"updated": [], "skipped_not_found": [], "failed": [], "checked": []}
+    results = {"updated": [], "skipped_not_found": [], "failed": [], "checked": [], "created": [], "create_failed": []}
     processed_codes = set()
-    if mode == "run" and only_code is None and os.path.exists(RESULTS_PATH):
+    if mode in ("run", "create") and only_code is None and os.path.exists(RESULTS_PATH):
         with open(RESULTS_PATH) as f:
             prior = json.load(f)
         if "updated" in prior:
-            results = prior
-            for bucket in ("updated", "skipped_not_found", "failed"):
-                processed_codes.update(e["code"] for e in results.get(bucket, []))
-            print(f"Resuming: {len(processed_codes)} codes already processed in a prior run.")
+            results = {**{"updated": [], "skipped_not_found": [], "failed": [], "checked": [], "created": [], "create_failed": []}, **prior}
+            if mode == "run":
+                for bucket in ("updated", "skipped_not_found", "failed"):
+                    processed_codes.update(e["code"] for e in results.get(bucket, []))
+            else:
+                for bucket in ("created", "create_failed"):
+                    processed_codes.update(e["code"] for e in results.get(bucket, []))
+            print(f"Resuming: {len(processed_codes)} codes already processed in a prior '{mode}' run.")
 
     for row in rows:
         code = row["code"]
         if code in processed_codes:
             continue
         sap_entry = sap_map.get(code.upper())
-        if not sap_entry or not (sap_entry["contact_uuid"] or sap_entry["contact_internal_id"]):
-            results["skipped_not_found"].append({"code": code, "reason": "Supplier or default contact not found in SAP"})
-            print(f"  SKIP {code}: not found in SAP")
-            with open(RESULTS_PATH, "w") as f:
-                json.dump(results, f, indent=2)
+        has_contact = bool(sap_entry and (sap_entry["contact_uuid"] or sap_entry["contact_internal_id"]))
+
+        if not sap_entry:
+            if mode != "create":
+                results["skipped_not_found"].append({"code": code, "reason": "Supplier code not found in SAP at all"})
+                print(f"  SKIP {code}: supplier code not found in SAP")
+                with open(RESULTS_PATH, "w") as f:
+                    json.dump(results, f, indent=2)
             continue
+
+        if mode == "create":
+            if has_contact:
+                continue  # already has a contact, handled by --run
+            create_new = True
+        elif mode == "check":
+            create_new = not has_contact  # auto-detect for single-code dry-run testing
+        else:  # mode == "run"
+            if not has_contact:
+                continue  # no existing contact to update, handled by --create-missing
+            create_new = False
 
         xml_builder = build_check_xml if mode == "check" else build_update_xml
         xml_body = xml_builder(
             code, sap_entry["contact_uuid"], sap_entry["contact_internal_id"],
-            row["contact_name"], row["phone"], row["email"],
+            row["contact_name"], row["phone"], row["email"], create_new,
         )
         outcome = post_supplier_update(xml_body)
         entry = {"code": code, **row, **outcome}
         if mode == "check":
             results["checked"].append(entry)
             print(f"  CHECK {code}: {'OK' if outcome['success'] else 'FAIL - ' + str(outcome.get('faultstring'))}")
+        elif mode == "create":
+            if outcome["success"]:
+                results["created"].append(entry)
+                print(f"  CREATED contact for {code}")
+            else:
+                results["create_failed"].append(entry)
+                print(f"  CREATE FAILED {code}: {outcome.get('faultstring')}")
         elif outcome["success"]:
             results["updated"].append(entry)
             print(f"  UPDATED {code}")
@@ -293,20 +327,25 @@ def run(mode, only_code=None):
         time.sleep(0.5)
 
     print(f"\nDone. Results written to {RESULTS_PATH}")
-    print(f"Updated: {len(results['updated'])}  Checked: {len(results['checked'])}  "
-          f"Failed: {len(results['failed'])}  Skipped (not found): {len(results['skipped_not_found'])}")
+    print(f"Updated: {len(results['updated'])}  Created: {len(results['created'])}  Checked: {len(results['checked'])}  "
+          f"Failed: {len(results['failed'])}  Create-failed: {len(results['create_failed'])}  "
+          f"Skipped (not found): {len(results['skipped_not_found'])}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", nargs="?", const="ALL", metavar="CODE")
     parser.add_argument("--run", nargs="?", const="ALL", metavar="CODE")
+    parser.add_argument("--create-missing", nargs="?", const="ALL", metavar="CODE",
+                         help="Create a new default contact for suppliers that exist in SAP but have none yet")
     args = parser.parse_args()
 
     if args.check:
         run("check", only_code=None if args.check == "ALL" else args.check)
     elif args.run:
         run("run", only_code=None if args.run == "ALL" else args.run)
+    elif args.create_missing:
+        run("create", only_code=None if args.create_missing == "ALL" else args.create_missing)
     else:
         parser.print_help()
         sys.exit(1)
