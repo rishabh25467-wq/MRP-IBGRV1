@@ -47,8 +47,17 @@ export default function CreatedPurchaseOrdersPage() {
 
   return (
     <div className="min-h-screen bg-[#F5F6F7] flex flex-col font-sans">
-      <header className="bg-white border-b border-[#D0D5DD] px-6 py-3 flex items-center justify-between gap-4 flex-wrap">
-        <NavTabs />
+      {/* Sep 7 2026 fix - real bug, "menu is not visible on this page":
+          this header used a plain white bar while every other page uses a
+          teal (#0E7C86) header - NavTabs/SapConnectionStatus render WHITE
+          text (by design, meant to sit on that teal bar), so on a white
+          background they were rendering but invisible (white-on-white).
+          Only the active/current NavTabs item showed (its text turns teal
+          when active). Matched the standard header used everywhere else. */}
+      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
+        <div className="flex items-center gap-3 flex-1 justify-start min-w-0">
+          <NavTabs />
+        </div>
         <SapConnectionStatus />
       </header>
 
