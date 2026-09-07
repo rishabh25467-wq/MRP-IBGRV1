@@ -304,6 +304,11 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons }) => {
         production_task_id: row.production_task_id,
         production_task_uuid: row.production_task_uuid,
         actor: actorName.trim(),
+        reporting_point_id: row.reporting_point_id,
+        site_id: row.site_id,
+        main_output_product: row.main_output_product,
+        confirmed_quantity: row.total_confirmed_quantity,
+        unit_code: row.unit_code,
       });
       toast.success(`Task closed in SAP for Lot ${row.production_lot_id}`);
       onConfirmed(row);

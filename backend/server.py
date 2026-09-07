@@ -2916,6 +2916,18 @@ class FinishTaskRequest(BaseModel):
     production_task_id: Optional[str] = None
     production_task_uuid: Optional[str] = None
     actor: str
+    # Sep 7 2026 fix (live incident, Lot 71930 - "finish task closed by
+    # live app but WIP is not posted" + "Last Confirmation" column never
+    # updates): this endpoint used to ONLY close the Task in SAP and
+    # return - unlike /confirm, it never ran WIP Clearing/FG Movement and
+    # never logged anything to production_confirmation_history at all.
+    # These are optional (old callers/older frontend builds without them
+    # still work exactly as before - Task-close only, no side effects).
+    reporting_point_id: Optional[str] = None
+    site_id: Optional[str] = None
+    main_output_product: Optional[str] = None
+    confirmed_quantity: Optional[float] = None
+    unit_code: Optional[str] = None
 
 
 @api_router.post("/production-confirmation/finish-task")
@@ -2940,7 +2952,48 @@ async def finish_production_task(payload: FinishTaskRequest):
     )
     if not result.get("success"):
         raise HTTPException(status_code=502, detail=f"Finish Task failed in SAP: {result.get('logs')}")
+
+    # Sep 7 2026 fix - see FinishTaskRequest docstring above. Mirrors
+    # /confirm's own WIP Clearing + FG Movement + history-logging steps,
+    # gated the same way (only once EVERY operation on the lot is
+    # finished - _all_lot_operations_finished).
+    if payload.site_id:
+        lot_fully_finished = await asyncio.to_thread(_all_lot_operations_finished, payload.production_lot_id)
+        if lot_fully_finished:
+            try:
+                result["wip_clearing"] = await asyncio.to_thread(
+                    sap_wip_clearing_client.run_wip_clearing, payload.production_lot_id, payload.site_id,
+                )
+            except SAPWipClearingError as e:
+                result["wip_clearing"] = {"success": False, "log": str(e)}
+            if payload.main_output_product and payload.confirmed_quantity:
+                category, _ = await asyncio.to_thread(
+                    production_confirmation_service.get_or_classify_category, db, payload.main_output_product,
+                )
+                if category == "Finished Goods":
+                    owner_party_id, _ = company_and_set_of_books_for_site(payload.site_id)
+                    result["fg_movement"] = await asyncio.to_thread(
+                        store_approval_service._trigger_goods_movement,
+                        sap_goods_movement_client, owner_party_id, payload.main_output_product,
+                        f"{payload.site_id}-SFG", f"{payload.site_id}-FG",
+                        payload.confirmed_quantity, payload.unit_code or "EA", payload.site_id,
+                    )
+        else:
+            result["wip_clearing"] = {
+                "success": None, "skipped": True,
+                "log": "Other operations on this lot are still open in SAP - WIP Clearing (and the FG Goods Movement, if applicable) will run automatically once the last operation is finished.",
+            }
+        await asyncio.to_thread(
+            production_confirmation_service.log_confirmation, db, payload.actor,
+            {
+                "production_lot_id": payload.production_lot_id, "reporting_point_id": payload.reporting_point_id,
+                "main_output_product": payload.main_output_product, "site_id": payload.site_id,
+                "confirmed_quantity": payload.confirmed_quantity, "confirmation_finished": True,
+            },
+            result,
+        )
     return result
+
 
 
 def _site_scope_for(user: dict):
