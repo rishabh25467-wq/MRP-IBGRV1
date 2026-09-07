@@ -3515,42 +3515,61 @@ async def _continue_order_creation(job_id: str, payload: "CreateProductionPropos
                     current_prep_ids = await asyncio.to_thread(sap_production_order_release_client.list_ids_by_status, "1")
                     new_prep_ids = current_prep_ids - baseline_prep_ids
                     if new_prep_ids:
-                        candidate_id = max(new_prep_ids, key=lambda x: int(x) if x.isdigit() else -1)
-                        # list_ids_by_status() is tenant-wide (no Site/Material
-                        # filter exists on this entity) - verify this candidate
-                        # is really OUR material+quantity before ever touching
-                        # it (real incident: see get_requested_material docstring).
-                        candidate_matches = False
-                        verify_error = False
-                        try:
-                            requested = await asyncio.to_thread(sap_production_order_release_client.get_requested_material, candidate_id)
-                            candidate_matches = bool(requested) and requested["material_id"] == payload.material_id and (
-                                requested["quantity"] is None or abs(requested["quantity"] - payload.quantity) < 0.001
-                            )
-                        except SAPProductionOrderReleaseError as e:
-                            # Aug 2026 fix - real incident (Order 70547, PL-0037A):
-                            # a TRANSIENT failure here (this tenant sees frequent
-                            # connect timeouts) is NOT the same as a real mismatch.
-                            # The old code advanced baseline_prep_ids regardless,
-                            # permanently forgetting this candidate even if it was
-                            # really OUR order - dooming the job to poll for the
-                            # full 20 min with no way to ever find it again. Now
-                            # baseline_prep_ids is left untouched below so it's
-                            # simply re-checked on the very next poll tick.
-                            verify_error = True
-                            logger.warning(f"create-and-release job {job_id}: could not verify candidate order {candidate_id}'s material (transient - will retry next poll, not discarding it): {e}")
-                        # Claim BEFORE releasing anything - guards against a
-                        # SECOND concurrent job for this same material+quantity
-                        # (or a same-material job at a different site racing
-                        # the tenant-wide list) claiming/releasing the same order.
-                        if candidate_matches and await asyncio.to_thread(_claim_order_id, db, candidate_id, job_id):
-                            release_result = await asyncio.to_thread(sap_production_order_release_client.release_order, candidate_id, True)
-                            if release_result.get("success"):
-                                new_order_id = candidate_id
-                                order_self_released = True
-                                break
-                        if not verify_error:
-                            baseline_prep_ids = current_prep_ids  # don't re-consider this same candidate (mismatched material, already claimed, or matched-but-not-releasable) next loop
+                        # Sep 7 2026 fix - real incident (Proposal 229965,
+                        # PDQ3286 qty 19 @ P9): this tenant is busy enough
+                        # that MULTIPLE new "In Preparation" orders (from
+                        # OTHER concurrent proposals, unrelated to us) can
+                        # appear in the same poll tick. The old code only
+                        # ever checked the single highest-ID candidate, then
+                        # unconditionally folded ALL of new_prep_ids into
+                        # baseline_prep_ids regardless - so if OUR order
+                        # wasn't the max, it was silently forgotten forever
+                        # even though it was never actually verified. Order
+                        # 71933 (our real order) sat "In Preparation",
+                        # correctly matching PDQ3286/19, for 6+ minutes
+                        # while this job kept reporting "already requested"
+                        # trigger errors and never found it. Now every new
+                        # candidate is checked this tick (new_prep_ids is a
+                        # tiny diff of the tenant-wide list) and only the
+                        # ones actually verified get folded into baseline -
+                        # a transient-error candidate stays "new" for the
+                        # next tick instead of a match being skipped for it.
+                        verified_ids = set()
+                        for candidate_id in sorted(new_prep_ids, key=lambda x: int(x) if x.isdigit() else -1, reverse=True):
+                            # list_ids_by_status() is tenant-wide (no Site/Material
+                            # filter exists on this entity) - verify this candidate
+                            # is really OUR material+quantity before ever touching
+                            # it (real incident: see get_requested_material docstring).
+                            candidate_matches = False
+                            verify_error = False
+                            try:
+                                requested = await asyncio.to_thread(sap_production_order_release_client.get_requested_material, candidate_id)
+                                candidate_matches = bool(requested) and requested["material_id"] == payload.material_id and (
+                                    requested["quantity"] is None or abs(requested["quantity"] - payload.quantity) < 0.001
+                                )
+                            except SAPProductionOrderReleaseError as e:
+                                # Aug 2026 fix - real incident (Order 70547, PL-0037A):
+                                # a TRANSIENT failure here (this tenant sees frequent
+                                # connect timeouts) is NOT the same as a real mismatch.
+                                # Leave this candidate out of verified_ids below so
+                                # it's simply re-checked on the very next poll tick.
+                                verify_error = True
+                                logger.warning(f"create-and-release job {job_id}: could not verify candidate order {candidate_id}'s material (transient - will retry next poll, not discarding it): {e}")
+                            # Claim BEFORE releasing anything - guards against a
+                            # SECOND concurrent job for this same material+quantity
+                            # (or a same-material job at a different site racing
+                            # the tenant-wide list) claiming/releasing the same order.
+                            if candidate_matches and await asyncio.to_thread(_claim_order_id, db, candidate_id, job_id):
+                                release_result = await asyncio.to_thread(sap_production_order_release_client.release_order, candidate_id, True)
+                                if release_result.get("success"):
+                                    new_order_id = candidate_id
+                                    order_self_released = True
+                                    break
+                            if not verify_error:
+                                verified_ids.add(candidate_id)  # mismatched, already claimed, or matched-but-not-releasable - don't re-consider next loop
+                        baseline_prep_ids = baseline_prep_ids | verified_ids
+                        if new_order_id:
+                            break
                 except SAPProductionOrderReleaseError as e:
                     logger.warning(f"create-and-release job {job_id}: In-Preparation-order poll/self-release hit a transient SAP error, will retry: {e}")
                 await asyncio.sleep(CREATE_RELEASE_POLL_INTERVAL_SECONDS)
