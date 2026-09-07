@@ -259,7 +259,7 @@ def run(mode, only_code=None):
 
     results = {"updated": [], "skipped_not_found": [], "failed": [], "checked": [], "created": [], "create_failed": []}
     processed_codes = set()
-    if mode in ("run", "create") and only_code is None and os.path.exists(RESULTS_PATH):
+    if os.path.exists(RESULTS_PATH):
         with open(RESULTS_PATH) as f:
             prior = json.load(f)
         if "updated" in prior:
