@@ -453,6 +453,16 @@ export default function StockTransferPage() {
   const [loadingRecent, setLoadingRecent] = useState(true);
   const [selectedOrder, setSelectedOrder] = useState(null);
 
+  // Sep 7 2026, user's explicit ask: filter row above the Recent Stock
+  // Transfer Orders table - all client-side over the already-loaded
+  // (max 100, most recent) `recentOrders` list, no backend change needed.
+  const [filterStoId, setFilterStoId] = useState("");
+  const [filterDate, setFilterDate] = useState("");
+  const [filterCreatedBy, setFilterCreatedBy] = useState("all");
+  const [filterShipFrom, setFilterShipFrom] = useState("all");
+  const [filterShipTo, setFilterShipTo] = useState("all");
+  const [filterItem, setFilterItem] = useState("");
+
   // "Refresh Site Stock" (Aug 27 2026, user's explicit ask) - after a live
   // SAP Goods Movement/Issue, the cached quantities on this form need to
   // catch up immediately rather than waiting for the scheduled refresh.
@@ -613,6 +623,30 @@ export default function StockTransferPage() {
   };
 
   useEffect(() => { loadRecentOrders(); }, []);
+
+  // Sep 7 2026, user's explicit ask: dropdown options + filtered list for
+  // the Recent Stock Transfer Orders filter row - derived straight from
+  // whatever's already loaded, no extra API call.
+  const distinctCreatedBy = [...new Set(recentOrders.map((o) => o.created_by).filter(Boolean))].sort();
+  const distinctShipFrom = [...new Set(recentOrders.map((o) => o.ship_from_site_id).filter(Boolean))].sort();
+  const distinctShipTo = [...new Set(recentOrders.map((o) => o.ship_to_site_id).filter(Boolean))].sort();
+  const filteredRecentOrders = recentOrders.filter((o) => {
+    if (filterStoId && !o.sto_id.toLowerCase().includes(filterStoId.trim().toLowerCase())) return false;
+    if (filterDate && (o.created_at || "").slice(0, 10) !== filterDate) return false;
+    if (filterCreatedBy !== "all" && o.created_by !== filterCreatedBy) return false;
+    if (filterShipFrom !== "all" && o.ship_from_site_id !== filterShipFrom) return false;
+    if (filterShipTo !== "all" && o.ship_to_site_id !== filterShipTo) return false;
+    if (filterItem) {
+      const q = filterItem.trim().toLowerCase();
+      const matches = (o.items || []).some((it) => (it.product_id || "").toLowerCase().includes(q) || (it.description || "").toLowerCase().includes(q));
+      if (!matches) return false;
+    }
+    return true;
+  });
+  const hasActiveRecentFilters = !!(filterStoId || filterDate || filterCreatedBy !== "all" || filterShipFrom !== "all" || filterShipTo !== "all" || filterItem);
+  const clearRecentFilters = () => {
+    setFilterStoId(""); setFilterDate(""); setFilterCreatedBy("all"); setFilterShipFrom("all"); setFilterShipTo("all"); setFilterItem("");
+  };
 
   // Companion to the sync-fix above - without this, the list itself
   // never refreshes on its own either (no other periodic poll exists),
@@ -1295,12 +1329,73 @@ export default function StockTransferPage() {
         {/* Recent orders */}
         <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-x-auto" data-testid="stock-transfer-recent-card">
           <div className="px-3 py-2 border-b border-[#D0D5DD] bg-[#F9FAFB]">
-            <h3 className="font-heading text-xs font-bold text-[#1D2939] uppercase tracking-wide">Recent Stock Transfer Orders ({recentOrders.length})</h3>
+            <h3 className="font-heading text-xs font-bold text-[#1D2939] uppercase tracking-wide">
+              Recent Stock Transfer Orders ({hasActiveRecentFilters ? `${filteredRecentOrders.length} of ${recentOrders.length}` : recentOrders.length})
+            </h3>
           </div>
+
+          <div className="px-3 py-2.5 border-b border-[#D0D5DD] bg-white flex flex-wrap items-end gap-2" data-testid="stock-transfer-recent-filter-row">
+            <div className="w-[120px]">
+              <Label className="text-[10px] font-bold text-[#667085] uppercase">STO ID</Label>
+              <Input value={filterStoId} onChange={(e) => setFilterStoId(e.target.value)} placeholder="e.g. 165" className="h-8 text-xs" data-testid="stock-transfer-filter-sto-id" />
+            </div>
+            <div className="w-[140px]">
+              <Label className="text-[10px] font-bold text-[#667085] uppercase">Created Date</Label>
+              <Input type="date" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} className="h-8 text-xs" data-testid="stock-transfer-filter-date" />
+            </div>
+            <div className="w-[150px]">
+              <Label className="text-[10px] font-bold text-[#667085] uppercase">Created By</Label>
+              <Select value={filterCreatedBy} onValueChange={setFilterCreatedBy}>
+                <SelectTrigger className="h-8 text-xs" data-testid="stock-transfer-filter-created-by">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Users</SelectItem>
+                  {distinctCreatedBy.map((u) => <SelectItem key={u} value={u}>{u}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="w-[130px]">
+              <Label className="text-[10px] font-bold text-[#667085] uppercase">Ship-from</Label>
+              <Select value={filterShipFrom} onValueChange={setFilterShipFrom}>
+                <SelectTrigger className="h-8 text-xs" data-testid="stock-transfer-filter-ship-from">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Sites</SelectItem>
+                  {distinctShipFrom.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="w-[130px]">
+              <Label className="text-[10px] font-bold text-[#667085] uppercase">Ship-to</Label>
+              <Select value={filterShipTo} onValueChange={setFilterShipTo}>
+                <SelectTrigger className="h-8 text-xs" data-testid="stock-transfer-filter-ship-to">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Sites</SelectItem>
+                  {distinctShipTo.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="w-[170px]">
+              <Label className="text-[10px] font-bold text-[#667085] uppercase">Item</Label>
+              <Input value={filterItem} onChange={(e) => setFilterItem(e.target.value)} placeholder="Product ID or name" className="h-8 text-xs" data-testid="stock-transfer-filter-item" />
+            </div>
+            {hasActiveRecentFilters && (
+              <Button variant="ghost" size="sm" onClick={clearRecentFilters} className="h-8 text-xs text-[#B42318]" data-testid="stock-transfer-filter-clear">
+                Clear Filters
+              </Button>
+            )}
+          </div>
+
           {loadingRecent ? (
             <p className="p-4 text-xs text-[#667085]">Loading...</p>
           ) : recentOrders.length === 0 ? (
             <p className="p-4 text-xs text-[#98A2B3]" data-testid="stock-transfer-recent-empty">No Stock Transfer Orders yet.</p>
+          ) : filteredRecentOrders.length === 0 ? (
+            <p className="p-4 text-xs text-[#98A2B3]" data-testid="stock-transfer-recent-filtered-empty">No orders match these filters.</p>
           ) : (
             <table className="w-full text-[12px] border-collapse min-w-[900px]" data-testid="stock-transfer-recent-table">
               <thead>
@@ -1310,8 +1405,9 @@ export default function StockTransferPage() {
                   ))}
                 </tr>
               </thead>
+
               <tbody>
-                {recentOrders.map((o) => {
+                {filteredRecentOrders.map((o) => {
                   const badge = o.error_message
                     ? { label: "Issue Found", className: "bg-[#FEF3F2] text-[#B42318]" }
                     : o.status === "created_in_sap"
