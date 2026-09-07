@@ -10,7 +10,6 @@ import { Shield,
   CheckCircle,
   CircleNotch,
   Robot,
-  Wrench,
   Printer,
 } from "@phosphor-icons/react";
 import { useAuth } from "@/contexts/AuthContext";
@@ -1285,58 +1284,13 @@ export default function StockTransferPage() {
         <Button onClick={openConfirmDialog} disabled={submitting} className="w-full sm:w-auto" data-testid="stock-transfer-create-button">
           Review &amp; Create Stock Transfer Order <ArrowRight size={14} className="ml-1.5" />
         </Button>
-
-        {notifications.length > 0 && (
-          <div className="bg-[#FFFAEB] border border-[#FEC84B] rounded-sm overflow-hidden" data-testid="admin-action-needed-panel">
-            <div className="px-3 py-2 border-b border-[#FEC84B] bg-[#FEF0C7] flex items-center gap-2">
-              <Wrench size={14} className="text-[#93370D]" />
-              <h3 className="font-heading text-xs font-bold text-[#93370D] uppercase tracking-wide">Action Needed ({notifications.length})</h3>
-            </div>
-            <div className="divide-y divide-[#FEC84B]">
-              {notifications.map((n) => {
-                const result = activateResults[n._id];
-                return (
-                  <div key={n._id} className="p-3 text-xs space-y-2" data-testid={`admin-notification-${n._id}`}>
-                    <p className="text-[#93370D]">
-                      Product <span className="font-bold">{n.product_id}</span> has no Planning/Valuation data set up at site <span className="font-bold">{n.site_id}</span> - Stock Transfer Order <span className="font-bold">{n.sto_id}</span> can't proceed until this is activated.
-                    </p>
-                    {!result && confirmActivateFor !== n._id && (
-                      <Button size="sm" variant="outline" onClick={() => setConfirmActivateFor(n._id)} data-testid={`admin-activate-button-${n._id}`}>
-                        Activate {n.site_id} for {n.product_id}
-                      </Button>
-                    )}
-                    {!result && confirmActivateFor === n._id && (
-                      <div className="flex items-center gap-2 bg-white border border-[#FEC84B] rounded-sm p-2">
-                        <span className="text-[#93370D]">This writes directly to live SAP master data - are you sure?</span>
-                        <Button size="sm" onClick={() => handleActivate(n)} disabled={activatingId === n._id} data-testid={`admin-activate-confirm-${n._id}`}>
-                          {activatingId === n._id ? <CircleNotch size={14} className="animate-spin" /> : "Yes, activate"}
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={() => setConfirmActivateFor(null)} data-testid={`admin-activate-cancel-${n._id}`}>Cancel</Button>
-                      </div>
-                    )}
-                    {result && (
-                      <div className="space-y-1" data-testid={`admin-activate-result-${n._id}`}>
-                        <p className={result.planning_logistics === "ok" ? "text-[#027A48] font-bold" : "text-[#B42318] font-bold"}>
-                          Planning / Availability / Logistics: {result.planning_logistics === "ok" ? "Activated successfully." : cleanSapMessage(result.planning_logistics)}
-                        </p>
-                        {result.valuation && (
-                          <p className={result.valuation === "ok" ? "text-[#027A48]" : "text-[#B42318]"}>
-                            Valuation: {result.valuation === "ok" ? "Activated successfully." : cleanSapMessage(result.valuation)}
-                          </p>
-                        )}
-                        {result.planning_logistics === "ok" && (
-                          <Button size="sm" variant="outline" onClick={() => handleRetryOrder(n.sto_id)} disabled={retryingStoId === n.sto_id} data-testid={`admin-notification-retry-${n.sto_id}`}>
-                            {retryingStoId === n.sto_id ? <CircleNotch size={14} className="animate-spin" /> : `Retry ${n.sto_id}`}
-                          </Button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
+        {/* Sep 7 2026, user's explicit ask: hide this aggregated "Action
+            Needed" panel from the main page - the exact same Activate
+            action already surfaces inline on each affected order's own
+            detail view (OrderDetailBody above, via `notifications` prop),
+            so this was redundant clutter. Notifications data/activation
+            logic is kept (still feeds that per-order view) - only this
+            panel's rendering is removed. */}
 
         {/* Recent orders */}
         <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-x-auto" data-testid="stock-transfer-recent-card">
