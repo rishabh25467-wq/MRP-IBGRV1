@@ -5006,7 +5006,18 @@ async def search_products(q: str = Query(..., min_length=1), limit: int = 10):
     """Live autosuggest for Product ID fields (Suppliers page) - backed by
     the `component_master` Mongo cache (3200+ known parts across all BOMs,
     already synced with description text) rather than a live SAP call per
-    keystroke. Matches on Product ID prefix OR a description substring."""
+    keystroke. Matches on Product ID prefix OR a description substring.
+
+    Real incident fix (Sep 9 2026, item 100162725 on Inter-Plant Stock
+    Transfer): with no `.sort()`, Mongo returns matches in an arbitrary
+    order once there are more of them than `limit` - reproduced live: a
+    prefix with 20 matches (100162725, 100162725-1, ...AL1, ...PL7, etc.)
+    came back with the EXACT match "100162725" itself pushed past the
+    top-10 cutoff, even though it's the single most relevant result and
+    genuinely has stock. Sorting by ID ascending both fixes this (a
+    shorter string that's a prefix of a longer one always sorts first,
+    e.g. "100162725" before "100162725-1") and makes results
+    deterministic instead of query-plan-dependent."""
     q_escaped = re.escape(q.strip())
     cursor = db["component_master"].find(
         {"$or": [
@@ -5014,7 +5025,7 @@ async def search_products(q: str = Query(..., min_length=1), limit: int = 10):
             {"description": {"$regex": q_escaped, "$options": "i"}},
         ]},
         {"_id": 1, "description": 1},
-    ).limit(limit)
+    ).sort("_id", 1).limit(limit)
     return [ProductSuggestion(product_id=d["_id"], description=d.get("description")) for d in cursor]
 
 
@@ -5314,6 +5325,9 @@ async def po_search_suppliers(q: str = Query(..., min_length=1), limit: int = 15
 
 @api_router.get("/purchase-orders/products/search", response_model=List[PurchaseOrderProductSuggestion])
 async def po_search_products(q: str = Query(..., min_length=1), limit: int = 15):
+    """Same ordering bug/fix as /products/search above (Sep 9 2026) - sort
+    before truncating to `limit` so an exact/short match is never crowded
+    out by longer variants sharing the same prefix."""
     q_escaped = re.escape(q.strip())
 
     def _search():
@@ -5326,10 +5340,11 @@ async def po_search_products(q: str = Query(..., min_length=1), limit: int = 15)
                     {"$regexMatch": {"input": "$$i.description", "regex": q_escaped, "options": "i"}},
                 ]},
             }}}},
-            {"$project": {"items": {"$slice": ["$items", limit]}}},
         ]
         result = list(db["inventory_cache"].aggregate(pipeline))
-        return result[0]["items"] if result else []
+        items = result[0]["items"] if result else []
+        items.sort(key=lambda i: i.get("product_id") or "")
+        return items[:limit]
 
     items = await asyncio.to_thread(_search)
     return [
