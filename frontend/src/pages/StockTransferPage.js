@@ -1423,7 +1423,16 @@ export default function StockTransferPage() {
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{o.ship_to_location_name || o.ship_to_location_id}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{o.items?.length || 0}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{o.requested_delivery_date}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono" data-testid={`stock-transfer-recent-sap-id-${o.sto_id}`}>{formatSapId(o.sap_order_id) || "—"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono" data-testid={`stock-transfer-recent-sap-id-${o.sto_id}`}>
+                        {formatSapId(o.sap_order_id) || "—"}
+                        {o.gi_status === "posted" && o.outbound_delivery_ids?.length > 0 && (
+                          <div className="mt-0.5" data-testid={`stock-transfer-recent-outbound-no-${o.sto_id}`}>
+                            <span className="inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]">
+                              Outbound: {o.outbound_delivery_ids.join(", ")}
+                            </span>
+                          </div>
+                        )}
+                      </td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">
                         <span className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold ${badge.className}`}>{badge.label}</span>
                       </td>
