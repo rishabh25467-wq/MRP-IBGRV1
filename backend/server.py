@@ -55,7 +55,7 @@ from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_hsn_client import SAPHSNClient
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
-from inventory_service import get_cached_inventory, refresh_inventory_cache, refresh_stock_quantities_for_warehouses, refresh_stock_quantities_for_site, deep_backfill_uuids, list_known_sites
+from inventory_service import get_cached_inventory, refresh_inventory_cache, refresh_stock_quantities_for_warehouses, refresh_stock_quantities_for_site, refresh_stock_quantities_for_products, deep_backfill_uuids, list_known_sites
 import l1_l2_report_service
 from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids, categorize_full_inventory, backfill_drawing_urls, refresh_attachments_now, REFRESH_ATTACHMENTS_MAX_IDS
 from oms_client import OMSClient, OMSError
@@ -5947,6 +5947,15 @@ async def get_stock_transfer_delivery_note_excel(sto_id: str):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="delivery_challan_{sto_id}.xlsx"'},
     )
+
+
+@api_router.post("/stock-transfer/refresh-item-stock")
+async def post_refresh_item_stock(product_id: str):
+    """Per-line-item refresh (Sep 2026, user's explicit ask) - available
+    right after picking the item, no site selection needed. Fast enough
+    (~2-3s, verified live) to run synchronously, unlike the site-wide job."""
+    result = await asyncio.to_thread(refresh_stock_quantities_for_products, db, sap_inventory_client, [product_id])
+    return {"rows_found": result.get("rows_found")}
 
 
 @api_router.post("/stock-transfer/refresh-site-stock")

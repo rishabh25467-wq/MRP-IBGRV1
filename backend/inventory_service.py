@@ -299,21 +299,25 @@ def refresh_inventory_cache(db, sap_inventory_client, sap_valuation_client) -> d
     return {"items": items, "categories": categories, "updated_at": updated_at}
 
 
-def _refresh_stock_quantities_scoped(db, sap_inventory_client, site_id: str = None, warehouse_ids: list = None) -> dict:
+def _refresh_stock_quantities_scoped(db, sap_inventory_client, site_id: str = None, warehouse_ids: list = None, product_ids: list = None) -> dict:
     """Shared merge logic behind refresh_stock_quantities_for_warehouses
     below (site_id kept as an option here since get_inventory_detail
     supports both verified filters, even though only the warehouse-scoped
-    wrapper currently calls this) - exactly one of site_id/warehouse_ids
-    scopes BOTH the live SAP pull itself AND which of a product's
-    existing cached locations get replaced vs left alone. Deliberately
-    does NOT bump the cache doc's top-level `updated_at` - that timestamp
-    represents the last FULL company-wide refresh, and would mislead the
-    Inventory page into showing everything else as freshly-checked too
-    if a partial pull touched it."""
-    fresh_rows = sap_inventory_client.get_inventory_detail(site_id=site_id, warehouse_ids=warehouse_ids)
+    wrapper currently calls this) - exactly one of site_id/warehouse_ids/
+    product_ids scopes BOTH the live SAP pull itself AND which of a
+    product's existing cached locations get replaced vs left alone.
+    Deliberately does NOT bump the cache doc's top-level `updated_at` -
+    that timestamp represents the last FULL company-wide refresh, and
+    would mislead the Inventory page into showing everything else as
+    freshly-checked too if a partial pull touched it."""
+    fresh_rows = sap_inventory_client.get_inventory_detail(site_id=site_id, warehouse_ids=warehouse_ids, product_ids=product_ids)
     warehouse_id_set = set(warehouse_ids) if warehouse_ids else None
+    # product_ids scope is holistic (every site/warehouse for that item) -
+    # touched_ids below already restricts the merge to just those products,
+    # so every existing location for them gets replaced wholesale.
     in_scope = (
-        (lambda loc: loc.get("logistics_area_id") in warehouse_id_set) if warehouse_id_set
+        (lambda loc: True) if product_ids
+        else (lambda loc: loc.get("logistics_area_id") in warehouse_id_set) if warehouse_id_set
         else (lambda loc: (loc.get("logistics_area_id") or "").startswith(f"{site_id}/"))
     )
 
@@ -333,9 +337,15 @@ def _refresh_stock_quantities_scoped(db, sap_inventory_client, site_id: str = No
     # Anything with fresh data in-scope OR that previously had (now
     # possibly stale/gone) in-scope locations needs re-checking - the
     # latter covers stock that's been fully consumed since the last pull.
-    touched_ids = set(fresh_by_product.keys()) | {
-        pid for pid, it in items_by_id.items() if any(in_scope(loc) for loc in it.get("locations", []))
-    }
+    # product_ids scope: touched is exactly the requested products, never
+    # "every product with any location" (in_scope is unconditionally True
+    # there, which would otherwise wrongly sweep the whole cache).
+    touched_ids = (
+        set(product_ids) if product_ids
+        else set(fresh_by_product.keys()) | {
+            pid for pid, it in items_by_id.items() if any(in_scope(loc) for loc in it.get("locations", []))
+        }
+    )
     component_docs = {
         doc["_id"]: doc for doc in db["component_master"].find({"_id": {"$in": list(touched_ids)}}, {"description": 1})
     }
@@ -393,6 +403,18 @@ def refresh_stock_quantities_for_site(db, sap_inventory_client, site_id: str) ->
     the user may have moved stock into any warehouse type."""
     result = _refresh_stock_quantities_scoped(db, sap_inventory_client, site_id=site_id)
     result["site_id"] = site_id
+    return result
+
+
+def refresh_stock_quantities_for_products(db, sap_inventory_client, product_ids: list) -> dict:
+    """"Refresh" per line item (Sep 2026, Inter-Plant Stock Transfer page,
+    user's explicit ask) - available as soon as an item is picked, no site
+    needed first. Holistic pull (every site/warehouse that item exists in),
+    same product_ids-scoped SAP call the BOM Component Stock Status
+    panel's "Refresh Now" already uses - verified live ~2.3s for 1 item,
+    vs ~12s site-wide/60s+ company-wide."""
+    result = _refresh_stock_quantities_scoped(db, sap_inventory_client, product_ids=product_ids)
+    result["product_ids"] = product_ids
     return result
 
 

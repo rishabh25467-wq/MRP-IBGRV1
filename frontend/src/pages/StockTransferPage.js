@@ -9,6 +9,7 @@ import { Shield,
   WarningCircle,
   CheckCircle,
   CircleNotch,
+  ArrowsClockwise,
   Robot,
   Printer,
 } from "@phosphor-icons/react";
@@ -463,17 +464,6 @@ export default function StockTransferPage() {
   const [filterShipTo, setFilterShipTo] = useState("all");
   const [filterItem, setFilterItem] = useState("");
 
-  // "Refresh Site Stock" (Aug 27 2026, user's explicit ask) - after a live
-  // SAP Goods Movement/Issue, the cached quantities on this form need to
-  // catch up immediately rather than waiting for the scheduled refresh.
-  const [allSites, setAllSites] = useState([]);
-  const [refreshSiteId, setRefreshSiteId] = useState("");
-  const [refreshingSite, setRefreshingSite] = useState(false);
-
-  useEffect(() => {
-    axios.get(`${API}/store-requests/known-sites`).then(({ data }) => setAllSites(data.sites || [])).catch(() => setAllSites([]));
-  }, []);
-
   const { user } = useAuth();
   const isAdmin = user?.role === "super_admin" || user?.role === "admin";
 
@@ -583,30 +573,22 @@ export default function StockTransferPage() {
 
   const shipFromSiteId = items.find((i) => i.ship_from_site_id)?.ship_from_site_id || "";
 
-  useEffect(() => { if (shipFromSiteId) setRefreshSiteId(shipFromSiteId); }, [shipFromSiteId]);
-
-  const refreshSiteStock = async () => {
-    if (!refreshSiteId) { toast.error("Choose a site to refresh first."); return; }
-    setRefreshingSite(true);
+  const refreshItemStock = async (itemKey, productId) => {
+    // Per-item "Refresh" (Sep 2026, user's explicit ask) - available as
+    // soon as the item is picked, no site needed first. Scoped to just
+    // this one product across every site/warehouse - a live SAP pull
+    // this narrow takes ~11-17s end to end (verified), well under the
+    // ~12s/site or 60s+/company-wide full refresh this replaces.
+    setItems((prev) => prev.map((i) => (i.key === itemKey ? { ...i, refreshing: true } : i)));
     try {
-      const { data } = await axios.post(`${API}/stock-transfer/refresh-site-stock`, null, { params: { site_id: refreshSiteId } });
-      let job = null;
-      for (let i = 0; i < 20; i++) {
-        await new Promise((r) => setTimeout(r, 2000));
-        const res = await axios.get(`${API}/stock-transfer/refresh-site-stock/${data.job_id}`);
-        job = res.data;
-        if (job.status !== "running") break;
-      }
-      if (job?.status !== "done") throw new Error(job?.error || "Refresh timed out.");
-      await Promise.all(items.map(async (line) => {
-        const { data: inv } = await axios.get(`${API}/stock-transfer/inventory`, { params: { product_id: line.product_id, include_non_usable: true } });
-        setItems((prev) => prev.map((i) => (i.key === line.key ? { ...i, locations: inv.locations || [], hsn_code: inv.hsn_code } : i)));
-      }));
-      toast.success(`${refreshSiteId} stock refreshed live from SAP.`);
+      await axios.post(`${API}/stock-transfer/refresh-item-stock`, null, { params: { product_id: productId } });
+      const { data: inv } = await axios.get(`${API}/stock-transfer/inventory`, { params: { product_id: productId, include_non_usable: true } });
+      setItems((prev) => prev.map((i) => (i.key === itemKey ? { ...i, locations: inv.locations || [], hsn_code: inv.hsn_code } : i)));
+      toast.success(`${productId} stock refreshed live from SAP.`);
     } catch (e) {
-      toast.error(e?.response?.data?.detail || e.message || "Could not refresh site stock.");
+      toast.error(e?.response?.data?.detail || e.message || "Could not refresh item stock.");
     } finally {
-      setRefreshingSite(false);
+      setItems((prev) => prev.map((i) => (i.key === itemKey ? { ...i, refreshing: false } : i)));
     }
   };
 
@@ -1092,30 +1074,8 @@ export default function StockTransferPage() {
         {/* Line item table */}
         {items.length > 0 && (
           <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-x-auto" data-testid="stock-transfer-line-items-card">
-            <div className="px-3 py-2 border-b border-[#D0D5DD] bg-[#F9FAFB] flex items-center justify-between gap-3 flex-wrap">
+            <div className="px-3 py-2 border-b border-[#D0D5DD] bg-[#F9FAFB]">
               <h3 className="font-heading text-xs font-bold text-[#1D2939] uppercase tracking-wide">2-4. Inventory Check / Source Warehouse / Ship-from Site</h3>
-              <div className="flex items-center gap-2">
-                <Select value={refreshSiteId} onValueChange={setRefreshSiteId}>
-                  <SelectTrigger className="h-7 text-xs w-32" data-testid="stock-transfer-refresh-site-select">
-                    <SelectValue placeholder="Site" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {allSites.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-7 text-xs"
-                  onClick={refreshSiteStock}
-                  disabled={refreshingSite || !refreshSiteId}
-                  data-testid="stock-transfer-refresh-site-stock-btn"
-                >
-                  {refreshingSite ? <CircleNotch size={12} className="animate-spin mr-1" /> : null}
-                  Refresh Site Stock
-                </Button>
-              </div>
             </div>
             <table className="w-full text-xs border-collapse min-w-[900px]" data-testid="stock-transfer-line-items-table">
               <thead>
@@ -1129,7 +1089,19 @@ export default function StockTransferPage() {
                 {items.map((i) => (
                   <tr key={i.key} data-testid={`stock-transfer-line-${i.product_id}`}>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
-                      <div className="font-medium text-[#344054]">{i.product_id}</div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-medium text-[#344054]">{i.product_id}</span>
+                        <button
+                          type="button"
+                          title="Refresh live stock for this item from SAP (all warehouses)"
+                          onClick={() => refreshItemStock(i.key, i.product_id)}
+                          disabled={i.refreshing}
+                          data-testid={`stock-transfer-refresh-item-${i.product_id}`}
+                          className="text-[#0E7C86] hover:text-[#095b62] disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {i.refreshing ? <CircleNotch size={13} className="animate-spin" /> : <ArrowsClockwise size={13} />}
+                        </button>
+                      </div>
                       <div className="text-[#667085]">{i.description || "—"}</div>
                       <div className="text-[10px] mt-0.5" data-testid={`stock-transfer-hsn-${i.product_id}`}>
                         {i.hsn_code
