@@ -534,7 +534,18 @@ def run_issue_movements(db, request_id: str, sap_client, progress_cb=None) -> di
             progress_cb(idx + 1, total, c["product_id"])
 
     now = datetime.now(timezone.utc)
-    shortfall_exists = any(c["shortfall"] > 0 for c in components)
+    # Sep 2026 fix (user's explicit report: request P1-000014 closed as
+    # "resolved" even though SAP rejected the goods movement outright -
+    # "Negative stock not permitted" - and 0 EA actually moved). The
+    # store's recorded issued_qty covering required_qty is only "no
+    # shortfall" on paper; if SAP itself rejected THIS round's attempt,
+    # nothing actually landed in SAP's ledger, so the request must stay
+    # reopenable rather than closing as fully resolved.
+    sap_rejected_this_round = any(
+        (c.get("issued_this_round") or 0) > 0 and not (c.get("goods_movement") or {}).get("ok")
+        for c in components
+    )
+    shortfall_exists = sap_rejected_this_round or any(c["shortfall"] > 0 for c in components)
     decision = doc.get("store_decision")
     update = {
         "updated_at": now, "target_logistics_area_id": target_warehouse,
