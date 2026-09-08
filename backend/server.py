@@ -594,6 +594,16 @@ class BomSearchResponse(BaseModel):
     tree: List[BomNode] = []
     has_bom: bool = True
     item_info: Optional[ItemLookupInfo] = None
+    # Sep 8 2026 (BOM Explorer speed fix): source/cached_as_of tell the
+    # frontend whether this came back near-instantly from the Mongo BOM
+    # cache or from a live SAP explosion, and how stale the cached copy
+    # is - needed for the "Cached as of ..." badge + "Refresh from SAP"
+    # button. needs_live_fetch=True means the opposite of a result: this
+    # root has never been resolved before, no tree/cost data is included,
+    # and the caller MUST start a live job via POST /bom/search/live.
+    source: Optional[str] = None  # "cache" | "live"
+    cached_as_of: Optional[str] = None
+    needs_live_fetch: bool = False
 
 
 class ConnectionStatus(BaseModel):
@@ -809,30 +819,117 @@ async def connection_status():
 
 @api_router.get("/bom/search", response_model=BomSearchResponse)
 async def search_bom(bom_id: str = Query(..., min_length=1)):
+    # Sep 8 2026 (BOM Explorer speed fix): a root NEVER seen before still
+    # needs a genuine live SAP explosion - the frontend gets told to start
+    # a progress-tracked background job for THAT case (see /bom/search/live
+    # below) instead of this endpoint blocking on it. A root seen before
+    # (even a "confirmed no BOM" one) is served from the same persistent
+    # Mongo cache Purchasing Plan/MRP already use - near-instant.
     product_id = bom_id.strip()
+    cached = await asyncio.to_thread(bom_cache_service.is_cached, product_id, db)
+    if not cached:
+        return BomSearchResponse(bom_id=product_id, total_components=0, max_level=0, tree=[], needs_live_fetch=True)
+
     try:
-        result = await asyncio.to_thread(sap_soap_client.explode_bom, product_id)
-    except SAPSoapError as e:
-        # NOTE: 400, not 502/503/504 - the platform's Cloudflare ingress
-        # swallows those gateway-error status codes and substitutes its own
-        # generic HTML error page, discarding our JSON detail before it
-        # reaches the frontend (see the Cost Estimate Run endpoint below for
-        # the original discovery/verification of this). A plain 400 passes
-        # through intact - applied consistently to every external
-        # SAP/OMS/Price-Explorer error response in this file.
+        result = await asyncio.to_thread(bom_cache_service.build_tree_from_cache, product_id, sap_soap_client, db)
+    except bom_cache_service.BomFetchError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     if result is None:
         item_info = await asyncio.to_thread(_lookup_item_without_bom, product_id)
         if item_info is None:
             raise HTTPException(status_code=404, detail=f"BOM '{product_id}' not found in SAP")
-        return BomSearchResponse(bom_id=product_id, total_components=0, max_level=0, tree=[], has_bom=False, item_info=item_info)
+        return BomSearchResponse(bom_id=product_id, total_components=0, max_level=0, tree=[], has_bom=False, item_info=item_info, source="cache")
 
     return BomSearchResponse(
         bom_id=result["bom_id"],
         total_components=result["total_components"],
         max_level=result["max_level"] or 1,
         tree=result["tree"],
+        source="cache",
+        cached_as_of=result["min_checked_at"].isoformat() if result.get("min_checked_at") else None,
+    )
+
+
+class BomSearchLiveRequest(BaseModel):
+    bom_id: str
+    force_refresh: bool = False
+
+
+def _build_bom_search_response(product_id: str, result: Optional[dict]) -> "BomSearchResponse":
+    if result is None:
+        item_info = _lookup_item_without_bom(product_id)
+        if item_info is None:
+            raise HTTPException(status_code=404, detail=f"BOM '{product_id}' not found in SAP")
+        return BomSearchResponse(bom_id=product_id, total_components=0, max_level=0, tree=[], has_bom=False, item_info=item_info, source="live")
+    return BomSearchResponse(
+        bom_id=result["bom_id"],
+        total_components=result["total_components"],
+        max_level=result["max_level"] or 1,
+        tree=result["tree"],
+        source="live",
+        cached_as_of=result["min_checked_at"].isoformat() if result.get("min_checked_at") else None,
+    )
+
+
+@api_router.post("/bom/search/live")
+async def start_bom_search_live(payload: BomSearchLiveRequest):
+    """Sep 8 2026 (BOM Explorer speed fix): background job for the two
+    cases that genuinely need a live SAP explosion - a root never seen
+    before (see /bom/search's needs_live_fetch), or an explicit
+    "Refresh from SAP" (force_refresh=True). Reports level-by-level
+    progress via bom_cache_service's progress_cb so the frontend can show
+    real feedback instead of a blank multi-second-to-40s wait."""
+    product_id = payload.bom_id.strip()
+    job_id = str(uuid.uuid4())
+    job_store.create_job(db, job_id, {
+        "status": "running", "phase": "starting",
+        "progress": {"level": 0, "lookups_done": 0, "max_lookups": bom_cache_service.MAX_LOOKUPS},
+        "result": None, "error": None,
+    })
+
+    def progress_cb(level, lookups_done, max_lookups):
+        job_store.update_job(db, job_id, {
+            "phase": f"exploring_level_{level}",
+            "progress": {"level": level, "lookups_done": lookups_done, "max_lookups": max_lookups},
+        })
+
+    async def run():
+        try:
+            result = await asyncio.to_thread(
+                bom_cache_service.build_tree_from_cache, product_id, sap_soap_client, db, payload.force_refresh, progress_cb,
+            )
+            response = _build_bom_search_response(product_id, result)
+            job_store.update_job(db, job_id, {"status": "done", "phase": "done", "result": response.model_dump(), "error": None})
+        except HTTPException as e:
+            job_store.update_job(db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": str(e.detail)})
+        except bom_cache_service.BomFetchError as e:
+            job_store.update_job(db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": str(e)})
+        except Exception as e:
+            logger.error(f"Live BOM search failed for '{product_id}': {e}")
+            job_store.update_job(db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": str(e)})
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+class BomSearchLiveJobStatus(BaseModel):
+    job_id: str
+    status: str
+    phase: Optional[str] = None
+    progress: Optional[dict] = None
+    result: Optional[BomSearchResponse] = None
+    error: Optional[str] = None
+
+
+@api_router.get("/bom/search/live/{job_id}", response_model=BomSearchLiveJobStatus)
+async def get_bom_search_live_status(job_id: str):
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return BomSearchLiveJobStatus(
+        job_id=job_id, status=job["status"], phase=job.get("phase"), progress=job.get("progress"),
+        result=BomSearchResponse(**job["result"]) if job.get("result") else None, error=job.get("error"),
     )
 
 

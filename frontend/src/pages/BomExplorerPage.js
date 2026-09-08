@@ -403,6 +403,8 @@ const highlightMatch = (text, query) => {
 export default function BomExplorerPage() {
   const [bomId, setBomId] = useState("");
   const [loading, setLoading] = useState(false);
+  const [refreshingLive, setRefreshingLive] = useState(false);
+  const [liveProgress, setLiveProgress] = useState(null);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
   const [itemInfo, setItemInfo] = useState(null);
@@ -625,6 +627,46 @@ export default function BomExplorerPage() {
     }
   };
 
+  // Sep 8 2026 (BOM Explorer speed fix): polls a background live-SAP-fetch
+  // job (started for a never-seen-before root, or an explicit "Refresh
+  // from SAP") and streams its level-by-level progress into liveProgress
+  // until it's done/failed.
+  const POLL_INTERVAL_MS = 1000;
+  const pollLiveJob = (jobId) =>
+    new Promise((resolve, reject) => {
+      const tick = async () => {
+        try {
+          const { data } = await axios.get(`${API}/bom/search/live/${jobId}`);
+          if (data.status === "done") {
+            resolve(data.result);
+          } else if (data.status === "failed") {
+            reject(new Error(data.error || "SAP BOM fetch failed"));
+          } else {
+            setLiveProgress(data.progress || null);
+            setTimeout(tick, POLL_INTERVAL_MS);
+          }
+        } catch (err) {
+          reject(err);
+        }
+      };
+      tick();
+    });
+
+  const applySearchResult = (data) => {
+    if (data.has_bom === false) {
+      setItemInfo(data.item_info);
+      toast.info(`${data.item_info.product_id} has no BOM`, { description: data.item_info.note });
+      return;
+    }
+    setResult(data);
+    setLastSynced(new Date());
+    toast.success(`BOM ${data.bom_id} loaded`, {
+      description: `${data.total_components} components across ${data.max_level} levels${data.source === "cache" ? " (from cache)" : " (live from SAP)"}`,
+    });
+    loadCategories(data.tree);
+    loadDrawingUrls(data.tree);
+  };
+
   const handleSearch = async (e, overrideId) => {
     e.preventDefault();
     const searchId = (overrideId ?? bomId).trim();
@@ -634,6 +676,7 @@ export default function BomExplorerPage() {
     setError(null);
     setResult(null);
     setItemInfo(null);
+    setLiveProgress(null);
     setExpandedKeys(new Set());
     setCosts({});
     setCostsLoaded(false);
@@ -644,27 +687,38 @@ export default function BomExplorerPage() {
     setSortConfig({ field: null, direction: "asc" });
 
     try {
-      const response = await axios.get(`${API}/bom/search`, { params: { bom_id: searchId } });
-      if (response.data.has_bom === false) {
-        setItemInfo(response.data.item_info);
-        toast.info(`${response.data.item_info.product_id} has no BOM`, {
-          description: response.data.item_info.note,
-        });
-        return;
+      const { data } = await axios.get(`${API}/bom/search`, { params: { bom_id: searchId } });
+      let finalData = data;
+      if (data.needs_live_fetch) {
+        const { data: jobStart } = await axios.post(`${API}/bom/search/live`, { bom_id: searchId, force_refresh: false });
+        finalData = await pollLiveJob(jobStart.job_id);
       }
-      setResult(response.data);
-      setLastSynced(new Date());
-      toast.success(`BOM ${response.data.bom_id} loaded`, {
-        description: `${response.data.total_components} components across ${response.data.max_level} levels`,
-      });
-      loadCategories(response.data.tree);
-      loadDrawingUrls(response.data.tree);
+      applySearchResult(finalData);
     } catch (err) {
-      const detail = err?.response?.data?.detail || "Failed to fetch BOM from SAP";
+      const detail = err?.response?.data?.detail || err.message || "Failed to fetch BOM from SAP";
       setError(detail);
       toast.error("BOM lookup failed", { description: detail });
     } finally {
       setLoading(false);
+      setLiveProgress(null);
+    }
+  };
+
+  const handleRefreshFromSap = async () => {
+    if (!result) return;
+    setRefreshingLive(true);
+    setLiveProgress(null);
+    try {
+      const { data: jobStart } = await axios.post(`${API}/bom/search/live`, { bom_id: result.bom_id, force_refresh: true });
+      const finalData = await pollLiveJob(jobStart.job_id);
+      applySearchResult(finalData);
+      toast.success("Refreshed from SAP", { description: `${finalData.bom_id} re-pulled live just now.` });
+    } catch (err) {
+      const detail = err?.response?.data?.detail || err.message || "Failed to refresh from SAP";
+      toast.error("Refresh failed", { description: detail });
+    } finally {
+      setRefreshingLive(false);
+      setLiveProgress(null);
     }
   };
 
@@ -728,6 +782,32 @@ export default function BomExplorerPage() {
           >
             Resolved: {result.bom_id}
           </Badge>
+        )}
+
+        {result && result.source === "cache" && (
+          <Badge
+            variant="outline"
+            className="bg-[#F9FAFB] text-[#475467] border-[#D0D5DD] rounded font-sans text-xs h-8 flex items-center gap-1"
+            data-testid="bom-cached-as-of-badge"
+          >
+            <ClockCounterClockwise size={12} />
+            {result.cached_as_of ? `Cached as of ${new Date(result.cached_as_of).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}` : "From cache"}
+          </Badge>
+        )}
+
+        {result && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleRefreshFromSap}
+            disabled={loading || refreshingLive}
+            className="h-8 text-xs rounded-sm border-[#D0D5DD] text-[#344054] transition-colors"
+            data-testid="bom-refresh-from-sap-button"
+          >
+            <ArrowsClockwise size={13} className={`mr-1.5 ${refreshingLive ? "animate-spin" : ""}`} />
+            {refreshingLive ? "Refreshing from SAP..." : "Refresh from SAP"}
+          </Button>
         )}
 
         <div className="flex items-center gap-2 ml-auto">
@@ -862,7 +942,22 @@ export default function BomExplorerPage() {
           </Alert>
         )}
 
-        {loading && (
+        {liveProgress && (
+          <div className="mb-4 bg-white border border-[#D0D5DD] rounded-sm p-3" data-testid="bom-live-progress">
+            <div className="flex items-center justify-between text-xs text-[#475467] mb-1.5">
+              <span>Pulling live from SAP - exploring level {liveProgress.level || 1} of up to 6...</span>
+              <span>{liveProgress.lookups_done || 0} of ~{liveProgress.max_lookups || 300} components resolved</span>
+            </div>
+            <div className="h-1.5 w-full bg-[#EAECF0] rounded-full overflow-hidden">
+              <div
+                className="h-full bg-[#004B87] transition-all duration-300"
+                style={{ width: `${Math.min(100, Math.round(((liveProgress.lookups_done || 0) / (liveProgress.max_lookups || 300)) * 100))}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {loading && !liveProgress && (
           <div className="space-y-1.5" data-testid="bom-loading-skeleton">
             {[...Array(8)].map((_, i) => (
               <Skeleton key={i} className="h-8 w-full rounded-sm" />

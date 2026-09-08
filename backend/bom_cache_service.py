@@ -219,7 +219,16 @@ def _upsert(collection, product_id, raw_bom, changed):
     collection.update_one({"_id": product_id}, {"$set": update}, upsert=True)
 
 
-def build_tree_from_cache(root_id: str, sap_soap_client, db):
+def is_cached(root_id: str, db) -> bool:
+    """Sep 8 2026 (BOM Explorer speed fix): true if `root_id` has EVER been
+    resolved before (found or confirmed-no-BOM, doesn't matter which) -
+    lets a caller decide "serve from cache, near-instant" vs. "this is a
+    brand-new part, needs an actual live SAP explosion" BEFORE paying for
+    any fetch at all."""
+    return db[COLLECTION_NAME].find_one({"_id": root_id}, {"_id": 1}) is not None
+
+
+def build_tree_from_cache(root_id: str, sap_soap_client, db, force_refresh: bool = False, progress_cb=None):
     """Cache-first equivalent of sap_soap_client.explode_bom() - same output
     shape ({bom_id, total_components, max_level, tree}), plus a
     `min_checked_at` timestamp (the oldest last_checked_at among every node
@@ -227,7 +236,21 @@ def build_tree_from_cache(root_id: str, sap_soap_client, db):
     is), sourced from the local Mongo cache wherever possible, falling back
     to a live SAP fetch (and caching the result) only for product_ids never
     seen before. Raises BomFetchError if the ROOT itself can't be reached
-    (distinct from a clean "return None" when SAP confirms no BOM exists)."""
+    (distinct from a clean "return None" when SAP confirms no BOM exists).
+
+    `force_refresh=True` (Sep 8 2026, BOM Explorer's "Refresh from SAP"
+    button) makes every node in this exploration act as if uncached - a
+    full live re-walk of the whole tree, same as the old always-live
+    behavior, EXCEPT every freshly-fetched node still gets `_upsert`ed back
+    into the cache as it goes, so a subsequent non-refresh search benefits
+    from this refresh too.
+
+    `progress_cb(level, lookups_done, max_lookups)`, if given, is called
+    once per BFS level of live SAP lookups actually performed (never
+    called for a level entirely served from cache) - lets a caller (a
+    background job, see server.py's /bom/search/live) report incremental
+    progress on what would otherwise be a single opaque multi-second-to-
+    40s wait."""
     collection = db[COLLECTION_NAME]
     min_checked_at = None
 
@@ -238,6 +261,8 @@ def build_tree_from_cache(root_id: str, sap_soap_client, db):
 
     def get_cached(product_id):
         """Returns (raw_bom_or_None, was_already_cached, checked_at)."""
+        if force_refresh:
+            return None, False, None
         doc = collection.find_one({"_id": product_id})
         if doc is None:
             return None, False, None
@@ -281,10 +306,12 @@ def build_tree_from_cache(root_id: str, sap_soap_client, db):
     total_components = 0
     max_level_seen = 0
     lookups_done = 0
+    level_num = 0
     root_children = []
     frontier = [(root, 1, frozenset({root_id, root["bom_id"]}), root_children, 1.0)]
 
     while frontier and lookups_done < MAX_LOOKUPS:
+        level_num += 1
         candidate_ids = set()
         for bom, level, ancestors, _, _ in frontier:
             if level >= MAX_DEPTH:
@@ -327,6 +354,15 @@ def build_tree_from_cache(root_id: str, sap_soap_client, db):
                     resolved[pid] = None
 
         lookups_done += len(to_resolve)
+
+        if progress_cb and uncached_ids:
+            # Only report progress for levels that actually hit SAP live -
+            # a level served entirely from cache is already fast enough
+            # that a UI-facing progress tick would just be visual noise.
+            try:
+                progress_cb(level_num, lookups_done, MAX_LOOKUPS)
+            except Exception:
+                pass
 
         next_frontier = []
         for bom, level, ancestors, children_out, parent_cum_qty in frontier:

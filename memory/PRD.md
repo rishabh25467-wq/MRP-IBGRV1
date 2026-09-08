@@ -45,6 +45,14 @@ Extend the existing SAP BOM viewer application: Production Plan page (OMS Open-P
 ### P0
 - **External QMS feed**: secured API/data feed for external QMS app to pull pending-QC items. Not started.
 
+
+## What's been implemented (Sep 8, 2026 session - BOM Explorer speed fix)
+- **Root cause of "why is SAP BOM pull so slow"**: `/bom/search` bypassed the existing Mongo `bom_node_cache` entirely and always did a live multi-level SAP SOAP explosion (`sap_soap_client.explode_bom`), unlike Purchasing Plan/MRP/L1L2 which already read from that cache. Compounded by SAP's own slow/flaky SOAP service, a hard cap of 3 concurrent SAP sessions app-wide (`sap_rate_limiter`), and inherently sequential BFS levels (can't parallelize across tree depth).
+- **Cache-first serving**: `GET /api/bom/search` now checks `bom_cache_service.is_cached()` first - if the root was ever resolved before, serves from cache near-instantly (~0.2-0.3s) via `build_tree_from_cache`, with a `source: "cache"` + `cached_as_of` timestamp. A never-seen root returns `needs_live_fetch: true` instead of blocking.
+- **Background live-fetch job**: new `POST /api/bom/search/live` (body `{bom_id, force_refresh}`) + `GET /api/bom/search/live/{job_id}` (polled, via existing `job_store.py` pattern) for the two cases that genuinely need a live SAP walk - a brand-new part, or an explicit "Refresh from SAP". `build_tree_from_cache` gained `force_refresh` (bypasses cache for every node in this walk, still persists fresh results back to cache) and `progress_cb(level, lookups_done, max_lookups)` (called once per BFS level that hits SAP live).
+- **Frontend** (`BomExplorerPage.js`): "Cached as of [time]" badge + "Refresh from SAP" button next to the "Resolved: ..." badge; a live progress bar ("Pulling live from SAP - exploring level X of up to 6... / N of ~300 components resolved") replaces the blank skeleton whenever a live fetch is actually happening; old tree stays visible underneath during a manual refresh (stale-while-revalidate UX).
+- Verified end-to-end: backend curl-tested (cache hit 0.24s; live job progressed 4 real SAP levels/36 lookups over ~40s; force_refresh updated the cache timestamp), then `testing_agent` (iteration_148): 100% pass, no regressions to AI Categorize/Standard Costs/Drawings/Export/sort/filter, no mobile overflow.
+
 ### P1
 - **Thread Pool Exhaustion**: `asyncio.to_thread` on blocking SAP calls exhausts the default executor, causing ~60s stalls under load. Move to a dedicated `ThreadPoolExecutor`. Not started (explicitly deferred by user).
 - **SAP Custom BO / ABSL Web Service Authorization**: blocked on SAP Admin fixing Work Center View binding for `CombineView` in SAP UI Business Roles.
