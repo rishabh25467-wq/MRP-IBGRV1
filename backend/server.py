@@ -6275,6 +6275,33 @@ async def post_stock_transfer_order_retry_erp_sync(sto_id: str):
     return {"status": "restarted"}
 
 
+class ManualErpLinkRequest(BaseModel):
+    sale_no: int
+    sale_noc: int
+
+
+@api_router.post("/stock-transfer/orders/{sto_id}/manual-erp-link")
+async def post_stock_transfer_order_manual_erp_link(sto_id: str, payload: ManualErpLinkRequest, request: Request):
+    """Admin-only recovery (Sep 9 2026, real incident STO-000202/000203 -
+    see manually_link_erp_sale_no's own docstring) for when a Delivery
+    Challan genuinely already exists in the ERP for this order but the
+    app never recorded it - a human has confirmed (outside this app,
+    e.g. from the physical Challan) which Sale_No it really is."""
+    if request.state.user.get("role") not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    try:
+        await asyncio.to_thread(
+            stock_transfer_service.manually_link_erp_sale_no, db, sto_id,
+            payload.sale_no, payload.sale_noc,
+            (request.state.user.get("name") or request.state.user.get("email") or "Unknown").strip(),
+        )
+    except stock_transfer_service.StockTransferOrderNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except stock_transfer_service.StockTransferValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "linked"}
+
+
 
 @api_router.get("/admin/notifications")
 async def get_admin_notifications(request: Request):

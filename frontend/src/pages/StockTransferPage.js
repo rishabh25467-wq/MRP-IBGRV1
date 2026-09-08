@@ -138,7 +138,7 @@ const DebugScreenshotsViewer = ({ stoId }) => {
   );
 };
 
-export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingErpStoId, onRetryErpSync, retryingGiStoId, onRetryGoodsIssue, stoppingGiStoId, onForceStopGi, isAdmin, notifications, activateResults, activatingId, confirmActivateFor, setConfirmActivateFor, onActivate }) => {
+export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingErpStoId, onRetryErpSync, onManualErpLink, retryingGiStoId, onRetryGoodsIssue, stoppingGiStoId, onForceStopGi, isAdmin, notifications, activateResults, activatingId, confirmActivateFor, setConfirmActivateFor, onActivate }) => {
   if (!order) return null;
   // User's explicit ask (Sep 3 2026): the "Activate this site" fix action
   // for a "No valid planning data..." rejection used to live ONLY in the
@@ -271,6 +271,15 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
                   {retryingErpStoId === order.sto_id ? <CircleNotch size={14} className="animate-spin mr-1.5" /> : null}
                   Retry ERP Sync
                 </Button>
+                {isAdmin && (
+                  <Button
+                    size="sm" variant="outline" className="mt-2 ml-2"
+                    onClick={() => onManualErpLink(order.sto_id)}
+                    data-testid="stock-transfer-manual-erp-link-btn"
+                  >
+                    Link to Existing Challan
+                  </Button>
+                )}
               </>
             )}
             {order.erp_portal_status === "synced" && (
@@ -561,6 +570,20 @@ export default function StockTransferPage() {
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Could not retry ERP Portal sync.");
       setRetryingErpStoId(null);
+    }
+  };
+
+  const handleManualErpLink = async (stoId) => {
+    const sale_no = window.prompt("Sale_No of the Delivery Challan that already exists in the ERP for this order?");
+    if (!sale_no) return;
+    const sale_noc = window.prompt("Sale_Noc for that same Challan?");
+    if (!sale_noc) return;
+    try {
+      await axios.post(`${API}/stock-transfer/orders/${stoId}/manual-erp-link`, { sale_no: Number(sale_no), sale_noc: Number(sale_noc) });
+      toast.success(`Linked to existing Challan Sale_No ${sale_no}.`);
+      loadRecentOrders();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not link this order to that Challan.");
     }
   };
 
@@ -1504,7 +1527,7 @@ export default function StockTransferPage() {
                 <OrderDetailBody
                   order={createdOrderLive}
                   retryingStoId={retryingStoId} onRetryOrder={handleRetryOrder}
-                  retryingErpStoId={retryingErpStoId} onRetryErpSync={handleRetryErpSync}
+                  retryingErpStoId={retryingErpStoId} onRetryErpSync={handleRetryErpSync} onManualErpLink={handleManualErpLink}
                   retryingGiStoId={retryingGiStoId} onRetryGoodsIssue={handleRetryGoodsIssue}
                   stoppingGiStoId={stoppingGiStoId} onForceStopGi={handleForceStopGi} isAdmin={isAdmin}
                   notifications={notifications} activateResults={activateResults} activatingId={activatingId}
@@ -1581,7 +1604,7 @@ export default function StockTransferPage() {
               <OrderDetailBody
                 order={selectedOrder}
                 retryingStoId={retryingStoId} onRetryOrder={handleRetryOrder}
-                retryingErpStoId={retryingErpStoId} onRetryErpSync={handleRetryErpSync}
+                retryingErpStoId={retryingErpStoId} onRetryErpSync={handleRetryErpSync} onManualErpLink={handleManualErpLink}
                 retryingGiStoId={retryingGiStoId} onRetryGoodsIssue={handleRetryGoodsIssue}
                 stoppingGiStoId={stoppingGiStoId} onForceStopGi={handleForceStopGi} isAdmin={isAdmin}
                 notifications={notifications} activateResults={activateResults} activatingId={activatingId}

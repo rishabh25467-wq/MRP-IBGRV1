@@ -1467,9 +1467,23 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str)
         never a fresh SAP call here.
       Trans = Freight Forwarder / Transporter name (Aug 27 2026, user's
         explicit ask - now a mandatory field on the STO form, see
-        create_stock_transfer_order). Emp_no/ElecRefNo/Padd_Code1/
-        Padd_Code2/Term1-3 all still left blank - user's explicit
-        instruction (not captured/needed today).
+        create_stock_transfer_order). ElecRefNo/Padd_Code1/Padd_Code2/
+        Term1-3 all still left blank - user's explicit instruction (not
+        captured/needed today).
+      Emp_no = this order's own SAP Order ID (Sep 9 2026 fix, real
+        incident STO-000202/000203 - see erp_portal_client's own
+        duplicate-check docstring note below). Previously always left
+        blank per an earlier explicit instruction, but the ERP's own
+        Pro_DeliveryChallan_Insert proc rejects a new Challan as a
+        duplicate purely on (Plant, Customer, Emp_no, Amount) - it does
+        NOT consider date or product at all. Two genuinely different
+        STOs shipping the identical product+qty (same Amount) back to
+        back is a real, unremarkable scenario (confirmed live: 2
+        identical Wall Plate x460 EA shipments 2 minutes apart), and the
+        second one was permanently blocked as a "duplicate" of the
+        first's own already-successful Challan. Since Order IDs are
+        always unique, this alone is enough to stop the false collision
+        without the ERP team needing to change their own proc.
       InvStk_status = always "Open" on creation (user's explicit ask,
         Aug 27 2026) - see erp_portal_client.create_delivery_challan
         (the stored proc itself has no parameter for this column at all,
@@ -1528,7 +1542,7 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str)
         "tdis_amt": 0,
         "ttaxable_amt": round(total_amount, 2),
         "term1": None, "term2": None, "term3": None,
-        "emp_no": None,
+        "emp_no": doc.get("sap_order_id"),
     }
     result = erp_portal_client.create_delivery_challan(header, line_items)
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
@@ -1546,6 +1560,36 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str)
 
 def mark_erp_portal_failed(db, sto_id: str, error: str) -> None:
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"erp_portal_status": "failed", "erp_portal_error": error}, "$unset": {"erp_sync_retry_started_at": ""}})
+
+
+def manually_link_erp_sale_no(db, sto_id: str, sale_no: int, sale_noc: int, actor: str) -> None:
+    """Admin-only recovery (Sep 9 2026, real incident STO-000202): the
+    ERP write can genuinely succeed (record committed, real Sale_No
+    assigned) while the app still shows "failed" - e.g. the connection
+    dropped right after commit but before the OUTPUT param could be
+    read back, or (this incident) 2 back-to-back STOs shipped the exact
+    identical product+qty, so ERP's own duplicate-check (Plant+
+    Customer+Emp_no+Amount, no date/product) rejected the SECOND one's
+    insert as a "duplicate" of the FIRST one's already-successful
+    Challan, leaving the first looking "failed" too even though its
+    own Sale_No 38682 was real. There is no way to safely auto-detect
+    which of 2 identical-shipment orders a pre-existing Challan
+    actually belongs to (confirmed live - both orders had the exact
+    same Plant/Customer/Product/Qty/Amount), so this requires a human
+    to confirm it (e.g. from the physical Challan/vehicle number) - see
+    the corresponding /manual-erp-link endpoint, admin/super_admin
+    only. Blocked once already "synced" for the same reason
+    reset_erp_portal_sync_for_retry is."""
+    doc = db[STO_COLLECTION].find_one({"_id": sto_id})
+    if not doc:
+        raise StockTransferOrderNotFoundError(f"Stock Transfer Order {sto_id} not found.")
+    if doc.get("erp_portal_status") == "synced":
+        raise StockTransferValidationError("This order has already synced to the ERP Portal.")
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
+        "erp_portal_status": "synced", "erp_portal_error": None,
+        "erp_sale_no": sale_no, "erp_sale_noc": sale_noc,
+        "erp_manually_linked_by": actor, "erp_manually_linked_at": datetime.now(timezone.utc),
+    }, "$unset": {"erp_sync_retry_started_at": ""}})
 
 
 def mark_erp_portal_syncing(db, sto_id: str) -> None:
