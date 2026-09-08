@@ -374,11 +374,41 @@ def log_order_release(db, actor: str, production_order_id: str, result: dict, jo
     under a BRAND NEW job_id (the original job doc has long since expired
     from job_store's 24h TTL, or might even still be alive as a DIFFERENT
     unrelated job) - matching by the Proposal ID itself instead still
-    finds and updates the SAME original row in-place."""
-    if job_id or match_proposal_id:
-        query = {"job_id": job_id, "type": "proposal_created"} if job_id else {"production_proposal_id": match_proposal_id, "type": "proposal_created"}
+    finds and updates the SAME original row in-place.
+
+    Real incident fix (Sep 9 2026, proposals 230577/230628, order 72180):
+    a Retry/Resume always passes BOTH a job_id (its own brand new one,
+    never present on the ORIGINAL proposal_created row - that row's
+    job_id field is the OLD, now-irrelevant job) AND match_proposal_id
+    (the real link back to the original row). The old code tried job_id
+    FIRST and, since that job_id can never match here by construction,
+    silently gave up (matched_count==0) WITHOUT ever trying
+    match_proposal_id - falling through to a disconnected `insert_one`
+    every single time a retry/resume actually completed. This created a
+    duplicate "order_released" row (order 72180 appeared as its own
+    line instead of updating the original proposal 230577/230628 row in
+    place) AND left the original row's `production_order_id` unset
+    forever, so its "Retry" button kept showing even after the retry had
+    genuinely succeeded (can_retry only looks at whether
+    production_order_id is set). Fixed: try job_id first, then ALSO try
+    match_proposal_id before giving up and inserting a new row - either
+    match updates the original row in-place."""
+    if job_id:
         updated = db[PROPOSAL_HISTORY_COLLECTION].update_one(
-            query,
+            {"job_id": job_id, "type": "proposal_created"},
+            {"$set": {
+                "production_order_id": production_order_id,
+                "released": result.get("success"),
+                "released_at": datetime.now(timezone.utc),
+                "released_by": actor,
+                "released_by_user_id": actor_user_id,
+            }},
+        )
+        if updated.matched_count:
+            return
+    if match_proposal_id:
+        updated = db[PROPOSAL_HISTORY_COLLECTION].update_one(
+            {"production_proposal_id": match_proposal_id, "type": "proposal_created"},
             {"$set": {
                 "production_order_id": production_order_id,
                 "released": result.get("success"),
