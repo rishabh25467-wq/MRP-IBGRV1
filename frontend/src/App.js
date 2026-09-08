@@ -32,11 +32,13 @@ import SupplierPendingPage from "@/pages/supplier-portal/SupplierPendingPage";
 import SupplierDashboardPage from "@/pages/supplier-portal/SupplierDashboardPage";
 import SupplierShipmentsPage from "@/pages/supplier-portal/SupplierShipmentsPage";
 import SupplierDocumentsPage from "@/pages/supplier-portal/SupplierDocumentsPage";
+import SupplierAuditsPage from "@/pages/supplier-portal/SupplierAuditsPage";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { SupplierAuthProvider, useSupplierAuth } from "@/contexts/SupplierAuthContext";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { Footer } from "@/components/Footer";
 import { ConcurrencyBadge } from "@/components/ConcurrencyBadge";
+import { Toaster } from "@/components/ui/sonner";
 
 // Aug 2026: Store Approval now requires Entra ID login like every other
 // page (was previously exempted here) - user's explicit ask, now that
@@ -113,7 +115,7 @@ function SupplierPortalGate({ page }) {
   if (!account) return <Navigate to="/supplier-portal/login" replace />;
   if (account.status !== "approved") return <SupplierPendingPage />;
   if (!vendorCode) return <Navigate to={`/supplier-portal/${page}/${account.vendor_code}`} replace />;
-  return page === "shipments" ? <SupplierShipmentsPage /> : page === "documents" ? <SupplierDocumentsPage /> : <SupplierDashboardPage />;
+  return page === "shipments" ? <SupplierShipmentsPage /> : page === "documents" ? <SupplierDocumentsPage /> : page === "audits-qc" ? <SupplierAuditsPage /> : <SupplierDashboardPage />;
 }
 
 function InternalApp() {
@@ -180,6 +182,8 @@ function AppShell() {
             <Route path="/supplier-portal/shipments/:vendorCode" element={<SupplierPortalGate page="shipments" />} />
             <Route path="/supplier-portal/documents" element={<SupplierPortalGate page="documents" />} />
             <Route path="/supplier-portal/documents/:vendorCode" element={<SupplierPortalGate page="documents" />} />
+            <Route path="/supplier-portal/audits-qc" element={<SupplierPortalGate page="audits-qc" />} />
+            <Route path="/supplier-portal/audits-qc/:vendorCode" element={<SupplierPortalGate page="audits-qc" />} />
           </Routes>
         </div>
         <Footer />
@@ -196,6 +200,7 @@ function App() {
         <BrowserRouter>
           <AppShell />
         </BrowserRouter>
+        <Toaster />
       </SupplierAuthProvider>
     </AuthProvider>
   );

@@ -1,141 +1,167 @@
 {
-  "project_name": "SAP BOM Viewer & Enterprise Procurement Portal",
-  "theme_archetype": "Swiss Enterprise / JDE Tactical Density",
-  "app_type": "saas_app",
+  "project_name": "Materials Hub - SAP BOM/MRP Supplier & Vendor Portal",
+  "app_type": "dashboard",
+  "design_context": "B2B External Vendor Portal (SAP Materials Hub)",
+  "emotional_archetype": "Archetype 4: Swiss & High-Contrast meets Performance Pro (Precision, Industrial Authority, Crisp Workflow)",
+  "theme": "Light theme default with rich Slate/Obsidian contrast elements, sharp metrics hierarchy, and crisp interactive states",
   "typography": {
-    "headings_font": "Chivo, sans-serif",
-    "body_font": "IBM Plex Sans, sans-serif",
-    "data_font": "JetBrains Mono, monospace",
-    "anti_default_rule": "Do not default to Inter or Arial for headlines. Use Chivo for section titles and JetBrains Mono for monetary values and item codes.",
+    "heading_font": "Cabinet Grotesk, Outfit, or General Sans (Modern Industrial Display)",
+    "body_font": "IBM Plex Sans, DM Sans, or Inter",
+    "forbidden_font": "Space Grotesk (Banned for dashboards)",
     "hierarchy": {
-      "page_title": "text-xl sm:text-2xl font-bold tracking-tight font-heading (Chivo)",
-      "section_heading": "text-[11px] font-bold uppercase tracking-wide text-[#344054] font-heading (Chivo)",
-      "card_title": "text-sm font-semibold font-heading",
-      "table_header": "text-xs font-bold uppercase text-[#344054] font-heading bg-[#EAECF0]",
-      "table_data": "text-xs font-data (JetBrains Mono) text-[#101828]",
-      "body": "text-xs sm:text-sm font-sans (IBM Plex Sans) text-[#344054]",
-      "microcopy": "text-[11px] text-[#667085]"
+      "page_title": "text-2xl md:text-3xl font-bold tracking-tight text-slate-900",
+      "section_heading": "text-lg md:text-xl font-semibold tracking-tight text-slate-900",
+      "card_title": "text-sm font-semibold text-slate-800 uppercase tracking-wider",
+      "body_text": "text-sm text-slate-600 leading-relaxed",
+      "metric_number": "text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight"
     }
   },
   "colors": {
-    "primary": "#004B87",
-    "primary_hover": "#003A6A",
-    "primary_active": "#00294D",
-    "header_teal": "#0E7C86",
-    "background_app": "#F2F4F7",
-    "card_background": "#FFFFFF",
-    "card_border": "#D0D5DD",
-    "table_header_bg": "#EAECF0",
-    "zebra_bg": "#F9FAFB",
-    "status_success_bg": "#ECFDF3",
-    "status_success_border": "#ABEFC6",
-    "status_success_text": "#027A48",
-    "status_warning_bg": "#FFFAEB",
-    "status_warning_border": "#FEDF89",
-    "status_warning_text": "#B54708",
-    "status_danger_bg": "#FEF3F2",
-    "status_danger_border": "#FECDCA",
-    "status_danger_text": "#B42318",
-    "accent_blue_bg": "#EFF8FF",
-    "accent_blue_border": "#B2DDFF",
-    "accent_blue_text": "#175CD3",
-    "forbidden_colors": ["#7351B7", "#1B93A4"]
-  },
-  "visual_enhancers": {
-    "borders": "1px solid #D0D5DD with rounded-sm (2px/4px border radius)",
-    "shadows": "shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] for cards; no soft blurred floating glow",
-    "data_density": "Compact enterprise table padding (py-1.5 px-2.5) with direct grid borders",
-    "split_schedule_connector": "Left border accent (3px solid #004B87) or tree branch indicator (└─) for split delivery child rows"
-  },
-  "component_name": {
-    "page": "PurchaseOrderPage.jsx",
-    "sub_components": [
-      "PrLookupCard",
-      "OrgContextCard",
-      "SupplierTermsCard",
-      "LineItemsEngine",
-      "DeliveryScheduleSplitGroup",
-      "SplitAllocationProgressBar",
-      "InlineSplitGuidanceBanner",
-      "OrderSummarySidebar",
-      "ConfirmDialog"
-    ]
-  },
-  "grids": {
-    "layout_mode": "MODE B: High Density Grid (Enterprise Procurement / Analytics)",
-    "base_grid": "grid-cols-1 lg:grid-cols-12 gap-4",
-    "main_content_span": "lg:col-span-8 xl:col-span-9",
-    "sidebar_span": "lg:col-span-4 xl:col-span-3",
-    "card_inner_grid": "grid-cols-1 md:grid-cols-3 gap-3"
-  },
-  "layouts": {
-    "header": "Fixed h-16 bg-[#0E7C86] with logo, NavTabs, and SapConnectionStatus",
-    "body": "Max width 1400px centered with responsive padding px-4 sm:px-6 lg:px-8 py-4",
-    "line_items_table": "Dense border-collapsed table with sticky headers and explicit schedule split groupings"
-  },
-  "motion": {
-    "transitions": "transition-colors duration-150 ease-in-out for buttons and row hovers",
-    "micro_interactions": "Subtle scale or background highlight on split button click",
-    "no_universal_transition": "Do not use transition: all. Target specific CSS properties."
-  },
-  "accessibility": {
-    "wcag_level": "WCAG AA (minimum 4.5:1 text contrast)",
-    "data_testid_required": true,
-    "interactive_elements": "All buttons, inputs, selects, and status indicators must carry data-testid attributes formatted in kebab-case."
-  },
-  "media": {
-    "use_icons": "@phosphor-icons/react (Calendar, Truck, Plus, Trash, Copy, Split, CheckCircle, WarningCircle, ShieldCheck, ListChecks, FileMagnifyingGlass)",
-    "image_usage": "Functional enterprise icons and badges only. Stock photos are excluded for this backend ERP table view."
-  },
-  "3d_libraries": {
-    "enabled": false,
-    "reason": "Enterprise SAP procurement application requires flat high-density data tables for functional legibility."
-  },
-  "split_delivery_schedule_redesign": {
-    "feature_title": "Redesigned Split Delivery Schedule Flow",
-    "problem_addressed": "Buyers lacked clarity on how to split a Purchase Requisition item into multiple delivery dates. The action was represented by an ambiguous 'Duplicate row' copy icon button without context, labels, or allocation feedback.",
-    "proposed_solutions": {
-      "1_microcopy_and_action_button": {
-        "button_type": "Explicit Action Button with Label",
-        "desktop_text": "Split Schedule",
-        "button_icon": "Calendar/Truck icon with Plus (+)",
-        "tooltip_text": "Split this PR item into multiple delivery dates & partial quantities",
-        "data_testid": "po-line-split-schedule-button-{idx}"
+    "forbidden_color": "#1B93A4 (Teal green/blue is strictly banned)",
+    "primary": {
+      "brand_blue": "#1E40AF",
+      "brand_indigo": "#4338CA",
+      "brand_hover": "#1E3A8A",
+      "brand_light": "#EEF2FF"
+    },
+    "slate_neutrals": {
+      "bg_app": "#F8FAFC",
+      "bg_card": "#FFFFFF",
+      "border": "#E2E8F0",
+      "border_subtle": "#F1F5F9",
+      "text_primary": "#0F172A",
+      "text_secondary": "#475569",
+      "text_muted": "#94A3B8"
+    },
+    "status_badges": {
+      "in_transit_blue": {
+        "bg": "#EFF6FF",
+        "text": "#1E40AF",
+        "border": "#BFDBFE"
       },
-      "2_visual_grouping_treatment": {
-        "group_container": "Grouped table block with a distinct light blue accent background (#F0F7FF) and a 3px left border accent (#004B87)",
-        "group_header": "Header badge showing 'PR Line #{prLineNo} · {count} Scheduled Deliveries' with total PR quantity",
-        "child_row_indicator": "Tree-connector icon (└─) or 'Delivery #2' badge distinguishing child schedule rows from parent"
+      "received_green": {
+        "bg": "#ECFDF5",
+        "text": "#065F46",
+        "border": "#A7F3D0"
       },
-      "3_allocation_progress_indicator": {
-        "badge_format": "Progress bar + counter badge",
-        "states": {
-          "under_allocated": "Yellow/Amber badge: '60 / 100 EA allocated (40 EA remaining)'",
-          "fully_allocated": "Green check badge: '100 / 100 EA fully scheduled'",
-          "over_allocated": "Red error alert: '120 / 100 EA - Exceeds PR qty by 20 EA'"
-        },
-        "visual_element": "Compact inline progress bar in the table cell under the Qty input"
+      "discrepancy_amber": {
+        "bg": "#FFFBEB",
+        "text": "#92400E",
+        "border": "#FDE68A"
       },
-      "4_inline_guidance": {
-        "location": "Top of Line Items Engine card or sticky helper popup",
-        "content": "💡 Delivery Split Tip: To schedule staggered shipments for a single PR line item, click 'Split Schedule' on the row. Adjust quantities and target delivery dates for each batch until total matches approved PR quantity."
+      "rejected_red": {
+        "bg": "#FEF2F2",
+        "text": "#991B1B",
+        "border": "#FECACA"
+      },
+      "open_nc_orange": {
+        "bg": "#FFEDD5",
+        "text": "#9A3412",
+        "border": "#FED7AA"
       }
     }
   },
-  "image_urls": [],
+  "navigation_structure": {
+    "layout": "Persistent Left Sidebar + Top Header bar with Quick Actions & Vendor Profile Badge",
+    "sidebar_items": [
+      {
+        "id": "nav-dashboard",
+        "label": "Dashboard",
+        "icon": "LayoutDashboard",
+        "path": "/supplier-portal/dashboard"
+      },
+      {
+        "id": "nav-purchase-orders",
+        "label": "Purchase Orders",
+        "icon": "FileText",
+        "path": "/supplier-portal/purchase-orders"
+      },
+      {
+        "id": "nav-shipments",
+        "label": "Shipments",
+        "icon": "Truck",
+        "path": "/supplier-portal/shipments"
+      },
+      {
+        "id": "nav-documents",
+        "label": "Compliance & Documents",
+        "icon": "FileCheck",
+        "path": "/supplier-portal/documents"
+      },
+      {
+        "id": "nav-audits-qc",
+        "label": "Audits & QC (QMS)",
+        "icon": "ShieldAlert",
+        "badge": "QMS",
+        "path": "/supplier-portal/audits-qc"
+      }
+    ],
+    "header_features": [
+      "Vendor Code + Name Badge (e.g. VEND-88402 | Apex Precision Components)",
+      "SAP Sync Status Indicator ('SAP ERP Connected')",
+      "Quick Create Shipment button",
+      "JWT Logout action"
+    ]
+  },
+  "page_specifications": {
+    "dashboard": {
+      "title": "Vendor Control Center",
+      "sections": [
+        "Company Profile Summary Card (Vendor Code, GSTIN/Tax ID, Payment Terms, MSME Category, ERP Rating)",
+        "Key Metric Bento Cards (Active POs, Total Outstanding Qty, In-Transit Shipments, Open QC NCs)",
+        "Actionable Assigned Purchase Orders Table with remaining qty highlight & quick dispatch action",
+        "Recent Activity & Compliance Reminders"
+      ]
+    },
+    "shipments": {
+      "title": "In-Transit Shipments & Dispatch Tracking",
+      "sections": [
+        "Shipment Summary Bar (In Transit, Discrepancy, Received, Rejected)",
+        "Create Shipment Modal / Form (PO line item selection, ASN number, Lorry receipt / Tracking #, expected delivery date, driver details)",
+        "Shipment History Table with Status Filter, inline item details, & Edit Shipment drawer"
+      ]
+    },
+    "documents": {
+      "title": "Vendor Compliance & Statutory Documents",
+      "sections": [
+        "Mandatory Upload Cards: MSME Registration Certificate & Bank Details / Cancelled Cheque",
+        "Version History Log (Revision history, timestamp, verified status, download link - NEVER deleted, audit trail preserved)",
+        "Document Upload Form with File Validation and Expiry Tracking"
+      ]
+    },
+    "audits_qc": {
+      "title": "Audits & Quality Control (QMS Integration)",
+      "banner": {
+        "text": "DEMO DATA DISCLOSURE: The QMS Integration feed is currently operating in Preview/Demo mode. Data shown below illustrates real-time Q-Notifications and Audit Non-Conformances once live QMS API sync is finalized.",
+        "type": "warning_banner"
+      },
+      "sections": [
+        "QC Metrics Overview (Total Q-Notifications, Open Audit NCs, CAP Pending Action, Pass Rate %)",
+        "Tab 1: Q-Notifications List (Defect type, Material Code, Affected Qty, Inspection Lot #, Severity, Status)",
+        "Tab 2: Audit Non-Conformances (NC #, Audit Date, Finding Description, ISO Standard Clause, Risk Level)",
+        "Corrective Action Plan (CAP) Submission Form / Modal (Root Cause Analysis text area, Immediate Containment Action, Corrective Action Plan, Target Completion Date, Evidence File Upload)"
+      ]
+    }
+  },
+  "image_urls": {
+    "warehouse_loading": "https://images.unsplash.com/photo-1782942444654-246a874bd1a1?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MTJ8MHwxfHNlYXJjaHw0fHxpbmR1c3RyaWFsJTIwbWFudWZhY3R1cmluZyUyMGxvZ2lzdGljcyUyMHdhcmVob3VzZSUyMEIyQnxlbnwwfHx8fDE3ODg4NjU4NDV8MA&ixlib=rb-4.1.0&q=85",
+    "warehouse_aisle": "https://images.unsplash.com/photo-1592085198739-ffcad7f36b54?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MTJ8MHwxfHNlYXJjaHxfHxpbmR1c3RyaWFsJTIwbWFudWZhY3R1cmluZyUyMGxvZ2lzdGljcyUyMHdhcmVob3VzZSUyMEIyQnxlbnwwfHx8fDE3ODg4NjU4NDV8MA&ixlib=rb-4.1.0&q=85",
+    "forklift_logistics": "https://images.unsplash.com/photo-1740914994657-f1cdffdc418e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MTJ8MHwxfHNlYXJjaHwyfHxpbmR1c3RyaWFsJTIwbWFudWZhY3R1cmluZyUyMGxvZ2lzdGljcyUyMHdhcmVob3VzZSUyMEIyQnxlbnwwfHx8fDE3ODg4NjU4NDV8MA&ixlib=rb-4.1.0&q=85"
+  },
   "instructions_to_main_agent": [
-    "Implement the redesigned Split Delivery Schedule interaction in frontend/src/pages/PurchaseOrderPage.jsx.",
-    "Replace the plain Copy icon button with an explicitly labeled button: 'Split Schedule' with a Calendar or Truck icon and clear tooltip.",
-    "Add visual grouping for rows sharing the same prLineNo, using a 3px left border (#004B87), light background shading (#F0F7FF), and a schedule sub-header badge.",
-    "Redesign the allocation indicator below the quantity input into a clear progress bar & status badge (Green for exact match, Amber for remaining, Red for overflow).",
-    "Add an inline guidance banner above the line items table explaining how to split shipments into batches.",
-    "Ensure all new interactive elements contain role-based data-testid attributes for automated testing."
+    "Ensure ALL interactive elements (buttons, nav items, inputs, table rows, modals, tabs) include meaningful `data-testid` attributes (e.g. data-testid='nav-audits-qc', data-testid='submit-cap-button', data-testid='qms-demo-banner').",
+    "Do NOT use teal green/blue (#1B93A4 or #0E7C86) for primary surfaces. Use crisp Slate/Indigo/Blue palette.",
+    "Do NOT use Space Grotesk font.",
+    "Implement Sonner toast notifications for actions (Shipment created, Document uploaded, CAP submitted).",
+    "Ensure persistent left sidebar with clean collapsible mobile menu and active route highlight.",
+    "Provide demo data disclosure banner on the Audits & QC page prominently at the top.",
+    "Keep full functional backward compatibility for login/JWT auth and existing supplier API endpoints while dramatically improving UI polish."
   ],
-  "UNIVERSAL GUIDELINES FOR MAIN AGENT": {
-    "avoid_ai_slop": "Do not default to generic centered designs or unstyled tables. Use JDE enterprise table borders, high contrast headers, and strict typography hierarchy.",
-    "no_universal_transition": "Do not apply transition: all. Apply transitions specifically to hover and focus states.",
-    "data_testid": "Every button, input, tab, select, and status badge MUST have a data-testid attribute in kebab-case.",
-    "color_contrast": "Ensure all text meets WCAG AA contrast standards (minimum 4.5:1 ratio).",
-    "spacing": "Maintain 12px to 16px container padding for card containers to prevent text collisions with borders."
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": {
+    "spacing": "Generous spacing philosophy (p-6, gap-6, py-8) to prevent visual clutter",
+    "borders": "1px crisp slate-200 borders with subtle hover highlights",
+    "radius": "rounded-lg or rounded-xl for containers",
+    "micro_interactions": "Smooth transition-colors and hover:translate-y-[-1px] for card buttons",
+    "accessibility": "High contrast WCAG AA compliant text over light backgrounds"
   }
 }

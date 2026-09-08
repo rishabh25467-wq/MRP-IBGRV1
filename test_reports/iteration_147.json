@@ -1,0 +1,26 @@
+{
+  "summary": "Frontend-only regression + new-feature test of the Supplier Portal Swiss High-Contrast redesign + new Audits & QC page for H1330 (test@test.com/Test123). Login, persistent left sidebar shell (dashboard/shipments/documents/audits-qc nav items), KPI bento cards, mobile hamburger drawer, cross-page navigation, demo-data banner, QMS metrics row, both tabs (Q-Notifications + Audit NCs), CAP validation error on empty submit, successful CAP submit + persistence across full page reload (GET /api/supplier-portal/caps returns the new row) all verified end-to-end. No blocking bugs found.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard (H1330, first paint)", "issues": ["Active POs / Outstanding Qty / In-Transit KPI cards show 0 while POs are still loading (Loading your Purchase Orders... visible). They do update once /purchase-orders resolves, but a brief '0' flash is visible for ~1-2s. Minor - consider a skeleton state on the KPI numbers instead of showing 0."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "SupplierAuditsPage.jsx: pendingCapCount = 11 while the page only surfaces 6 Q-Notifications + 5 NCs (11 rows total) - i.e. the metric currently counts EVERY not-yet-CAPped open row regardless of whether it's already Closed. Filter looks correct on read (q.status !== 'Closed') but you may want to double-check the mock data's Closed rows so the CAP-Pending KPI doesn't overstate. Not a blocker.",
+    "Dashboard KPI cards default to 0 while data is loading which visually flickers - consider showing '-' or a small skeleton until both /purchase-orders and /shipments resolve, since the user requested 'sensible non-crashing numbers'.",
+    "SupplierPortalLayout.jsx line 41: data-testid mapping uses inline ternary (`audits` -> `audits-qc`). Works, but a small map { audits: 'audits-qc' } is cleaner and easier to extend."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (frontend-only run)", "frontend": "100% of requested flows"},
+  "test_credentials": "test@test.com / Test123 (vendor_code H1330). A CAP row was persisted for QN-911-1 (reference_type=q_notification) during this run - safe to leave, main agent said either leave or they will clean up.",
+  "seed_data_creation": "One real CAP submission was POSTed to MongoDB collection supplier_cap_submissions: reference_type=q_notification, reference_id=QN-911-1, vendor_code H1330. Verified persistent across full page reload.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Sidebar shell (SupplierPortalLayout) is shared across Dashboard/Shipments/Documents/Audits pages - nav data-testids are nav-dashboard, nav-shipments, nav-documents, nav-audits-qc. Mobile hamburger toggle is supplier-mobile-nav-toggle (< md). Sonner Toaster is mounted globally in App.js. CAP endpoints POST/GET /api/supplier-portal/caps are LIVE and persist. Q-Notifications/Audit-NC data itself is deterministic frontend mock (qmsMockData.js) - do NOT flag that.",
+  "rca of the issue": "N/A - no failing flow. The one flaky-looking observation (nav-dashboard/nav-shipments returning is_visible=False in the very first check right after login, before the sidebar mount settled) is a Playwright non-auto-waiting is_visible race, not a product bug - screenshots and subsequent clicks on the same selectors succeeded, confirming the elements are correctly in the DOM and interactive."
+}

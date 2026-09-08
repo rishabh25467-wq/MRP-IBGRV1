@@ -338,6 +338,52 @@ def record_resend(db, invite_id: str, resent_by: str) -> dict:
     return get_invite(db, invite_id)
 
 
+# ---- Corrective Action Plan (CAP) submissions (Sep 2026, user's explicit
+# ask): vendor-submitted CAPs against the (currently mocked/demo, Phase 5
+# QMS feed pending) Q-Notifications and Audit NCs shown on the Audits & QC
+# page. Persisted so a vendor's submission history survives a page
+# revisit, even though the reference records themselves are still demo
+# data - each submission just needs a stable reference_id to key off. ----
+
+CAP_SUBMISSIONS_COLLECTION = "supplier_cap_submissions"
+
+
+def create_cap_submission(db, account: dict, payload: dict, evidence_bytes: bytes = None,
+                           evidence_filename: str = None, evidence_content_type: str = None) -> dict:
+    required = ("reference_type", "reference_id", "root_cause", "containment_action", "corrective_action", "target_completion_date")
+    if not all((payload.get(k) or "").strip() for k in required):
+        raise SupplierPortalValidationError("Root cause, containment action, corrective action, and target completion date are required")
+
+    cap_id = str(uuid.uuid4())
+    evidence = None
+    if evidence_bytes:
+        ext = evidence_filename.rsplit(".", 1)[-1] if evidence_filename and "." in evidence_filename else "bin"
+        path = f"{APP_NAME}/supplier-docs/{account['_id']}/cap/{cap_id}.{ext}"
+        object_storage_service.put_object(path, evidence_bytes, evidence_content_type or "application/octet-stream")
+        evidence = {"path": path, "filename": evidence_filename, "content_type": evidence_content_type}
+
+    doc = {
+        "_id": cap_id,
+        "account_id": account["_id"],
+        "vendor_code": account["vendor_code"],
+        "reference_type": payload["reference_type"],
+        "reference_id": payload["reference_id"],
+        "root_cause": payload["root_cause"].strip(),
+        "containment_action": payload["containment_action"].strip(),
+        "corrective_action": payload["corrective_action"].strip(),
+        "target_completion_date": payload["target_completion_date"],
+        "evidence": evidence,
+        "status": "submitted",
+        "created_at": datetime.now(timezone.utc),
+    }
+    db[CAP_SUBMISSIONS_COLLECTION].insert_one(doc)
+    return doc
+
+
+def list_cap_submissions(db, vendor_code: str) -> list:
+    return list(db[CAP_SUBMISSIONS_COLLECTION].find({"vendor_code": vendor_code}).sort("created_at", -1))
+
+
 def list_invites(db) -> list:
     """Each invite is enriched with `signup_status` - whether that
     vendor code has actually signed up yet (user's explicit ask), by

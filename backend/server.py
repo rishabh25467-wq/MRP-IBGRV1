@@ -6659,6 +6659,41 @@ async def get_supplier_portal_document_version(doc_type: str, version: int, requ
     return Response(content=data, media_type=content_type, headers={"Content-Disposition": f'inline; filename="{filename}"'})
 
 
+@api_router.get("/supplier-portal/caps")
+async def get_supplier_portal_caps(request: Request, as_vendor: str = Query(None)):
+    account = await asyncio.to_thread(_require_supplier_account, request)
+    vendor_code = _effective_vendor_code(account, as_vendor)
+    return {"caps": await asyncio.to_thread(supplier_portal_service.list_cap_submissions, db, vendor_code)}
+
+
+@api_router.post("/supplier-portal/caps")
+async def post_supplier_portal_cap(
+    request: Request,
+    reference_type: str = Form(...),
+    reference_id: str = Form(...),
+    root_cause: str = Form(...),
+    containment_action: str = Form(...),
+    corrective_action: str = Form(...),
+    target_completion_date: str = Form(...),
+    evidence: UploadFile = File(None),
+):
+    account = await asyncio.to_thread(_require_supplier_account, request)
+    evidence_bytes = await evidence.read() if evidence else None
+    payload = {
+        "reference_type": reference_type, "reference_id": reference_id, "root_cause": root_cause,
+        "containment_action": containment_action, "corrective_action": corrective_action,
+        "target_completion_date": target_completion_date,
+    }
+    try:
+        cap = await asyncio.to_thread(
+            supplier_portal_service.create_cap_submission, db, account, payload,
+            evidence_bytes, evidence.filename if evidence else None, evidence.content_type if evidence else None,
+        )
+    except supplier_portal_service.SupplierPortalValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return cap
+
+
 @api_router.get("/admin/supplier-portal/accounts")
 async def get_admin_supplier_portal_accounts(status: str = Query(None)):
     return {"accounts": await asyncio.to_thread(supplier_portal_service.list_accounts, db, status)}
