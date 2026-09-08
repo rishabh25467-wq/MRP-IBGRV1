@@ -41,6 +41,7 @@ from sap_material_physical_client import (
 from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplierAuthError, SAPSupplierNotConfiguredError
 from sap_po_client import SAPPurchaseOrderClient, SAPPurchaseOrderError, SAPPurchaseOrderNotConfiguredError, WATERMARK_COLLECTION as SAP_PO_WATERMARK_COLLECTION
 from sap_po_analytics_client import SAPPOAnalyticsClient
+from sap_outbound_delivery_analytics_client import SAPOutboundDeliveryAnalyticsClient
 from sap_gsa_write_client import SAPGSAWriteClient
 from sap_po_write_client import SAPPurchaseOrderWriteClient, SAPPurchaseOrderWriteError, SAPPurchaseOrderWriteNotConfiguredError
 from sap_po_odata_client import SAPPurchaseOrderODataClient, SAPPurchaseOrderODataError, SAPPurchaseOrderODataNotConfiguredError
@@ -362,6 +363,12 @@ sap_outbound_delivery_client = SAPOutboundDeliveryClient(
     username=os.environ['SAP_USERNAME'],
     password=os.environ['SAP_PASSWORD'],
     vhost=os.environ['BYD_ODATA_VHOST'],
+)
+
+sap_outbound_delivery_analytics_client = SAPOutboundDeliveryAnalyticsClient(
+    instance_url=os.environ['SAP_INSTANCE_URL'],
+    username=os.environ['SAP_ODATA_USERNAME'],
+    password=os.environ['SAP_ODATA_PASSWORD'],
 )
 
 
@@ -6080,7 +6087,7 @@ async def _run_goods_issue_job(sto_id: str):
             logger.info(f"Stock Transfer Order {sto_id}: Goods Issue automation stopped by user request.")
             return
         try:
-            outcome = await asyncio.to_thread(stock_transfer_service.try_post_goods_issue, db, sap_outbound_delivery_client, sap_inventory_client, sto_id)
+            outcome = await asyncio.to_thread(stock_transfer_service.try_post_goods_issue, db, sap_outbound_delivery_client, sap_outbound_delivery_analytics_client, sap_inventory_client, sto_id)
             if outcome == "posted":
                 return
         except SAPOutboundDeliveryError as e:

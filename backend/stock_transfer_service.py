@@ -711,7 +711,7 @@ def _build_line_status(doc: dict, delivery_items: list, insufficient_products: d
     return result
 
 
-def _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_inventory_client, sto_id: str, doc: dict, pending: list, lines_by_product: dict, object_ids: list, existing_delivery_ids: list, delivery_items: list) -> str:
+def _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_outbound_delivery_analytics_client, sap_inventory_client, sto_id: str, doc: dict, pending: list, lines_by_product: dict, object_ids: list, existing_delivery_ids: list, delivery_items: list) -> str:
     """Multi-line path (Aug 28 2026) - see try_post_goods_issue's own
     docstring for why this can't use the per-line API loop. Same
     per-line live-stock pre-check as the single-line path (own copy,
@@ -734,18 +734,49 @@ def _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_invent
     (below) never got a chance to run since it only fires when
     `outbound_delivery_ids` is already known, so the order was stuck
     "waiting" for the full 20 minutes with no way to self-recover.
-    Fixed by checking SAP directly (fast OData link-table lookup, no
-    Playwright) for an already-existing Delivery covering these exact
-    item UUIDs BEFORE ever launching the Playwright combine flow - this
-    query doesn't depend on Delivery Proposals still showing the
-    (already-consumed) rows, so it finds P2D1-5527 even after the
-    request items are gone from that screen."""
+
+    Fixed with the user's own find (Sep 9 2026): SAP's Analytics
+    report `RPSCMOBDB04_Q0001QueryResults` (sap_outbound_delivery_analytics_client.py),
+    filtered by CSTO_REF_ID (this order's own SAP Order ID) - a single
+    fast OData GET that reflects reality even when Delivery Proposals
+    has already consumed the request items, AND also reports the
+    Delivery's own Finished/not-yet-Finished status directly (no need
+    to open the SAP UI just to check "Release Status"). Checked FIRST,
+    every poll tick, before ever launching Playwright - covers both
+    "Delivery already fully Finished (GI posted) but we never recorded
+    it" (mark posted immediately) and "Delivery exists but Release is
+    still pending" (skip straight to the release-only path, no
+    re-combine attempt). The older item-UUID-link-table check
+    (find_outbound_delivery_objects) is kept as a fallback only, in
+    case this analytics report itself has a reporting lag."""
     if not existing_delivery_ids:
+        try:
+            analytics_rows = sap_outbound_delivery_analytics_client.find_deliveries_for_sto(doc.get("sap_order_id") or "")
+        except Exception as e:
+            logger.warning(f"Stock Transfer Order {sto_id}: Outbound Delivery Analytics pre-check failed, falling back to the item-UUID lookup: {e}")
+            analytics_rows = []
+        found_ids = sorted({r["delivery_id"] for r in analytics_rows if r.get("delivery_id")})
+        if found_ids:
+            all_finished = bool(analytics_rows) and all(r.get("finished") for r in analytics_rows)
+            if all_finished:
+                logger.info(f"Stock Transfer Order {sto_id}: Outbound Delivery Analytics shows {found_ids} already Finished (GI posted) - marking posted without ever needing Playwright.")
+                db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
+                    "gi_status": "posted", "gi_posted_at": datetime.now(timezone.utc), "gi_error": None, "gi_job_running": False,
+                    "outbound_delivery_object_id": object_ids[0] if object_ids else None,
+                    "outbound_delivery_object_ids": object_ids,
+                    "outbound_delivery_ids": found_ids,
+                    "gi_line_status": _build_line_status(doc, [], force_shipped={d.get("product_id") for d in pending}),
+                }})
+                return "posted"
+            logger.info(f"Stock Transfer Order {sto_id}: Outbound Delivery Analytics found already-existing Delivery {found_ids}, not yet Finished - releasing it directly instead of re-combining.")
+            db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"outbound_delivery_ids": found_ids}})
+            return _try_release_existing_multiline_delivery(db, sap_outbound_delivery_client, sto_id, doc, found_ids)
+
         all_uuids_precheck = [d.get("uuid") for d in pending if d.get("uuid")]
         try:
             already_created = sap_outbound_delivery_client.find_outbound_delivery_objects(all_uuids_precheck)
         except Exception as e:
-            logger.warning(f"Stock Transfer Order {sto_id}: pre-check for an already-existing (but unreleased) Delivery failed, proceeding to combine normally: {e}")
+            logger.warning(f"Stock Transfer Order {sto_id}: item-UUID pre-check for an already-existing (but unreleased) Delivery failed, proceeding to combine normally: {e}")
             already_created = []
         found_ids = sorted({o["id"] for o in already_created if o.get("id")})
         if found_ids:
@@ -918,7 +949,7 @@ def _try_release_existing_multiline_delivery(db, sap_outbound_delivery_client, s
     return "posted"
 
 
-def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client, sto_id: str) -> str:
+def try_post_goods_issue(db, sap_outbound_delivery_client, sap_outbound_delivery_analytics_client, sap_inventory_client, sto_id: str) -> str:
     """One poll attempt: looks for EVERY Outbound Delivery Request Item
     SAP has produced from this STO's Customer Requirement - one per line
     item, see sap_outbound_delivery_client.py docstring for the safe
@@ -1071,7 +1102,7 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_inventory_client,
     # per-line loop; a single-line order has nothing to combine, so it
     # keeps using the fast, already-working API path unchanged.
     if len(doc.get("items") or []) > 1:
-        return _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_inventory_client, sto_id, doc, pending, lines_by_product, object_ids, existing_delivery_ids, delivery_items)
+        return _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_outbound_delivery_analytics_client, sap_inventory_client, sto_id, doc, pending, lines_by_product, object_ids, existing_delivery_ids, delivery_items)
 
     insufficient_notes = []
     insufficient_products = {}
