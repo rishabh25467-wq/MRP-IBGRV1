@@ -31,6 +31,7 @@ import SupplierLoginPage from "@/pages/supplier-portal/SupplierLoginPage";
 import SupplierPendingPage from "@/pages/supplier-portal/SupplierPendingPage";
 import SupplierDashboardPage from "@/pages/supplier-portal/SupplierDashboardPage";
 import SupplierShipmentsPage from "@/pages/supplier-portal/SupplierShipmentsPage";
+import SupplierDocumentsPage from "@/pages/supplier-portal/SupplierDocumentsPage";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { SupplierAuthProvider, useSupplierAuth } from "@/contexts/SupplierAuthContext";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
@@ -70,6 +71,7 @@ const FIRST_ACCESSIBLE_PAGE_ROUTES = [
   ["admin_create_material", "/admin/create-material"],
   ["store_approval", "/storeapproval"],
   ["supplier_portal_admin", "/admin/supplier-portal-approvals"],
+  ["supplier_portal_documents", "/admin/supplier-portal-approvals"],
   // Sep 5 2026, same bug-fix pattern for the newly split-out permissions.
   ["supplier_portal_invite", "/admin/supplier-portal-invite"],
   ["vendor_goods_receipt", "/admin/grn-approval"],
@@ -111,7 +113,7 @@ function SupplierPortalGate({ page }) {
   if (!account) return <Navigate to="/supplier-portal/login" replace />;
   if (account.status !== "approved") return <SupplierPendingPage />;
   if (!vendorCode) return <Navigate to={`/supplier-portal/${page}/${account.vendor_code}`} replace />;
-  return page === "shipments" ? <SupplierShipmentsPage /> : <SupplierDashboardPage />;
+  return page === "shipments" ? <SupplierShipmentsPage /> : page === "documents" ? <SupplierDocumentsPage /> : <SupplierDashboardPage />;
 }
 
 function InternalApp() {
@@ -143,7 +145,7 @@ function InternalApp() {
             <Route path="/admin/create-material" element={<ProtectedRoute page="admin_create_material"><CreateMaterialPage /></ProtectedRoute>} />
             <Route path="/admin/l1-l2-report" element={<ProtectedRoute page="admin"><L1L2ReportPage /></ProtectedRoute>} />
             <Route path="/admin/access-management" element={<ProtectedRoute superAdminOnly><AccessManagementPage /></ProtectedRoute>} />
-            <Route path="/admin/supplier-portal-approvals" element={<ProtectedRoute page="supplier_portal_admin"><SupplierPortalApprovalsPage /></ProtectedRoute>} />
+            <Route path="/admin/supplier-portal-approvals" element={<ProtectedRoute page={["supplier_portal_admin", "supplier_portal_documents"]}><SupplierPortalApprovalsPage /></ProtectedRoute>} />
             <Route path="/admin/supplier-portal-invite" element={<ProtectedRoute page="supplier_portal_invite"><SupplierPortalInvitePage /></ProtectedRoute>} />
             <Route path="/playwrightrate" element={<ProtectedRoute superAdminOnly><PlaywrightReliabilityReportPage /></ProtectedRoute>} />
             <Route path="/admin/grn-approval" element={<ProtectedRoute page="vendor_goods_receipt"><GrnApprovalPage /></ProtectedRoute>} />
@@ -176,6 +178,8 @@ function AppShell() {
             <Route path="/supplier-portal/dashboard/:vendorCode" element={<SupplierPortalGate page="dashboard" />} />
             <Route path="/supplier-portal/shipments" element={<SupplierPortalGate page="shipments" />} />
             <Route path="/supplier-portal/shipments/:vendorCode" element={<SupplierPortalGate page="shipments" />} />
+            <Route path="/supplier-portal/documents" element={<SupplierPortalGate page="documents" />} />
+            <Route path="/supplier-portal/documents/:vendorCode" element={<SupplierPortalGate page="documents" />} />
           </Routes>
         </div>
         <Footer />

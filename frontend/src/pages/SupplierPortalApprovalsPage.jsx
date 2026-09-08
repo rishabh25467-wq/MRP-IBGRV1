@@ -1,14 +1,15 @@
 import { useState, useEffect } from "react";
 import "@/App.css";
 import axios from "axios";
-import { CheckCircle, XCircle, FileText, Buildings, Shield } from "@phosphor-icons/react";
+import { CheckCircle, XCircle, FileText, Buildings, Shield, Clock } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Toaster, toast } from "@/components/ui/sonner";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
+import { useAuth } from "@/contexts/AuthContext";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -25,12 +26,20 @@ const STATUS_BADGE = {
   rejected: "bg-[#E02424]/10 text-[#B91C1C] rounded-sm",
 };
 
+const ADDITIONAL_DOC_TYPES = [
+  { key: "msme", label: "MSME" },
+  { key: "bank", label: "Bank Details" },
+];
+
 export default function SupplierPortalApprovalsPage() {
+  const { hasPageAccess } = useAuth();
+  const canApprove = hasPageAccess("supplier_portal_admin");
   const [status, setStatus] = useState("pending");
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [rejectTarget, setRejectTarget] = useState(null);
   const [rejectReason, setRejectReason] = useState("");
+  const [historyModal, setHistoryModal] = useState(null); // { accountId, docType, history }
 
   const load = async (s) => {
     setLoading(true);
@@ -95,7 +104,11 @@ export default function SupplierPortalApprovalsPage() {
           <Buildings size={18} weight="fill" className="text-[#0076CC]" />
           <h1 className="font-sans text-base font-bold text-[#111827]">Supplier Portal Approvals</h1>
         </div>
-        <p className="text-sm text-[#5B738B]">Review external vendor onboarding requests before they can sign in and view their Purchase Orders.</p>
+        <p className="text-sm text-[#5B738B]">
+          {canApprove
+            ? "Review external vendor onboarding requests before they can sign in and view their Purchase Orders."
+            : "View-only access to supplier documents."}
+        </p>
 
         <div className="flex items-center gap-4 mt-5 border-b border-[#CBD3DB]">
           {TABS.map((t) => (
@@ -121,16 +134,17 @@ export default function SupplierPortalApprovalsPage() {
                 <th className="text-left px-3 py-2 font-semibold">Email</th>
                 <th className="text-left px-3 py-2 font-semibold">GST / PAN</th>
                 <th className="text-left px-3 py-2 font-semibold">Documents</th>
+                {status === "approved" && <th className="text-left px-3 py-2 font-semibold">Additional Documents</th>}
                 <th className="text-left px-3 py-2 font-semibold">Status</th>
-                <th className="text-right px-3 py-2 font-semibold">Actions</th>
+                {canApprove && <th className="text-right px-3 py-2 font-semibold">Actions</th>}
               </tr>
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={7} className="px-3 py-6 text-center text-[#5B738B]" data-testid="supplier-portal-approvals-loading">Loading...</td></tr>
+                <tr><td colSpan={8} className="px-3 py-6 text-center text-[#5B738B]" data-testid="supplier-portal-approvals-loading">Loading...</td></tr>
               )}
               {!loading && accounts.length === 0 && (
-                <tr><td colSpan={7} className="px-3 py-6 text-center text-[#5B738B]" data-testid="supplier-portal-approvals-empty">No {status} accounts.</td></tr>
+                <tr><td colSpan={8} className="px-3 py-6 text-center text-[#5B738B]" data-testid="supplier-portal-approvals-empty">No {status} accounts.</td></tr>
               )}
               {!loading && accounts.map((a) => (
                 <tr key={a._id} className="border-b border-[#CBD3DB]" data-testid={`supplier-portal-approvals-row-${a._id}`}>
@@ -148,27 +162,82 @@ export default function SupplierPortalApprovalsPage() {
                       </a>
                     </div>
                   </td>
+                  {status === "approved" && (
+                    <td className="px-3 py-2">
+                      <div className="flex flex-col gap-1">
+                        {ADDITIONAL_DOC_TYPES.map(({ key, label }) => {
+                          const doc = a[`${key}_documents`] || [];
+                          const latest = doc[doc.length - 1];
+                          return (
+                            <div key={key} className="flex items-center gap-1.5 text-xs">
+                              {latest ? (
+                                <a href={`${API}/admin/supplier-portal/${a._id}/documents/${key}`} target="_blank" rel="noreferrer" className="text-[#0076CC] flex items-center gap-1 underline" data-testid={`supplier-portal-approvals-${key}-link-${a._id}`}>
+                                  <FileText size={12} /> {label}
+                                </a>
+                              ) : (
+                                <span className="text-[#98A2B3] flex items-center gap-1"><FileText size={12} /> {label} - none</span>
+                              )}
+                              {doc.length > 1 && (
+                                <button
+                                  onClick={() => setHistoryModal({ accountId: a._id, docType: key, label, history: doc })}
+                                  className="text-[#5B738B] hover:underline flex items-center gap-0.5"
+                                  data-testid={`supplier-portal-approvals-${key}-history-${a._id}`}
+                                >
+                                  <Clock size={11} /> ({doc.length})
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </td>
+                  )}
                   <td className="px-3 py-2">
                     <Badge className={STATUS_BADGE[a.status]}>{a.status}</Badge>
                   </td>
-                  <td className="px-3 py-2 text-right">
-                    {a.status === "pending" && (
-                      <div className="flex gap-2 justify-end">
-                        <Button size="sm" onClick={() => approve(a._id)} className="rounded-sm bg-[#10B981] hover:bg-[#0B7A56] transition-colors duration-150" data-testid={`supplier-portal-approvals-approve-${a._id}`}>
-                          <CheckCircle size={14} className="mr-1" /> Approve
-                        </Button>
-                        <Button size="sm" variant="outline" onClick={() => setRejectTarget(a._id)} className="rounded-sm border-[#E02424]/40 text-[#B91C1C]" data-testid={`supplier-portal-approvals-reject-${a._id}`}>
-                          <XCircle size={14} className="mr-1" /> Reject
-                        </Button>
-                      </div>
-                    )}
-                  </td>
+                  {canApprove && (
+                    <td className="px-3 py-2 text-right">
+                      {a.status === "pending" && (
+                        <div className="flex gap-2 justify-end">
+                          <Button size="sm" onClick={() => approve(a._id)} className="rounded-sm bg-[#10B981] hover:bg-[#0B7A56] transition-colors duration-150" data-testid={`supplier-portal-approvals-approve-${a._id}`}>
+                            <CheckCircle size={14} className="mr-1" /> Approve
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => setRejectTarget(a._id)} className="rounded-sm border-[#E02424]/40 text-[#B91C1C]" data-testid={`supplier-portal-approvals-reject-${a._id}`}>
+                            <XCircle size={14} className="mr-1" /> Reject
+                          </Button>
+                        </div>
+                      )}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       </div>
+
+      <Dialog open={!!historyModal} onOpenChange={(o) => !o && setHistoryModal(null)}>
+        <DialogContent className="max-w-md rounded-sm" data-testid="supplier-portal-approvals-history-dialog">
+          <DialogHeader>
+            <DialogTitle className="font-sans">{historyModal?.label} - Version History</DialogTitle>
+            <DialogDescription>Older versions are kept for reference.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            {historyModal?.history?.slice().reverse().map((rev) => (
+              <a
+                key={rev.version}
+                href={`${API}/admin/supplier-portal/${historyModal.accountId}/documents/${historyModal.docType}?version=${rev.version}`}
+                target="_blank" rel="noreferrer"
+                className="flex items-center justify-between text-sm border border-[#CBD3DB] rounded-sm p-2 hover:bg-[#F5F6F7]"
+                data-testid={`supplier-portal-approvals-history-item-${rev.version}`}
+              >
+                <span>v{rev.version} - {rev.filename}</span>
+                <span className="text-xs text-[#5B738B]">{rev.uploaded_at ? new Date(rev.uploaded_at).toLocaleDateString("en-IN") : ""}</span>
+              </a>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!rejectTarget} onOpenChange={(o) => !o && setRejectTarget(null)}>
         <DialogContent className="rounded-sm" data-testid="supplier-portal-approvals-reject-dialog">

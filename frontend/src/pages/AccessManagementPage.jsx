@@ -23,7 +23,7 @@ const PAGE_KEYS = Object.keys(PAGE_LABELS);
 const WORK_CENTER_GROUPS = [
   { label: "BOM & Production", keys: ["bom_explorer", "production_plan", "production_confirmation"] },
   { label: "Procurement", keys: ["purchasing_plan", "purchase_order", "created_purchase_orders", "open_purchase_orders", "quota_allocation", "vendor_goods_receipt"] },
-  { label: "Supplier Management", keys: ["supplier_master", "supplier_portal_invite", "supplier_portal_admin", "supplier_dashboard"] },
+  { label: "Supplier Management", keys: ["supplier_master", "supplier_portal_invite", "supplier_portal_admin", "supplier_portal_documents", "supplier_dashboard"] },
   { label: "Inventory Management", keys: ["inventory", "stock_transfer", "inbound_stock_transfer", "store_approval"] },
   { label: "Master Data", keys: ["admin", "admin_create_material"] },
   { label: "Administration", keys: ["admin_sap_write"] },

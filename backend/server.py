@@ -6627,13 +6627,59 @@ async def get_supplier_portal_shipments(request: Request, as_vendor: str = Query
     return {"shipments": await asyncio.to_thread(supplier_shipment_service.list_shipments_for_vendor, db, vendor_code)}
 
 
+@api_router.get("/supplier-portal/documents")
+async def get_supplier_portal_documents(request: Request):
+    account = await asyncio.to_thread(_require_supplier_account, request)
+    return await asyncio.to_thread(supplier_portal_service.list_additional_documents, db, account["_id"])
+
+
+@api_router.post("/supplier-portal/documents/{doc_type}")
+async def post_supplier_portal_document(doc_type: str, request: Request, file: UploadFile = File(...)):
+    account = await asyncio.to_thread(_require_supplier_account, request)
+    file_bytes = await file.read()
+    try:
+        revision = await asyncio.to_thread(
+            supplier_portal_service.upload_additional_document, db, account["_id"], doc_type,
+            file_bytes, file.filename, file.content_type,
+        )
+    except supplier_portal_service.SupplierPortalValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return revision
+
+
+@api_router.get("/supplier-portal/documents/{doc_type}/{version}")
+async def get_supplier_portal_document_version(doc_type: str, version: int, request: Request):
+    account = await asyncio.to_thread(_require_supplier_account, request)
+    try:
+        data, content_type, filename = await asyncio.to_thread(
+            supplier_portal_service.get_additional_document, db, account["_id"], doc_type, version,
+        )
+    except (supplier_portal_service.SupplierPortalValidationError, supplier_portal_service.SupplierPortalNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return Response(content=data, media_type=content_type, headers={"Content-Disposition": f'inline; filename="{filename}"'})
+
+
 @api_router.get("/admin/supplier-portal/accounts")
 async def get_admin_supplier_portal_accounts(status: str = Query(None)):
     return {"accounts": await asyncio.to_thread(supplier_portal_service.list_accounts, db, status)}
 
 
+def _require_supplier_portal_admin(request: Request) -> None:
+    """Sep 9 2026, user's explicit ask: the general page-permission rule
+    for this whole /api/admin/supplier-portal prefix now also grants
+    read access to supplier_portal_documents-only users (see
+    auth_service.py's PAGE_ROUTE_RULES - it can't distinguish HTTP
+    methods) - Approve/Reject specifically must stay admin-only, checked
+    here explicitly, same pattern as other admin-gated ACTIONS elsewhere
+    in this file."""
+    user = request.state.user
+    if user.get("role") not in ("super_admin", "admin") and "supplier_portal_admin" not in (user.get("allowed_pages") or []):
+        raise HTTPException(status_code=403, detail="Supplier Portal Approvals access required")
+
+
 @api_router.post("/admin/supplier-portal/{account_id}/approve")
 async def post_admin_supplier_portal_approve(account_id: str, request: Request):
+    _require_supplier_portal_admin(request)
     approver = (request.state.user.get("name") or request.state.user.get("email") or "Unknown").strip()
     try:
         await asyncio.to_thread(supplier_portal_service.approve_account, db, account_id, approver)
@@ -6644,6 +6690,7 @@ async def post_admin_supplier_portal_approve(account_id: str, request: Request):
 
 @api_router.post("/admin/supplier-portal/{account_id}/reject")
 async def post_admin_supplier_portal_reject(account_id: str, payload: SupplierRejectRequest, request: Request):
+    _require_supplier_portal_admin(request)
     approver = (request.state.user.get("name") or request.state.user.get("email") or "Unknown").strip()
     try:
         await asyncio.to_thread(supplier_portal_service.reject_account, db, account_id, approver, payload.reason)
@@ -6653,13 +6700,19 @@ async def post_admin_supplier_portal_reject(account_id: str, payload: SupplierRe
 
 
 @api_router.get("/admin/supplier-portal/{account_id}/documents/{doc_type}")
-async def get_admin_supplier_portal_document(account_id: str, doc_type: str):
-    if doc_type not in ("gst", "pan"):
+async def get_admin_supplier_portal_document(account_id: str, doc_type: str, version: int = Query(None)):
+    if doc_type in ("gst", "pan"):
+        try:
+            data, content_type, filename = await asyncio.to_thread(supplier_portal_service.get_document, db, account_id, doc_type)
+        except supplier_portal_service.SupplierPortalNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+    elif doc_type in supplier_portal_service.ADDITIONAL_DOC_TYPES:
+        try:
+            data, content_type, filename = await asyncio.to_thread(supplier_portal_service.get_additional_document, db, account_id, doc_type, version)
+        except (supplier_portal_service.SupplierPortalValidationError, supplier_portal_service.SupplierPortalNotFoundError) as e:
+            raise HTTPException(status_code=404, detail=str(e))
+    else:
         raise HTTPException(status_code=400, detail="Invalid document type")
-    try:
-        data, content_type, filename = await asyncio.to_thread(supplier_portal_service.get_document, db, account_id, doc_type)
-    except supplier_portal_service.SupplierPortalNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
     return Response(content=data, media_type=content_type, headers={"Content-Disposition": f'inline; filename="{filename}"'})
 
 

@@ -54,7 +54,7 @@ const PROCUREMENT_SUBTABS = [
 const SUPPLIER_MANAGEMENT_SUBTABS = [
   { to: "/purchasing-strategy/supplier-master", label: "Supplier Master", testId: "nav-supplier-management-supplier-master", page: "supplier_master" },
   { to: "/admin/supplier-portal-invite", label: "Invite Supplier", testId: "nav-supplier-management-supplier-portal-invite", page: "supplier_portal_invite" },
-  { to: "/admin/supplier-portal-approvals", label: "Supplier Portal Approvals", testId: "nav-supplier-management-supplier-portal-approvals", page: "supplier_portal_admin" },
+  { to: "/admin/supplier-portal-approvals", label: "Supplier Portal Approvals", testId: "nav-supplier-management-supplier-portal-approvals", page: ["supplier_portal_admin", "supplier_portal_documents"] },
   // Sep 2 2026, user's explicit ask: quick shortcut into the Supplier
   // Portal (separate vendor-JWT auth, not `vms_session`) so staff can log
   // in and use its vendor-impersonation search to view/act on any

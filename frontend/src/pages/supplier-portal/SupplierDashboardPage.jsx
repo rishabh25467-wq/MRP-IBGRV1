@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import {
   Buildings, SignOut, Package, PlugsConnected, Truck, MagnifyingGlass,
-  X, Eye, ListChecks, ArrowRight, Flask, CheckCircle, CaretUp, CaretDown,
+  X, Eye, ListChecks, ArrowRight, Flask, CheckCircle, CaretUp, CaretDown, FileText,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -321,6 +321,11 @@ export default function SupplierDashboardPage() {
           </div>
         )}
         <div className="flex items-center gap-4">
+          <Link to={`/supplier-portal/documents/${vendorCode}`} data-testid="supplier-nav-documents-link">
+            <Button variant="outline" size="sm" className="rounded-sm border-white/40 text-white hover:bg-white/10 hover:text-white transition-colors duration-150">
+              <FileText size={14} className="mr-1" /> Documents
+            </Button>
+          </Link>
           <Link to={`/supplier-portal/shipments/${vendorCode}`} data-testid="supplier-nav-shipments-link">
             <Button variant="outline" size="sm" className="rounded-sm border-white/40 text-white hover:bg-white/10 hover:text-white transition-colors duration-150">
               <ListChecks size={14} className="mr-1" /> Shipments <ArrowRight size={12} className="ml-1" />

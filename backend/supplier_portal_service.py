@@ -236,6 +236,68 @@ def get_document(db, account_id: str, doc_type: str) -> tuple:
     return data, account.get(f"{doc_type}_doc_content_type") or fallback_content_type, filename
 
 
+# ---- Additional Documents (Sep 9 2026, user's explicit ask): MSME
+# Certificate + Bank Details/Cancelled Cheque, uploadable by the vendor
+# any time AFTER approval (unlike GST/PAN, required upfront at signup).
+# Each upload is a new REVISION, not a replacement - user's explicit ask
+# ("if he upload two it should be saved as revision/latest he can't
+# remove it") - so every version stays in `{doc_type}_documents` forever,
+# object storage path included, and only the LATEST is treated as
+# "current" by default. ----
+
+ADDITIONAL_DOC_TYPES = ("msme", "bank")
+
+
+MAX_ADDITIONAL_DOC_SIZE_BYTES = 10 * 1024 * 1024
+ALLOWED_ADDITIONAL_DOC_CONTENT_TYPES = {"application/pdf", "image/jpeg", "image/png"}
+
+
+def upload_additional_document(db, account_id: str, doc_type: str, file_bytes: bytes, filename: str, content_type: str) -> dict:
+    if doc_type not in ADDITIONAL_DOC_TYPES:
+        raise SupplierPortalValidationError("Invalid document type")
+    if not file_bytes:
+        raise SupplierPortalValidationError("A file is required")
+    if len(file_bytes) > MAX_ADDITIONAL_DOC_SIZE_BYTES:
+        raise SupplierPortalValidationError("File is too large - maximum size is 10 MB")
+    if content_type not in ALLOWED_ADDITIONAL_DOC_CONTENT_TYPES:
+        raise SupplierPortalValidationError("Only PDF, JPG or PNG files are allowed")
+    account = _get_account_or_404(db, account_id)
+    if account.get("status") != "approved":
+        raise SupplierPortalValidationError("Additional documents can only be uploaded after your account is approved")
+    existing = account.get(f"{doc_type}_documents") or []
+    version = len(existing) + 1
+    ext = filename.rsplit(".", 1)[-1] if filename and "." in filename else "bin"
+    path = f"{APP_NAME}/supplier-docs/{account_id}/{doc_type}/v{version}.{ext}"
+    object_storage_service.put_object(path, file_bytes, content_type or "application/octet-stream")
+    revision = {
+        "version": version, "path": path, "filename": filename,
+        "content_type": content_type, "uploaded_at": datetime.now(timezone.utc),
+    }
+    db[ACCOUNTS_COLLECTION].update_one({"_id": account_id}, {"$push": {f"{doc_type}_documents": revision}})
+    return revision
+
+
+def list_additional_documents(db, account_id: str) -> dict:
+    account = _get_account_or_404(db, account_id)
+    result = {}
+    for doc_type in ADDITIONAL_DOC_TYPES:
+        revisions = account.get(f"{doc_type}_documents") or []
+        result[doc_type] = {"latest": revisions[-1] if revisions else None, "history": revisions}
+    return result
+
+
+def get_additional_document(db, account_id: str, doc_type: str, version: int = None) -> tuple:
+    if doc_type not in ADDITIONAL_DOC_TYPES:
+        raise SupplierPortalValidationError("Invalid document type")
+    account = _get_account_or_404(db, account_id)
+    revisions = account.get(f"{doc_type}_documents") or []
+    revision = revisions[-1] if version is None else next((r for r in revisions if r["version"] == version), None)
+    if not revision:
+        raise SupplierPortalNotFoundError("Document not found")
+    data, fallback_content_type = object_storage_service.get_object(revision["path"])
+    return data, revision.get("content_type") or fallback_content_type, revision["filename"]
+
+
 # ---- Invite Supplier (Sep 2 2026) - manual, one-at-a-time outreach.
 # User's explicit ask: "No, I'll reach out manually" to bulk-invite, just
 # a form near Supplier Portal Approvals to send one supplier at a time an

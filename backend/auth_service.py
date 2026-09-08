@@ -92,6 +92,14 @@ PAGE_CATALOG = [
     # Distinct from the Supplier Portal itself, which is NOT an Entra ID
     # page at all - see EXTERNAL_PORTAL_PATH_PREFIXES below.
     {"key": "supplier_portal_admin", "label": "Supplier Portal Approvals"},
+    # Sep 9 2026, user's explicit ask: view-only access to the Supplier
+    # Portal Approvals page (supplier list + GST/PAN/MSME/Bank documents)
+    # WITHOUT the Approve/Reject actions, which stay gated behind
+    # supplier_portal_admin specifically (see the explicit role checks in
+    # post_admin_supplier_portal_approve/reject in server.py - the page
+    # route rule below intentionally grants EITHER permission read access
+    # to the whole prefix since it can't distinguish HTTP methods).
+    {"key": "supplier_portal_documents", "label": "Supplier Additional Documents"},
     # Aug 2026: Purchase Order Creation automation - writes real POs into
     # SAP ByDesign via ManagePurchaseOrderIn. Kept separate from
     # purchasing_plan/supplier_master (planning/master-data pages, no
@@ -173,7 +181,7 @@ PAGE_ROUTE_RULES = [
     # approvals AND the Phase 4 GRN approval screen share this same page
     # permission - one internal team, one page.
     ("/api/admin/supplier-portal/invites", {"supplier_portal_invite"}),
-    ("/api/admin/supplier-portal", {"supplier_portal_admin"}),
+    ("/api/admin/supplier-portal", {"supplier_portal_admin", "supplier_portal_documents"}),
     ("/api/admin/grn", {"vendor_goods_receipt"}),
     # Aug 2026: Purchase Order Creation automation page.
     # Sep 5 2026, user's explicit ask: "Created POs" (history/list) and

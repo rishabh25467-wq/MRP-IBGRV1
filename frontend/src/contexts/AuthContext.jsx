@@ -52,6 +52,11 @@ export const PAGE_LABELS = {
   supplier_dashboard: "Supplier Dashboard",
   created_purchase_orders: "Created POs",
   open_purchase_orders: "Open Purchase Orders",
+  // Sep 9 2026, user's explicit ask: separate view-only right for the
+  // GST/PAN/MSME/Bank documents on the Supplier Portal Approvals page,
+  // without the Approve/Reject actions (still gated behind
+  // supplier_portal_admin only).
+  supplier_portal_documents: "Supplier Additional Documents",
 };
 
 const AuthContext = createContext(null);
@@ -85,8 +90,14 @@ export const AuthProvider = ({ children }) => {
     window.location.href = "/";
   };
 
+  // Sep 9 2026: also accepts an array of page keys - access is granted if
+  // the user has ANY one of them (e.g. Supplier Portal Approvals is
+  // reachable with EITHER supplier_portal_admin OR the newer
+  // view-only supplier_portal_documents right).
   const hasPageAccess = (pageKey) =>
-    !!user && (user.role === "super_admin" || (user.allowed_pages || []).includes(pageKey));
+    !!user && (user.role === "super_admin" || (Array.isArray(pageKey)
+      ? pageKey.some((k) => (user.allowed_pages || []).includes(k))
+      : (user.allowed_pages || []).includes(pageKey)));
 
   const isPendingAccess = !!user && user.role !== "super_admin" && (user.allowed_pages || []).length === 0;
 
