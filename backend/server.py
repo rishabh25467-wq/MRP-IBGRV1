@@ -6053,6 +6053,7 @@ async def _run_erp_portal_sync_job(sto_id: str):
     outcome. Best-effort, same pattern as gst_note_pushed - never blocks
     or fails the SAP write itself."""
     try:
+        await asyncio.to_thread(stock_transfer_service.mark_erp_portal_syncing, db, sto_id)
         await asyncio.to_thread(stock_transfer_service.sync_to_erp_portal, db, erp_portal_client, sap_valuation_client, sto_id)
     except Exception as e:
         logger.error(f"Stock Transfer Order {sto_id}: ERP Portal sync failed: {e}")

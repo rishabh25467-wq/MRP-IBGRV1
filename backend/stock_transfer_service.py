@@ -717,7 +717,42 @@ def _try_post_goods_issue_multiline(db, sap_outbound_delivery_client, sap_invent
     per-line live-stock pre-check as the single-line path (own copy,
     since it pops from `lines_by_product` too), then hands the whole
     order to sap_playwright_outbound_gi_service in ONE call covering
-    every line at once."""
+    every line at once.
+
+    Real incident fix (Sep 9 2026, STO-000195, order 31297): a fresh
+    combine attempt genuinely created the Outbound Delivery in SAP
+    ("Create Outbound Delivery" > "Without Release" - irreversible,
+    confirmed live in SAP UI: Delivery P2D1-5527, Release Status "Not
+    Released"), but the SAME Python call then hit
+    GI_PLAYWRIGHT_ATTEMPT_TIMEOUT_SECONDS (or any other transient
+    error) while still trying to look up that Delivery's own ID via
+    OData - caught by the generic `except Exception` below, which
+    returns "waiting" WITHOUT ever persisting `outbound_delivery_ids`.
+    Every later poll tick then opened Delivery Proposals again and saw
+    0 rows (its items were already consumed into the Delivery that
+    already exists) - `_try_release_existing_multiline_delivery`
+    (below) never got a chance to run since it only fires when
+    `outbound_delivery_ids` is already known, so the order was stuck
+    "waiting" for the full 20 minutes with no way to self-recover.
+    Fixed by checking SAP directly (fast OData link-table lookup, no
+    Playwright) for an already-existing Delivery covering these exact
+    item UUIDs BEFORE ever launching the Playwright combine flow - this
+    query doesn't depend on Delivery Proposals still showing the
+    (already-consumed) rows, so it finds P2D1-5527 even after the
+    request items are gone from that screen."""
+    if not existing_delivery_ids:
+        all_uuids_precheck = [d.get("uuid") for d in pending if d.get("uuid")]
+        try:
+            already_created = sap_outbound_delivery_client.find_outbound_delivery_objects(all_uuids_precheck)
+        except Exception as e:
+            logger.warning(f"Stock Transfer Order {sto_id}: pre-check for an already-existing (but unreleased) Delivery failed, proceeding to combine normally: {e}")
+            already_created = []
+        found_ids = sorted({o["id"] for o in already_created if o.get("id")})
+        if found_ids:
+            logger.info(f"Stock Transfer Order {sto_id}: found already-existing Delivery {found_ids} that was never persisted (Delivery Proposals had already consumed its items) - releasing it directly instead of re-combining.")
+            db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"outbound_delivery_ids": found_ids}})
+            return _try_release_existing_multiline_delivery(db, sap_outbound_delivery_client, sto_id, doc, found_ids)
+
     insufficient_notes = []
     insufficient_products = {}
     for d in pending:
@@ -1299,14 +1334,15 @@ def reset_goods_issue_for_retry(db, sto_id: str) -> dict:
 
 
 def list_stock_transfer_orders(db, limit: int = 100) -> list:
-    return list(db[STO_COLLECTION].find({}).sort("created_at", -1).limit(limit))
+    docs = list(db[STO_COLLECTION].find({}).sort("created_at", -1).limit(limit))
+    return [reconcile_stuck_erp_sync(db, d) for d in docs]
 
 
 def get_stock_transfer_order(db, sto_id: str) -> dict:
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:
         raise StockTransferOrderNotFoundError(f"Stock Transfer Order {sto_id} not found.")
-    return doc
+    return reconcile_stuck_erp_sync(db, doc)
 
 
 # "Let's build to test only" AI feature (Aug 2026, user's explicit ask) -
@@ -1482,7 +1518,49 @@ def mark_erp_portal_failed(db, sto_id: str, error: str) -> None:
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"erp_portal_status": "failed", "erp_portal_error": error}, "$unset": {"erp_sync_retry_started_at": ""}})
 
 
+def mark_erp_portal_syncing(db, sto_id: str) -> None:
+    """Sep 9 2026 fix (real incident, STO-000196): the very FIRST
+    (non-retry) ERP sync attempt used to fire via a bare
+    `asyncio.create_task` with no status/timestamp set beforehand - if
+    the app server restarted (deploy/hot-reload) before that task ever
+    reached sync_to_erp_portal's success branch or
+    _run_erp_portal_sync_job's except block, `erp_portal_status` stayed
+    permanently unset, the frontend's default "ERP Portal: syncing..."
+    text showed forever, and reset_erp_portal_sync_for_retry rejected
+    every retry attempt ("not currently in a failed state" - that guard
+    only recognized an orphaned "retrying" state, not an orphaned
+    initial sync). Called right before sync_to_erp_portal on EVERY
+    attempt (first try and retries alike) so
+    reconcile_stuck_erp_sync below can self-heal either kind the same
+    way."""
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
+        "erp_portal_status": "syncing", "erp_sync_retry_started_at": datetime.now(timezone.utc),
+    }})
+
+
 ERP_SYNC_STUCK_RETRYING_THRESHOLD_SECONDS = 180
+
+
+def reconcile_stuck_erp_sync(db, doc: dict) -> dict:
+    """Lazy self-heal, checked on every read (list/detail) rather than
+    a background poll - there's no polling loop for ERP sync the way
+    Goods Issue has one. If a "syncing" or "retrying" attempt has been
+    running longer than any real attempt possibly could (both ERP
+    hosts' own connect/login timeouts are 20s each - 3 minutes is a
+    generous abandoned-job margin, same threshold already used for the
+    "retrying"-only case this extends), flips it to "failed" with a
+    clear message so the existing "Retry ERP Sync" button (which only
+    ever showed for status=="failed") becomes reachable again. Mutates
+    `doc` in place too so the caller's response reflects it without a
+    second DB read."""
+    status = doc.get("erp_portal_status")
+    started_at = doc.get("erp_sync_retry_started_at")
+    if status in ("syncing", "retrying") and started_at and (datetime.now(timezone.utc) - started_at).total_seconds() > ERP_SYNC_STUCK_RETRYING_THRESHOLD_SECONDS:
+        error = "ERP sync appears to have been interrupted (e.g. a server restart) before it could finish - click Retry ERP Sync."
+        db[STO_COLLECTION].update_one({"_id": doc["_id"]}, {"$set": {"erp_portal_status": "failed", "erp_portal_error": error}, "$unset": {"erp_sync_retry_started_at": ""}})
+        doc["erp_portal_status"] = "failed"
+        doc["erp_portal_error"] = error
+    return doc
 
 
 def reset_erp_portal_sync_for_retry(db, sto_id: str) -> None:
@@ -1508,12 +1586,13 @@ def reset_erp_portal_sync_for_retry(db, sto_id: str) -> None:
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:
         raise StockTransferOrderNotFoundError(f"Stock Transfer Order {sto_id} not found.")
+    doc = reconcile_stuck_erp_sync(db, doc)
     status = doc.get("erp_portal_status")
-    stuck_retrying = False
-    if status == "retrying":
+    stuck = False
+    if status in ("retrying", "syncing"):
         started_at = doc.get("erp_sync_retry_started_at")
-        stuck_retrying = bool(started_at) and (datetime.now(timezone.utc) - started_at).total_seconds() > ERP_SYNC_STUCK_RETRYING_THRESHOLD_SECONDS
-    if status != "failed" and not stuck_retrying:
+        stuck = bool(started_at) and (datetime.now(timezone.utc) - started_at).total_seconds() > ERP_SYNC_STUCK_RETRYING_THRESHOLD_SECONDS
+    if status != "failed" and not stuck:
         raise StockTransferValidationError("ERP Portal sync is not currently in a failed state for this order.")
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
         "erp_portal_status": "retrying", "erp_portal_error": None,
