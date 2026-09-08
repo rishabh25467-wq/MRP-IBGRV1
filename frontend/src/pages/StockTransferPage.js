@@ -255,9 +255,13 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
                 : "ERP Portal: syncing..."}
             </p>
             {order.erp_portal_status === "failed" && <p className="mt-0.5">{order.erp_portal_error || "See logs."}</p>}
-            {order.erp_portal_status === "failed" && (
+            {order.erp_portal_status !== "synced" && (
               <>
-                <p className="mt-1 text-xs opacity-80">No legal Delivery Challan can be printed until this syncs - Serial Number comes from the ERP portal.</p>
+                <p className="mt-1 text-xs opacity-80">
+                  {order.erp_portal_status === "failed"
+                    ? "No legal Delivery Challan can be printed until this syncs - Serial Number comes from the ERP portal."
+                    : "Looks stuck? Click Retry ERP Sync - safe to click anytime before this shows Synced."}
+                </p>
                 <Button
                   size="sm" variant="outline" className="mt-2"
                   onClick={() => onRetryErpSync(order.sto_id)}

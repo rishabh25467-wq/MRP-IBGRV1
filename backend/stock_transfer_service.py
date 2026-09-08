@@ -1365,15 +1365,14 @@ def reset_goods_issue_for_retry(db, sto_id: str) -> dict:
 
 
 def list_stock_transfer_orders(db, limit: int = 100) -> list:
-    docs = list(db[STO_COLLECTION].find({}).sort("created_at", -1).limit(limit))
-    return [reconcile_stuck_erp_sync(db, d) for d in docs]
+    return list(db[STO_COLLECTION].find({}).sort("created_at", -1).limit(limit))
 
 
 def get_stock_transfer_order(db, sto_id: str) -> dict:
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:
         raise StockTransferOrderNotFoundError(f"Stock Transfer Order {sto_id} not found.")
-    return reconcile_stuck_erp_sync(db, doc)
+    return doc
 
 
 # "Let's build to test only" AI feature (Aug 2026, user's explicit ask) -
@@ -1550,81 +1549,38 @@ def mark_erp_portal_failed(db, sto_id: str, error: str) -> None:
 
 
 def mark_erp_portal_syncing(db, sto_id: str) -> None:
-    """Sep 9 2026 fix (real incident, STO-000196): the very FIRST
-    (non-retry) ERP sync attempt used to fire via a bare
-    `asyncio.create_task` with no status/timestamp set beforehand - if
-    the app server restarted (deploy/hot-reload) before that task ever
-    reached sync_to_erp_portal's success branch or
-    _run_erp_portal_sync_job's except block, `erp_portal_status` stayed
-    permanently unset, the frontend's default "ERP Portal: syncing..."
-    text showed forever, and reset_erp_portal_sync_for_retry rejected
-    every retry attempt ("not currently in a failed state" - that guard
-    only recognized an orphaned "retrying" state, not an orphaned
-    initial sync). Called right before sync_to_erp_portal on EVERY
-    attempt (first try and retries alike) so
-    reconcile_stuck_erp_sync below can self-heal either kind the same
-    way."""
+    """Tracks when the very FIRST (non-retry) ERP sync attempt started
+    too, not just retries - see reset_erp_portal_sync_for_retry's own
+    docstring for the real incident (STO-000196) this matters for.
+    Called right before sync_to_erp_portal on EVERY attempt."""
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
         "erp_portal_status": "syncing", "erp_sync_retry_started_at": datetime.now(timezone.utc),
     }})
 
 
-ERP_SYNC_STUCK_RETRYING_THRESHOLD_SECONDS = 180
-
-
-def reconcile_stuck_erp_sync(db, doc: dict) -> dict:
-    """Lazy self-heal, checked on every read (list/detail) rather than
-    a background poll - there's no polling loop for ERP sync the way
-    Goods Issue has one. If a "syncing" or "retrying" attempt has been
-    running longer than any real attempt possibly could (both ERP
-    hosts' own connect/login timeouts are 20s each - 3 minutes is a
-    generous abandoned-job margin, same threshold already used for the
-    "retrying"-only case this extends), flips it to "failed" with a
-    clear message so the existing "Retry ERP Sync" button (which only
-    ever showed for status=="failed") becomes reachable again. Mutates
-    `doc` in place too so the caller's response reflects it without a
-    second DB read."""
-    status = doc.get("erp_portal_status")
-    started_at = doc.get("erp_sync_retry_started_at")
-    if status in ("syncing", "retrying") and started_at and (datetime.now(timezone.utc) - started_at).total_seconds() > ERP_SYNC_STUCK_RETRYING_THRESHOLD_SECONDS:
-        error = "ERP sync appears to have been interrupted (e.g. a server restart) before it could finish - click Retry ERP Sync."
-        db[STO_COLLECTION].update_one({"_id": doc["_id"]}, {"$set": {"erp_portal_status": "failed", "erp_portal_error": error}, "$unset": {"erp_sync_retry_started_at": ""}})
-        doc["erp_portal_status"] = "failed"
-        doc["erp_portal_error"] = error
-    return doc
-
-
 def reset_erp_portal_sync_for_retry(db, sto_id: str) -> None:
     """Manual "Retry ERP Sync" (Aug 27 2026, user's explicit ask - "no
-    legal document can be created" while this is stuck failed). Only
-    allowed while genuinely "failed" - guards against ever calling
-    sync_to_erp_portal twice for the same order, which would create a
-    DUPLICATE Delivery Challan (new Sale_No) in the legacy portal for
-    the same physical stock movement.
+    legal document can be created" while this is stuck failed).
+    Blocked ONLY while already "synced" - guards against ever calling
+    sync_to_erp_portal twice for an order that already has a real
+    Delivery Challan in the legacy portal (would create a DUPLICATE
+    Sale_No for the same physical stock movement). Every other state
+    (failed/syncing/retrying/never-started) is retriable on demand.
 
-    Sep 5 2026, real incident (STO-000136/137, "No route to host" on
-    both configured ERP hosts) - the retry job legitimately ran and
-    flipped this to "retrying", but the app server was recycled (a
-    prod redeploy/restart) before the fire-and-forget asyncio task
-    could ever reach _run_erp_portal_sync_job's except block, leaving
-    the order PERMANENTLY stuck at "retrying" - blocking every future
-    retry attempt with a confusing "not currently in a failed state"
-    error, with no way out. Same self-healing pattern as the Goods
-    Issue job's own 20-min not_found_timeout: if it's been "retrying"
-    for longer than any real sync attempt could possibly take (both
-    hosts' own connection/login timeouts are 20s each - 3 minutes is a
-    generous margin), treat it as abandoned and allow a fresh retry."""
+    Sep 9 2026 fix (real incident, STO-000196): this used to also
+    require status=="failed" specifically (or a time-based "has it
+    been stuck long enough" guess for "retrying") - an orphaned FIRST
+    sync attempt (app server restarted/redeployed mid-flight, before
+    ever reaching a terminal status) left `erp_portal_status` stuck at
+    "syncing" (or unset) forever with no way to retry at all, and a
+    server restart is common enough that guessing a "stuck" threshold
+    isn't worth the complexity - per user's explicit ask, just let the
+    button always work instead of making the user wait out a timer."""
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:
         raise StockTransferOrderNotFoundError(f"Stock Transfer Order {sto_id} not found.")
-    doc = reconcile_stuck_erp_sync(db, doc)
-    status = doc.get("erp_portal_status")
-    stuck = False
-    if status in ("retrying", "syncing"):
-        started_at = doc.get("erp_sync_retry_started_at")
-        stuck = bool(started_at) and (datetime.now(timezone.utc) - started_at).total_seconds() > ERP_SYNC_STUCK_RETRYING_THRESHOLD_SECONDS
-    if status != "failed" and not stuck:
-        raise StockTransferValidationError("ERP Portal sync is not currently in a failed state for this order.")
+    if doc.get("erp_portal_status") == "synced":
+        raise StockTransferValidationError("This order has already synced to the ERP Portal - retry is not needed.")
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
         "erp_portal_status": "retrying", "erp_portal_error": None,
         "erp_sync_retry_started_at": datetime.now(timezone.utc),
