@@ -71,6 +71,14 @@ Extend the existing SAP BOM viewer application: Production Plan page (OMS Open-P
 - **User's ask**: an "ERP Synced"/"ERP Disconnected" badge matching the existing "SAP PRD Connected" badge, visible for all users on every page.
 - **Backend**: `erp_portal_client.check_connection()` (opens+closes a real MS SQL connection to primary host, falls back to secondary, raises only if both are unreachable) + `GET /api/erp/connection-status` (same `ConnectionStatus` model + anti-flicker retry-once pattern as the existing `/api/bom/connection-status`).
 - **Frontend**: new `ErpConnectionStatus.jsx` (mirrors `SapConnectionStatus.jsx` exactly - 60s poll, colored dot + label, dot-only on mobile) added to all 22 page files that already show the SAP badge, right next to it.
+
+## What's been implemented (Sep 9, 2026 session - GRN screen: show PO Price)
+- **User's ask**: "in GRN approval screen, show PO price also to the GRN person."
+- **Backend**: `supplier_shipment_service.attach_po_pricing()` joins each shipment item with the existing PO cache (`unit_price`/`currency` already captured from SAP's NetUnitPrice on every PO pull, just never surfaced before) - wired into `GET /api/admin/grn/lookup/{doc_code}`.
+- **Frontend**: `GrnApprovalPage.jsx` GRN item table gained two new read-only columns - "PO Price" and "Line Value" (= PO Price x whatever Actual Qty is currently entered/typed, updates live as the GRN person adjusts it).
+- Verified live end-to-end with a real shipment (MU7DE2, PO 29086, HAMIDI EXPORTS): screenshot confirms INR 1.26/2.52 and INR 3.04/6.08 render correctly.
+- **Separate, still open**: user asked earlier in this session whether there's a timeline for the Supplier Portal's "Open Order Qty" to update after a GRN approval - confirmed YES, a background job (`start_sap_open_qty_refresh_loop`) refreshes it from SAP's own report every ~5-6 minutes (verified healthy via logs). Still waiting on a specific PO/item number from the user if they want a deeper look at one that seems stuck beyond that window.
+
 - Verified: backend curl (returns `Connected to ERP Portal (fallback host)` - primary MS SQL host currently down, fallback working as designed), then `testing_agent` (iteration_150): 100% pass across 5 spot-checked pages + mobile, no bugs. Code-review note: `ErpConnectionStatus`/`SapConnectionStatus` are ~95% duplicate code, intentionally mirrored for consistency - a shared `<ConnectionStatusBadge>` component would be a future cleanup, not done now (out of scope for this additive ask).
 
 

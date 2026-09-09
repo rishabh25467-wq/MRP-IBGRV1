@@ -421,11 +421,15 @@ export default function GrnApprovalPage() {
                   <th className="border border-[#D0D5DD] p-1.5 text-right">Ship Qty</th>
                   <th className="border border-[#D0D5DD] p-1.5 text-right">Open PO Qty</th>
                   <th className="border border-[#D0D5DD] p-1.5 text-right">Actual Qty</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-right">PO Price</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-right">Line Value</th>
                 </tr>
               </thead>
               <tbody>
                 {shipment.items.map((it, i) => {
                   const key = `${it.po_number}::${it.item_number}`;
+                  const effectiveQty = Number(actualQtys[key] ?? it.actual_qty ?? it.ship_qty ?? 0);
+                  const lineValue = it.unit_price != null ? effectiveQty * it.unit_price : null;
                   return (
                     <tr key={i} className="bg-white odd:bg-[#F9FAFB]">
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data">{it.po_number}</td>
@@ -446,11 +450,17 @@ export default function GrnApprovalPage() {
                           <span className="font-data font-semibold" data-testid={`grn-actual-qty-value-${key}`}>{it.actual_qty ?? it.ship_qty} {it.unit_of_measure}</span>
                         )}
                       </td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data text-[#475467]" data-testid={`grn-item-unit-price-${i}`}>
+                        {it.unit_price != null ? `${it.currency || ""} ${it.unit_price.toFixed(2)}` : "-"}
+                      </td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data font-semibold text-[#1D2939]" data-testid={`grn-item-line-value-${i}`}>
+                        {lineValue != null ? `${it.currency || ""} ${lineValue.toFixed(2)}` : "-"}
+                      </td>
                     </tr>
                   );
                 })}
                 {isActionable && (
-                  <tr><td colSpan={6} className="border border-[#D0D5DD] px-2 py-1 text-xs text-[#475467]">Actual Qty defaults to Ship Qty - adjust only if the physical count differs.</td></tr>
+                  <tr><td colSpan={8} className="border border-[#D0D5DD] px-2 py-1 text-xs text-[#475467]">Actual Qty defaults to Ship Qty - adjust only if the physical count differs. PO Price/Line Value are for reference only, from SAP's last cached rate.</td></tr>
                 )}
               </tbody>
             </table>

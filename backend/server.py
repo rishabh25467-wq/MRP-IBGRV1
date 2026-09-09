@@ -7001,6 +7001,10 @@ async def get_admin_grn_lookup(doc_code: str, request: Request):
             else:
                 it["open_po_qty"] = round((it.get("po_qty") or 0) - (it.get("already_shipped_qty") or 0), 4)
     await asyncio.to_thread(_attach_open_po_qty)
+    # Sep 9 2026, user's explicit ask: "show PO price also to the GRN
+    # person" - unit_price/currency already captured on every PO pull,
+    # just never surfaced on this screen before.
+    await asyncio.to_thread(supplier_shipment_service.attach_po_pricing, db, doc.get("vendor_code"), doc.get("items", []))
     # "RI and RT Site should be non-editable and pre-fixed based on shipment
     # code" (mrp vendor side changes.docx, Sep 2026): narrow the Site choices
     # down to only the buying entity's own sites, further narrowed by this

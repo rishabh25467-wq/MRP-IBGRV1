@@ -212,6 +212,20 @@ def get_sap_open_qty(db, po_number: str, item_number: str) -> dict:
     return db[SAP_OPEN_QTY_COLLECTION].find_one({"_id": f"{po_number}:{item_number}"})
 
 
+def attach_po_pricing(db, vendor_code: str, items: list) -> None:
+    """Sep 9 2026, user's explicit ask: "show PO price also to the GRN
+    person" - mutates each item in place with `unit_price`/`currency`
+    from the PO cache (already captured from SAP's NetUnitPrice on every
+    PO pull, just never surfaced on the GRN screen before) - a PO/item
+    combo not found in the cache (very old shipment, cache entry purged)
+    simply leaves unit_price as None, the frontend then just omits that
+    column for that row rather than showing a wrong number."""
+    for it in items:
+        cached = db[PO_CACHE_COLLECTION].find_one({"_id": f"{vendor_code}::{it['po_number']}::{it['item_number']}"})
+        it["unit_price"] = cached.get("unit_price") if cached else None
+        it["currency"] = cached.get("currency") if cached else None
+
+
 def list_active_po_numbers(db) -> list:
     """Distinct PO numbers currently in the vendor PO cache (any vendor,
     not expired) - the background refresh loop's own worklist."""
