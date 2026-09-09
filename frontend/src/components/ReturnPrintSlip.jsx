@@ -30,6 +30,9 @@ export const ReturnPrintSlip = ({ ret }) => {
         <div><span className="font-bold">Requester :</span> {ret.requester}</div>
         <div><span className="font-bold">Site :</span> {ret.site_id}</div>
         <div><span className="font-bold">Status :</span> {ret.status}</div>
+        {ret.status === "resolved" && (
+          <div><span className="font-bold">Received By :</span> {ret.store_actor || "\u2014"}</div>
+        )}
       </div>
       <table className="w-full text-[12px] border-collapse mt-8">
         <thead>

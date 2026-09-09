@@ -41,6 +41,9 @@ export const RequestPrintSlip = ({ request, heading = "Goods Issue From Store" }
         <div><span className="font-bold">Site :</span> {request.site_id}</div>
         <div><span className="font-bold">Department :</span> {request.site_id}</div>
         <div><span className="font-bold">Date :</span> {formatDateTime(request.created_at)}</div>
+        {request.status === "resolved" && (
+          <div><span className="font-bold">Issued By :</span> {request.store_actor || "\u2014"}</div>
+        )}
       </div>
       <table className="w-full text-[12px] border-collapse mt-8">
         <thead>
