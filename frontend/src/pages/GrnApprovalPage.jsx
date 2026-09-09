@@ -14,6 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
+import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -351,6 +352,7 @@ export default function GrnApprovalPage() {
           <NavTabs />
         </div>
         <SapConnectionStatus />
+        <ErpConnectionStatus />
       </header>
       <div className="flex-1 overflow-auto max-w-[1400px] w-full mx-auto p-4 md:p-6 space-y-4">
         <div className="flex items-center gap-2 mb-1">

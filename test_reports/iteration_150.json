@@ -1,0 +1,22 @@
+{
+  "summary": "Frontend-only verification of new ERP connection status badge (ErpConnectionStatus.jsx) placed next to existing SAP badge on 22 pages. Spot-checked 5 pages at desktop 1920x900 and mobile 390x844. Also verified backend GET /api/erp/connection-status.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ErpConnectionStatus.jsx and SapConnectionStatus.jsx are ~95% duplicate code (same polling pattern, same styling, only endpoint + label strings differ). Consider extracting a shared <ConnectionStatusBadge endpoint='...' labels={{checking, connected, disconnected}} testId='...'/> component to reduce duplication and simplify future maintenance. Also, the copy-paste into 22 page files is fragile - a single Header layout component would be a cleaner long-term fix (out of scope for this additive change)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Seeded synthetic Entra ID session: auth_users _id='test-tid:erp-badge-oid' (super_admin), auth_sessions token 'erpbadge_g08UZbUOSGa83wr6QJFo1BmzKjigQo_8' (expires in 2 days from Sep 9 2026). Left in DB for potential retest; safe to delete.",
+  "seed_data_creation": "1 auth_users doc + 1 auth_sessions doc as above.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "GET /api/erp/connection-status returns 200 {connected:true,message:'Connected to ERP Portal (fallback host)'} in ~2.2s (primary MS SQL host down, fallback works - expected per main agent). On all 5 spot-checked pages ('/', '/inventory/inter-plant-transfer', '/purchasing-strategy/purchase-order-create', '/admin/access-management', '/inventory/inventory') the ERP badge (data-testid='erp-connection-status-indicator') rendered immediately to the right of the existing SAP badge (data-testid='connection-status-indicator'). Initial state amber+'Checking ERP...' (~1-3s) then transitions to green pulsing dot + 'ERP Synced' - dot color and label are consistent on every observed state (no green+Disconnected mismatches). Mobile 390px: badge collapses to dot only (span with hidden md:inline correctly hides), badge box 30x18px, no horizontal page overflow at html/body level (scrollWidth=clientWidth=390). No console errors. Everything working as designed.",
+  "rca of the issue": "N/A - no issues found."
+}

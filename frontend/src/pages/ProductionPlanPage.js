@@ -35,6 +35,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Input } from "@/components/ui/input";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
+import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -2032,6 +2033,7 @@ export default function ProductionPlanPage() {
           <NavTabs />
         </div>
         <SapConnectionStatus />
+        <ErpConnectionStatus />
         <div className="flex items-center gap-1.5 shrink-0">
           <span className="font-sans text-[11px] text-white/70 hidden md:inline">Your name (for selection tracking):</span>
           <input

@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
+import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -336,6 +337,7 @@ export default function InboundReceiptsPage() {
         <div className="w-px h-7 bg-white/25 shrink-0" />
         <div className="flex items-center gap-3 flex-1 justify-start min-w-0"><NavTabs /></div>
         <SapConnectionStatus />
+        <ErpConnectionStatus />
       </header>
       <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-8">
         <div className="flex items-start justify-between gap-4 flex-wrap mb-6">

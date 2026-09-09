@@ -21,6 +21,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
+import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -380,6 +381,7 @@ export default function QuotaAllocationPage() {
           <NavTabs />
         </div>
         <SapConnectionStatus />
+        <ErpConnectionStatus />
       </header>
 
       <main className="flex-1 overflow-auto p-4 space-y-4">

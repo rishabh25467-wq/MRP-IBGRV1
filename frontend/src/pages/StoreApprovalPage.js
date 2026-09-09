@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Toaster, toast } from "@/components/ui/sonner";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
+import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
 import { useAuth } from "@/contexts/AuthContext";
 import { RequestPrintSlip } from "@/components/RequestPrintSlip";
 
@@ -540,6 +541,7 @@ export default function StoreApprovalPage() {
             <NavTabs />
           </div>
           <SapConnectionStatus />
+          <ErpConnectionStatus />
         </header>
         <main className="max-w-[1400px] mx-auto p-4 sm:p-6 space-y-4">
           <div className="flex flex-wrap items-end gap-3">

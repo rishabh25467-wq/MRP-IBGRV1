@@ -30,7 +30,7 @@ from sap_production_proposal_client import SAPProductionProposalClient, SAPProdu
 from sap_sto_client import SAPSTOClient
 from qms_drawings_client import QMSDrawingsClient, QMSDrawingsError
 from sap_outbound_delivery_client import SAPOutboundDeliveryClient, SAPOutboundDeliveryError
-from erp_portal_client import ERPPortalClient
+from erp_portal_client import ERPPortalClient, ERPPortalError
 from sap_production_model_client import SAPProductionModelClient, SAPProductionModelError, SAPProductionModelBomClient
 from sap_boo_client import SAPBooClient, SAPBooError
 from sap_goods_movement_client import SAPGoodsMovementClient, SAPGoodsMovementError
@@ -812,6 +812,25 @@ async def connection_status():
             await asyncio.to_thread(sap_soap_client.check_connection)
             return ConnectionStatus(connected=True, message="Connected to SAP Business ByDesign")
         except SAPSoapError as e:
+            last_error = e
+            if attempt == 0:
+                await asyncio.sleep(1.5)
+    return ConnectionStatus(connected=False, message=str(last_error))
+
+
+@api_router.get("/erp/connection-status", response_model=ConnectionStatus)
+async def erp_connection_status():
+    """Sep 9 2026, user's explicit ask: an "ERP Synced"/"ERP Disconnected"
+    badge matching the existing SAP one, everywhere. Same retry-once
+    pattern as /bom/connection-status above, for the same reason (don't
+    flash "Disconnected" on a single transient blip)."""
+    last_error = None
+    for attempt in range(2):
+        try:
+            host_used = await asyncio.to_thread(erp_portal_client.check_connection)
+            message = "Connected to ERP Portal" + (" (fallback host)" if host_used == "fallback" else "")
+            return ConnectionStatus(connected=True, message=message)
+        except ERPPortalError as e:
             last_error = e
             if attempt == 0:
                 await asyncio.sleep(1.5)

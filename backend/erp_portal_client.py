@@ -58,6 +58,26 @@ class ERPPortalClient:
         self.password = password
         self.timeout = timeout
 
+    def check_connection(self) -> str:
+        """Sep 9 2026, user's explicit ask: a lightweight "is the ERP
+        server reachable right now" check (mirrors sap_soap_client's
+        check_connection - NOT a per-STO/per-transaction sync status).
+        Returns which host actually answered ("primary" or "fallback").
+        Raises ERPPortalError (via _connect's own failover logic) if
+        neither configured host is reachable."""
+        for i, host in enumerate(self.hosts):
+            try:
+                conn = pytds.connect(
+                    server=host, port=self.port, database=self.database,
+                    user=self.username, password=self.password,
+                    timeout=self.timeout, login_timeout=self.timeout, autocommit=False,
+                )
+                conn.close()
+                return "primary" if i == 0 else "fallback"
+            except Exception as e:
+                logger.warning(f"ERP Portal connection check: could not reach {host}:{self.port}: {e}")
+        raise ERPPortalError(f"ERP Portal unreachable on all configured host(s) ({', '.join(self.hosts)})")
+
     def _connect(self):
         last_err = None
         for i, host in enumerate(self.hosts):

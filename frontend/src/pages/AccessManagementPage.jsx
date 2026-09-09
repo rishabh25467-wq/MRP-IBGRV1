@@ -9,6 +9,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
+import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
 import { useAuth, PAGE_LABELS } from "@/contexts/AuthContext";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -175,6 +176,7 @@ export default function AccessManagementPage() {
           <NavTabs />
         </div>
         <SapConnectionStatus />
+        <ErpConnectionStatus />
       </header>
 
       <div className="p-4 sm:p-6">

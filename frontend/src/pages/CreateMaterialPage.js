@@ -8,6 +8,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 import { Toaster, toast } from "@/components/ui/sonner";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
+import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -109,6 +110,7 @@ export default function CreateMaterialPage() {
             <NavTabs />
           </div>
           <SapConnectionStatus />
+          <ErpConnectionStatus />
         </header>
         <main className="flex-1 flex items-center justify-center">
           <form

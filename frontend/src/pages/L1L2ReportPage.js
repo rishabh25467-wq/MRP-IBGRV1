@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { ArrowsClockwise, DownloadSimple, MagnifyingGlass, Stack } from "@phosphor-icons/react";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
+import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
@@ -153,6 +154,7 @@ export default function L1L2ReportPage() {
         <span className="text-white font-heading font-bold text-base shrink-0">Materials Hub</span>
         <NavTabs />
         <SapConnectionStatus />
+        <ErpConnectionStatus />
       </div>
 
       <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-6">

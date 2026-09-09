@@ -67,6 +67,13 @@ Extend the existing SAP BOM viewer application: Production Plan page (OMS Open-P
 - Verified live end-to-end: backend curl (1.48s live SAP fetch -> 0.24s cached), then `testing_agent` (iteration_149): 100% pass, no bugs. Testing agent explicitly did NOT click "Create Purchase Order in SAP" (creates a real permanent SAP document, per longstanding caution in this app - see PO Creation history above).
 - Also filed a detailed external bug report (this session, not a codebase fix) for the user to send to whoever manages the separate Radish QMS app: ALL drawing file downloads there 404 with "Drawing file not found in storage" (8/8 parts tested) despite healthy metadata - a QMS-side storage issue, outside this codebase.
 
+## What's been implemented (Sep 9, 2026 session - "ERP Synced" status badge)
+- **User's ask**: an "ERP Synced"/"ERP Disconnected" badge matching the existing "SAP PRD Connected" badge, visible for all users on every page.
+- **Backend**: `erp_portal_client.check_connection()` (opens+closes a real MS SQL connection to primary host, falls back to secondary, raises only if both are unreachable) + `GET /api/erp/connection-status` (same `ConnectionStatus` model + anti-flicker retry-once pattern as the existing `/api/bom/connection-status`).
+- **Frontend**: new `ErpConnectionStatus.jsx` (mirrors `SapConnectionStatus.jsx` exactly - 60s poll, colored dot + label, dot-only on mobile) added to all 22 page files that already show the SAP badge, right next to it.
+- Verified: backend curl (returns `Connected to ERP Portal (fallback host)` - primary MS SQL host currently down, fallback working as designed), then `testing_agent` (iteration_150): 100% pass across 5 spot-checked pages + mobile, no bugs. Code-review note: `ErpConnectionStatus`/`SapConnectionStatus` are ~95% duplicate code, intentionally mirrored for consistency - a shared `<ConnectionStatusBadge>` component would be a future cleanup, not done now (out of scope for this additive ask).
+
+
 - `StockTransferPage.jsx` refactor (~1400 lines), STO stuck-order nav badge, "last confirmed in SAP" timestamp on stale PO rows, auto-refresh a site's stock after its own STO posts, bulk-import diff preview, missing-weight alert, auto-retry ERP sync.
 - `GrnApprovalPage.jsx` is ~610 lines mixing lookup/approve/reject/discrepancy/retry/pending-table - approaching split threshold per code review (iteration_141).
 

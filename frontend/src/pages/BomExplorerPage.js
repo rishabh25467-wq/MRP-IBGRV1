@@ -39,6 +39,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
+import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
 
 // Sep 3 2026, user's explicit ask: "Latest Drawing" column, sourced from
 // the sister QMS Emergent app's External Drawings API (server-side
@@ -750,6 +751,7 @@ export default function BomExplorerPage() {
         </div>
 
         <SapConnectionStatus />
+        <ErpConnectionStatus />
       </header>
       {/* Toolbar */}
       <div className="bg-white border-b border-[#D0D5DD] p-2 flex items-center gap-3 shrink-0 flex-wrap">

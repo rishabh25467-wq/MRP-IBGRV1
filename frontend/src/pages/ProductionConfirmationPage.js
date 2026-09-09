@@ -33,6 +33,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
+import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
 import { MyStockRequestsTab } from "@/components/MyStockRequestsTab";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -2257,6 +2258,7 @@ export default function ProductionConfirmationPage() {
           <NavTabs />
         </div>
         <SapConnectionStatus />
+        <ErpConnectionStatus />
       </header>
 
       <main className="flex-1 overflow-auto p-4 space-y-4">
