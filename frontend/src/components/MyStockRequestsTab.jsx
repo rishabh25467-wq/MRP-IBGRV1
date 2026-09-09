@@ -267,7 +267,6 @@ export const MyStockRequestsTab = ({ actorName }) => {
               <SortTh label="Status" field="status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
               <SortTh label="Short Components" field="short_count" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
               <SortTh label="Requested At" field="created_at" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-              <th className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase whitespace-nowrap">Print</th>
             </tr></thead>
             <tbody>
               {filtered.map((r, i) => (
@@ -288,11 +287,6 @@ export const MyStockRequestsTab = ({ actorName }) => {
                   <td className="border border-[#D0D5DD] px-2 py-1.5"><Badge className={`${STATUS_BADGE[r.status]?.tone} border`}>{STATUS_BADGE[r.status]?.label || r.status}</Badge></td>
                   <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{r.short_count}</td>
                   <td className="border border-[#D0D5DD] px-2 py-1.5">{formatDate(r.created_at)}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5">
-                    <Button variant="outline" size="sm" className="h-6 px-2 text-[11px]" onClick={() => setPrintTarget(r)} data-testid={`myreq-print-button-${i}`}>
-                      <Printer size={12} className="mr-1" /> Print
-                    </Button>
-                  </td>
                 </tr>
               ))}
             </tbody>

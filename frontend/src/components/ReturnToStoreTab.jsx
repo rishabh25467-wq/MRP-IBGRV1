@@ -110,7 +110,7 @@ export const ReturnToStoreTab = ({ actorName }) => {
               <ArrowClockwise size={14} className="mr-1.5" /> Refresh
             </Button>
           </div>
-          <ReturnList returns={returns} loading={loading} isAdmin={isAdmin} onView={setDetailReturn} onPrint={setPrintTarget} onEditRejected={editRejected} />
+          <ReturnList returns={returns} loading={loading} isAdmin={isAdmin} onView={setDetailReturn} onEditRejected={editRejected} />
         </>
       )}
 
@@ -136,7 +136,7 @@ export const ReturnToStoreTab = ({ actorName }) => {
   );
 };
 
-const ReturnList = ({ returns, loading, isAdmin, onView, onPrint, onEditRejected }) => {
+const ReturnList = ({ returns, loading, isAdmin, onView, onEditRejected }) => {
   const [search, setSearch] = useState("");
   const term = search.trim().toLowerCase();
   const filtered = term
@@ -183,16 +183,11 @@ const ReturnList = ({ returns, loading, isAdmin, onView, onPrint, onEditRejected
                   <td className="border border-[#D0D5DD] px-2 py-1.5">{(r.items || [])[0]?.reason_label}{(r.items || []).length > 1 ? " +" : ""}</td>
                   <td className="border border-[#D0D5DD] px-2 py-1.5"><StatusBadge status={r.status} /></td>
                   <td className="border border-[#D0D5DD] px-2 py-1.5">
-                    <div className="flex gap-1">
-                      {r.status === "rejected" && (
-                        <Button variant="outline" size="sm" className="h-6 px-2 text-[11px]" onClick={() => onEditRejected(r)} data-testid={`return-edit-resubmit-button-${i}`}>
-                          <PencilSimple size={11} className="mr-1" /> Edit & Resubmit
-                        </Button>
-                      )}
-                      <Button variant="outline" size="sm" className="h-6 px-2 text-[11px]" onClick={() => onPrint(r)} data-testid={`return-print-button-${i}`}>
-                        <Printer size={11} className="mr-1" /> Print
+                    {r.status === "rejected" ? (
+                      <Button variant="outline" size="sm" className="h-6 px-2 text-[11px]" onClick={() => onEditRejected(r)} data-testid={`return-edit-resubmit-button-${i}`}>
+                        <PencilSimple size={11} className="mr-1" /> Edit & Resubmit
                       </Button>
-                    </div>
+                    ) : "\u2014"}
                   </td>
                 </tr>
               ))}
