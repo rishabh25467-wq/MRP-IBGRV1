@@ -220,6 +220,7 @@ const StepShell = ({ title, onCancel, children }) => (
 const PickRequestStep = ({ actorName, isAdmin, onPick, onCancel }) => {
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     axios.get(`${API}/store-returns/previous-requests`, { params: { requester: actorName } })
@@ -228,12 +229,24 @@ const PickRequestStep = ({ actorName, isAdmin, onPick, onCancel }) => {
       .finally(() => setLoading(false));
   }, [actorName]);
 
+  const term = search.trim().toLowerCase();
+  const filtered = term ? requests.filter((r) => [r._id, r.site_id].filter(Boolean).some((f) => String(f).toLowerCase().includes(term))) : requests;
+
   return (
     <StepShell title="Step 1 - Select Previous Request" onCancel={onCancel}>
+      <div>
+        <Label className="text-xs font-bold text-[#344054]">Search</Label>
+        <div className="relative">
+          <MagnifyingGlass size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
+          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by Request ID or Site..." className="w-64 bg-white pl-7" data-testid="pick-request-search-input" />
+        </div>
+      </div>
       {loading ? (
         <p className="text-sm text-[#667085]">Loading...</p>
-      ) : requests.length === 0 ? (
-        <p className="text-sm text-[#667085]" data-testid="pick-request-empty-state">No previous stock requests with issued stock found.</p>
+      ) : filtered.length === 0 ? (
+        <p className="text-sm text-[#667085]" data-testid="pick-request-empty-state">
+          {requests.length === 0 ? "No previous stock requests with issued stock found." : "No requests match your search."}
+        </p>
       ) : (
         <table className="w-full text-xs border-collapse">
           <thead><tr>
@@ -242,7 +255,7 @@ const PickRequestStep = ({ actorName, isAdmin, onPick, onCancel }) => {
             ))}
           </tr></thead>
           <tbody>
-            {requests.map((r, i) => (
+            {filtered.map((r, i) => (
               <tr key={r._id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`pick-request-row-${i}`}>
                 <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono">{r._id}</td>
                 <td className="border border-[#D0D5DD] px-2 py-1.5">{formatDate(r.created_at)}</td>
@@ -358,9 +371,11 @@ const AgainstRequestItemsStep = ({ requestId, actorName, reasons, editingReturn,
                   </Select>
                 </td>
                 <td className="border border-[#D0D5DD] px-2 py-1.5">
-                  {row.reason_code === "other" && (
-                    <Input value={row.remarks || ""} onChange={(e) => setRow(it.product_id, { remarks: e.target.value })} className="h-7 w-40" placeholder="Remarks (required)" data-testid={`against-item-remarks-${i}`} />
-                  )}
+                  <Input
+                    value={row.remarks || ""} onChange={(e) => setRow(it.product_id, { remarks: e.target.value })} className="h-7 w-40"
+                    placeholder={row.reason_code === "other" ? "Remarks (required)" : "Remarks (optional)"}
+                    data-testid={`against-item-remarks-${i}`}
+                  />
                 </td>
               </tr>
             );
@@ -514,9 +529,11 @@ const ManualReturnStep = ({ actorName, reasons, editingReturn, onDone, onCancel 
                 </Select>
               </td>
               <td className="border border-[#D0D5DD] px-2 py-1.5">
-                {r.reason_code === "other" && (
-                  <Input value={r.remarks} onChange={(e) => setRow(i, { remarks: e.target.value })} className="h-7 w-40" placeholder="Remarks (required)" data-testid={`manual-return-remarks-${i}`} />
-                )}
+                <Input
+                  value={r.remarks} onChange={(e) => setRow(i, { remarks: e.target.value })} className="h-7 w-40"
+                  placeholder={r.reason_code === "other" ? "Remarks (required)" : "Remarks (optional)"}
+                  data-testid={`manual-return-remarks-${i}`}
+                />
               </td>
               <td className="border border-[#D0D5DD] px-2 py-1.5">
                 {rows.length > 1 && (
