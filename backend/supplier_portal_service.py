@@ -82,8 +82,15 @@ def signup(db, vendor_code: str, company_name: str, email: str, password: str,
         raise SupplierPortalValidationError("Password must be at least 8 characters")
     if not (gst_bytes and pan_bytes):
         raise SupplierPortalValidationError("GST certificate and PAN card documents are both required")
-    if db[ACCOUNTS_COLLECTION].find_one({"email": email}):
-        raise SupplierPortalValidationError("An account with this email already exists")
+    existing = db[ACCOUNTS_COLLECTION].find_one({"email": email})
+    if existing:
+        if existing.get("status") == "rejected":
+            # Sep 9 2026 fix: a rejected applicant must be able to re-apply
+            # with the same email (e.g. corrected vendor code) instead of
+            # being permanently blocked by their old rejected record.
+            db[ACCOUNTS_COLLECTION].delete_one({"_id": existing["_id"]})
+        else:
+            raise SupplierPortalValidationError("An account with this email already exists")
 
     account_id = str(uuid.uuid4())
     gst_ext = gst_filename.rsplit(".", 1)[-1] if gst_filename and "." in gst_filename else "bin"
