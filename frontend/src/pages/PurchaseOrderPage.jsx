@@ -171,6 +171,7 @@ export default function PurchaseOrderPage() {
         uomFromPr: it.unit,
         uomMappingConfident: it.matched_unit_of_measure ? true : it.unit_mapping_confident,
         fromPr: true,
+        matchedVia: it.matched_via || null,
         // Sep 4 2026, user's explicit ask: allow splitting one PR line's
         // qty across several PO lines (a delivery schedule) - grouped by
         // prLineNo, capped at prOriginalQty so the split can never exceed
@@ -696,6 +697,11 @@ export default function PurchaseOrderPage() {
                             l.product_id ? (
                               <div className="h-8 flex items-center px-2 text-xs bg-[#F9FAFB] border border-[#D0D5DD] rounded-sm font-data text-[#101828] truncate" data-testid={`po-line-product-locked-${idx}`} title={`${l.product_id} - ${l.description}`}>
                                 {l.product_id} - {l.description}
+                                {l.matchedVia === "sap_live" && (
+                                  <span className="ml-1.5 shrink-0 text-[9px] font-sans font-bold uppercase tracking-wide text-[#027A48] bg-[#ECFDF3] border border-[#ABEFC6] rounded-sm px-1 py-0.5" title="Not in the local catalog cache (likely zero stock so far) - matched live against SAP's Material Master instead" data-testid={`po-line-matched-live-badge-${idx}`}>
+                                    Live SAP match
+                                  </span>
+                                )}
                               </div>
                             ) : (
                               <div className="h-8 flex items-center px-2 text-xs bg-[#FEF3F2] border border-[#FECDCA] rounded-sm text-[#B42318] truncate" data-testid={`po-line-product-unresolved-${idx}`} title={l.description}>

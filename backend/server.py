@@ -5291,6 +5291,7 @@ class PRLookupLineItem(BaseModel):
     matched_product_id: Optional[str] = None
     matched_description: Optional[str] = None
     matched_unit_of_measure: Optional[str] = None
+    matched_via: Optional[str] = None  # "cache" | "sap_live" - Sep 9 2026, see po_pr_lookup docstring
     sap_unit_of_measure: Optional[str] = None
     unit_mapping_confident: bool = True
 
@@ -5387,6 +5388,35 @@ async def po_pr_lookup(voc_no: str):
             return result[0]["items"] if result else []
         matched_map = {m["product_id"]: m for m in await asyncio.to_thread(_match)}
 
+    # Sep 9 2026, real bug found + fixed: `inventory_cache` is sourced from
+    # SAP's own On-Hand Inventory STOCK report (see inventory_service.py) -
+    # a material that's genuinely active/released in the SAP Material
+    # Master but has zero on-hand stock anywhere (e.g. freshly activated,
+    # about to be purchased for the very first time via THIS PR) can never
+    # appear there, wrongly showing "Not matched in SAP" even though the
+    # PR's icode IS the material's real SAP InternalID. Live SAP fallback
+    # (single exact-ID lookup, cheap/parallel) for any icode the local
+    # cache missed - only trusted if SAP itself reports it as an active
+    # material (Purchasing LifeCycleStatusCode "2" = Active/Released, same
+    # code sap_material_create_client.py writes when activating a site).
+    unmatched_icodes = [c for c in set(icodes) if c not in matched_map]
+    if unmatched_icodes:
+        def _live_lookup(code):
+            try:
+                info = sap_material_client.resolve_material_info(code)
+            except SAPMaterialError:
+                return code, None
+            if info.get("uuid") and info.get("life_cycle_status_code") == "2":
+                return code, info
+            return code, None
+        live_results = await asyncio.gather(*[asyncio.to_thread(_live_lookup, c) for c in unmatched_icodes])
+        for code, info in live_results:
+            if info:
+                matched_map[code] = {
+                    "product_id": code, "description": info.get("description"),
+                    "uom": info.get("base_unit") or "EA", "_matched_via": "sap_live",
+                }
+
     items = []
     for it in raw_items:
         icode = it.get("icode") or None
@@ -5398,6 +5428,7 @@ async def po_pr_lookup(voc_no: str):
             matched_product_id=match.get("product_id") if match else None,
             matched_description=match.get("description") if match else None,
             matched_unit_of_measure=match.get("uom") if match else None,
+            matched_via=match.get("_matched_via", "cache") if match else None,
             sap_unit_of_measure=sap_uom, unit_mapping_confident=uom_confident,
         ))
 

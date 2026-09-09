@@ -88,10 +88,11 @@ class SAPMaterialClient:
 
     def resolve_material_info(self, internal_id: str):
         """Returns {"uuid": str|None, "drawing_url": str|None, "comments":
-        list[dict]} for a Material's InternalID (business ID, e.g.
-        'SPC5WM'). Both drawing_url and comments come from the same
-        Material master AttachmentFolder.Document node(s) - SAP ByDesign
-        lets a Document entry carry an external web link
+        list[dict], "description": str|None, "base_unit": str|None,
+        "life_cycle_status_code": str|None} for a Material's InternalID
+        (business ID, e.g. 'SPC5WM'). Both drawing_url and comments come
+        from the same Material master AttachmentFolder.Document node(s) -
+        SAP ByDesign lets a Document entry carry an external web link
         (ExternalLinkWebURI, this tenant uses it to point at drawings/
         documentation hosted on a separate shared-drive portal) AND a
         free-text Description - this is exactly the "Comment" field shown
@@ -101,10 +102,18 @@ class SAPMaterialClient:
         Document has a Description, and a Material can have more than one
         Document - `comments` only includes the ones that actually have a
         non-empty Description, each as {"title", "type_code",
-        "type_label", "comment"}. Returns all-None/empty if SAP has no
-        material with that exact InternalID. Raises SAPMaterialAuthError
-        if the technical user isn't authorized for this service, or
-        SAPMaterialError for any other SOAP fault/HTTP error."""
+        "type_label", "comment"}. `description`/`base_unit` (Sep 9 2026,
+        added for the PR-driven PO Creation live-fallback match - see
+        server.py's pr-lookup endpoint) come from the Material's own
+        <Description><Description languageCode="EN">...</Description>
+        </Description> (note the nested tag - NOT the same "Description"
+        tag used per-Document above, which is why this reads the material
+        block directly rather than reusing _first_tag on the whole block
+        naively) and <BaseMeasureUnitCode>. Returns all-None/empty if SAP
+        has no material with that exact InternalID. Raises
+        SAPMaterialAuthError if the technical user isn't authorized for
+        this service, or SAPMaterialError for any other SOAP fault/HTTP
+        error."""
         with sap_semaphore:
             resp = requests.post(
                 self.endpoint,
@@ -120,14 +129,24 @@ class SAPMaterialClient:
                 raise SAPMaterialAuthError(faultstring)
             raise SAPMaterialError(faultstring)
 
+        empty = {"uuid": None, "drawing_url": None, "comments": [], "description": None, "base_unit": None, "life_cycle_status_code": None}
         material_match = re.search(r"<(?:\w+:)?Material(?:\s[^>]*)?>(.*?)</(?:\w+:)?Material>", xml, re.S)
         if not material_match:
-            return {"uuid": None, "drawing_url": None, "comments": []}
+            return empty
         block = material_match.group(1)
         returned_id = _first_tag(block, "InternalID")
         if returned_id != internal_id:
-            return {"uuid": None, "drawing_url": None, "comments": []}
+            return empty
         material_uuid = _first_tag(block, "UUID")
+        base_unit = _first_tag(block, "BaseMeasureUnitCode")
+        life_cycle_status_code = None
+        purchasing_match = re.search(r"<Purchasing>(.*?)</Purchasing>", block, re.S)
+        if purchasing_match:
+            life_cycle_status_code = _first_tag(purchasing_match.group(1), "LifeCycleStatusCode")
+        description = None
+        desc_match = re.search(r"<Description>\s*<Description[^>]*>(.*?)</Description>\s*</Description>", block, re.S)
+        if desc_match:
+            description = desc_match.group(1).strip() or None
 
         drawing_url = None
         comments = []
@@ -144,7 +163,10 @@ class SAPMaterialClient:
                     "type_label": ATTACHMENT_TYPE_LABELS.get(type_code, f"Type {type_code}" if type_code else None),
                     "comment": comment_text,
                 })
-        return {"uuid": material_uuid, "drawing_url": drawing_url, "comments": comments}
+        return {
+            "uuid": material_uuid, "drawing_url": drawing_url, "comments": comments,
+            "description": description, "base_unit": base_unit, "life_cycle_status_code": life_cycle_status_code,
+        }
 
     def resolve_uuid(self, internal_id: str):
         """Returns just the material's UUID (str), or None - thin wrapper
