@@ -55,7 +55,7 @@ export default function SupplierSignupPage() {
 
   if (done) {
     return (
-      <div className="min-h-screen bg-[#F2F4F7] font-sans flex items-center justify-center p-4" data-testid="supplier-signup-success">
+      <div className="min-h-screen bg-[#F2F4F7] font-sans supplier-fiori-font flex items-center justify-center p-4" data-testid="supplier-signup-success">
         <div className="max-w-md w-full bg-white rounded-sm border border-[#D0D5DD] shadow-sm p-8 text-center">
           <CheckCircle size={40} weight="fill" className="text-[#10B981] mx-auto mb-4" />
           <h1 className="font-heading text-xl font-bold text-[#1D2939]">Request Submitted</h1>
@@ -72,7 +72,7 @@ export default function SupplierSignupPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F2F4F7] font-sans flex items-center justify-center p-4" data-testid="supplier-signup-page">
+    <div className="min-h-screen bg-[#F2F4F7] font-sans supplier-fiori-font flex items-center justify-center p-4" data-testid="supplier-signup-page">
       <div className="max-w-lg w-full bg-white rounded-sm border border-[#D0D5DD] shadow-sm p-8">
         <div className="flex items-center gap-2 mb-1 pb-3 border-b border-[#D0D5DD]">
           <Buildings size={22} weight="fill" className="text-[#004B87]" />

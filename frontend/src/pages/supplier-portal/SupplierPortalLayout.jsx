@@ -67,7 +67,7 @@ export function SupplierPortalLayout({ active, vendorCode, isImpersonating, page
   );
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] font-sans flex" data-testid="supplier-portal-layout">
+    <div className="min-h-screen bg-[#F8FAFC] font-sans supplier-fiori-font flex" data-testid="supplier-portal-layout">
       <aside className="hidden md:flex md:w-60 bg-[#0F172A] shrink-0 fixed inset-y-0 left-0 z-30">{sidebarContent}</aside>
 
       {mobileOpen && (

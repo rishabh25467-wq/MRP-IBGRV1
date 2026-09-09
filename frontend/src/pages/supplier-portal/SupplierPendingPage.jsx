@@ -7,7 +7,7 @@ export default function SupplierPendingPage() {
   const rejected = account?.status === "rejected";
 
   return (
-    <div className="min-h-screen bg-[#F2F4F7] font-sans flex items-center justify-center p-4" data-testid="supplier-pending-page">
+    <div className="min-h-screen bg-[#F2F4F7] font-sans supplier-fiori-font flex items-center justify-center p-4" data-testid="supplier-pending-page">
       <div className="max-w-md w-full bg-white rounded-sm border border-[#D0D5DD] shadow-sm p-8 text-center">
         <div className="flex items-center justify-center gap-2 mb-4 pb-3 border-b border-[#D0D5DD]">
           <Buildings size={20} weight="fill" className="text-[#004B87]" />

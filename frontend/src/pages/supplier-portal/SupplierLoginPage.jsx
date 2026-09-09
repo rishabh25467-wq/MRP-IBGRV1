@@ -39,7 +39,7 @@ export default function SupplierLoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#F2F4F7] font-sans flex items-center justify-center p-4" data-testid="supplier-login-page">
+    <div className="min-h-screen bg-[#F2F4F7] font-sans supplier-fiori-font flex items-center justify-center p-4" data-testid="supplier-login-page">
       <div className="max-w-sm w-full bg-white rounded-sm border border-[#D0D5DD] shadow-sm p-8">
         <div className="flex items-center gap-2 mb-1 pb-3 border-b border-[#D0D5DD]">
           <Buildings size={22} weight="fill" className="text-[#004B87]" />

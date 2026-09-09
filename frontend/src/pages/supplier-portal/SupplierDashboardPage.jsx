@@ -232,7 +232,12 @@ export default function SupplierDashboardPage() {
     });
   }, [sortedPos]);
 
-  const detailItems = useMemo(() => pos.filter((po) => po.po_number === detailPoNumber), [pos, detailPoNumber]);
+  const detailItems = useMemo(
+    () => pos.filter((po) => po.po_number === detailPoNumber)
+      .slice()
+      .sort((a, b) => (a.item_number || "").localeCompare(b.item_number || "", undefined, { numeric: true })),
+    [pos, detailPoNumber]
+  );
 
   const toggleCartItem = (po, checked) => {
     setCart((prev) => {
@@ -457,6 +462,7 @@ export default function SupplierDashboardPage() {
                       {sortColumn === "po_date" ? (sortDir === "asc" ? <CaretUp size={11} weight="bold" /> : <CaretDown size={11} weight="bold" />) : <CaretUp size={11} className="opacity-30" />}
                     </button>
                   </th>
+                  <th className="border border-[#E2E8F0] p-1.5 text-right">PO Qty</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-right">Unit Price</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-right">Subtotal</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-right">In Transit Qty</th>
@@ -511,6 +517,9 @@ export default function SupplierDashboardPage() {
                       <td className="border border-[#E2E8F0] px-2 py-1">{po.description || po.product_id}</td>
                       <td className="border border-[#E2E8F0] px-2 py-1 text-xs">{po.buyer_entity_name}</td>
                       <td className="border border-[#E2E8F0] px-2 py-1 font-data text-xs whitespace-nowrap">{fmtDate(po.po_date)}</td>
+                      <td className="border border-[#E2E8F0] px-2 py-1 text-right font-data text-xs" data-testid={`supplier-po-qty-${po.po_number}-${po.item_number}`}>
+                        {po.po_qty} {po.unit_of_measure}
+                      </td>
                       <td className="border border-[#E2E8F0] px-2 py-1 text-right font-data text-xs">{fmtMoney(po.unit_price, po.currency)}</td>
                       <td className="border border-[#E2E8F0] px-2 py-1 text-right font-data text-xs">{fmtMoney(po.subtotal, po.currency)}</td>
                       <td className="border border-[#E2E8F0] px-2 py-1 text-right font-data" data-testid={`supplier-po-in-transit-qty-${po.po_number}-${po.item_number}`}>
@@ -649,44 +658,46 @@ export default function SupplierDashboardPage() {
       </Dialog>
 
       <Dialog open={!!detailPoNumber} onOpenChange={(o) => !o && setDetailPoNumber(null)}>
-        <DialogContent className="rounded-sm max-w-2xl" data-testid="supplier-po-detail-modal">
+        <DialogContent className="rounded-sm max-w-3xl" data-testid="supplier-po-detail-modal">
           <DialogHeader>
             <DialogTitle className="font-heading font-data">PO {detailPoNumber}</DialogTitle>
             <DialogDescription>
               {detailItems[0]?.buyer_entity_name} · Ordered {fmtDate(detailItems[0]?.po_date)}
             </DialogDescription>
           </DialogHeader>
-          <table className="w-full text-sm border-collapse">
-            <thead className="text-[#475569] text-xs uppercase">
-              <tr>
-                <th className="text-left py-1 font-semibold">Item</th>
-                <th className="text-left py-1 font-semibold">Description</th>
-                <th className="text-right py-1 font-semibold">Qty</th>
-                <th className="text-right py-1 font-semibold">Unit Price</th>
-                <th className="text-right py-1 font-semibold">Subtotal</th>
-                <th className="text-left py-1 font-semibold">Due Date</th>
-              </tr>
-            </thead>
-            <tbody>
-              {detailItems.map((it, i) => (
-                <tr key={i} className="border-t border-[#E2E8F0]">
-                  <td className="py-1.5 font-data">{it.item_number}</td>
-                  <td className="py-1.5">{it.description}</td>
-                  <td className="py-1.5 text-right font-data">{it.po_qty} {it.unit_of_measure}</td>
-                  <td className="py-1.5 text-right font-data">{fmtMoney(it.unit_price, it.currency)}</td>
-                  <td className="py-1.5 text-right font-data">{fmtMoney(it.subtotal, it.currency)}</td>
-                  <td className="py-1.5 font-data whitespace-nowrap">{fmtDate(it.due_date)}</td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[13px] border-collapse" data-testid="supplier-po-detail-table">
+              <thead className="bg-[#F1F5F9] text-[#344054] text-xs font-bold font-heading uppercase tracking-wide">
+                <tr>
+                  <th className="border border-[#E2E8F0] p-1.5 text-left whitespace-nowrap">Item</th>
+                  <th className="border border-[#E2E8F0] p-1.5 text-left">Description</th>
+                  <th className="border border-[#E2E8F0] p-1.5 text-right whitespace-nowrap">PO Qty</th>
+                  <th className="border border-[#E2E8F0] p-1.5 text-right whitespace-nowrap">Unit Price</th>
+                  <th className="border border-[#E2E8F0] p-1.5 text-right whitespace-nowrap">Subtotal</th>
+                  <th className="border border-[#E2E8F0] p-1.5 text-left whitespace-nowrap">Due Date</th>
                 </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr className="border-t-2 border-[#E2E8F0]">
-                <td colSpan={4} className="py-2 text-right font-semibold text-xs text-[#475569]">PO Total</td>
-                <td className="py-2 text-right font-data font-bold">{fmtMoney(detailItems.reduce((s, it) => s + (it.subtotal || 0), 0), detailItems[0]?.currency)}</td>
-                <td></td>
-              </tr>
-            </tfoot>
-          </table>
+              </thead>
+              <tbody>
+                {detailItems.map((it, i) => (
+                  <tr key={i} className="bg-white odd:bg-[#F9FAFB]">
+                    <td className="border border-[#E2E8F0] px-2 py-1.5 font-data">{it.item_number}</td>
+                    <td className="border border-[#E2E8F0] px-2 py-1.5">{it.description}</td>
+                    <td className="border border-[#E2E8F0] px-2 py-1.5 text-right font-data whitespace-nowrap">{it.po_qty} {it.unit_of_measure}</td>
+                    <td className="border border-[#E2E8F0] px-2 py-1.5 text-right font-data whitespace-nowrap">{fmtMoney(it.unit_price, it.currency)}</td>
+                    <td className="border border-[#E2E8F0] px-2 py-1.5 text-right font-data whitespace-nowrap">{fmtMoney(it.subtotal, it.currency)}</td>
+                    <td className="border border-[#E2E8F0] px-2 py-1.5 font-data whitespace-nowrap">{fmtDate(it.due_date)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colSpan={4} className="border border-[#E2E8F0] px-2 py-2 text-right font-semibold text-xs text-[#475569]">PO Total</td>
+                  <td className="border border-[#E2E8F0] px-2 py-2 text-right font-data font-bold whitespace-nowrap">{fmtMoney(detailItems.reduce((s, it) => s + (it.subtotal || 0), 0), detailItems[0]?.currency)}</td>
+                  <td className="border border-[#E2E8F0]"></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
         </DialogContent>
       </Dialog>
       </div>
