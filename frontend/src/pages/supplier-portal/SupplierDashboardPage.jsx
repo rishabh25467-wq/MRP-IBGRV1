@@ -454,6 +454,8 @@ export default function SupplierDashboardPage() {
                   </th>
                   <th className="border border-[#E2E8F0] p-1.5 text-right">Unit Price</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-right">Subtotal</th>
+                  <th className="border border-[#E2E8F0] p-1.5 text-right">In Transit Qty</th>
+                  <th className="border border-[#E2E8F0] p-1.5 text-right">Received Qty</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-right">Open Qty</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-left">
                     <button
@@ -506,7 +508,24 @@ export default function SupplierDashboardPage() {
                       <td className="border border-[#E2E8F0] px-2 py-1 font-data text-xs whitespace-nowrap">{fmtDate(po.po_date)}</td>
                       <td className="border border-[#E2E8F0] px-2 py-1 text-right font-data text-xs">{fmtMoney(po.unit_price, po.currency)}</td>
                       <td className="border border-[#E2E8F0] px-2 py-1 text-right font-data text-xs">{fmtMoney(po.subtotal, po.currency)}</td>
-                      <td className="border border-[#E2E8F0] px-2 py-1 text-right font-data">
+                      <td className="border border-[#E2E8F0] px-2 py-1 text-right font-data" data-testid={`supplier-po-in-transit-qty-${po.po_number}-${po.item_number}`}>
+                        {po.in_transit_qty > 0 ? (
+                          <button
+                            onClick={() => navigate(`/supplier-portal/shipments/${vendorCode}?po=${po.po_number}`)}
+                            className="text-[#1E40AF] hover:underline underline-offset-2"
+                            title="View/edit this PO's in-transit shipment(s)"
+                            data-testid={`supplier-po-in-transit-qty-link-${po.po_number}-${po.item_number}`}
+                          >
+                            {po.in_transit_qty} {po.unit_of_measure}
+                          </button>
+                        ) : (
+                          <span className="text-[#94A3B8]">0</span>
+                        )}
+                      </td>
+                      <td className="border border-[#E2E8F0] px-2 py-1 text-right font-data text-[#065F46]" data-testid={`supplier-po-received-qty-${po.po_number}-${po.item_number}`}>
+                        {po.received_qty} {po.unit_of_measure}
+                      </td>
+                      <td className="border border-[#E2E8F0] px-2 py-1 text-right font-data" data-testid={`supplier-po-open-qty-${po.po_number}-${po.item_number}`}>
                         {po.remaining_qty} {po.unit_of_measure}
                       </td>
                       <td className="border border-[#E2E8F0] px-2 py-1 font-data text-xs whitespace-nowrap">{fmtDate(po.due_date)}</td>

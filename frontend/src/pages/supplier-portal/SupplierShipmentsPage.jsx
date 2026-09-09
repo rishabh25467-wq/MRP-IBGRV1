@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { CheckCircle, XCircle, Clock, PencilSimple, Plus, X, PlugsConnected, MagnifyingGlass } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,6 +27,9 @@ export default function SupplierShipmentsPage() {
   const { account } = useSupplierAuth();
   const { vendorCode } = useParams();
   const isImpersonating = !!(account?.testing_mode && vendorCode && vendorCode !== account?.vendor_code);
+  // Sep 9 2026: lets the Dashboard's "In Transit Qty" link jump here
+  // pre-filtered to a specific PO (e.g. /shipments/H1330?po=28792).
+  const [searchParams] = useSearchParams();
 
   const [shipments, setShipments] = useState([]);
   const [pos, setPos] = useState([]);
@@ -41,7 +44,7 @@ export default function SupplierShipmentsPage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(searchParams.get("po") || "");
 
   const [detailShipment, setDetailShipment] = useState(null);
 

@@ -198,6 +198,66 @@ def _shipped_qty_so_far(db, vendor_code: str, po_number: str, item_number: str, 
     return result[0]["total"] if result else 0.0
 
 
+def _qty_breakdown_by_status(db, vendor_code: str, po_number: str, item_number: str, exclude_doc_code: str = None) -> dict:
+    """Sep 9 2026, user's explicit ask: split what `_shipped_qty_so_far`
+    used to lump together into "in_transit_qty" (this vendor's OWN
+    shipments still awaiting GRN approval - SAP doesn't know about these
+    yet) vs. "approved_qty" (received via THIS app, used only as a
+    fallback for received_qty below before SAP's own report has ever
+    been read for this item - see _compute_qty_state)."""
+    match = {"vendor_code": vendor_code, "status": {"$in": ["in_transit", "approved"]}}
+    if exclude_doc_code:
+        match["_id"] = {"$ne": exclude_doc_code}
+    pipeline = [
+        {"$match": match},
+        {"$unwind": "$items"},
+        {"$match": {"items.po_number": po_number, "items.item_number": item_number}},
+        {"$group": {"_id": "$status", "total": {"$sum": "$items.ship_qty"}}},
+    ]
+    totals = {"in_transit": 0.0, "approved": 0.0}
+    for row in db[SHIPMENTS_COLLECTION].aggregate(pipeline):
+        totals[row["_id"]] = row["total"]
+    return {"in_transit_qty": totals["in_transit"], "approved_qty": totals["approved"]}
+
+
+def _compute_qty_state(db, vendor_code: str, po_number: str, item_number: str, po_qty: float, exclude_doc_code: str = None) -> dict:
+    """Sep 9 2026, user's explicit ask: "In Transit Qty"/"Received
+    Qty"/"Open Qty" columns on the Supplier Dashboard, PLUS the bug fix
+    this surfaced - shipment-creation validation used to check the new
+    ship_qty against SAP's own Open Qty report ALONE whenever it was
+    cached, silently ignoring the vendor's own already-in-transit (not
+    yet SAP-received) shipments for that same item. That let a vendor
+    create two overlapping in-transit shipments that together exceeded
+    the PO's real open quantity, because neither one had been received
+    by SAP yet to bring its own Open Qty figure down. Both
+    get_cached_pos_with_remaining() (display) and _resolve_items()
+    (validation) now share this one calculation so they can never
+    disagree with each other again.
+
+    `received_qty` prefers SAP's own report (po_qty - sap_open_qty,
+    firm/closed, includes receipts posted outside this app) once it's
+    been read at least once for this item; falls back to this app's own
+    locally-recorded "approved" shipments only until then.
+    `in_transit_qty` is always computed locally - SAP has no visibility
+    into a shipment the vendor hasn't had received yet."""
+    breakdown = _qty_breakdown_by_status(db, vendor_code, po_number, item_number, exclude_doc_code=exclude_doc_code)
+    in_transit_qty = breakdown["in_transit_qty"]
+    sap_cached = get_sap_open_qty(db, po_number, item_number)
+    if sap_cached:
+        received_qty = round((po_qty or 0) - sap_cached["open_qty"], 4)
+        sap_verified_at = sap_cached["fetched_at"]
+    else:
+        received_qty = breakdown["approved_qty"]
+        sap_verified_at = None
+    remaining_qty = round((po_qty or 0) - received_qty - in_transit_qty, 4)
+    return {
+        "in_transit_qty": in_transit_qty,
+        "received_qty": received_qty,
+        "remaining_qty": max(remaining_qty, 0.0),
+        "sap_verified_at": sap_verified_at,
+    }
+
+
 def get_sap_open_qty(db, po_number: str, item_number: str) -> dict:
     """Sep 2 2026, user's explicit ask: "Open PO qty should be fetched
     from SAP, not just maintained locally... to ensure if shipments
@@ -257,15 +317,12 @@ def store_sap_open_qty_cache(db, results: dict) -> dict:
 def get_cached_pos_with_remaining(db, vendor_code: str) -> list:
     items = list(db[PO_CACHE_COLLECTION].find({"vendor_code": vendor_code, "expired": {"$ne": True}}, {"_id": 0}).sort("po_number", 1))
     for it in items:
-        shipped = _shipped_qty_so_far(db, vendor_code, it["po_number"], it["item_number"])
-        it["already_shipped_qty"] = shipped
-        sap_cached = get_sap_open_qty(db, it["po_number"], it["item_number"])
-        if sap_cached:
-            it["remaining_qty"] = sap_cached["open_qty"]
-            it["sap_verified_at"] = sap_cached["fetched_at"]
-        else:
-            it["remaining_qty"] = round((it.get("po_qty") or 0) - shipped, 4)
-            it["sap_verified_at"] = None
+        state = _compute_qty_state(db, vendor_code, it["po_number"], it["item_number"], it.get("po_qty") or 0)
+        it["already_shipped_qty"] = _shipped_qty_so_far(db, vendor_code, it["po_number"], it["item_number"])
+        it["in_transit_qty"] = state["in_transit_qty"]
+        it["received_qty"] = state["received_qty"]
+        it["remaining_qty"] = state["remaining_qty"]
+        it["sap_verified_at"] = state["sap_verified_at"]
         it["buyer_entity_name"] = sap_po_client.buyer_entity_name(it.get("buyer_code"))
     return items
 
@@ -302,14 +359,17 @@ def _resolve_items(db, vendor_code: str, requested_items: list, exclude_doc_code
         if ship_qty <= 0:
             raise ShipmentValidationError(f"Ship quantity for item {item_number} on PO {po_number} must be greater than 0")
         already_shipped = _shipped_qty_so_far(db, vendor_code, po_number, item_number, exclude_doc_code=exclude_doc_code)
-        # Sep 2 2026, user's explicit ask: prefer SAP's own verified
-        # Open PO Quantity (accounts for ANY receipt, including ones
-        # posted outside this app) over the locally-computed figure -
-        # see get_sap_open_qty()'s docstring. Falls back to the old
-        # local computation only if SAP hasn't been read for this item
-        # yet.
-        sap_cached = get_sap_open_qty(db, po_number, item_number)
-        remaining = sap_cached["open_qty"] if sap_cached else (cached.get("po_qty") or 0) - already_shipped
+        # Sep 9 2026 fix: was `sap_cached["open_qty"] if sap_cached else
+        # (po_qty - already_shipped)` - whenever SAP data was cached
+        # (the common case), this checked ONLY against SAP's own Open
+        # Qty and completely ignored the vendor's own already-in-transit
+        # (not yet SAP-received) shipments for this same item, letting
+        # two overlapping in-transit shipments together exceed the PO's
+        # real open quantity. _compute_qty_state now always nets out
+        # in-transit qty on top of whichever "received" figure is best
+        # available (SAP's if read, else this app's own locally-approved
+        # total) - see its docstring.
+        remaining = _compute_qty_state(db, vendor_code, po_number, item_number, cached.get("po_qty") or 0, exclude_doc_code=exclude_doc_code)["remaining_qty"]
         if ship_qty > remaining + 1e-6:
             raise ShipmentValidationError(f"Item {item_number} on PO {po_number}: cannot ship {ship_qty} - only {remaining:g} still open")
         resolved.append({

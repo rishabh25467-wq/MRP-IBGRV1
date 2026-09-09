@@ -1,0 +1,41 @@
+{
+  "summary": "Frontend-only regression on Supplier Portal In-Transit / Received / Open qty column split + validation fix. ALL 6 requested scenarios PASSED end-to-end via UI. New 3-column display renders with correct data-testids and correct math; In-Transit>0 renders as clickable button linking to shipments page with search prefilled; overship validation correctly rejects both on shipment CREATE and shipment EDIT with the exact server error 'cannot ship X - only Y still open'; normal shipment creation succeeds and dashboard columns/KPIs update accordingly.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_evidence": {
+    "columns_present": "Table headers include 'In Transit Qty', 'Received Qty', 'Open Qty' as separate columns with data-testids supplier-po-in-transit-qty-{po}-{item}, supplier-po-received-qty-{po}-{item}.",
+    "math_spot_checks_passed": [
+      "PO 28897 item 1 (100526-45 NUT): InTransit 0 + Received 500 + Open 0 = 500; Subtotal 1710/UnitPrice 3.42 = 500. OK",
+      "PO 29086 item 1 (1/2\" HDG Lock Washer): InTransit 1 + Received 10 + Open 89 = 100; Subtotal 126/UnitPrice 1.26 = 100. OK",
+      "PO 28995 item 1: InTransit 0 + Received 0 + Open 8000 = 8000; Subtotal 43120/UnitPrice 5.39 = 8000. OK"
+    ],
+    "in_transit_link_zero": "In-Transit Qty = 0 rendered as plain text '0' (no -link- testid, no click handler). Verified on PO 28897/28995 rows.",
+    "in_transit_link_nonzero": "In-Transit Qty > 0 rendered as blue clickable BUTTON with data-testid supplier-po-in-transit-qty-link-29086-1 alongside the container supplier-po-in-transit-qty-29086-1. Click navigated to /supplier-portal/shipments/H1330?po=29086, search input pre-populated with value='29086', shipments list filtered to 9 of 18 (all PO 29086).",
+    "overship_reject_on_create": "PO 29086 item 1 currently shows Open Qty=89, In-Transit=1. Attempted ship_qty=90 -> confirmation modal displayed inline error: 'Item 1 on PO 29086: cannot ship 90.0 - only 89 still open'. Shipment NOT created (API returned 400). Bug-fix VERIFIED.",
+    "overship_reject_on_edit": "Opened Edit modal for shipment WDDSVY (in-transit, qty 1 EA), changed qty to 200, clicked Save Changes -> Yes, Save Changes -> inline error 'Item 1 on PO 29086: cannot ship 200.0 - only 89 still open'. Edit not persisted. Same fixed validation logic hit in edit path.",
+    "normal_ship_regression": "Successfully created shipment WDDSVY for PO 29086 item 1 qty 1 EA. 'Shipment Created' modal displayed doc code WDDSVY. Dashboard after refresh: In-Transit Qty for 29086-1 went from '1 EA' to '2 EA'; Total Outstanding Qty KPI decreased (173978->173977 immediately after); In-Transit Shipments KPI went 5->6. WDDSVY appears at top of shipments list for PO 29086 with status 'In Transit' and an 'Edit' button.",
+    "edit_button_visibility": "Edit action button only present on rows with status 'In Transit'; Received/Posted-to-SAP rows have no Edit button. Confirmed on shipments page for PO 29086.",
+    "kpi_row_regression": "Top KPI row still renders: Active POs=7, Total Outstanding Qty (numeric, sums remaining_qty across PO lines net of in-transit+received), In-Transit Shipments (live count), Open QC NCs=5. Values changed sensibly after our shipment create.",
+    "mobile_390px_check": "Mobile viewport shows table wrapped in horizontal scroll container (tableWidth=1118px, wrapWidth=356px, canScroll=true). No layout break; KPIs stack in 2-column grid. Acceptable responsive behaviour."
+  },
+  "test_report_links": [],
+  "action_items": [
+    "CLEANUP: Test-created shipment doc code WDDSVY (vendor H1330, PO 29086 item 1, qty 1 EA, status In Transit) should be deleted or received/discarded by main agent - I could not delete via UI (no delete affordance on the shipments page - only Edit)."
+  ],
+  "critical_code_review_comments": [
+    "In-Transit-Qty 'link' is implemented as a <button> (with onClick router.push) rather than an <a href> - functionally works and navigates correctly, but native middle-click / right-click 'open in new tab' semantics won't work. Low priority.",
+    "The 'Open Qty' cell does not appear to have a data-testid (only In-Transit and Received cells do). Minor testability gap - consider adding supplier-po-open-qty-{po}-{item} for consistency.",
+    "Same-column-split + validation-share design is clean: single _compute_qty_state() reused by both dashboard display and shipment create/edit avoids the exact drift bug that was fixed. Good architecture."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (not tested)", "frontend": "100% (6/6 scenarios passed)"},
+  "test_credentials": "Supplier Portal: test@test.com / Test123, vendor H1330 (HAMIDI EXPORTS). From /app/memory/test_credentials.md.",
+  "seed_data_creation": "One real shipment created for regression: doc code WDDSVY, vendor H1330, PO 29086, 1/2\" HDG Lock Washer x 1 EA, status In Transit. Needs cleanup.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Feature works end-to-end. If further changes touch supplier_shipment_service.py _compute_qty_state or the dashboard's PO table, re-test overship-reject and normal-ship regressions on PO 29086 (currently the most active PO for vendor H1330 with in-transit + received + open all > 0)."
+}
