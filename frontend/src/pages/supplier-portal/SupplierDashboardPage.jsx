@@ -489,12 +489,15 @@ export default function SupplierDashboardPage() {
                   return (
                     <tr key={i} className="bg-white odd:bg-[#F9FAFB] hover:bg-[#F0F4F8] transition-colors duration-150" data-testid={`supplier-po-row-${po.po_number}-${po.item_number}`}>
                       <td className="border border-[#E2E8F0] px-2 py-1">
-                        <Checkbox
-                          checked={inCart}
-                          disabled={po.remaining_qty <= 0}
-                          onCheckedChange={(c) => toggleCartItem(po, !!c)}
-                          data-testid={`supplier-po-checkbox-${po.po_number}-${po.item_number}`}
-                        />
+                        {po.remaining_qty > 0 ? (
+                          <Checkbox
+                            checked={inCart}
+                            onCheckedChange={(c) => toggleCartItem(po, !!c)}
+                            data-testid={`supplier-po-checkbox-${po.po_number}-${po.item_number}`}
+                          />
+                        ) : (
+                          <span className="text-[#94A3B8]" title="Nothing left to ship on this line">—</span>
+                        )}
                       </td>
                       <td className="border border-[#E2E8F0] px-2 py-1 font-data">
                         <button
@@ -544,14 +547,18 @@ export default function SupplierDashboardPage() {
                       </td>
                       <td className="border border-[#E2E8F0] px-2 py-1 font-data text-xs whitespace-nowrap">{fmtDate(po.due_date)}</td>
                       <td className="border border-[#E2E8F0] px-2 py-1 text-right">
-                        <Input
-                          type="number"
-                          disabled={!inCart}
-                          value={inCart ? cart[key].ship_qty : ""}
-                          onChange={(e) => updateCartQty(key, e.target.value)}
-                          className="h-7 w-24 text-right rounded-sm border-[#E2E8F0] text-xs"
-                          data-testid={`supplier-po-qty-input-${po.po_number}-${po.item_number}`}
-                        />
+                        {po.remaining_qty > 0 ? (
+                          <Input
+                            type="number"
+                            disabled={!inCart}
+                            value={inCart ? cart[key].ship_qty : ""}
+                            onChange={(e) => updateCartQty(key, e.target.value)}
+                            className="h-7 w-24 text-right rounded-sm border-[#E2E8F0] text-xs"
+                            data-testid={`supplier-po-qty-input-${po.po_number}-${po.item_number}`}
+                          />
+                        ) : (
+                          <span className="text-[#94A3B8] text-xs" data-testid={`supplier-po-qty-input-${po.po_number}-${po.item_number}`}>Fully shipped</span>
+                        )}
                       </td>
                       <td className="border border-[#E2E8F0] px-2 py-1 whitespace-nowrap">
                         <div className="text-[10px] text-[#94A3B8] font-sans flex items-center gap-1" data-testid={`supplier-po-sap-verified-${po.po_number}-${po.item_number}`}>
