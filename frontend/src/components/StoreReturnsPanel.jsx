@@ -294,7 +294,7 @@ const ProcessReturnDialog = ({ ret, storeActorName, onClose, onResolved, onPrint
         )}
 
         <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={() => onPrint(current)} data-testid="store-return-process-print-button"><Printer size={13} className="mr-1.5" /> Print</Button>
+          <Button variant="outline" onClick={() => { onPrint(current); onClose(); }} data-testid="store-return-process-print-button"><Printer size={13} className="mr-1.5" /> Print</Button>
           <Button variant="outline" onClick={onClose} data-testid="store-return-process-close-button"><X size={13} className="mr-1.5" /> Close</Button>
         </div>
       </DialogContent>

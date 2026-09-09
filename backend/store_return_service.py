@@ -114,6 +114,7 @@ def get_issued_items_for_request(db, request_id: str) -> dict | None:
             "unit_of_measure": c.get("unit_of_measure"), "required_qty": c.get("required_qty"), "issued_qty": issued_qty,
             "already_returned_qty": returned, "available_to_return": round(max(0.0, issued_qty - returned), 4),
             "issued_from_owner": c.get("issued_from_owner"), "issued_from_warehouse": c.get("issued_from_warehouse"),
+            "issued_via_sap": bool((c.get("goods_movement") or {}).get("ok")),
         })
     return {"request_id": request_id, "site_id": req["site_id"], "requester": req.get("requester"), "items": items}
 
@@ -146,7 +147,7 @@ def _build_items(db, return_type: str, original_request_id: str, site_id: str, i
                 "return_qty": return_qty, "reason_code": it["reason_code"],
                 "reason_label": REASON_CODES[it["reason_code"]], "remarks": (it.get("remarks") or "").strip() or None,
                 "issued_from_owner": src.get("issued_from_owner"), "issued_from_warehouse": src.get("issued_from_warehouse"),
-                "sap_goods_movement": None,
+                "issued_via_sap": src.get("issued_via_sap", True), "sap_goods_movement": None,
             })
         return clean_items, info["site_id"]
 
@@ -309,6 +310,13 @@ def run_confirm_movements(db, return_id: str, sap_client, progress_cb=None) -> d
             )
             if movement.get("ok") and not is_dry_run():
                 apply_goods_movement_to_cache(db, it["product_id"], source_warehouse, target_warehouse, it["return_qty"])
+        elif it.get("issued_via_sap") is False:
+            # Sep 9 2026, real case found: the original Stock Request marked
+            # this line "Issued" in our own bookkeeping, but its own
+            # goods_movement was never actually posted to SAP at the time
+            # (e.g. "No stock on file in this site's RM warehouse") - there
+            # is genuinely nothing in SAP to reverse for this item.
+            movement = {"attempted": False, "ok": False, "reason": "This item's original issue was never actually posted to SAP (no real SAP movement exists for it) - there is nothing to return in SAP. Ask your Store admin to review the original Stock Request."}
         else:
             movement = {"attempted": False, "ok": False, "reason": "Could not determine the owning party for this material at the source location - contact IT."}
         it["sap_goods_movement"] = movement

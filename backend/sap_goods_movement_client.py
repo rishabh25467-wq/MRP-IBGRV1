@@ -113,6 +113,21 @@ def _extract_sap_error(xml: str):
     return note.group(1) if note else "SAP logged an error-severity item for this movement"
 
 
+def _extract_gac_id(xml: str):
+    """Sep 9 2026 bug fix: SAP's response echoes back OUR OWN generated
+    <ExternalGACID> (what this client sent as the request's business ID)
+    alongside SAP's own real, permanent document number in <GACID> (e.g.
+    "274343") - confirmed live via a real posted movement's raw response:
+    <GACDetails><ExternalGACID>MOV-2B1632</ExternalGACID><GACUUID>...
+    </GACUUID><GACID>274343</GACID></GACDetails>. Every caller/UI in this
+    app was displaying ExternalGACID (our own throwaway placeholder,
+    meaningless to anyone checking SAP directly) instead of this real
+    GACID - fixed by returning GACID as `external_id` whenever SAP's
+    response actually contains one."""
+    m = re.search(r"<GACID>(.*?)</GACID>", xml)
+    return m.group(1).strip() if m and m.group(1).strip() else None
+
+
 # SAP's real Logistics Area ID for the write API is just "{SITE}-{TYPE}"
 # (e.g. "P2-RM", "P8-SFG" - confirmed live via SAP's own Logistics Area ID
 # lookup screen). This app's OWN data (inventory analytics report's
@@ -166,4 +181,4 @@ class SAPGoodsMovementClient:
         sap_error = _extract_sap_error(response.text)
         if sap_error:
             return {"ok": False, "external_id": external_id, "error": f"SAP rejected the movement: {sap_error}", "raw_xml": response.text}
-        return {"ok": True, "external_id": external_id, "raw_xml": response.text}
+        return {"ok": True, "external_id": _extract_gac_id(response.text) or external_id, "client_reference_id": external_id, "raw_xml": response.text}

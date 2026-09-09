@@ -49,6 +49,21 @@ code {
     font-family: "72", "72full", Helvetica, Arial, sans-serif !important;
 }
 
+/* Sep 9 2026 bug fix: print slips (RequestPrintSlip/ReturnPrintSlip) are
+   rendered via createPortal directly onto <body>, as a SIBLING of
+   #root, specifically so window.print() only ever outputs the plain
+   print-formatted slip. Without this, any modal/dialog still open on
+   screen at print time (e.g. Store's Process Return dialog, if the
+   caller doesn't close it before printing) prints ALONGSIDE the slip -
+   both fight for layout, producing the exact garbled/blank-space output
+   a user reported. Hiding the whole React root on print guarantees only
+   the portaled slip ever appears, regardless of what's open on screen. */
+@media print {
+    #root {
+        display: none !important;
+    }
+}
+
 @layer base {
     :root {
         --background: 0 0% 100%;
