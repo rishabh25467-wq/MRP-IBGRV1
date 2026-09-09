@@ -295,6 +295,19 @@ def list_active_po_numbers(db) -> list:
     ])]
 
 
+def list_active_po_numbers_for_vendor(db, vendor_code: str) -> list:
+    """Sep 9 2026, user's explicit ask: "can it just [refresh] when
+    supplier refreshes their page" - same worklist as
+    list_active_po_numbers() above, scoped to just ONE vendor so the
+    Supplier Dashboard can trigger its own fast, targeted live SAP pull
+    on every page load instead of waiting for the shared background
+    loop's ~5-6 min cycle to get around to it."""
+    return [r["_id"] for r in db[PO_CACHE_COLLECTION].aggregate([
+        {"$match": {"vendor_code": vendor_code, "expired": {"$ne": True}}},
+        {"$group": {"_id": "$po_number"}},
+    ])]
+
+
 def store_sap_open_qty_cache(db, results: dict) -> dict:
     """results: {po_number: {item_number: {po_qty, delivered_qty,
     open_qty, delivery_completed}}} - from fetch_open_po_quantities().

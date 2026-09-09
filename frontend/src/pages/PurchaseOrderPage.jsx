@@ -381,6 +381,14 @@ export default function PurchaseOrderPage() {
       const { data } = await axios.post(`${API}/purchase-orders/create`, payload);
       setResult({ po_number: data.po_number });
       setConfirmOpen(false);
+      toast.success(`Purchase Order ${data.po_number} created in SAP`, {
+        description: "Click to view its full details",
+        action: {
+          label: "View PO",
+          onClick: () => navigate(`/purchasing-strategy/created-purchase-orders?po=${data.po_number}`),
+        },
+        duration: 10000,
+      });
     } catch (e) {
       const detail = e?.response?.data?.detail;
       setResult({ error: typeof detail === "string" && detail.trim() ? detail : "Failed to create Purchase Order in SAP" });
@@ -921,14 +929,23 @@ export default function PurchaseOrderPage() {
           </DialogHeader>
           {result?.po_number ? (
             <p className="text-sm text-[#344054]" data-testid="po-result-success-message">
-              SAP Purchase Order <b className="font-data text-[#004B87]" data-testid="po-result-number">{result.po_number}</b> was created successfully.
+              SAP Purchase Order{" "}
+              <button
+                type="button"
+                className="font-data font-bold text-[#004B87] underline hover:text-[#003A6A]"
+                data-testid="po-result-number"
+                onClick={() => navigate(`/purchasing-strategy/created-purchase-orders?po=${result.po_number}`)}
+              >
+                {result.po_number}
+              </button>{" "}
+              was created successfully.
             </p>
           ) : (
             <p className="text-sm text-[#B42318]" data-testid="po-result-error-message">{result?.error}</p>
           )}
           <DialogFooter>
             {result?.po_number && (
-              <Button type="button" variant="outline" className="rounded-sm" onClick={() => navigate("/purchasing-strategy/created-purchase-orders")} data-testid="po-result-view-created-button">
+              <Button type="button" variant="outline" className="rounded-sm" onClick={() => navigate(`/purchasing-strategy/created-purchase-orders?po=${result.po_number}`)} data-testid="po-result-view-created-button">
                 View Created POs
               </Button>
             )}

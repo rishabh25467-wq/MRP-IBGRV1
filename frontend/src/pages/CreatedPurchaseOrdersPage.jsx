@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
+import { useSearchParams } from "react-router-dom";
 import axios from "axios";
-import { Eye, CircleNotch, FunnelSimple, X } from "@phosphor-icons/react";
+import { Eye, CircleNotch, FunnelSimple, X, DownloadSimple } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -22,6 +23,7 @@ export default function CreatedPurchaseOrdersPage() {
   const [productFilterInput, setProductFilterInput] = useState("");
   const [sites, setSites] = useState([]);
   const [filterOptions, setFilterOptions] = useState({ suppliers: [], created_by: [] });
+  const [searchParams, setSearchParams] = useSearchParams();
 
   useEffect(() => {
     axios.get(`${API}/purchase-orders/sites`).then((r) => setSites(r.data?.sites || [])).catch(() => {});
@@ -40,11 +42,42 @@ export default function CreatedPurchaseOrdersPage() {
 
   useEffect(() => { loadHistory(); }, [loadHistory]);
 
+  // Deep-link support: ?po=<number> from the PO Creation success toast/dialog auto-opens that row's detail
+  useEffect(() => {
+    const targetPo = searchParams.get("po");
+    if (!targetPo || loading || pos.length === 0) return;
+    const match = pos.find((p) => p.po_number === targetPo);
+    if (match) {
+      setDetail(match);
+      searchParams.delete("po");
+      setSearchParams(searchParams, { replace: true });
+    }
+  }, [searchParams, pos, loading, setSearchParams]);
+
   const setFilter = (key, value) => setFilters((prev) => ({ ...prev, [key]: value }));
   const clearFilters = () => { setFilters(EMPTY_FILTERS); setProductFilterInput(""); };
   const activeFilterCount = Object.values(filters).filter(Boolean).length;
 
   const fmtDate = (v) => (v ? new Date(v).toLocaleString() : "—");
+
+  const exportCsv = () => {
+    const headers = ["SAP PO #", "Supplier", "Site", "Bill-To", "PO Date", "PR Number", "Items", "Created By", "Created At"];
+    const csvEscape = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const rows = pos.map((po) => [
+      po.po_number, po.supplier_code, po.purchase_unit_site, po.bill_to_company,
+      po.po_date, po.pr_number || "", (po.items || []).length, po.created_by || "", fmtDate(po.created_at),
+    ].map(csvEscape).join(","));
+    const csv = [headers.map(csvEscape).join(","), ...rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `created-purchase-orders-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="min-h-screen bg-[#F5F6F7] flex flex-col font-sans">
@@ -64,9 +97,21 @@ export default function CreatedPurchaseOrdersPage() {
       </header>
 
       <main className="flex-1 overflow-auto max-w-[1400px] w-full mx-auto px-6 py-6 space-y-4">
-        <div>
-          <h1 className="font-heading text-xl font-bold text-[#1D2939]" data-testid="created-pos-page-title">Created Purchase Orders</h1>
-          <p className="text-sm text-[#667085] mt-0.5">Every Purchase Order pushed to SAP ByDesign from this app, with its live SAP reference number.</p>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h1 className="font-heading text-xl font-bold text-[#1D2939]" data-testid="created-pos-page-title">Created Purchase Orders</h1>
+            <p className="text-sm text-[#667085] mt-0.5">Every Purchase Order pushed to SAP ByDesign from this app, with its live SAP reference number.</p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            className="rounded-sm border-[#D0D5DD] text-[#344054] shrink-0"
+            disabled={pos.length === 0}
+            onClick={exportCsv}
+            data-testid="created-pos-export-csv-button"
+          >
+            <DownloadSimple size={14} className="mr-1.5" /> Export CSV
+          </Button>
         </div>
 
         <div className="bg-white border border-[#D0D5DD] rounded-sm p-3" data-testid="created-pos-filter-bar">

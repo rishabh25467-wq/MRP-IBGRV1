@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Buildings, Package, PlugsConnected, Truck, MagnifyingGlass,
-  X, Eye, Flask, CheckCircle, CaretUp, CaretDown,
+  X, Eye, Flask, CheckCircle, CaretUp, CaretDown, CircleNotch,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -374,7 +374,12 @@ export default function SupplierDashboardPage() {
           </div>
         </div>
 
-        {loading && <div className="mt-8 text-sm text-[#475569]" data-testid="supplier-dashboard-loading">Loading your Purchase Orders...</div>}
+        {loading && (
+          <div className="mt-8 flex items-center gap-2.5 bg-white border border-[#E2E8F0] rounded-lg px-4 py-3 text-sm text-[#475569]" data-testid="supplier-dashboard-loading">
+            <CircleNotch size={16} className="animate-spin text-[#1E40AF]" />
+            <span>Pulling live Open Qty from SAP for your Purchase Orders...</span>
+          </div>
+        )}
 
         {!loading && entities.length > 1 && (
           <div className="mt-4 flex items-center gap-2 flex-wrap" data-testid="supplier-entity-switcher">

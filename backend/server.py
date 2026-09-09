@@ -6692,10 +6692,22 @@ async def get_supplier_portal_purchase_orders(request: Request, as_vendor: str =
     if account.get("status") != "approved":
         raise HTTPException(status_code=403, detail="Your account is pending admin approval")
     vendor_code = _effective_vendor_code(account, as_vendor)
-    # No live SAP call here anymore (a single fetch can take 60-100s+ and
-    # was 502'ing through the ingress) - always reads the Mongo cache that
-    # start_supplier_po_cache_refresh_loop keeps current in the background.
-    # See sap_po_client.py's "THIRD FIX" docstring note, Aug 28 2026.
+    # Sep 9 2026, user's explicit ask: "can it just [refresh] when
+    # supplier refreshes their page" - unlike the FULL PO pull noted
+    # above (which really is too slow/unstable to do live), the Open PO
+    # Quantity analytics report is a single fast OData GET (~1-3s for a
+    # typical vendor's PO count, see sap_po_analytics_client.py) - safe
+    # to call live, scoped to just this vendor, on every dashboard load
+    # so In Transit/Received/Open Qty are always fresh instead of
+    # waiting on the shared background loop's ~5-6 min cycle. Falls back
+    # silently to the last cached values on any SAP hiccup.
+    po_numbers = await asyncio.to_thread(supplier_shipment_service.list_active_po_numbers_for_vendor, db, vendor_code)
+    if po_numbers:
+        try:
+            results = await asyncio.to_thread(sap_po_analytics_client.fetch_open_po_quantities, po_numbers)
+            await asyncio.to_thread(supplier_shipment_service.store_sap_open_qty_cache, db, results)
+        except Exception as e:
+            logger.warning(f"Live Open PO Qty refresh failed for vendor {vendor_code}, serving last cached values: {e}")
     watermark = await asyncio.to_thread(db[SAP_PO_WATERMARK_COLLECTION].find_one, {"_id": "latest"})
     pos = await asyncio.to_thread(supplier_shipment_service.get_cached_pos_with_remaining, db, vendor_code)
     # live_sync means "the background refresh loop is actually succeeding
