@@ -455,7 +455,7 @@ export default function SupplierDashboardPage() {
                   <th className="border border-[#E2E8F0] p-1.5 text-left">
                     <button
                       onClick={() => toggleSort("po_date")}
-                      className="flex items-center gap-1 hover:text-[#1E40AF]"
+                      className="flex items-center gap-1 hover:text-[#1E40AF] uppercase"
                       data-testid="supplier-po-sort-po-date"
                     >
                       PO Date
@@ -471,7 +471,7 @@ export default function SupplierDashboardPage() {
                   <th className="border border-[#E2E8F0] p-1.5 text-left">
                     <button
                       onClick={() => toggleSort("due_date")}
-                      className="flex items-center gap-1 hover:text-[#1E40AF]"
+                      className="flex items-center gap-1 hover:text-[#1E40AF] uppercase"
                       data-testid="supplier-po-sort-due-date"
                     >
                       Due Date
