@@ -1,12 +1,13 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { createPortal } from "react-dom";
 import axios from "axios";
-import { ArrowClockwise, CaretUp, CaretDown, MagnifyingGlass, Printer } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretUp, CaretDown, MagnifyingGlass, Printer, X } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/components/ui/sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { RequestPrintSlip } from "@/components/RequestPrintSlip";
@@ -70,6 +71,10 @@ export const MyStockRequestsTab = ({ actorName }) => {
   // store_approval page permission - shares RequestPrintSlip with
   // StoreApprovalPage.js's detail view.
   const [printTarget, setPrintTarget] = useState(null);
+  // Sep 9 2026, user's explicit ask: clicking a Request ID opens a full
+  // multi-item detail popup (item-level table + totals), instead of the
+  // row only ever showing a single Material/Qty summary.
+  const [detailRequest, setDetailRequest] = useState(null);
 
   useEffect(() => {
     if (!printTarget) return;
@@ -267,7 +272,16 @@ export const MyStockRequestsTab = ({ actorName }) => {
             <tbody>
               {filtered.map((r, i) => (
                 <tr key={r._id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`myreq-request-row-${i}`}>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono">{r._id}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono">
+                    <button
+                      type="button"
+                      onClick={() => setDetailRequest(r)}
+                      className="text-[#0E7C86] font-bold underline hover:text-[#0B5F67]"
+                      data-testid={`myreq-request-id-link-${i}`}
+                    >
+                      {r._id}
+                    </button>
+                  </td>
                   <td className="border border-[#D0D5DD] px-2 py-1.5">{r.material_id}</td>
                   <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(r.quantity)} {formatUnit(r.unit_code)}</td>
                   <td className="border border-[#D0D5DD] px-2 py-1.5">{r.site_id}</td>
@@ -329,6 +343,95 @@ export const MyStockRequestsTab = ({ actorName }) => {
           </table>
         )}
       </div>
+      {detailRequest && (
+        <RequestDetailDialog request={detailRequest} onClose={() => setDetailRequest(null)} onPrint={(r) => { setDetailRequest(null); setPrintTarget(r); }} />
+      )}
     </div>
+  );
+};
+
+// Sep 9 2026, user's explicit ask: clicking a Request ID shows the FULL
+// request (header info + an item-level table with Requested/Store
+// Issued/Pending Qty per item, plus grand totals) - not just the single
+// Material/Qty summary the request-level row shows. Store Issued Qty is
+// `c.issued_qty` - the ACTUAL quantity store_approval_service recorded
+// against a real Goods Movement, never just assumed equal to what was
+// requested (a component the store hasn't acted on yet has issued_qty
+// still `null`, shown as Pending here, not silently treated as 0-vs-0).
+const DETAIL_STATUS_LABEL = { ...STATUS_BADGE };
+
+const RequestDetailDialog = ({ request: r, onClose, onPrint }) => {
+  const items = (r.components || []).map((c) => {
+    const issuedQty = c.issued_qty ?? 0;
+    const pendingQty = Math.max(0, (c.required_qty || 0) - issuedQty);
+    return { ...c, issuedQty, pendingQty };
+  });
+  const totals = items.reduce((acc, it) => ({
+    requested: acc.requested + (it.required_qty || 0),
+    issued: acc.issued + it.issuedQty,
+    pending: acc.pending + it.pendingQty,
+  }), { requested: 0, issued: 0, pending: 0 });
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="rounded-sm max-w-4xl" data-testid="myreq-detail-dialog">
+        <DialogHeader>
+          <DialogTitle className="font-heading flex items-center justify-between gap-2 pr-6">
+            <span className="font-mono">{r._id}</span>
+            <Badge className={`${DETAIL_STATUS_LABEL[r.status]?.tone} border`}>{DETAIL_STATUS_LABEL[r.status]?.label || r.status}</Badge>
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs bg-[#F9FAFB] border border-[#D0D5DD] rounded-sm p-3" data-testid="myreq-detail-header">
+          <div><span className="text-[#667085] block">Request Date/Time</span><span className="font-bold text-[#1D2939]">{formatDate(r.created_at)}</span></div>
+          <div><span className="text-[#667085] block">Requested By</span><span className="font-bold text-[#1D2939]">{r.requester}</span></div>
+          <div><span className="text-[#667085] block">Site/Plant</span><span className="font-bold text-[#1D2939]">{r.site_id}</span></div>
+          <div><span className="text-[#667085] block">Total Items</span><span className="font-bold text-[#1D2939]" data-testid="myreq-detail-total-items">{items.length}</span></div>
+        </div>
+
+        <div className="overflow-x-auto border border-[#D0D5DD] rounded-sm">
+          <table className="w-full text-xs border-collapse">
+            <thead><tr>
+              {["Item Code", "Material", "Requested Qty", "Store Issued Qty", "Pending Qty", "UOM", "Status"].map((h) => (
+                <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {items.map((it, i) => (
+                <tr key={it.product_id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`myreq-detail-item-row-${i}`}>
+                  <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono">{it.product_id}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1.5">{it.description || "\u2014"}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(it.required_qty)}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(it.issuedQty)}</td>
+                  <td className={`border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums ${it.pendingQty > 0 ? "text-[#B42318] font-bold" : ""}`}>{formatQty(it.pendingQty)}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1.5">{formatUnit(it.unit_of_measure)}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1.5">
+                    {it.pendingQty <= 0 ? "Issued" : it.issuedQty > 0 ? "Partially Issued" : "Pending"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="bg-[#EAECF0] font-bold">
+                <td colSpan={2} className="border border-[#D0D5DD] px-2 py-1.5 text-right">Totals</td>
+                <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums" data-testid="myreq-detail-total-requested">{formatQty(totals.requested)}</td>
+                <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums" data-testid="myreq-detail-total-issued">{formatQty(totals.issued)}</td>
+                <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums" data-testid="myreq-detail-total-pending">{formatQty(totals.pending)}</td>
+                <td className="border border-[#D0D5DD]" colSpan={2}></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={() => onPrint(r)} data-testid="myreq-detail-print-button">
+            <Printer size={13} className="mr-1.5" /> Print
+          </Button>
+          <Button variant="outline" onClick={onClose} data-testid="myreq-detail-close-button">
+            <X size={13} className="mr-1.5" /> Close
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 };

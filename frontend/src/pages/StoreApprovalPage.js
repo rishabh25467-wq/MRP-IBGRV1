@@ -14,6 +14,7 @@ import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
 import { useAuth } from "@/contexts/AuthContext";
 import { RequestPrintSlip } from "@/components/RequestPrintSlip";
+import { StoreReturnsPanel } from "@/components/StoreReturnsPanel";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -200,6 +201,26 @@ const SortableHeader = ({ label, field, sortField, sortDir, onSort }) => (
   </th>
 );
 
+const StoreTabStrip = ({ viewMode, navigate }) => (
+  <div className="flex gap-1 bg-white border border-[#D0D5DD] rounded-sm p-1 flex-wrap">
+    <button type="button" onClick={() => navigate("/storeapproval")} className={`px-3 py-1.5 text-xs font-bold rounded-sm ${viewMode === "queue" ? "bg-[#0E7C86] text-white" : "text-[#344054]"}`} data-testid="store-view-mode-queue">
+      Pending Store Request
+    </button>
+    <button type="button" onClick={() => navigate("/storeapproval/returns")} className={`px-3 py-1.5 text-xs font-bold rounded-sm ${viewMode === "returns" ? "bg-[#0E7C86] text-white" : "text-[#344054]"}`} data-testid="store-view-mode-returns">
+      Pending Store Return
+    </button>
+    <button type="button" onClick={() => navigate("/storeapproval/journal")} className={`px-3 py-1.5 text-xs font-bold rounded-sm ${viewMode === "journal" ? "bg-[#0E7C86] text-white" : "text-[#344054]"}`} data-testid="store-view-mode-journal">
+      Journal (All Requests)
+    </button>
+    <button type="button" onClick={() => navigate("/storeapproval/balance")} className={`px-3 py-1.5 text-xs font-bold rounded-sm ${viewMode === "balance" ? "bg-[#0E7C86] text-white" : "text-[#344054]"}`} data-testid="store-view-mode-balance">
+      Balance Pending
+    </button>
+    <button type="button" onClick={() => navigate("/storeapproval/movements")} className={`px-3 py-1.5 text-xs font-bold rounded-sm ${viewMode === "movements" ? "bg-[#0E7C86] text-white" : "text-[#344054]"}`} data-testid="store-view-mode-movements">
+      Movement History
+    </button>
+  </div>
+);
+
 export default function StoreApprovalPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -228,6 +249,7 @@ export default function StoreApprovalPage() {
     : location.pathname.endsWith("/journal") ? "journal"
     : location.pathname.endsWith("/balance") ? "balance"
     : location.pathname.endsWith("/movements") ? "movements"
+    : location.pathname.endsWith("/returns") ? "returns"
     : "queue";
   const listPath = (mode) => (mode === "queue" ? "/storeapproval" : `/storeapproval/${mode}`);
   const [requests, setRequests] = useState([]);
@@ -512,6 +534,40 @@ export default function StoreApprovalPage() {
     else loadJournal();
   };
 
+  // Sep 9 2026 - "Pending Store Return" is a self-contained panel with its
+  // own queue/process/confirm/reject UI (see StoreReturnsPanel.jsx) - kept
+  // as an early, separate return so the existing queue/journal/balance/
+  // movements rendering below is completely untouched (user's explicit
+  // "do not redesign this page" instruction).
+  if (viewMode === "returns" && !requestId) {
+    return (
+      <div className="min-h-screen bg-[#F2F4F7] text-[#1D2939]">
+        <Toaster position="top-right" />
+        <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4" data-testid="store-approval-header">
+          <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
+            <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
+              <Shield size={18} weight="fill" className="text-white" />
+            </div>
+            <div className="flex flex-col leading-tight">
+              <span className="font-heading text-[16px] font-bold text-white tracking-tight">Materials Hub</span>
+              <span className="font-sans text-[12px] text-white/70 hidden sm:inline">Store Approval</span>
+            </div>
+          </div>
+          <div className="w-px h-7 bg-white/25 shrink-0" />
+          <div className="flex items-center gap-3 flex-1 justify-start min-w-0">
+            <NavTabs />
+          </div>
+          <SapConnectionStatus />
+          <ErpConnectionStatus />
+        </header>
+        <main className="max-w-[1400px] mx-auto p-4 sm:p-6 space-y-4">
+          <StoreTabStrip viewMode={viewMode} navigate={navigate} />
+          <StoreReturnsPanel siteFilter={siteFilter} storeActorName={storeActorName} />
+        </main>
+      </div>
+    );
+  }
+
   if (!selected) {
     if (requestId) {
       return (
@@ -545,40 +601,7 @@ export default function StoreApprovalPage() {
         </header>
         <main className="max-w-[1400px] mx-auto p-4 sm:p-6 space-y-4">
           <div className="flex flex-wrap items-end gap-3">
-            <div className="flex gap-1 bg-white border border-[#D0D5DD] rounded-sm p-1">
-              <button
-                type="button"
-                onClick={() => navigate("/storeapproval")}
-                className={`px-3 py-1.5 text-xs font-bold rounded-sm ${viewMode === "queue" ? "bg-[#0E7C86] text-white" : "text-[#344054]"}`}
-                data-testid="store-view-mode-queue"
-              >
-                Pending Queue
-              </button>
-              <button
-                type="button"
-                onClick={() => navigate("/storeapproval/journal")}
-                className={`px-3 py-1.5 text-xs font-bold rounded-sm ${viewMode === "journal" ? "bg-[#0E7C86] text-white" : "text-[#344054]"}`}
-                data-testid="store-view-mode-journal"
-              >
-                Journal (All Requests)
-              </button>
-              <button
-                type="button"
-                onClick={() => navigate("/storeapproval/balance")}
-                className={`px-3 py-1.5 text-xs font-bold rounded-sm ${viewMode === "balance" ? "bg-[#0E7C86] text-white" : "text-[#344054]"}`}
-                data-testid="store-view-mode-balance"
-              >
-                Balance Pending
-              </button>
-              <button
-                type="button"
-                onClick={() => navigate("/storeapproval/movements")}
-                className={`px-3 py-1.5 text-xs font-bold rounded-sm ${viewMode === "movements" ? "bg-[#0E7C86] text-white" : "text-[#344054]"}`}
-                data-testid="store-view-mode-movements"
-              >
-                Movement History
-              </button>
-            </div>
+            <StoreTabStrip viewMode={viewMode} navigate={navigate} />
             <div>
               <Label className="text-xs font-bold text-[#344054]">Search</Label>
               <div className="relative">

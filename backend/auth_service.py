@@ -175,6 +175,13 @@ PAGE_ROUTE_RULES = [
     # same pattern as the /journal override right above.
     ("/api/store-requests/known-sites", {"store_approval", "stock_transfer"}),
     ("/api/store-requests", {"store_approval"}),
+    # Sep 9 2026, user's explicit ask: Return to Store workflow - reuses
+    # the SAME two existing page permissions rather than new grantable
+    # rights (Production side creates/views its own returns under
+    # production_confirmation, Store side works the pending queue under
+    # store_approval - both need read access to shared endpoints like
+    # /store-returns/{id}, so this single broad rule covers everything).
+    ("/api/store-returns", {"production_confirmation", "store_approval"}),
     # Aug 2026: internal approval side of the new Supplier Portal
     # (Entra ID-authenticated staff, distinct from the JWT-authenticated
     # external supplier routes below). Both the vendor-onboarding

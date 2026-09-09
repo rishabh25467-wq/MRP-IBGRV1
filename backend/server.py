@@ -74,6 +74,7 @@ import mps_service
 import po_selection_service
 import production_confirmation_service
 import store_approval_service
+import store_return_service
 import mrp_plan_store
 import autosave_store
 import job_store
@@ -251,6 +252,7 @@ db = mongo_client[os.environ['DB_NAME']]
 job_store.ensure_indexes(db)
 auth_service.ensure_indexes(db)
 store_approval_service.ensure_indexes(db)
+store_return_service.ensure_indexes(db)
 supplier_portal_service.ensure_indexes(db)
 supplier_shipment_service.ensure_indexes(db)
 
@@ -4279,6 +4281,189 @@ async def decide_store_request(request_id: str, payload: PlannerStoreDecisionReq
             "note": "Order creation cancelled - the partial stock issue was rejected. The SAP Proposal was left un-converted (SAP has no API to delete a Production Proposal) - ask your SAP admin to clean it up in Fiori if it needs removing.",
         }})
     return updated
+
+
+# ==================== Return to Store (Sep 2026) ====================
+# Production <-> Store Return workflow - see store_return_service.py for
+# the full design note (mirrors store_approval_service's issue flow,
+# reversed). Gated by BOTH "production_confirmation" (Production side:
+# create/edit/list own returns) and "store_approval" (Store side: pending
+# queue/process/confirm/reject) via auth_service.PAGE_ROUTE_RULES - user's
+# explicit choice to reuse existing page permissions rather than add new
+# grantable rights.
+class ReturnAgainstRequestItem(BaseModel):
+    product_id: str
+    return_qty: float
+    reason_code: str
+    remarks: Optional[str] = None
+
+
+class ManualReturnItem(BaseModel):
+    product_id: str
+    description: Optional[str] = None
+    qty: float
+    unit_of_measure: Optional[str] = "EA"
+    reason_code: str
+    remarks: Optional[str] = None
+
+
+class CreateStoreReturnRequest(BaseModel):
+    return_type: str  # "against_request" | "manual"
+    original_request_id: Optional[str] = None
+    site_id: Optional[str] = None
+    items: List[dict]
+    actor: str
+
+
+class ProcessStoreReturnRequest(BaseModel):
+    actor: str
+
+
+class RejectStoreReturnRequest(BaseModel):
+    actor: str
+    reason: str
+
+
+@api_router.get("/store-returns/reasons")
+async def get_store_return_reasons():
+    return {"reasons": [{"code": k, "label": v} for k, v in store_return_service.REASON_CODES.items()]}
+
+
+@api_router.get("/store-returns/previous-requests")
+async def get_previous_requests_for_return(request: Request, requester: str = Query(...), site_id: str = Query(None)):
+    user = request.state.user
+    is_admin = user.get("role") in ("super_admin", "admin")
+    docs = await asyncio.to_thread(store_return_service.list_previous_requests, db, requester, is_admin, site_id)
+    return {"requests": _filter_by_site_access(docs, user)}
+
+
+@api_router.get("/store-returns/against-request/{request_id}")
+async def get_issued_items_for_return(request_id: str, request: Request):
+    info = await asyncio.to_thread(store_return_service.get_issued_items_for_request, db, request_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Store request not found")
+    if not _has_site_access(request.state.user, info["site_id"]):
+        raise HTTPException(status_code=403, detail="You are not bound to this site")
+    return info
+
+
+@api_router.post("/store-returns")
+async def create_store_return(payload: CreateStoreReturnRequest, request: Request):
+    if not payload.actor.strip():
+        raise HTTPException(status_code=400, detail="actor is required")
+    try:
+        doc = await asyncio.to_thread(
+            store_return_service.create_return, db, payload.return_type, payload.actor.strip(),
+            payload.site_id, payload.original_request_id, payload.items,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return doc
+
+
+@api_router.put("/store-returns/{return_id}")
+async def update_store_return(return_id: str, payload: CreateStoreReturnRequest, request: Request):
+    if not payload.actor.strip():
+        raise HTTPException(status_code=400, detail="actor is required")
+    try:
+        doc = await asyncio.to_thread(store_return_service.update_rejected_return, db, return_id, payload.actor.strip(), payload.items)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Return request not found")
+    return doc
+
+
+@api_router.get("/store-returns/journal")
+async def get_store_returns_journal(request: Request, requester: str = Query(None), site_id: str = Query(None)):
+    user = request.state.user
+    is_admin = user.get("role") in ("super_admin", "admin")
+    docs = await asyncio.to_thread(store_return_service.list_returns, db, requester, is_admin, site_id)
+    return {"returns": _filter_by_site_access(docs, user)}
+
+
+@api_router.get("/store-returns/pending")
+async def get_pending_store_returns(request: Request, site_id: str = Query(None)):
+    docs = await asyncio.to_thread(store_return_service.list_pending_for_store, db, site_id)
+    return {"returns": _filter_by_site_access(docs, request.state.user)}
+
+
+@api_router.get("/store-returns/{return_id}")
+async def get_store_return_detail(return_id: str, request: Request):
+    doc = await asyncio.to_thread(store_return_service.get_return, db, return_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Return request not found")
+    if not _has_site_access(request.state.user, doc.get("site_id")):
+        raise HTTPException(status_code=403, detail="You are not bound to this site")
+    return doc
+
+
+@api_router.post("/store-returns/{return_id}/process")
+async def process_store_return(return_id: str, payload: ProcessStoreReturnRequest, request: Request):
+    if not payload.actor.strip():
+        raise HTTPException(status_code=400, detail="actor (store user's name) is required")
+    try:
+        doc = await asyncio.to_thread(store_return_service.start_process, db, return_id, payload.actor.strip())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Return request not found")
+    return doc
+
+
+@api_router.post("/store-returns/{return_id}/reject")
+async def reject_store_return(return_id: str, payload: RejectStoreReturnRequest, request: Request):
+    if not payload.actor.strip():
+        raise HTTPException(status_code=400, detail="actor (store user's name) is required")
+    try:
+        doc = await asyncio.to_thread(store_return_service.reject_return, db, return_id, payload.actor.strip(), payload.reason)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Return request not found")
+    return doc
+
+
+@api_router.post("/store-returns/{return_id}/confirm")
+async def confirm_store_return(return_id: str, payload: ProcessStoreReturnRequest, request: Request):
+    """Returns immediately with a job_id - the actual SAP Goods Movement
+    call(s) run in the background, same pattern as /store-requests/{id}/
+    issue. Poll GET /store-returns/confirm-status/{job_id}."""
+    if not payload.actor.strip():
+        raise HTTPException(status_code=400, detail="actor (store user's name) is required")
+    try:
+        updated = await asyncio.to_thread(store_return_service.start_confirm, db, return_id, payload.actor.strip())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Return request not found")
+    job_id = str(uuid.uuid4())
+    job_store.create_job(db, job_id, {
+        "status": "running", "return_id": return_id,
+        "progress_current": 0, "progress_total": len(updated["items"]),
+    })
+    asyncio.create_task(_run_store_return_confirm_job(job_id, return_id))
+    return {"job_id": job_id, "return": updated}
+
+
+@api_router.get("/store-returns/confirm-status/{job_id}")
+async def get_store_return_confirm_status(job_id: str):
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return job
+
+
+async def _run_store_return_confirm_job(job_id: str, return_id: str):
+    def progress_cb(current, total, product_id):
+        job_store.update_job(db, job_id, {"progress_current": current, "progress_total": total, "current_component": product_id})
+    try:
+        updated = await asyncio.to_thread(store_return_service.run_confirm_movements, db, return_id, sap_goods_movement_client, progress_cb)
+        job_store.update_job(db, job_id, {"status": "done", "result": {"return_status": updated["status"], "return_id": return_id}})
+    except Exception as e:
+        logger.error(f"store return confirm job {job_id} for return {return_id} failed: {e}")
+        job_store.update_job(db, job_id, {"status": "failed", "error": str(e)})
+
 
 
 class ReleaseProductionOrderRequest(BaseModel):

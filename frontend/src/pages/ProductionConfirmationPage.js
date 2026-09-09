@@ -35,6 +35,7 @@ import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
 import { MyStockRequestsTab } from "@/components/MyStockRequestsTab";
+import { ReturnToStoreTab } from "@/components/ReturnToStoreTab";
 import { useAuth } from "@/contexts/AuthContext";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -2267,6 +2268,7 @@ export default function ProductionConfirmationPage() {
             <TabsTrigger value="create" data-testid="tab-create-order">Create Production Order</TabsTrigger>
             <TabsTrigger value="confirm" data-testid="tab-confirm-production">Production Confirmation</TabsTrigger>
             <TabsTrigger value="my-requests" data-testid="tab-my-requests">My Stock Requests</TabsTrigger>
+            <TabsTrigger value="return-to-store" data-testid="tab-return-to-store">Return to Store</TabsTrigger>
           </TabsList>
 
           <TabsContent value="create">
@@ -2275,6 +2277,10 @@ export default function ProductionConfirmationPage() {
 
           <TabsContent value="my-requests">
             <MyStockRequestsTab actorName={actorName} />
+          </TabsContent>
+
+          <TabsContent value="return-to-store">
+            <ReturnToStoreTab actorName={actorName} />
           </TabsContent>
 
           <TabsContent value="confirm" className="space-y-4">

@@ -155,6 +155,7 @@ function InternalApp() {
             <Route path="/storeapproval/journal" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
             <Route path="/storeapproval/balance" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
             <Route path="/storeapproval/movements" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
+            <Route path="/storeapproval/returns" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
             <Route path="/storeapproval/request/:requestId" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
