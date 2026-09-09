@@ -4,7 +4,7 @@ import axios from "axios";
 import {
   Trash, WarningCircle, CheckCircle, CircleNotch, MagnifyingGlass,
   Buildings, CreditCard, Calendar, Truck, ArrowRight, ShieldCheck, ListChecks,
-  FileMagnifyingGlass, XCircle, CalendarPlus, Lightbulb,
+  FileMagnifyingGlass, XCircle, CalendarPlus, Lightbulb, ArrowsLeftRight,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -50,6 +50,11 @@ const emptyLine = () => ({
   unit_of_measure: "EA",
   uomFromPr: null,
   uomMappingConfident: true,
+  // Sep 9 2026, user's explicit ask: on-demand alternate-UoM lookup
+  // (e.g. "1 Packet = 100 EA") - null until the buyer clicks the fetch
+  // icon next to the UOM field for this line.
+  uomOptions: null,
+  uomOptionsLoading: false,
   fromPr: false,
   prLineNo: null,
   prOriginalQty: null,
@@ -230,8 +235,30 @@ export default function PurchaseOrderPage() {
 
   const pickProduct = (lineKey, p) => {
     setLines((prev) => prev.map((l) => (l.key === lineKey
-      ? { ...l, product_id: p.product_id, description: p.description, unit_of_measure: p.unit_of_measure || "EA", uomMappingConfident: true, productQuery: `${p.product_id} - ${p.description || ""}`, showSuggestions: false }
+      ? { ...l, product_id: p.product_id, description: p.description, unit_of_measure: p.unit_of_measure || "EA", uomMappingConfident: true, uomOptions: null, uomOptionsLoading: false, productQuery: `${p.product_id} - ${p.description || ""}`, showSuggestions: false }
       : l)));
+  };
+
+  // Sep 9 2026, user's explicit ask: "fetch secondary unit of the item
+  // while creating PO" (e.g. 6550-002047, 1 Packet = 100 EA maintained
+  // in SAP's own Material master) - on-demand only, per user's choice,
+  // triggered by a small icon next to the UOM field rather than firing
+  // automatically for every line item picked.
+  const fetchUomOptions = async (lineKey, productId) => {
+    if (!productId) return;
+    setLines((prev) => prev.map((l) => (l.key === lineKey ? { ...l, uomOptionsLoading: true } : l)));
+    try {
+      const { data } = await axios.get(`${API}/purchase-orders/products/${encodeURIComponent(productId)}/uom-options`);
+      setLines((prev) => prev.map((l) => (l.key === lineKey ? { ...l, uomOptions: data.options, uomOptionsLoading: false } : l)));
+      if (data.options.length > 1) {
+        toast.success(`${data.options.length} units available for ${productId}`, { description: data.options.map((o) => o.label).join(" · ") });
+      } else {
+        toast.info(`${productId} has only its base unit (${data.base_unit}) in SAP`, { description: "No alternate units/quantity conversions configured for this material." });
+      }
+    } catch (err) {
+      setLines((prev) => prev.map((l) => (l.key === lineKey ? { ...l, uomOptionsLoading: false } : l)));
+      toast.error("Could not fetch units from SAP", { description: err?.response?.data?.detail || "Please try again" });
+    }
   };
 
   const updateLine = (lineKey, field, value) => {
@@ -710,11 +737,38 @@ export default function PurchaseOrderPage() {
                             </div>
                           )}
                         </td>
-                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[90px]">
-                          <div className="relative">
-                            <Input value={l.unit_of_measure} onChange={(e) => updateLine(l.key, "unit_of_measure", e.target.value)} className="h-8 text-xs font-data rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]" data-testid={`po-line-uom-input-${idx}`} title={l.uomFromPr && !l.uomMappingConfident ? `PR said "${l.uomFromPr}" - please verify the SAP unit code` : undefined} />
+                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[130px]">
+                          <div className="relative flex items-center gap-1">
+                            {l.uomOptions ? (
+                              <Select value={l.unit_of_measure} onValueChange={(v) => updateLine(l.key, "unit_of_measure", v)}>
+                                <SelectTrigger className="h-8 text-xs font-data rounded-sm border-[#D0D5DD] focus:ring-1 focus:ring-[#004B87]" data-testid={`po-line-uom-select-${idx}`}>
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {l.uomOptions.map((o) => (
+                                    <SelectItem key={o.unit_code} value={o.unit_code} data-testid={`po-line-uom-option-${idx}-${o.unit_code}`}>
+                                      {o.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            ) : (
+                              <Input value={l.unit_of_measure} onChange={(e) => updateLine(l.key, "unit_of_measure", e.target.value)} className="h-8 text-xs font-data rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]" data-testid={`po-line-uom-input-${idx}`} title={l.uomFromPr && !l.uomMappingConfident ? `PR said "${l.uomFromPr}" - please verify the SAP unit code` : undefined} />
+                            )}
                             {l.uomFromPr && !l.uomMappingConfident && (
                               <WarningCircle size={12} className="absolute -top-1.5 -right-1.5 text-[#B54708]" weight="fill" data-testid={`po-line-uom-warning-${idx}`} />
+                            )}
+                            {!l.uomOptions && (
+                              <button
+                                type="button"
+                                onClick={() => fetchUomOptions(l.key, l.product_id)}
+                                disabled={!l.product_id || l.uomOptionsLoading}
+                                title="Fetch secondary/alternate units from SAP (e.g. Packet/Box conversions)"
+                                className="shrink-0 h-8 w-8 flex items-center justify-center rounded-sm border border-[#D0D5DD] text-[#004B87] hover:bg-[#E5F0FA] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                data-testid={`po-line-fetch-uom-button-${idx}`}
+                              >
+                                {l.uomOptionsLoading ? <CircleNotch size={13} className="animate-spin" /> : <ArrowsLeftRight size={13} />}
+                              </button>
                             )}
                           </div>
                         </td>

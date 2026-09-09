@@ -1,0 +1,23 @@
+{
+  "summary": "Frontend-only verification of new on-demand UOM fetch feature on /purchasing-strategy/purchase-order-create. All six spec scenarios pass: (1) fetch icon disabled before product picked, enabled after; (2) clicking icon for 6550-002047 replaces plain UOM Input with a Select pre-filled with EA + XPA and fires the expected success toast '2 units available for 6550-002047 - EA - Each (base unit) · XPA - Packet (1 Packet = 100 EA)'; (3) picking XPA persists through Qty and Unit Price edits; (4) product with no alternates (CAR155.6545) shows correct info toast 'CAR155.6545 has only its base unit (EA) in SAP' and dropdown collapses to a single EA option; (5) all other page elements (PR lookup, supplier search, qty/price/date inputs, remove button) still render; (6) cached repeat lookup for the same product resolves near-instantly (~0.12s). NOTE: I did NOT click the 'Create Purchase Order in SAP' button per the strict directive. Also confirmed picking a different product correctly clears the stale dropdown back to a plain input (pickProduct nulls uomOptions).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "PurchaseOrderPage.jsx is 942 lines - approaching the 700-line 'split into smaller modules' threshold. Consider extracting the line-items table + line-item state helpers (pickProduct, fetchUomOptions, updateLine, duplicateLine, splitAllocationStatus) into a dedicated hook or subcomponent in a future refactor. Not blocking.",
+    "fetchUomOptions swallows the axios error message in the toast description via err?.response?.data?.detail - fine for now; a network-level failure (no response) will fall through to the generic 'Please try again' which is acceptable.",
+    "Manual 'add blank line' is not exposed in the UI - only duplicateLine (Split, PR-sourced only) and Fetch-PR-multi-item paths produce line index >= 1. Not a regression (pre-existing design) but worth flagging: any manual-only PO scenario is currently unsupported. Confirmed with product owner not in scope of this iteration."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (frontend only)", "frontend": "100%"},
+  "test_credentials": "Synthetic Entra ID session created for testing: vms_session=BBx8meS2mViWntqKQq5w2p1b0Ws52b0S bound to auth_users._id='test-tid:po-uom-tester' (role=super_admin, 1-day TTL). The older po.tester cookie DNHiw5Yq... from test_credentials.md was already expired (auth_sessions row missing). Recommend main agent refresh that section of /app/memory/test_credentials.md.",
+  "seed_data_creation": "One auth_users doc (test-tid:po-uom-tester, super_admin, 1-day session) + one auth_sessions doc. Safe to leave; both expire in 1 day.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The PurchaseOrderPage UOM feature is fully working end-to-end (frontend + backend, cache included). The 'Create Purchase Order in SAP' button was intentionally NOT clicked and remains untested from this UI - main agent has curl-verified backend. When re-testing anything on this page, use a fresh synthetic auth_users+auth_sessions insert (the po.tester cookie in test_credentials.md is expired). Test product 6550-002047 has EA (base) + XPA (1 Packet = 100 EA) alternates; product CAR155.6545 has only its EA base unit."
+}

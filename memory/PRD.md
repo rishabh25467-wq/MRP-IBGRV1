@@ -58,6 +58,15 @@ Extend the existing SAP BOM viewer application: Production Plan page (OMS Open-P
 - **SAP Custom BO / ABSL Web Service Authorization**: blocked on SAP Admin fixing Work Center View binding for `CombineView` in SAP UI Business Roles.
 - **Supplier GRN Live Test**: blocked on SAP production tenant (`my431827...`) responsiveness.
 - **PO 28792 "Notification Quantity" SAP save error** (deferred by user this session, "later"): SAP rejects the GRN save for shipments Q7YA7Z/39GA52/WVHKWT/LFQP9Z with "Actual quantity or notification item ID or notification quantity missing" - a separate "Notification Quantity" grid column may need populating, not yet investigated.
+
+## What's been implemented (Sep 9, 2026 session - PO Creation: secondary/alternate UOM lookup)
+- **User's ask**: "fetch secondary unit of the item while creating PO" - e.g. `6550-002047` has 1 Packet (XPA) = 100 EA maintained in SAP's Material master "Quantity Conversions" grid; confirmed live this data is readable via the same SOAP service already used for BOM Explorer drawings/comments.
+- **On-demand, per user's explicit choice** (not automatic on product pick): a small icon button next to the UOM field on each PO line (`po-line-fetch-uom-button-{idx}`) - click it to call SAP live and turn the plain UOM text box into a dropdown offering the base unit + any alternate unit(s)/conversion factors SAP has configured; whichever is selected is sent to SAP as-is on the PO line (SAP itself handles the qty math, no client-side conversion).
+- **Backend**: `sap_material_client.get_uom_info()` (parses `BaseMeasureUnitCode` + all `QuantityConversion` blocks from the Material master SOAP response) + `material_uom_service.py` (new Mongo cache `material_uom_cache`, keyed by product_id, effectively permanent since this is static master data) + `GET /api/purchase-orders/products/{product_id}/uom-options`.
+- **Frontend**: `PurchaseOrderPage.jsx` line state gained `uomOptions`/`uomOptionsLoading`; picking a NEW product for a line resets `uomOptions` to null so a stale dropdown from a previous product doesn't linger.
+- Verified live end-to-end: backend curl (1.48s live SAP fetch -> 0.24s cached), then `testing_agent` (iteration_149): 100% pass, no bugs. Testing agent explicitly did NOT click "Create Purchase Order in SAP" (creates a real permanent SAP document, per longstanding caution in this app - see PO Creation history above).
+- Also filed a detailed external bug report (this session, not a codebase fix) for the user to send to whoever manages the separate Radish QMS app: ALL drawing file downloads there 404 with "Drawing file not found in storage" (8/8 parts tested) despite healthy metadata - a QMS-side storage issue, outside this codebase.
+
 - `StockTransferPage.jsx` refactor (~1400 lines), STO stuck-order nav badge, "last confirmed in SAP" timestamp on stale PO rows, auto-refresh a site's stock after its own STO posts, bulk-import diff preview, missing-weight alert, auto-retry ERP sync.
 - `GrnApprovalPage.jsx` is ~610 lines mixing lookup/approve/reject/discrepancy/retry/pending-table - approaching split threshold per code review (iteration_141).
 

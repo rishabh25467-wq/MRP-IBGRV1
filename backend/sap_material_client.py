@@ -40,6 +40,14 @@ def _first_tag(xml: str, tag: str):
 
 
 _DOCUMENT_RE = re.compile(r"<(?:\w+:)?Document(?:\s[^>]*)?>(.*?)</(?:\w+:)?Document>", re.S)
+_QUANTITY_CONVERSION_RE = re.compile(r"<(?:\w+:)?QuantityConversion(?:\s[^>]*)?>(.*?)</(?:\w+:)?QuantityConversion>", re.S)
+
+
+def _quantity_with_unit(xml_block: str, tag: str):
+    """Extracts (unit_code, value) from a `<Tag unitCode="...">123.0</Tag>`
+    element, or None if `tag` isn't present in `xml_block`."""
+    m = re.search(rf'<(?:\w+:)?{tag}\s+unitCode="([^"]*)"[^>]*>([^<]*)</(?:\w+:)?{tag}>', xml_block)
+    return (m.group(1), float(m.group(2))) if m else None
 
 # SAP ByDesign's standard Attachment Type codeset - only the ones actually
 # seen on this tenant so far are listed; anything else falls back to a
@@ -143,6 +151,52 @@ class SAPMaterialClient:
         over resolve_material_info() kept for existing callers that only
         need the UUID (e.g. the Inventory page's deep backfill)."""
         return self.resolve_material_info(internal_id)["uuid"]
+
+    def get_uom_info(self, internal_id: str):
+        """Sep 9 2026, user's explicit ask: "fetch secondary unit of the
+        item while creating PO" (e.g. 6550-002047, 1 Packet = 100 EA
+        maintained in SAP's Material master "Quantity Conversions" grid,
+        General tab). Returns {"base_unit": str|None, "alternate_units":
+        [{"unit_code", "unit_qty", "base_unit_code", "base_qty"}]}, or
+        None if SAP has no material with that exact InternalID. A
+        material can have zero, one, or several alternate units
+        configured - each becomes its own dict in the list. Raises
+        SAPMaterialAuthError/SAPMaterialError same as
+        resolve_material_info()."""
+        with sap_semaphore:
+            resp = requests.post(
+                self.endpoint,
+                data=self._request_xml(internal_id).encode("utf-8"),
+                auth=self.auth,
+                headers={"Content-Type": "text/xml; charset=utf-8", "Accept": "text/xml", "SOAPAction": '""'},
+                timeout=45,
+            )
+        xml = resp.text
+        if resp.status_code >= 400 or "<Fault" in xml or ":Fault" in xml:
+            faultstring = _first_tag(xml, "faultstring") or f"HTTP {resp.status_code}"
+            if "Authorization role missing" in faultstring:
+                raise SAPMaterialAuthError(faultstring)
+            raise SAPMaterialError(faultstring)
+
+        material_match = re.search(r"<(?:\w+:)?Material(?:\s[^>]*)?>(.*?)</(?:\w+:)?Material>", xml, re.S)
+        if not material_match:
+            return None
+        block = material_match.group(1)
+        if _first_tag(block, "InternalID") != internal_id:
+            return None
+
+        base_unit = _first_tag(block, "BaseMeasureUnitCode")
+        alternate_units = []
+        for conv_match in _QUANTITY_CONVERSION_RE.finditer(block):
+            conv_block = conv_match.group(1)
+            unit_qty = _quantity_with_unit(conv_block, "Quantity")
+            base_qty = _quantity_with_unit(conv_block, "CorrespondingQuantity")
+            if unit_qty and base_qty:
+                alternate_units.append({
+                    "unit_code": unit_qty[0], "unit_qty": unit_qty[1],
+                    "base_unit_code": base_qty[0], "base_qty": base_qty[1],
+                })
+        return {"base_unit": base_unit, "alternate_units": alternate_units}
 
     def get_existing_procurement_type_code(self, internal_id: str):
         """Sep 5 2026, real incident (STO-135, SPLICE @ site P8): the

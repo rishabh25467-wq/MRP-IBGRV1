@@ -67,6 +67,7 @@ from purchasing_plan import (
     _default_month, _validate_month,
 )
 import bom_cache_service
+import material_uom_service
 import production_plan_service
 import mrp_service
 import mps_service
@@ -5448,6 +5449,21 @@ async def po_search_products(q: str = Query(..., min_length=1), limit: int = 15)
         PurchaseOrderProductSuggestion(product_id=i["product_id"], description=i.get("description"), unit_of_measure=i.get("uom"))
         for i in items
     ]
+
+
+@api_router.get("/purchase-orders/products/{product_id}/uom-options")
+async def po_product_uom_options(product_id: str):
+    """Sep 9 2026, user's explicit ask: on-demand "fetch secondary unit"
+    lookup for a single line item's product (see material_uom_service.py)
+    - live SAP call on first-ever lookup for this product_id, cached
+    (Mongo `material_uom_cache`) forever after since this is essentially
+    static master data."""
+    try:
+        return await asyncio.to_thread(material_uom_service.get_uom_options, product_id, sap_material_client, db)
+    except SAPMaterialAuthError as e:
+        raise HTTPException(status_code=400, detail=f"Not authorized to read units for '{product_id}' in SAP: {e}")
+    except SAPMaterialError as e:
+        raise HTTPException(status_code=400, detail=f"Could not fetch units for '{product_id}' from SAP: {e}")
 
 
 @api_router.get("/purchase-orders/history")
