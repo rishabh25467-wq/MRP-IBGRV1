@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
+import { createPortal } from "react-dom";
 import axios from "axios";
 import "@/App.css";
 import { Package, ArrowLeft, ArrowClockwise, WarningCircle, CaretUp, CaretDown, MagnifyingGlass, DownloadSimple, Shield, MapPin, Printer } from "@phosphor-icons/react";
@@ -15,6 +16,8 @@ import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
 import { useAuth } from "@/contexts/AuthContext";
 import { RequestPrintSlip } from "@/components/RequestPrintSlip";
 import { StoreReturnsPanel } from "@/components/StoreReturnsPanel";
+import { ReturnDetailDialog } from "@/components/ReturnToStoreTab";
+import { ReturnPrintSlip } from "@/components/ReturnPrintSlip";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -188,6 +191,18 @@ const matchesSearch = (r, term) => {
   return haystack.includes(term.toLowerCase());
 };
 
+// Sep 10 2026: same free-text-search idea as matchesSearch above, but
+// for the Journal's resolved/rejected Return rows (different field
+// shape - items[] instead of components[], no material_id).
+const returnMatchesSearch = (r, term) => {
+  if (!term) return true;
+  const haystack = [
+    r._id, r.original_request_id, r.site_id, r.requester, r.status,
+    ...(r.items || []).flatMap((it) => [it.product_id, it.description]),
+  ].filter(Boolean).join(" ").toLowerCase();
+  return haystack.includes(term.toLowerCase());
+};
+
 const SortableHeader = ({ label, field, sortField, sortDir, onSort }) => (
   <th
     className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide cursor-pointer select-none"
@@ -255,6 +270,7 @@ export default function StoreApprovalPage() {
   const [requests, setRequests] = useState([]);
   const [journalRequests, setJournalRequests] = useState([]);
   const [balanceRequests, setBalanceRequests] = useState([]);
+  const [returnJournal, setReturnJournal] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(null);
   const [issuedQty, setIssuedQty] = useState({});
@@ -272,8 +288,25 @@ export default function StoreApprovalPage() {
   const [sortDir, setSortDir] = useState("desc");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  // Sep 10 2026, user's explicit ask: a Resolved/Rejected Return to
+  // Store should surface here on "Journal (All Requests)" as a View-only
+  // row, not linger on the "Pending Store Return" tab (that tab now only
+  // ever shows actionable pending/under_verification returns).
+  const [viewingReturn, setViewingReturn] = useState(null);
+  const [printReturnTarget, setPrintReturnTarget] = useState(null);
 
   useEffect(() => localStorage.setItem(SITE_FILTER_KEY, siteFilter), [siteFilter]);
+
+  useEffect(() => {
+    if (!printReturnTarget) return;
+    const t = setTimeout(() => window.print(), 50);
+    return () => clearTimeout(t);
+  }, [printReturnTarget]);
+  useEffect(() => {
+    const clear = () => setPrintReturnTarget(null);
+    window.addEventListener("afterprint", clear);
+    return () => window.removeEventListener("afterprint", clear);
+  }, []);
 
   // Ticks while a Goods Movement POST is in flight (backend now retries up
   // to 3x with a 5s backoff on transient SAP errors, so this single
@@ -382,16 +415,27 @@ export default function StoreApprovalPage() {
     }
   }, []);
 
+  const loadReturnJournal = useCallback(async () => {
+    try {
+      const { data } = await axios.get(`${API}/store-returns/journal`);
+      setReturnJournal(data.returns || []);
+    } catch (e) {
+      console.error("Failed to load the returns journal for Movement History:", e);
+    }
+  }, []);
+
   useEffect(() => {
     const refresh = () => {
       if (viewMode === "queue") return loadRequests();
       if (viewMode === "balance") return loadBalancePending();
+      if (viewMode === "movements") return loadReturnJournal();
+      if (viewMode === "journal") { loadJournal(); loadReturnJournal(); return; }
       return loadJournal();
     };
     refresh();
     const interval = setInterval(refresh, 8000);
     return () => clearInterval(interval);
-  }, [viewMode, loadRequests, loadJournal, loadBalancePending]);
+  }, [viewMode, loadRequests, loadJournal, loadBalancePending, loadReturnJournal]);
 
   // Aug 2026 fix (testing_agent iteration_103): a request can be "issuing"
   // because a DIFFERENT session/tab started the job - pollIssueJob() only
@@ -444,6 +488,25 @@ export default function StoreApprovalPage() {
     return list;
   }, [rawList, searchTerm, statusFilter, siteFilter, sortField, sortDir]);
 
+  // Sep 10 2026: resolved/rejected Returns, surfaced as extra View-only
+  // rows on the "Journal (All Requests)" tab only (queue/balance are
+  // untouched - those are for OPEN store issue requests). Filters as
+  // closely as sensibly possible to the same Search/Site/Status controls
+  // already on this page - Status dropdown only lists issue-request
+  // statuses, so "resolved"/"cancelled" are treated as this feature's
+  // nearest equivalents (Resolved/Rejected); any other status hides
+  // return rows since none of them apply to a return.
+  const resolvedReturnRows = useMemo(() => {
+    if (viewMode !== "journal") return [];
+    let list = returnJournal.filter((r) => r.status === "resolved" || r.status === "rejected");
+    list = list.filter((r) => returnMatchesSearch(r, searchTerm));
+    if (siteFilter !== "all") list = list.filter((r) => r.site_id === siteFilter);
+    if (statusFilter === "resolved") list = list.filter((r) => r.status === "resolved");
+    else if (statusFilter === "cancelled") list = list.filter((r) => r.status === "rejected");
+    else if (statusFilter !== "all") list = [];
+    return list;
+  }, [returnJournal, viewMode, searchTerm, siteFilter, statusFilter]);
+
   const movementRows = useMemo(() => {
     // Register of every physically-issued component across all requests -
     // one row per component-issue (Aug 2026, "Movement History" tab).
@@ -460,7 +523,38 @@ export default function StoreApprovalPage() {
           target_bin: r.target_logistics_area_id,
           requester: r.requester, store_actor: r.store_actor,
           movement: c.goods_movement, when: r.resolved_at || r.updated_at,
-          requested_at: r.created_at,
+          requested_at: r.created_at, is_return: false,
+        });
+      });
+    });
+    // Sep 9 2026 fix: a user reported a Store-confirmed Return "not
+    // visible in Movement History" - it's a real SAP stock movement
+    // (just SFG -> RM, reversed) and belongs in the same ledger. Only
+    // RESOLVED returns are movements (pending/rejected never actually
+    // moved stock in SAP) - request_id shows the ORIGINAL Stock Request
+    // for traceability (or "MANUAL" if there wasn't one), issue_id shows
+    // the Return's own RTN id.
+    returnJournal.filter((ret) => ret.status === "resolved").forEach((ret) => {
+      (ret.items || []).forEach((it) => {
+        rows.push({
+          key: `${ret._id}:${it.product_id}`,
+          request_id: ret.original_request_id || "MANUAL", issue_id: ret._id, site_id: ret.site_id,
+          material_id: null, product_id: it.product_id, description: it.description,
+          issued_qty: -Math.abs(it.return_qty || 0), unit_of_measure: it.unit_of_measure,
+          // Sep 10 2026 fix: a Return's real SAP movement is the REVERSE
+          // of a normal issue - source is the site's SFG (production)
+          // warehouse, destination is its RM warehouse (mirrors the
+          // backend's own _sfg_warehouse/_rm_warehouse in
+          // store_return_service.run_confirm_movements - these two are
+          // always fixed by site, never chosen per item, so no new
+          // field is needed on the return doc itself). Was hardcoded
+          // null/null before, showing a confusing blank "From
+          // Warehouse"/"To Bin" for every return row.
+          warehouse: `${ret.site_id}/${ret.site_id}-SFG`, owner: it.issued_from_owner,
+          target_bin: rmWarehouseIdForSite(ret.site_id),
+          requester: ret.requester, store_actor: ret.store_actor,
+          movement: it.sap_goods_movement, when: ret.resolved_at || ret.updated_at,
+          requested_at: ret.created_at, is_return: true,
         });
       });
     });
@@ -483,7 +577,7 @@ export default function StoreApprovalPage() {
       list = list.filter((row) => row.when && new Date(row.when) <= to);
     }
     return list.sort((a, b) => new Date(b.when || 0) - new Date(a.when || 0));
-  }, [journalRequests, siteFilter, searchTerm, userSearch, dateFrom, dateTo]);
+  }, [journalRequests, returnJournal, siteFilter, searchTerm, userSearch, dateFrom, dateTo]);
 
   // Fetches the request behind /storeapproval/request/:requestId (direct
   // link, refresh, or browser back/forward all land here the same way -
@@ -722,7 +816,7 @@ export default function StoreApprovalPage() {
               </Button>
             )}
             <span className="text-xs text-[#667085] ml-auto" data-testid="store-result-count">
-              {viewMode === "movements" ? `${movementRows.length} movement(s)` : `${displayedRequests.length} request(s)`}
+              {viewMode === "movements" ? `${movementRows.length} movement(s)` : viewMode === "journal" ? `${displayedRequests.length + resolvedReturnRows.length} request(s)${resolvedReturnRows.length ? ` (${resolvedReturnRows.length} return)` : ""}` : `${displayedRequests.length} request(s)`}
             </span>
           </div>
 
@@ -742,7 +836,10 @@ export default function StoreApprovalPage() {
                       <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono font-bold text-[#175CD3]">{row.request_id}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono text-[#0E7C86]">{row.issue_id || "\u2014"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{row.site_id}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1.5">{row.product_id}{row.description ? ` - ${row.description}` : ""}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5">
+                        {row.is_return && <span className="mr-1.5 text-[9px] font-bold uppercase tracking-wide text-[#B54708] bg-[#FFFAEB] border border-[#FEDF89] rounded-sm px-1 py-0.5" data-testid={`store-movement-return-tag-${i}`}>Return</span>}
+                        {row.product_id}{row.description ? ` - ${row.description}` : ""}
+                      </td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(row.issued_qty)} {formatUnit(row.unit_of_measure)}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{row.warehouse ? `${humanizeWarehouseId(row.warehouse)}${row.owner ? ` \u00b7 ${row.owner}` : ""}` : "\u2014"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{row.target_bin ? humanizeWarehouseId(row.target_bin) : "\u2014"}</td>
@@ -815,7 +912,29 @@ export default function StoreApprovalPage() {
                     </td>
                   </tr>
                 ))}
-                {!loading && displayedRequests.length === 0 && (
+                {viewMode === "journal" && resolvedReturnRows.map((r, i) => (
+                  <tr key={`ret-${r._id}`} className={(displayedRequests.length + i) % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`store-return-journal-row-${i}`}>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono font-bold text-[#175CD3] max-w-[110px] truncate" title={r.original_request_id || "MANUAL"}>{r.original_request_id || "MANUAL"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono text-[#0E7C86]">
+                      <span className="mr-1 text-[9px] font-bold uppercase tracking-wide text-[#B54708] bg-[#FFFAEB] border border-[#FEDF89] rounded-sm px-1 py-0.5" data-testid={`store-return-journal-tag-${i}`}>Return</span>
+                      {r._id}
+                    </td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5">{new Date(r.created_at).toLocaleString("en-IN")}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5"><span className="text-[#667085]" title="Time from request to resolution">{ageParts(r.created_at, r.resolved_at)?.label || "\u2014"}</span></td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium">{(r.items || []).map((it) => it.product_id).join(", ")}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5">{r.site_id}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty((r.items || []).reduce((s, it) => s + (it.return_qty || 0), 0))}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5">{r.requester}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5">{(r.items || []).length}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5">
+                      <Badge className={`${r.status === "resolved" ? "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]" : "bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]"} border`}>{r.status === "resolved" ? "Resolved" : "Rejected"}</Badge>
+                    </td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5">
+                      <Button size="sm" variant="outline" onClick={() => setViewingReturn(r)} data-testid={`store-return-journal-view-${i}`}>View</Button>
+                    </td>
+                  </tr>
+                ))}
+                {!loading && displayedRequests.length === 0 && (viewMode !== "journal" || resolvedReturnRows.length === 0) && (
                   <tr><td colSpan={11} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="store-requests-empty-state">
                     {rawList.length === 0 ? (viewMode === "journal" ? "No requests recorded yet." : viewMode === "balance" ? "No requests with an outstanding balance right now." : "No pending stock requests right now.") : "No requests match your filters."}
                   </td></tr>
@@ -824,6 +943,10 @@ export default function StoreApprovalPage() {
             </table>
           </div>
           )}
+          {viewingReturn && (
+            <ReturnDetailDialog ret={viewingReturn} onClose={() => setViewingReturn(null)} onPrint={() => { setPrintReturnTarget(viewingReturn); setViewingReturn(null); }} />
+          )}
+          {printReturnTarget && createPortal(<ReturnPrintSlip ret={printReturnTarget} />, document.body)}
         </main>
       </div>
     );

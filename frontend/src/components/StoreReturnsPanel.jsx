@@ -4,6 +4,7 @@ import axios from "axios";
 import { ArrowClockwise, CheckCircle, XCircle, Printer, X } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/components/ui/sonner";
@@ -36,18 +37,33 @@ const StatusBadge = ({ status }) => (
 // warehouses reversed - the return only becomes "Resolved" once that SAP
 // call actually succeeds; a failure keeps it retryable, never silently
 // marked done.
+//
+// Sep 9 2026 fix: shows EVERY return (not only pending/under_verification
+// - a user reported a Resolved return "disappearing" after confirming
+// it, since it's Store's only real place to look up returns at all).
+// Uses /store-returns/journal (same endpoint Production's own list
+// uses) instead of /store-returns/pending, and adds a read-only "View"
+// action for anything that isn't actionable anymore.
+//
+// Sep 10 2026 fix (user's explicit ask): this tab is literally named
+// "Pending Store Return" - once a return is Resolved/Rejected it no
+// longer belongs here at all, it now surfaces as a "View" row on the
+// "Journal (All Requests)" tab instead (StoreApprovalPage.js's
+// resolvedReturnRows). This panel now only ever shows the two
+// actionable statuses.
 export const StoreReturnsPanel = ({ siteFilter, storeActorName }) => {
   const [returns, setReturns] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
   const [processing, setProcessing] = useState(null);
   const [printTarget, setPrintTarget] = useState(null);
 
   const load = useCallback(async () => {
     try {
-      const { data } = await axios.get(`${API}/store-returns/pending`, { params: siteFilter !== "all" ? { site_id: siteFilter } : {} });
-      setReturns(data.returns || []);
+      const { data } = await axios.get(`${API}/store-returns/journal`, { params: siteFilter !== "all" ? { site_id: siteFilter } : {} });
+      setReturns((data.returns || []).filter((r) => r.status === "pending" || r.status === "under_verification"));
     } catch {
-      toast.error("Failed to load Pending Store Return queue");
+      toast.error("Failed to load Store Return list");
     } finally {
       setLoading(false);
     }
@@ -79,11 +95,17 @@ export const StoreReturnsPanel = ({ siteFilter, storeActorName }) => {
     }
   };
 
+  const term = search.trim().toLowerCase();
+  const filtered = term
+    ? returns.filter((r) => [r._id, r.original_request_id, r.site_id, r.requester, ...(r.items || []).map((i) => i.product_id)].filter(Boolean).some((f) => String(f).toLowerCase().includes(term)))
+    : returns;
+
   return (
     <div className="space-y-2" data-testid="store-returns-panel">
       {printTarget && createPortal(<ReturnPrintSlip ret={printTarget} />, document.body)}
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-[#667085]">Return to Store requests submitted by Production, waiting for Store action.</p>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs text-[#667085]">Return to Store requests awaiting Store action. Once Resolved or Rejected, a return moves to the "Journal (All Requests)" tab.</p>
+        <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search return ID, item, requester..." className="w-64 bg-white" data-testid="store-returns-search-input" />
         <Button variant="outline" size="sm" onClick={load} data-testid="store-returns-refresh-button">
           <ArrowClockwise size={13} className="mr-1.5" /> Refresh
         </Button>
@@ -91,8 +113,8 @@ export const StoreReturnsPanel = ({ siteFilter, storeActorName }) => {
       <div className="overflow-x-auto bg-white border border-[#D0D5DD] rounded-sm">
         {loading ? (
           <p className="p-4 text-sm text-[#667085]">Loading...</p>
-        ) : returns.length === 0 ? (
-          <p className="p-4 text-sm text-[#667085]" data-testid="store-returns-empty-state">No pending store returns right now.</p>
+        ) : filtered.length === 0 ? (
+          <p className="p-4 text-sm text-[#667085]" data-testid="store-returns-empty-state">{returns.length === 0 ? "No pending store returns right now." : "No returns match your search."}</p>
         ) : (
           <table className="w-full text-xs border-collapse">
             <thead><tr>
@@ -101,25 +123,27 @@ export const StoreReturnsPanel = ({ siteFilter, storeActorName }) => {
               ))}
             </tr></thead>
             <tbody>
-              {returns.map((r, i) => (
-                <tr key={r._id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`store-return-row-${i}`}>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono font-bold">{r._id}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono">{r.original_request_id || "\u2014"}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5">{r.return_type === "against_request" ? "Against Request" : "Manual"}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5 whitespace-nowrap">{formatDate(r.created_at)}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5">{(r.items || []).map((it) => it.product_id).join(", ")}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty((r.items || []).reduce((s, it) => s + (it.return_qty || 0), 0))}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5">{r.site_id}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5">{r.requester}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5">{(r.items || [])[0]?.reason_label}{(r.items || []).length > 1 ? " +" : ""}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5"><StatusBadge status={r.status} /></td>
-                  <td className="border border-[#D0D5DD] px-2 py-1.5">
-                    <Button size="sm" className="h-6 px-2 text-[11px] bg-[#0E7C86] hover:bg-[#0B5F67]" onClick={() => openProcess(r)} data-testid={`store-return-process-button-${i}`}>
-                      Process
-                    </Button>
-                  </td>
-                </tr>
-              ))}
+              {filtered.map((r, i) => {
+                return (
+                  <tr key={r._id} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`store-return-row-${i}`}>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono font-bold">{r._id}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono">{r.original_request_id || "\u2014"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5">{r.return_type === "against_request" ? "Against Request" : "Manual"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 whitespace-nowrap">{formatDate(r.created_at)}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5">{(r.items || []).map((it) => it.product_id).join(", ")}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty((r.items || []).reduce((s, it) => s + (it.return_qty || 0), 0))}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5">{r.site_id}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5">{r.requester}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5">{(r.items || [])[0]?.reason_label}{(r.items || []).length > 1 ? " +" : ""}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5"><StatusBadge status={r.status} /></td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5">
+                      <Button size="sm" className="h-6 px-2 text-[11px] bg-[#0E7C86] hover:bg-[#0B5F67]" onClick={() => openProcess(r)} data-testid={`store-return-process-button-${i}`}>
+                        Process
+                      </Button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
