@@ -637,7 +637,7 @@ export default function StoreApprovalPage() {
     return (
       <div className="min-h-screen bg-[#F2F4F7] text-[#1D2939]">
         <Toaster position="top-right" />
-        <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4" data-testid="store-approval-header">
+        <header className="print:hidden h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4" data-testid="store-approval-header">
           <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
             <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
               <Shield size={18} weight="fill" className="text-white" />
@@ -654,7 +654,7 @@ export default function StoreApprovalPage() {
           <SapConnectionStatus />
           <ErpConnectionStatus />
         </header>
-        <main className="max-w-[1400px] mx-auto p-4 sm:p-6 space-y-4">
+        <main className="print:hidden max-w-[1400px] mx-auto p-4 sm:p-6 space-y-4">
           <StoreTabStrip viewMode={viewMode} navigate={navigate} />
           <StoreReturnsPanel siteFilter={siteFilter} storeActorName={storeActorName} />
         </main>
@@ -676,7 +676,7 @@ export default function StoreApprovalPage() {
     return (
       <div className="min-h-screen bg-[#F2F4F7] text-[#1D2939]">
         <Toaster position="top-right" />
-        <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4" data-testid="store-approval-header">
+        <header className="print:hidden h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4" data-testid="store-approval-header">
           <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
             <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
               <Shield size={18} weight="fill" className="text-white" />
@@ -693,7 +693,7 @@ export default function StoreApprovalPage() {
           <SapConnectionStatus />
           <ErpConnectionStatus />
         </header>
-        <main className="max-w-[1400px] mx-auto p-4 sm:p-6 space-y-4">
+        <main className="print:hidden max-w-[1400px] mx-auto p-4 sm:p-6 space-y-4">
           <div className="flex flex-wrap items-end gap-3">
             <StoreTabStrip viewMode={viewMode} navigate={navigate} />
             <div>
