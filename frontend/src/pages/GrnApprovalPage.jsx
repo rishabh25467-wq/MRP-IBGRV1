@@ -495,7 +495,12 @@ export default function GrnApprovalPage() {
                   const lineValue = it.unit_price != null ? effectiveQty * it.unit_price : null;
                   return (
                     <tr key={i} className="bg-white odd:bg-[#F9FAFB]">
-                      <td className="border border-[#D0D5DD] px-2 py-1 font-data">{it.po_number}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data">
+                        {it.po_number}
+                        {it.sap_po_number && (
+                          <div className="text-[10px] text-[#475467] font-sans" data-testid={`grn-item-printed-po-number-${i}`}>Printed PO #: {it.sap_po_number}</div>
+                        )}
+                      </td>
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data">{it.item_number}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1">{it.description}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data font-semibold">{it.ship_qty} {it.unit_of_measure}</td>
@@ -836,6 +841,9 @@ export default function GrnApprovalPage() {
               </DialogHeader>
               <div className="grid grid-cols-2 gap-y-2 gap-x-6 text-sm" data-testid="grn-confirmed-detail-meta">
                 <div><span className="text-[#475467]">PO Number(s):</span> <span className="font-data font-semibold">{[...new Set(confirmedDetail.items.map((it) => it.po_number))].join(", ")}</span></div>
+                {[...new Set(confirmedDetail.items.map((it) => it.sap_po_number).filter(Boolean))].length > 0 && (
+                  <div><span className="text-[#475467]">Printed PO #(s):</span> <span className="font-data font-semibold" data-testid="grn-confirmed-detail-printed-po-number">{[...new Set(confirmedDetail.items.map((it) => it.sap_po_number).filter(Boolean))].join(", ")}</span></div>
+                )}
                 <div><span className="text-[#475467]">Supplier Invoice No:</span> <span className="font-data font-semibold">{confirmedDetail.supplier_doc_num || "\u2014"}</span></div>
                 <div><span className="text-[#475467]">Bill Date:</span> <span className="font-data font-semibold">{confirmedDetail.bill_date || "\u2014"}</span></div>
                 <div><span className="text-[#475467]">SAP Inbound Delivery #:</span>{" "}

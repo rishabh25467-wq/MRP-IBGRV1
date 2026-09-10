@@ -61,10 +61,10 @@ export default function CreatedPurchaseOrdersPage() {
   const fmtDate = (v) => (v ? new Date(v).toLocaleString() : "—");
 
   const exportCsv = () => {
-    const headers = ["SAP PO #", "Supplier", "Site", "Bill-To", "PO Date", "PR Number", "Items", "Created By", "Created At"];
+    const headers = ["SAP PO #", "Printed PO #", "Supplier", "Site", "Bill-To", "PO Date", "PR Number", "Items", "Created By", "Created At"];
     const csvEscape = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const rows = pos.map((po) => [
-      po.po_number, po.supplier_code, po.purchase_unit_site, po.bill_to_company,
+      po.po_number, po.sap_po_number || "", po.supplier_code, po.purchase_unit_site, po.bill_to_company,
       po.po_date, po.pr_number || "", (po.items || []).length, po.created_by || "", fmtDate(po.created_at),
     ].map(csvEscape).join(","));
     const csv = [headers.map(csvEscape).join(","), ...rows].join("\n");
@@ -195,7 +195,7 @@ export default function CreatedPurchaseOrdersPage() {
             <table className="w-full text-xs border-collapse min-w-[900px]" data-testid="created-pos-table">
               <thead>
                 <tr>
-                  {["SAP PO #", "Supplier", "Site", "Bill-To", "PO Date", "PR Number", "Items", "Created By", "Created At", ""].map((h) => (
+                  {["SAP PO #", "Printed PO #", "Supplier", "Site", "Bill-To", "PO Date", "PR Number", "Items", "Created By", "Created At", ""].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -204,6 +204,7 @@ export default function CreatedPurchaseOrdersPage() {
                 {pos.map((po, idx) => (
                   <tr key={po._id} className={idx % 2 === 1 ? "bg-[#F9FAFB]" : ""} data-testid={`created-pos-row-${po.po_number}`}>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 font-data font-semibold text-[#1D2939]">{po.po_number}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 font-data" data-testid={`created-pos-printed-number-${po.po_number}`}>{po.sap_po_number || "—"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{po.supplier_code}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{po.purchase_unit_site}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{po.bill_to_company}</td>
@@ -234,6 +235,7 @@ export default function CreatedPurchaseOrdersPage() {
             <div className="text-sm space-y-3 text-[#344054]">
               <div className="grid grid-cols-2 gap-2">
                 <p><b>Supplier:</b> {detail.supplier_code}</p>
+                <p><b>Printed PO #:</b> <span data-testid="created-pos-detail-printed-number">{detail.sap_po_number || "—"}</span></p>
                 <p><b>Purchase Unit:</b> {detail.purchase_unit_site}</p>
                 <p><b>Company:</b> {detail.company_code}</p>
                 <p><b>Bill-To:</b> {detail.bill_to_company}</p>

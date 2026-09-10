@@ -386,3 +386,49 @@ class SAPPurchaseOrderWriteClient:
             "po_uuid": po_uuid_match.group(1) if po_uuid_match else None,
             "raw_xml": resp.text[:3000],
         }
+
+    def get_purchase_order_number(self, po_number: str) -> str:
+        """Sep 10 2026, user's explicit ask: read back the tenant's own
+        custom "Purchase Order Number" Key User field (e.g.
+        'P1PO-00641/26-27', the number printed on the physical PO
+        document) - a DIFFERENT field from the plain sequential
+        `PurchaseOrderID` (e.g. '29347') this app already tracks
+        everywhere. Confirmed live (Sep 10 2026) this field is only
+        readable via `PurchaseOrderByIDQuery_sync` on this SAME
+        ManagePurchaseOrderIn service (NOT the Simple Query service
+        sap_po_client.py uses, and NOT the custom OData PO service -
+        both confirmed live to omit it; the user's own SAP Adaptation
+        Mode "Services" tab screenshot confirmed "Field Available" is
+        only checked for `PurchaseOrderByIDResponse_sync`/"Manage
+        Purchase Order Read"). Request shape per SAP's own official
+        help.sap.com docs: `<PurchaseOrder><ID>{po_number}</ID></PurchaseOrder>`
+        (NOT `<PurchaseOrderID>` at the root, which silently returns an
+        empty `<Log/>` with zero data, no error).
+        Best-effort: returns None (never raises) on any transport
+        error, missing endpoint, or the field genuinely being blank for
+        this PO - this is a "nice to have" display field, must never
+        block or error out a caller."""
+        if not self.endpoint:
+            return None
+        body = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">'
+            '<soapenv:Body>'
+            f'<glob:PurchaseOrderByIDQuery_sync xmlns:glob="{NAMESPACE}">'
+            f'<PurchaseOrder><ID>{escape(str(po_number))}</ID></PurchaseOrder>'
+            '</glob:PurchaseOrderByIDQuery_sync>'
+            '</soapenv:Body></soapenv:Envelope>'
+        )
+        try:
+            with sap_semaphore:
+                resp = requests.post(
+                    self.endpoint, data=body.encode("utf-8"),
+                    headers={"Content-Type": "text/xml; charset=utf-8", "SOAPAction": SOAP_ACTION},
+                    auth=self.auth, timeout=self.timeout,
+                )
+            if resp.status_code != 200:
+                return None
+            match = re.search(r"<(?:\w+:)?PurchaseOrderNumber[^>]*>([^<]*)</(?:\w+:)?PurchaseOrderNumber>", resp.text)
+            return match.group(1).strip() or None if match else None
+        except Exception:
+            return None

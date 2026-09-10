@@ -63,6 +63,7 @@ from sap_wip_clearing_client import company_and_set_of_books_for_site
 
 PO_CACHE_COLLECTION = "supplier_portal_po_cache"
 SAP_OPEN_QTY_COLLECTION = "sap_po_open_qty_cache"
+SAP_PO_NUMBER_COLLECTION = "sap_po_custom_number_cache"
 SHIPMENTS_COLLECTION = "supplier_portal_shipments"
 DOC_CODE_ALPHABET = "".join(c for c in string.ascii_uppercase + string.digits if c not in "0O1I")
 DOC_CODE_LENGTH = 6
@@ -337,7 +338,51 @@ def get_cached_pos_with_remaining(db, vendor_code: str) -> list:
         it["remaining_qty"] = state["remaining_qty"]
         it["sap_verified_at"] = state["sap_verified_at"]
         it["buyer_entity_name"] = sap_po_client.buyer_entity_name(it.get("buyer_code"))
+    attach_sap_po_numbers(db, items)
     return items
+
+
+def get_sap_po_number(db, po_number: str) -> str:
+    """Sep 10 2026, user's explicit ask: the tenant's own custom
+    "Purchase Order Number" field (e.g. 'P1PO-00641/26-27', the number
+    printed on the physical PO document) - see
+    sap_po_write_client.SAPPurchaseOrderWriteClient.get_purchase_order_number
+    for how this is actually fetched from SAP (a different field from
+    the plain sequential PurchaseOrderID this app tracks everywhere
+    else). Returns None if never successfully fetched yet (background
+    loop catches up, see server.py) - callers must treat None as "not
+    known yet", never as "genuinely blank"."""
+    doc = db[SAP_PO_NUMBER_COLLECTION].find_one({"_id": po_number})
+    return doc.get("sap_po_number") if doc else None
+
+
+def store_sap_po_number(db, po_number: str, sap_po_number: str) -> None:
+    db[SAP_PO_NUMBER_COLLECTION].update_one(
+        {"_id": po_number},
+        {"$set": {"sap_po_number": sap_po_number, "fetched_at": datetime.now(timezone.utc)}},
+        upsert=True,
+    )
+
+
+def attach_sap_po_numbers(db, items: list) -> None:
+    """Mutates each item in place with `sap_po_number` (joined from
+    SAP_PO_NUMBER_COLLECTION by po_number) - a PO not yet fetched simply
+    leaves it None, the frontend then just omits it for that row rather
+    than showing a wrong/blank value."""
+    po_numbers = {it.get("po_number") for it in items if it.get("po_number")}
+    cache = {d["_id"]: d.get("sap_po_number") for d in db[SAP_PO_NUMBER_COLLECTION].find({"_id": {"$in": list(po_numbers)}})}
+    for it in items:
+        it["sap_po_number"] = cache.get(it.get("po_number"))
+
+
+def list_po_numbers_missing_custom_number(db, limit: int = 15) -> list:
+    """Background loop's worklist (server.py) - distinct PO numbers
+    currently in the vendor PO cache that have never been resolved to a
+    custom SAP PO Number yet, capped per cycle so a big backlog catches
+    up gradually instead of one very slow cycle."""
+    known = set(list_active_po_numbers(db))
+    already_fetched = set(db[SAP_PO_NUMBER_COLLECTION].distinct("_id"))
+    return sorted(known - already_fetched)[:limit]
 
 
 def _generate_doc_code(db) -> str:

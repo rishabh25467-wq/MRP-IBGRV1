@@ -5806,6 +5806,14 @@ async def get_purchase_order_history(
             d["_id"] = str(d["_id"])
             if isinstance(d.get("created_at"), datetime):
                 d["created_at"] = d["created_at"].isoformat()
+        # Sep 10 2026, user's explicit ask: join the tenant's custom
+        # (printed) SAP PO Number - cache-only here (never a live SAP
+        # call), so this list stays instant; a PO the background loop
+        # hasn't reached yet just shows nothing for this column.
+        po_numbers = {d["po_number"] for d in docs if d.get("po_number")}
+        number_cache = {c["_id"]: c.get("sap_po_number") for c in db[supplier_shipment_service.SAP_PO_NUMBER_COLLECTION].find({"_id": {"$in": list(po_numbers)}})}
+        for d in docs:
+            d["sap_po_number"] = number_cache.get(d.get("po_number"))
         return docs
 
     return await asyncio.to_thread(_fetch)
@@ -5912,7 +5920,16 @@ async def create_purchase_order(payload: PurchaseOrderCreateRequest, request: Re
     except PRIntegrationError as e:
         logger.warning(f"PO {result['po_number']} created in SAP but PR {payload.pr_number} stamp-back failed: {e}")
 
-    return {"po_number": result["po_number"], "po_uuid": result["po_uuid"]}
+    # Sep 10 2026, user's explicit ask: fetch+cache the tenant's custom
+    # (printed) SAP PO Number right away, so it's visible immediately on
+    # this success screen instead of waiting for the background catch-up
+    # loop's next cycle. Best-effort - get_purchase_order_number() never
+    # raises, so a SAP hiccup here can't fail an already-successful create.
+    sap_po_number = await asyncio.to_thread(sap_po_write_client.get_purchase_order_number, result["po_number"])
+    if sap_po_number:
+        await asyncio.to_thread(supplier_shipment_service.store_sap_po_number, db, result["po_number"], sap_po_number)
+
+    return {"po_number": result["po_number"], "po_uuid": result["po_uuid"], "sap_po_number": sap_po_number}
 
 
 @api_router.post("/part-suppliers", response_model=PartSupplierAssignment)
@@ -7283,6 +7300,9 @@ async def get_admin_grn_shipments(status: str = Query(None)):
     def _attach_pricing():
         for s in shipments:
             supplier_shipment_service.attach_po_pricing(db, s.get("vendor_code"), s.get("items", []))
+            # Sep 10 2026, user's explicit ask: surface the tenant's
+            # custom (printed) SAP PO Number alongside every item.
+            supplier_shipment_service.attach_sap_po_numbers(db, s.get("items", []))
     await asyncio.to_thread(_attach_pricing)
     return {"shipments": shipments}
 
@@ -7311,6 +7331,9 @@ async def get_admin_grn_lookup(doc_code: str, request: Request):
     # person" - unit_price/currency already captured on every PO pull,
     # just never surfaced on this screen before.
     await asyncio.to_thread(supplier_shipment_service.attach_po_pricing, db, doc.get("vendor_code"), doc.get("items", []))
+    # Sep 10 2026, user's explicit ask: surface the tenant's custom
+    # (printed) SAP PO Number alongside every item.
+    await asyncio.to_thread(supplier_shipment_service.attach_sap_po_numbers, db, doc.get("items", []))
     # "RI and RT Site should be non-editable and pre-fixed based on shipment
     # code" (mrp vendor side changes.docx, Sep 2026): narrow the Site choices
     # down to only the buying entity's own sites, further narrowed by this
@@ -7593,7 +7616,35 @@ async def start_supplier_po_cache_refresh_loop():
     asyncio.create_task(loop())
 
 
-# Sep 2 2026: the ORIGINAL Playwright-based "Open PO Qty" background
+# Sep 10 2026, user's explicit ask: catch up the tenant's custom
+# (printed) SAP PO Number for every PO the vendor cache already knows
+# about but hasn't been resolved yet - capped per cycle (see
+# list_po_numbers_missing_custom_number) since it's one live SAP call
+# per PO, not a batched report like the other loops here. A brand-new
+# PO created via this app's own PO Creation flow is fetched immediately
+# at creation time instead (see /purchase-orders/create) - this loop is
+# only for POs the Supplier Portal picked up independently.
+SAP_PO_NUMBER_CACHE_REFRESH_INTERVAL_SECONDS = 5 * 60
+
+
+@app.on_event("startup")
+async def start_sap_po_number_refresh_loop():
+    async def loop():
+        await asyncio.sleep(90)
+        while True:
+            try:
+                po_numbers = await asyncio.to_thread(supplier_shipment_service.list_po_numbers_missing_custom_number, db)
+                for po_number in po_numbers:
+                    value = await asyncio.to_thread(sap_po_write_client.get_purchase_order_number, po_number)
+                    if value:
+                        await asyncio.to_thread(supplier_shipment_service.store_sap_po_number, db, po_number, value)
+                if po_numbers:
+                    logger.info(f"SAP custom PO Number cache: checked {len(po_numbers)} PO(s)")
+            except Exception as e:
+                logger.error(f"SAP custom PO Number cache refresh failed: {e}")
+            await asyncio.sleep(SAP_PO_NUMBER_CACHE_REFRESH_INTERVAL_SECONDS)
+
+    asyncio.create_task(loop())
 # refresh was CANCELLED per user's explicit ask ("we cannot go with
 # playwright for this") - it was found live-hammering SAP's UI
 # sequentially for every active PO (10-20s each, 30+ POs per cycle),

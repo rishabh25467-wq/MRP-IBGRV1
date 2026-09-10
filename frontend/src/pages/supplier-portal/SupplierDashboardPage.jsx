@@ -507,6 +507,9 @@ export default function SupplierDashboardPage() {
                         >
                           <Eye size={12} /> {po.po_number}
                         </button>
+                        {po.sap_po_number && (
+                          <div className="text-[10px] text-[#64748B] font-sans" data-testid={`supplier-po-printed-number-${po.po_number}-${po.item_number}`}>Printed PO #: {po.sap_po_number}</div>
+                        )}
                         {po._isFirstOpenOfPo && po._poOpenRows.length > 1 && (
                           <button
                             onClick={() => toggleSelectAllForPo(po._poOpenRows)}
@@ -670,6 +673,7 @@ export default function SupplierDashboardPage() {
             <DialogTitle className="font-heading font-data">PO {detailPoNumber}</DialogTitle>
             <DialogDescription>
               {detailItems[0]?.buyer_entity_name} · Ordered {fmtDate(detailItems[0]?.po_date)}
+              {detailItems[0]?.sap_po_number && <> · Printed PO #: <span className="font-data" data-testid="supplier-po-detail-printed-number">{detailItems[0].sap_po_number}</span></>}
             </DialogDescription>
           </DialogHeader>
           <div className="overflow-x-auto">

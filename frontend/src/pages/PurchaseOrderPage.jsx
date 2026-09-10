@@ -380,7 +380,7 @@ export default function PurchaseOrderPage() {
         })),
       };
       const { data } = await axios.post(`${API}/purchase-orders/create`, payload);
-      setResult({ po_number: data.po_number });
+      setResult({ po_number: data.po_number, sap_po_number: data.sap_po_number });
       setConfirmOpen(false);
       toast.success(`Purchase Order ${data.po_number} created in SAP`, {
         description: "Click to view its full details",
@@ -945,6 +945,11 @@ export default function PurchaseOrderPage() {
                 {result.po_number}
               </button>{" "}
               was created successfully.
+              {result.sap_po_number && (
+                <span className="block mt-1 text-xs text-[#475467]" data-testid="po-result-printed-number">
+                  Printed PO #: <span className="font-data font-semibold">{result.sap_po_number}</span>
+                </span>
+              )}
             </p>
           ) : (
             <p className="text-sm text-[#B42318]" data-testid="po-result-error-message">{result?.error}</p>
