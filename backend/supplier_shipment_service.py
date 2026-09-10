@@ -375,6 +375,27 @@ def attach_sap_po_numbers(db, items: list) -> None:
         it["sap_po_number"] = cache.get(it.get("po_number"))
 
 
+def ensure_sap_po_numbers_live(db, items: list, sap_po_write_client) -> None:
+    """Sep 10 2026, user's explicit ask: "need this in the GRN window
+    also while lookup process" - the background catch-up loop
+    (server.py) only crawls ~15 POs/5min, so a shipment on a PO that
+    hasn't been reached yet showed nothing at lookup time. A single GRN
+    lookup only ever touches a HANDFUL of distinct POs (unlike the list
+    endpoints, which stay cache-only on purpose to stay fast), so it's
+    safe to do a live SAP fetch here for just the ones still missing -
+    attaches the result immediately AND caches it for every other
+    screen. Best-effort per PO (get_purchase_order_number never raises),
+    one PO's SAP hiccup can't block the others."""
+    attach_sap_po_numbers(db, items)
+    missing = {it["po_number"] for it in items if it.get("po_number") and it.get("sap_po_number") is None}
+    for po_number in missing:
+        value = sap_po_write_client.get_purchase_order_number(po_number)
+        if value:
+            store_sap_po_number(db, po_number, value)
+    if missing:
+        attach_sap_po_numbers(db, items)
+
+
 def list_po_numbers_missing_custom_number(db, limit: int = 15) -> list:
     """Background loop's worklist (server.py) - distinct PO numbers
     currently in the vendor PO cache that have never been resolved to a

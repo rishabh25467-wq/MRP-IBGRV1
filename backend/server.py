@@ -7332,8 +7332,10 @@ async def get_admin_grn_lookup(doc_code: str, request: Request):
     # just never surfaced on this screen before.
     await asyncio.to_thread(supplier_shipment_service.attach_po_pricing, db, doc.get("vendor_code"), doc.get("items", []))
     # Sep 10 2026, user's explicit ask: surface the tenant's custom
-    # (printed) SAP PO Number alongside every item.
-    await asyncio.to_thread(supplier_shipment_service.attach_sap_po_numbers, db, doc.get("items", []))
+    # (printed) SAP PO Number alongside every item - live-fetch (not
+    # just cache-only) here since a single lookup only ever touches a
+    # handful of distinct POs, unlike the list endpoints.
+    await asyncio.to_thread(supplier_shipment_service.ensure_sap_po_numbers_live, db, doc.get("items", []), sap_po_write_client)
     # "RI and RT Site should be non-editable and pre-fixed based on shipment
     # code" (mrp vendor side changes.docx, Sep 2026): narrow the Site choices
     # down to only the buying entity's own sites, further narrowed by this
