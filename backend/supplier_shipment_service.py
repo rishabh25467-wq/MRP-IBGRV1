@@ -816,12 +816,31 @@ def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_c
     post_goods_receipt_via_ui returns - `gr_results` is its
     results list. All POs in the shipment must have posted for step 2
     (Goods Movement) to run, matching approve_shipment's old
-    all-or-nothing behaviour."""
+    all-or-nothing behaviour.
+
+    Sep 10 2026, user's explicit ask ("do not show status received
+    until SAP inbound number is received" + "retry... not work...you
+    have to resolve this"): a Playwright-level failure used to leave
+    `sap_sync_status` as "pending" forever (same real SAP validation
+    error recurring on every Retry click, since Retry re-attempts the
+    identical action against the identical unresolved SAP-side issue) -
+    indistinguishable in the UI from "still actively trying". After
+    `MAX_GR_RETRIES_BEFORE_FAILED` unsuccessful retries, flip to a
+    distinct "failed" status so staff see this needs manual SAP
+    attention instead of waiting on a Retry button that will keep
+    reproducing the same error."""
     doc = get_shipment_by_code(db, doc_code)
     all_ok = bool(gr_results) and all(r.get("status") == "posted" for r in gr_results)
     all_skipped = bool(gr_results) and all(r.get("status") == "skipped" for r in gr_results)
     sap_gr_result = {"ok": all_ok, "per_po": gr_results}
-    sap_sync_status = "posted" if all_ok else ("skipped" if all_skipped else "pending")
+    if all_ok:
+        sap_sync_status = "posted"
+    elif all_skipped:
+        sap_sync_status = "skipped"
+    elif doc.get("sap_gr_retry_count", 0) >= MAX_GR_RETRIES_BEFORE_FAILED:
+        sap_sync_status = "failed"
+    else:
+        sap_sync_status = "pending"
 
     sap_movement_status = "not_applicable"
     sap_movement_result = None
@@ -841,17 +860,23 @@ def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_c
     return get_shipment_by_code(db, doc_code)
 
 
+MAX_GR_RETRIES_BEFORE_FAILED = 3
+
+
 def prepare_retry_goods_receipt(db, doc_code: str) -> dict:
     """Validates a shipment is eligible for a fresh Goods Receipt attempt
     (mirrors the old retry_goods_receipt's own guard) - no SAP call here,
     the caller runs the same Playwright job + finalize_goods_receipt used
-    by the initial approval."""
+    by the initial approval. Sep 10 2026: counts this attempt so
+    finalize_goods_receipt can flip to "failed" after enough retries of
+    the same unresolved SAP error (see its own docstring)."""
     doc = get_shipment_by_code(db, doc_code)
     if doc["status"] != "approved":
         raise ShipmentValidationError("This shipment has not been approved yet")
     if doc.get("sap_sync_status") == "posted":
         raise ShipmentValidationError("The Goods Receipt has already posted to SAP - nothing to retry")
-    return doc
+    db[SHIPMENTS_COLLECTION].update_one({"_id": doc["_id"]}, {"$inc": {"sap_gr_retry_count": 1}})
+    return get_shipment_by_code(db, doc_code)
 
 
 

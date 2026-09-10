@@ -26,6 +26,20 @@ const STATUS_BADGE = {
   rejected: { label: "Rejected", className: "bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA] rounded-sm" },
 };
 
+// Sep 10 2026, user's explicit ask: "do not show status received until
+// the SAP inbound number is received" - internal `status` becomes
+// "approved" the instant staff physically match goods (independent of
+// SAP), so the top badge must NOT say "Received" (implying fully done)
+// until sap_sync_status actually confirms SAP posted the Goods Receipt.
+const resolveStatusBadge = (shipment) => {
+  if (shipment.status === "approved" && shipment.sap_sync_status !== "posted") {
+    return shipment.sap_sync_status === "failed"
+      ? { label: "SAP Sync Failed", className: "bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA] rounded-sm" }
+      : { label: "Pending SAP Sync", className: "bg-[#FFFAEB] text-[#B54708] border border-[#FEDF89] rounded-sm" };
+  }
+  return STATUS_BADGE[shipment.status];
+};
+
 // Sep 2 2026 (user's ask: step-by-step visibility + a reverse timer
 // instead of a plain spinner) - matches the `phase` strings server.py
 // forwards from sap_playwright_supplier_pgr_service.py's progress_cb.
@@ -447,7 +461,7 @@ export default function GrnApprovalPage() {
                 <div className="text-lg font-data font-bold text-[#004B87]">{shipment._id}</div>
                 <div className="text-sm text-[#475467]">{shipment.company_name} ({shipment.vendor_code}) · {[...new Set(shipment.items.map((it) => it.po_number))].map((p) => `PO ${p}`).join(", ")}</div>
               </div>
-              <Badge className={STATUS_BADGE[shipment.status].className} data-testid="grn-status-badge">{STATUS_BADGE[shipment.status].label}</Badge>
+              <Badge className={resolveStatusBadge(shipment).className} data-testid="grn-status-badge">{resolveStatusBadge(shipment).label}</Badge>
             </div>
 
             {shipment.buyer_entity_name && (
@@ -626,13 +640,20 @@ export default function GrnApprovalPage() {
             {shipment.status === "approved" && !busy && (
               <div className="mt-4 space-y-2">
                 <div className="text-sm px-3 py-2 rounded-sm flex items-center justify-between gap-2 border" data-testid="grn-sap-sync-status"
-                     style={shipment.sap_sync_status === "posted" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : { color: "#B45309", background: "rgba(227,160,8,0.1)", borderColor: "rgba(227,160,8,0.3)" }}>
+                     style={shipment.sap_sync_status === "posted" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : shipment.sap_sync_status === "failed" ? { color: "#B42318", background: "rgba(180,35,24,0.08)", borderColor: "rgba(180,35,24,0.3)" } : { color: "#B45309", background: "rgba(227,160,8,0.1)", borderColor: "rgba(227,160,8,0.3)" }}>
                   <span className="flex items-center gap-2">
                     {shipment.sap_sync_status === "posted" ? <CheckCircle size={16} /> : <PlugsConnected size={16} />}
                     {shipment.sap_sync_status === "posted"
                       ? "Goods Receipt posted to SAP"
                       : shipment.sap_sync_status === "skipped"
                       ? (shipment.sap_gr_result?.per_po?.[0]?.error || "PO not found in SAP - check it's released")
+                      : shipment.sap_sync_status === "failed"
+                      ? (
+                        <span className="flex items-center gap-2">
+                          <Badge className="bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA]" data-testid="grn-sap-failed-badge">SAP Sync Failed</Badge>
+                          {shipment.sap_gr_result?.per_po?.find((p) => p.error)?.error || "Repeated attempts failed - needs SAP Admin attention"}
+                        </span>
+                      )
                       : (
                         <span className="flex items-center gap-2">
                           <Badge className="bg-[#FFFAEB] text-[#B54708] border border-[#FEDF89]" data-testid="grn-sap-in-process-badge">In Process</Badge>
@@ -775,6 +796,8 @@ export default function GrnApprovalPage() {
                       <td className="border border-[#D0D5DD] px-2 py-1" data-testid={`grn-confirmed-sap-status-${s._id}`}>
                         {s.sap_sync_status === "posted" ? (
                           <Badge className="bg-[#ECFDF3] text-[#027A48] border border-[#ABEFC6]">Posted</Badge>
+                        ) : s.sap_sync_status === "failed" ? (
+                          <Badge className="bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA]">Sync Failed</Badge>
                         ) : (
                           <Badge className="bg-[#FFFAEB] text-[#B54708] border border-[#FEDF89]">In Process</Badge>
                         )}
@@ -855,7 +878,11 @@ export default function GrnApprovalPage() {
                     <span className="font-data font-semibold" data-testid="grn-confirmed-detail-inbound-id">{inboundDeliveryIds(confirmedDetail).join(", ") || "\u2014"}</span>
                   ) : (
                     <span className="inline-flex items-center gap-1.5">
-                      <Badge className="bg-[#FFFAEB] text-[#B54708] border border-[#FEDF89]" data-testid="grn-confirmed-detail-in-process-badge">In Process</Badge>
+                      {confirmedDetail.sap_sync_status === "failed" ? (
+                        <Badge className="bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA]" data-testid="grn-confirmed-detail-failed-badge">Sync Failed</Badge>
+                      ) : (
+                        <Badge className="bg-[#FFFAEB] text-[#B54708] border border-[#FEDF89]" data-testid="grn-confirmed-detail-in-process-badge">In Process</Badge>
+                      )}
                       {retryUnlockInMin(confirmedDetail.approved_at) > 0 ? (
                         <span className="text-xs text-[#98A2B3]" data-testid="grn-confirmed-detail-retry-cooldown">Retry available in {retryUnlockInMin(confirmedDetail.approved_at)}m</span>
                       ) : (
