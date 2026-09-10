@@ -711,18 +711,20 @@ export default function GrnApprovalPage() {
                     <th className="border border-[#D0D5DD] p-1.5 text-left">Code</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-left">Vendor</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-left">PO Numbers</th>
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">Printed PO #</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-left">Created</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredPending.length === 0 && (
-                    <tr><td colSpan={4} className="border border-[#D0D5DD] px-3 py-6 text-center text-[#475467]" data-testid="grn-pending-empty">{pending.length === 0 ? "No shipments awaiting GRN approval." : "No shipments match your search."}</td></tr>
+                    <tr><td colSpan={5} className="border border-[#D0D5DD] px-3 py-6 text-center text-[#475467]" data-testid="grn-pending-empty">{pending.length === 0 ? "No shipments awaiting GRN approval." : "No shipments match your search."}</td></tr>
                   )}
                   {filteredPending.map((s) => (
                     <tr key={s._id} className="cursor-pointer bg-white odd:bg-[#F9FAFB] hover:bg-[#F0F4F8] transition-colors duration-150" onClick={() => lookup(s._id)} data-testid={`grn-pending-row-${s._id}`}>
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data font-bold text-[#004B87]">{s._id}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1">{s.company_name}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data">{[...new Set(s.items.map((it) => it.po_number))].join(", ")}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data" data-testid={`grn-pending-printed-po-${s._id}`}>{[...new Set(s.items.map((it) => it.sap_po_number).filter(Boolean))].join(", ") || "\u2014"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]">{new Date(s.created_at).toLocaleString()}</td>
                     </tr>
                   ))}
@@ -751,6 +753,7 @@ export default function GrnApprovalPage() {
                     <th className="border border-[#D0D5DD] p-1.5 text-left">Code</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-left">Vendor</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-left">PO Numbers</th>
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">Printed PO #</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-left">Supplier Invoice No</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-left">SAP Inbound Delivery #</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-left">SAP Status</th>
@@ -759,13 +762,14 @@ export default function GrnApprovalPage() {
                 </thead>
                 <tbody>
                   {filteredConfirmed.length === 0 && (
-                    <tr><td colSpan={7} className="border border-[#D0D5DD] px-3 py-6 text-center text-[#475467]" data-testid="grn-confirmed-empty">{confirmed.length === 0 ? "No confirmed GRNs yet." : "No confirmed GRNs match your search."}</td></tr>
+                    <tr><td colSpan={8} className="border border-[#D0D5DD] px-3 py-6 text-center text-[#475467]" data-testid="grn-confirmed-empty">{confirmed.length === 0 ? "No confirmed GRNs yet." : "No confirmed GRNs match your search."}</td></tr>
                   )}
                   {filteredConfirmed.map((s) => (
                     <tr key={s._id} className="cursor-pointer bg-white odd:bg-[#F9FAFB] hover:bg-[#F0F4F8] transition-colors duration-150" onClick={() => setConfirmedDetail(s)} data-testid={`grn-confirmed-row-${s._id}`}>
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data font-bold text-[#004B87]">{s._id}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1">{s.company_name}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data">{[...new Set(s.items.map((it) => it.po_number))].join(", ")}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data" data-testid={`grn-confirmed-printed-po-${s._id}`}>{[...new Set(s.items.map((it) => it.sap_po_number).filter(Boolean))].join(", ") || "\u2014"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data">{s.supplier_doc_num || "\u2014"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data">{inboundDeliveryIds(s).join(", ") || "\u2014"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1" data-testid={`grn-confirmed-sap-status-${s._id}`}>

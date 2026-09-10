@@ -7071,7 +7071,14 @@ async def put_supplier_portal_shipment(doc_code: str, payload: ShipmentCreateReq
 async def get_supplier_portal_shipments(request: Request, as_vendor: str = Query(None)):
     account = await asyncio.to_thread(_require_supplier_account, request)
     vendor_code = _effective_vendor_code(account, as_vendor)
-    return {"shipments": await asyncio.to_thread(supplier_shipment_service.list_shipments_for_vendor, db, vendor_code)}
+    shipments = await asyncio.to_thread(supplier_shipment_service.list_shipments_for_vendor, db, vendor_code)
+    # Sep 10 2026, user's explicit ask: surface the tenant's custom
+    # (printed) SAP PO Number here too - cache-only (list view, stays fast).
+    def _attach():
+        for s in shipments:
+            supplier_shipment_service.attach_sap_po_numbers(db, s.get("items", []))
+    await asyncio.to_thread(_attach)
+    return {"shipments": shipments}
 
 
 @api_router.get("/supplier-portal/documents")

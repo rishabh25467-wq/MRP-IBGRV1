@@ -197,6 +197,7 @@ export default function SupplierShipmentsPage() {
                   <th className="border border-[#E2E8F0] p-1.5 text-left">Doc Code</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-left">Created</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-left">PO Numbers</th>
+                  <th className="border border-[#E2E8F0] p-1.5 text-left">Printed PO #</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-left">Items</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-left">Status</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-right">Action</th>
@@ -204,7 +205,7 @@ export default function SupplierShipmentsPage() {
               </thead>
               <tbody>
                 {filteredShipments.length === 0 && (
-                  <tr><td colSpan={6} className="border border-[#E2E8F0] px-3 py-6 text-center text-[#475569]" data-testid="supplier-shipments-empty">{shipments.length === 0 ? "No shipments yet." : "No shipments match these filters."}</td></tr>
+                  <tr><td colSpan={7} className="border border-[#E2E8F0] px-3 py-6 text-center text-[#475569]" data-testid="supplier-shipments-empty">{shipments.length === 0 ? "No shipments yet." : "No shipments match these filters."}</td></tr>
                 )}
                 {filteredShipments.map((s) => {
                   const badge = SHIPMENT_STATUS_BADGE[s.status] || SHIPMENT_STATUS_BADGE.in_transit;
@@ -214,6 +215,7 @@ export default function SupplierShipmentsPage() {
                       <td className="border border-[#E2E8F0] px-2 py-1 font-data font-bold text-[#1E40AF]">{s._id}</td>
                       <td className="border border-[#E2E8F0] px-2 py-1 font-data text-xs text-[#475569]">{new Date(s.created_at).toLocaleDateString()}</td>
                       <td className="border border-[#E2E8F0] px-2 py-1 font-data text-xs">{[...new Set(s.items.map((it) => it.po_number))].join(", ")}</td>
+                      <td className="border border-[#E2E8F0] px-2 py-1 font-data text-xs" data-testid={`supplier-shipment-printed-po-${s._id}`}>{[...new Set(s.items.map((it) => it.sap_po_number).filter(Boolean))].join(", ") || "\u2014"}</td>
                       <td className="border border-[#E2E8F0] px-2 py-1 text-xs text-[#475569] max-w-xs">
                         {s.items.map((it) => `PO ${it.po_number} · ${it.description || it.item_number} × ${it.ship_qty}${it.unit_of_measure ? ` ${it.unit_of_measure}` : ""}`).join("; ")}
                       </td>
