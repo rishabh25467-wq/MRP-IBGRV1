@@ -800,18 +800,30 @@ export default function GrnApprovalPage() {
                     <th className="border border-[#D0D5DD] p-1.5 text-right">Qty</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-left">Unit</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-left">Warehouse</th>
+                    <th className="border border-[#D0D5DD] p-1.5 text-right">PO Price</th>
+                    <th className="border border-[#D0D5DD] p-1.5 text-right">Line Value</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {confirmedDetail.items.map((it, i) => (
-                    <tr key={i} className="bg-white odd:bg-[#F9FAFB]" data-testid={`grn-confirmed-detail-item-${i}`}>
-                      <td className="border border-[#D0D5DD] px-2 py-1 font-data font-semibold">{it.product_id || "\u2014"}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1">{it.description}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data">{it.actual_qty ?? it.ship_qty}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1 font-data">{it.unit_of_measure}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1 font-data">{confirmedDetail.site_id}/{confirmedDetail.warehouse_id}</td>
-                    </tr>
-                  ))}
+                  {confirmedDetail.items.map((it, i) => {
+                    const qty = it.actual_qty ?? it.ship_qty;
+                    const lineValue = it.unit_price != null ? qty * it.unit_price : null;
+                    return (
+                      <tr key={i} className="bg-white odd:bg-[#F9FAFB]" data-testid={`grn-confirmed-detail-item-${i}`}>
+                        <td className="border border-[#D0D5DD] px-2 py-1 font-data font-semibold">{it.product_id || "\u2014"}</td>
+                        <td className="border border-[#D0D5DD] px-2 py-1">{it.description}</td>
+                        <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data">{qty}</td>
+                        <td className="border border-[#D0D5DD] px-2 py-1 font-data">{it.unit_of_measure}</td>
+                        <td className="border border-[#D0D5DD] px-2 py-1 font-data">{confirmedDetail.site_id}/{confirmedDetail.warehouse_id}</td>
+                        <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data text-[#475467]" data-testid={`grn-confirmed-detail-po-price-${i}`}>
+                          {it.unit_price != null ? `${it.currency || ""} ${it.unit_price.toFixed(2)}` : "\u2014"}
+                        </td>
+                        <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data font-semibold text-[#1D2939]" data-testid={`grn-confirmed-detail-line-value-${i}`}>
+                          {lineValue != null ? `${it.currency || ""} ${lineValue.toFixed(2)}` : "\u2014"}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </>

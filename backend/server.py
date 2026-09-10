@@ -7206,7 +7206,15 @@ async def get_admin_grn_warehouses(site_id: str, request: Request):
 
 @api_router.get("/admin/grn/shipments")
 async def get_admin_grn_shipments(status: str = Query(None)):
-    return {"shipments": await asyncio.to_thread(supplier_shipment_service.list_shipments, db, status)}
+    shipments = await asyncio.to_thread(supplier_shipment_service.list_shipments, db, status)
+    # Sep 10 2026, user's explicit ask: "add PO price also on the popup
+    # view" (Confirmed GRNs) - same attach_po_pricing already used on the
+    # single-code lookup screen, just also run here for the list.
+    def _attach_pricing():
+        for s in shipments:
+            supplier_shipment_service.attach_po_pricing(db, s.get("vendor_code"), s.get("items", []))
+    await asyncio.to_thread(_attach_pricing)
+    return {"shipments": shipments}
 
 
 @api_router.get("/admin/grn/lookup/{doc_code}")
