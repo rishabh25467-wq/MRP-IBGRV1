@@ -95,6 +95,34 @@ export default function GrnApprovalPage() {
   // already went through.
   const [confirmed, setConfirmed] = useState([]);
   const [confirmedDetail, setConfirmedDetail] = useState(null);
+  const [confirmedRetryBusy, setConfirmedRetryBusy] = useState(false);
+
+  // Sep 10 2026, user's explicit ask: don't let anyone hit Retry while the
+  // background job might still legitimately be running - the whole flow
+  // (3 attempts x Playwright login/navigate/save + 8s pauses) can
+  // genuinely take a few minutes, so gate Retry behind a 5 min cooldown
+  // from approval and show "In Process" until then.
+  const RETRY_COOLDOWN_MIN = 5;
+  const [nowTick, setNowTick] = useState(Date.now());
+  useEffect(() => {
+    const tick = setInterval(() => setNowTick(Date.now()), 15000);
+    return () => clearInterval(tick);
+  }, []);
+  const minutesSince = (dateStr) => dateStr ? (nowTick - new Date(dateStr).getTime()) / 60000 : Infinity;
+  const retryUnlockInMin = (dateStr) => Math.max(0, Math.ceil(RETRY_COOLDOWN_MIN - minutesSince(dateStr)));
+
+  const retryConfirmedGoodsReceipt = async (doc) => {
+    setConfirmedRetryBusy(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/grn/${doc._id}/retry-goods-receipt`);
+      toast.success("Retry started - checking SAP now, this can take a couple of minutes");
+      setTimeout(loadConfirmed, 3000);
+    } catch (err) {
+      toast.error("Retry failed", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setConfirmedRetryBusy(false);
+    }
+  };
 
   const loadPending = async () => {
     try {
@@ -600,12 +628,25 @@ export default function GrnApprovalPage() {
                       ? "Goods Receipt posted to SAP"
                       : shipment.sap_sync_status === "skipped"
                       ? (shipment.sap_gr_result?.per_po?.[0]?.error || "PO not found in SAP - check it's released")
-                      : `SAP posting pending${shipment.sap_gr_result?.per_po?.find((p) => p.error)?.error ? ` - ${shipment.sap_gr_result.per_po.find((p) => p.error).error}` : ""}`}
+                      : (
+                        <span className="flex items-center gap-2">
+                          <Badge className="bg-[#FFFAEB] text-[#B54708] border border-[#FEDF89]" data-testid="grn-sap-in-process-badge">In Process</Badge>
+                          {shipment.sap_gr_result?.per_po?.find((p) => p.error)?.error || "Posting to SAP - this can take a few minutes"}
+                        </span>
+                      )}
                   </span>
-                  {shipment.sap_sync_status !== "posted" && (
+                  {shipment.sap_sync_status === "skipped" ? (
                     <Button size="sm" variant="outline" onClick={retryGoodsReceipt} disabled={busy} className="rounded-sm h-7 text-xs" data-testid="grn-retry-goods-receipt-button">
                       <ArrowsClockwise size={12} className="mr-1" /> Retry
                     </Button>
+                  ) : shipment.sap_sync_status !== "posted" && (
+                    retryUnlockInMin(shipment.approved_at) > 0 ? (
+                      <span className="text-xs text-[#98A2B3] shrink-0" data-testid="grn-retry-cooldown">Retry available in {retryUnlockInMin(shipment.approved_at)}m</span>
+                    ) : (
+                      <Button size="sm" variant="outline" onClick={retryGoodsReceipt} disabled={busy} className="rounded-sm h-7 text-xs" data-testid="grn-retry-goods-receipt-button">
+                        <ArrowsClockwise size={12} className="mr-1" /> Retry
+                      </Button>
+                    )
                   )}
                 </div>
                 {shipment.sap_sync_status === "posted" && shipment.sap_gr_result?.per_po?.some((p) => p.inbound_delivery_id) && (
@@ -707,12 +748,13 @@ export default function GrnApprovalPage() {
                     <th className="border border-[#D0D5DD] p-1.5 text-left">PO Numbers</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-left">Supplier Invoice No</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-left">SAP Inbound Delivery #</th>
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">SAP Status</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-left">Approved</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredConfirmed.length === 0 && (
-                    <tr><td colSpan={6} className="border border-[#D0D5DD] px-3 py-6 text-center text-[#475467]" data-testid="grn-confirmed-empty">{confirmed.length === 0 ? "No confirmed GRNs yet." : "No confirmed GRNs match your search."}</td></tr>
+                    <tr><td colSpan={7} className="border border-[#D0D5DD] px-3 py-6 text-center text-[#475467]" data-testid="grn-confirmed-empty">{confirmed.length === 0 ? "No confirmed GRNs yet." : "No confirmed GRNs match your search."}</td></tr>
                   )}
                   {filteredConfirmed.map((s) => (
                     <tr key={s._id} className="cursor-pointer bg-white odd:bg-[#F9FAFB] hover:bg-[#F0F4F8] transition-colors duration-150" onClick={() => setConfirmedDetail(s)} data-testid={`grn-confirmed-row-${s._id}`}>
@@ -721,10 +763,18 @@ export default function GrnApprovalPage() {
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data">{[...new Set(s.items.map((it) => it.po_number))].join(", ")}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data">{s.supplier_doc_num || "\u2014"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data">{inboundDeliveryIds(s).join(", ") || "\u2014"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1" data-testid={`grn-confirmed-sap-status-${s._id}`}>
+                        {s.sap_sync_status === "posted" ? (
+                          <Badge className="bg-[#ECFDF3] text-[#027A48] border border-[#ABEFC6]">Posted</Badge>
+                        ) : (
+                          <Badge className="bg-[#FFFAEB] text-[#B54708] border border-[#FEDF89]">In Process</Badge>
+                        )}
+                      </td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]">{s.approved_at ? new Date(s.approved_at).toLocaleString() : "\u2014"}</td>
                     </tr>
                   ))}
                 </tbody>
+
               </table>
             </div>
           </>
@@ -788,7 +838,22 @@ export default function GrnApprovalPage() {
                 <div><span className="text-[#475467]">PO Number(s):</span> <span className="font-data font-semibold">{[...new Set(confirmedDetail.items.map((it) => it.po_number))].join(", ")}</span></div>
                 <div><span className="text-[#475467]">Supplier Invoice No:</span> <span className="font-data font-semibold">{confirmedDetail.supplier_doc_num || "\u2014"}</span></div>
                 <div><span className="text-[#475467]">Bill Date:</span> <span className="font-data font-semibold">{confirmedDetail.bill_date || "\u2014"}</span></div>
-                <div><span className="text-[#475467]">SAP Inbound Delivery #:</span> <span className="font-data font-semibold">{inboundDeliveryIds(confirmedDetail).join(", ") || "\u2014"}</span></div>
+                <div><span className="text-[#475467]">SAP Inbound Delivery #:</span>{" "}
+                  {confirmedDetail.sap_sync_status === "posted" ? (
+                    <span className="font-data font-semibold" data-testid="grn-confirmed-detail-inbound-id">{inboundDeliveryIds(confirmedDetail).join(", ") || "\u2014"}</span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Badge className="bg-[#FFFAEB] text-[#B54708] border border-[#FEDF89]" data-testid="grn-confirmed-detail-in-process-badge">In Process</Badge>
+                      {retryUnlockInMin(confirmedDetail.approved_at) > 0 ? (
+                        <span className="text-xs text-[#98A2B3]" data-testid="grn-confirmed-detail-retry-cooldown">Retry available in {retryUnlockInMin(confirmedDetail.approved_at)}m</span>
+                      ) : (
+                        <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={confirmedRetryBusy} onClick={() => retryConfirmedGoodsReceipt(confirmedDetail)} data-testid="grn-confirmed-detail-retry-button">
+                          <ArrowsClockwise size={11} className="mr-1" /> Retry
+                        </Button>
+                      )}
+                    </span>
+                  )}
+                </div>
                 <div><span className="text-[#475467]">Site:</span> <span className="font-data font-semibold">{confirmedDetail.site_id}</span></div>
                 <div><span className="text-[#475467]">Approved By:</span> <span className="font-semibold">{confirmedDetail.approved_by} · {confirmedDetail.approved_at ? new Date(confirmedDetail.approved_at).toLocaleString() : "\u2014"}</span></div>
               </div>
