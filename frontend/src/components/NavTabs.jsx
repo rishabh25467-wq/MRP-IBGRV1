@@ -86,6 +86,7 @@ const MASTER_DATA_SUBTABS = [
   { to: "/admin", label: "Component Master", testId: "nav-master-data-component-master", page: "admin" },
   { to: "/admin/create-material", label: "Create Material", testId: "nav-master-data-create-material", page: "admin_create_material" },
   { to: "/admin/l1-l2-report", label: "L1/L2 Item Report", testId: "nav-master-data-l1l2-report", page: "admin" },
+  { to: "/admin/closing-inventory-report", label: "Closing Inventory Report", testId: "nav-master-data-closing-inventory-report", page: "admin" },
 ];
 
 const ADMINISTRATION_SUBTABS = [

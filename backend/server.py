@@ -55,9 +55,11 @@ import quota_arrangement_service
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_hsn_client import SAPHSNClient
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
+from sap_inventory_closing_client import SAPInventoryClosingClient, SAPInventoryClosingError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
 from inventory_service import get_cached_inventory, refresh_inventory_cache, refresh_stock_quantities_for_warehouses, refresh_stock_quantities_for_site, refresh_stock_quantities_for_products, deep_backfill_uuids, list_known_sites
 import l1_l2_report_service
+import inventory_closing_report_service
 from bom_categorizer import categorize_items, _ai_categorize, BomCategorizerError, get_categories, add_category, delete_category, backfill_product_uuids, categorize_full_inventory, backfill_drawing_urls, refresh_attachments_now, REFRESH_ATTACHMENTS_MAX_IDS
 from oms_client import OMSClient, OMSError
 from open_po_client import OpenPODemandClient, OpenPODemandError
@@ -476,6 +478,12 @@ sap_po_analytics_client = SAPPOAnalyticsClient(
 
 sap_inventory_client = SAPInventoryClient(
     report_url=os.environ['SAP_INVENTORY_ODATA_URL'],
+    username=os.environ['SAP_ODATA_USERNAME'],
+    password=os.environ['SAP_ODATA_PASSWORD'],
+)
+
+sap_inventory_closing_client = SAPInventoryClosingClient(
+    report_url=os.environ['SAP_INVENTORY_CLOSING_ODATA_URL'],
     username=os.environ['SAP_ODATA_USERNAME'],
     password=os.environ['SAP_ODATA_PASSWORD'],
 )
@@ -1778,6 +1786,68 @@ async def get_l1_l2_report_job(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id")
     return L1L2ReportJobStatus(job_id=job_id, **job)
+
+
+class ClosingInventoryRow(BaseModel):
+    site_id: str
+    site_name: str
+    product_id: str
+    description: str
+    qty: float
+    uom: str
+    value: float
+    currency: str
+
+
+class ClosingInventoryReport(BaseModel):
+    key_date: str
+    rows: List[ClosingInventoryRow]
+    total_qty: float
+    total_value: float
+    generated_at: str
+
+
+class ClosingInventoryJobStatus(BaseModel):
+    job_id: str
+    status: str  # "running" | "done" | "failed"
+    result: Optional[ClosingInventoryReport] = None
+    error: Optional[str] = None
+
+
+class GenerateClosingInventoryRequest(BaseModel):
+    key_date: str  # "YYYY-MM-DD"
+
+
+@api_router.post("/admin/inventory-closing-report/generate")
+async def start_closing_inventory_report(body: GenerateClosingInventoryRequest):
+    """Historical "as of {date}" closing stock, site by site, from SAP's own
+    Material Inventories - Balance Summary report (see
+    sap_inventory_closing_client.py) - NOT this app's live inventory_cache.
+    Runs as a background job: even with every site queried in parallel,
+    SAP's own report takes 60-90s per site to compute."""
+    job_id = str(uuid.uuid4())
+    job_store.create_job(db, job_id, {"status": "running", "result": None, "error": None})
+
+    async def run():
+        try:
+            result = await asyncio.to_thread(inventory_closing_report_service.build_closing_inventory_report, sap_inventory_closing_client, db, body.key_date)
+            job_store.update_job(db, job_id, {"status": "done", "result": result, "error": None})
+        except SAPInventoryClosingError as e:
+            job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
+        except Exception as e:
+            logger.error(f"Closing inventory report generation failed: {e}")
+            job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+@api_router.get("/admin/inventory-closing-report/generate/{job_id}", response_model=ClosingInventoryJobStatus)
+async def get_closing_inventory_report_job(job_id: str):
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return ClosingInventoryJobStatus(job_id=job_id, **job)
 
 
 class CategorizeAllResult(BaseModel):

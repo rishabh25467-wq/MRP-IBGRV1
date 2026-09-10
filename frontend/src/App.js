@@ -18,6 +18,7 @@ import OpenPurchaseOrdersPage from "@/pages/OpenPurchaseOrdersPage";
 import SapWritePage from "@/pages/SapWritePage";
 import CreateMaterialPage from "@/pages/CreateMaterialPage";
 import L1L2ReportPage from "@/pages/L1L2ReportPage";
+import InventoryClosingReportPage from "@/pages/InventoryClosingReportPage";
 import StoreApprovalPage from "@/pages/StoreApprovalPage";
 import LoginPage from "@/pages/LoginPage";
 import PendingAccessPage from "@/pages/PendingAccessPage";
@@ -146,6 +147,7 @@ function InternalApp() {
             <Route path="/admin/sap-write" element={<ProtectedRoute page="admin_sap_write"><SapWritePage /></ProtectedRoute>} />
             <Route path="/admin/create-material" element={<ProtectedRoute page="admin_create_material"><CreateMaterialPage /></ProtectedRoute>} />
             <Route path="/admin/l1-l2-report" element={<ProtectedRoute page="admin"><L1L2ReportPage /></ProtectedRoute>} />
+            <Route path="/admin/closing-inventory-report" element={<ProtectedRoute page="admin"><InventoryClosingReportPage /></ProtectedRoute>} />
             <Route path="/admin/access-management" element={<ProtectedRoute superAdminOnly><AccessManagementPage /></ProtectedRoute>} />
             <Route path="/admin/supplier-portal-approvals" element={<ProtectedRoute page={["supplier_portal_admin", "supplier_portal_documents"]}><SupplierPortalApprovalsPage /></ProtectedRoute>} />
             <Route path="/admin/supplier-portal-invite" element={<ProtectedRoute page="supplier_portal_invite"><SupplierPortalInvitePage /></ProtectedRoute>} />
