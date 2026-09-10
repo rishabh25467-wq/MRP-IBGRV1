@@ -88,6 +88,14 @@ export default function GrnApprovalPage() {
   const [discReason, setDiscReason] = useState("");
   const [discItems, setDiscItems] = useState({});
 
+  // Sep 10 2026, user's explicit ask: a browsable list of already-Received
+  // GRNs, with a popup showing the full trail (supplier code, bill number,
+  // SAP inbound delivery number, item-level qty/unit/warehouse) - so staff
+  // don't need to remember/re-type a shipment code just to confirm a GRN
+  // already went through.
+  const [confirmed, setConfirmed] = useState([]);
+  const [confirmedDetail, setConfirmedDetail] = useState(null);
+
   const loadPending = async () => {
     try {
       const { data } = await axios.get(`${API}/admin/grn/shipments`, { params: { status: "in_transit" } });
@@ -96,6 +104,17 @@ export default function GrnApprovalPage() {
       toast.error("Could not load pending shipments", { description: err?.response?.data?.detail || err.message });
     }
   };
+
+  const loadConfirmed = async () => {
+    try {
+      const { data } = await axios.get(`${API}/admin/grn/shipments`, { params: { status: "approved" } });
+      setConfirmed(data.shipments || []);
+    } catch (err) {
+      toast.error("Could not load confirmed GRNs", { description: err?.response?.data?.detail || err.message });
+    }
+  };
+
+  const inboundDeliveryIds = (s) => [...new Set((s.sap_gr_result?.per_po || []).map((p) => p.inbound_delivery_id).filter(Boolean))];
 
   const loadSites = async () => {
     try {
@@ -109,6 +128,7 @@ export default function GrnApprovalPage() {
 
   useEffect(() => {
     loadPending();
+    loadConfirmed();
     loadSites();
   }, []);
 
@@ -230,6 +250,7 @@ export default function GrnApprovalPage() {
         toast.error("Approved internally - SAP posting failed, use Retry Goods Receipt below", { description: JSON.stringify(result.sap_gr_result) });
       }
       loadPending();
+      loadConfirmed();
     } catch (err) {
       toast.error("Approval failed", { description: err?.response?.data?.detail || err.message });
       lookup(shipment?._id);
@@ -629,6 +650,38 @@ export default function GrnApprovalPage() {
             </tbody>
           </table>
         </div>
+
+        <h2 className="font-heading text-sm font-bold uppercase tracking-wider text-[#344054] mt-8">Confirmed GRNs</h2>
+        <p className="text-xs text-[#475467] -mt-1">Click a row for the full receipt trail - supplier bill number, SAP inbound delivery #, and item-level qty/unit/warehouse.</p>
+        <div className="mt-3 bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] overflow-x-auto">
+          <table className="w-full text-[13px] border-collapse">
+            <thead className="bg-[#EAECF0] text-[#344054] text-xs font-bold font-heading uppercase tracking-wide">
+              <tr>
+                <th className="border border-[#D0D5DD] p-1.5 text-left">Code</th>
+                <th className="border border-[#D0D5DD] p-1.5 text-left">Vendor</th>
+                <th className="border border-[#D0D5DD] p-1.5 text-left">PO Numbers</th>
+                <th className="border border-[#D0D5DD] p-1.5 text-left">Supplier Invoice No</th>
+                <th className="border border-[#D0D5DD] p-1.5 text-left">SAP Inbound Delivery #</th>
+                <th className="border border-[#D0D5DD] p-1.5 text-left">Approved</th>
+              </tr>
+            </thead>
+            <tbody>
+              {confirmed.length === 0 && (
+                <tr><td colSpan={6} className="border border-[#D0D5DD] px-3 py-6 text-center text-[#475467]" data-testid="grn-confirmed-empty">No confirmed GRNs yet.</td></tr>
+              )}
+              {confirmed.map((s) => (
+                <tr key={s._id} className="cursor-pointer bg-white odd:bg-[#F9FAFB] hover:bg-[#F0F4F8] transition-colors duration-150" onClick={() => setConfirmedDetail(s)} data-testid={`grn-confirmed-row-${s._id}`}>
+                  <td className="border border-[#D0D5DD] px-2 py-1 font-data font-bold text-[#004B87]">{s._id}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1">{s.company_name}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1 font-data">{[...new Set(s.items.map((it) => it.po_number))].join(", ")}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1 font-data">{s.supplier_doc_num || "\u2014"}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1 font-data">{inboundDeliveryIds(s).join(", ") || "\u2014"}</td>
+                  <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]">{s.approved_at ? new Date(s.approved_at).toLocaleString() : "\u2014"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <Dialog open={rejectOpen} onOpenChange={setRejectOpen}>
@@ -674,6 +727,48 @@ export default function GrnApprovalPage() {
             <Button variant="outline" className="rounded-sm" onClick={() => setDiscOpen(false)}>Cancel</Button>
             <Button onClick={submitDiscrepancy} disabled={busy} className="rounded-sm bg-[#E3A008] hover:bg-[#B87F06] text-white transition-colors duration-150" data-testid="grn-discrepancy-confirm-button">Log Discrepancy</Button>
           </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={!!confirmedDetail} onOpenChange={(o) => !o && setConfirmedDetail(null)}>
+        <DialogContent className="rounded-sm max-w-2xl" data-testid="grn-confirmed-detail-dialog">
+          {confirmedDetail && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="font-heading font-data text-[#004B87]" data-testid="grn-confirmed-detail-code">{confirmedDetail._id}</DialogTitle>
+                <DialogDescription>{confirmedDetail.company_name} ({confirmedDetail.vendor_code})</DialogDescription>
+              </DialogHeader>
+              <div className="grid grid-cols-2 gap-y-2 gap-x-6 text-sm" data-testid="grn-confirmed-detail-meta">
+                <div><span className="text-[#475467]">PO Number(s):</span> <span className="font-data font-semibold">{[...new Set(confirmedDetail.items.map((it) => it.po_number))].join(", ")}</span></div>
+                <div><span className="text-[#475467]">Supplier Invoice No:</span> <span className="font-data font-semibold">{confirmedDetail.supplier_doc_num || "\u2014"}</span></div>
+                <div><span className="text-[#475467]">Bill Date:</span> <span className="font-data font-semibold">{confirmedDetail.bill_date || "\u2014"}</span></div>
+                <div><span className="text-[#475467]">SAP Inbound Delivery #:</span> <span className="font-data font-semibold">{inboundDeliveryIds(confirmedDetail).join(", ") || "\u2014"}</span></div>
+                <div><span className="text-[#475467]">Site:</span> <span className="font-data font-semibold">{confirmedDetail.site_id}</span></div>
+                <div><span className="text-[#475467]">Approved By:</span> <span className="font-semibold">{confirmedDetail.approved_by} · {confirmedDetail.approved_at ? new Date(confirmedDetail.approved_at).toLocaleString() : "\u2014"}</span></div>
+              </div>
+              <table className="border-collapse w-full text-[13px] mt-2 border border-[#D0D5DD] rounded-sm overflow-hidden">
+                <thead className="bg-[#EAECF0] text-[#344054] text-xs font-bold font-heading uppercase tracking-wide">
+                  <tr>
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">Item Code</th>
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">Description</th>
+                    <th className="border border-[#D0D5DD] p-1.5 text-right">Qty</th>
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">Unit</th>
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">Warehouse</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {confirmedDetail.items.map((it, i) => (
+                    <tr key={i} className="bg-white odd:bg-[#F9FAFB]" data-testid={`grn-confirmed-detail-item-${i}`}>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data font-semibold">{it.product_id || "\u2014"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1">{it.description}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data">{it.actual_qty ?? it.ship_qty}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data">{it.unit_of_measure}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data">{confirmedDetail.site_id}/{confirmedDetail.warehouse_id}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
         </DialogContent>
       </Dialog>
     </div>
