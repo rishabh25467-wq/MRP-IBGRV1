@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect } from "react";
 import axios from "axios";
-import { MagnifyingGlass, ShieldCheck, Package, CheckCircle, CircleNotch } from "@phosphor-icons/react";
+import { MagnifyingGlass, ShieldCheck, Package, CheckCircle, CircleNotch, ArrowsClockwise } from "@phosphor-icons/react";
+import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
@@ -32,6 +34,7 @@ export default function OpenPurchaseOrdersPage() {
   const [selectedSupplier, setSelectedSupplier] = useState(null);
   const [items, setItems] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const wrapperRef = useRef(null);
   const debounceRef = useRef(null);
 
@@ -78,6 +81,36 @@ export default function OpenPurchaseOrdersPage() {
     return acc;
   }, {});
 
+  // Sep 10 2026, user's explicit ask: a PO created directly in SAP
+  // (not via this app's own PO Creation flow) only shows up here after
+  // the shared 10-min background sync - this lets staff force that
+  // sync right now instead of waiting.
+  const refreshFromSap = async () => {
+    setRefreshing(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/purchase-orders/refresh-cache`);
+      const jobId = data.job_id;
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const { data: poll } = await axios.get(`${API}/admin/purchase-orders/refresh-cache/poll/${jobId}`);
+        if (poll.status === "done") {
+          toast.success("Refreshed from SAP - re-searching this supplier");
+          if (selectedSupplier) await pickSupplier(selectedSupplier);
+          return;
+        }
+        if (poll.status === "failed") {
+          toast.error(`Refresh failed: ${poll.error || "Unknown error"}`);
+          return;
+        }
+      }
+      toast.error("Refresh is taking longer than expected - try again shortly");
+    } catch {
+      toast.error("Could not start SAP refresh");
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#F2F4F7] flex flex-col font-sans">
       <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
@@ -99,12 +132,25 @@ export default function OpenPurchaseOrdersPage() {
       </header>
 
       <main className="flex-1 overflow-auto w-full max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-4 space-y-4">
-        <div>
-          <h1 className="font-heading text-xl font-bold text-[#101828] tracking-tight flex items-center gap-2" data-testid="open-pos-page-title">
-            <ShieldCheck size={18} className="text-[#004B87]" weight="fill" />
-            Open Purchase Orders
-          </h1>
-          <p className="text-sm text-[#475467] mt-0.5">Pick a vendor to see every PO line still open against them - SAP-verified where available.</p>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h1 className="font-heading text-xl font-bold text-[#101828] tracking-tight flex items-center gap-2" data-testid="open-pos-page-title">
+              <ShieldCheck size={18} className="text-[#004B87]" weight="fill" />
+              Open Purchase Orders
+            </h1>
+            <p className="text-sm text-[#475467] mt-0.5">Pick a vendor to see every PO line still open against them - SAP-verified where available.</p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="rounded-sm border-[#D0D5DD] text-[#344054] shrink-0"
+            onClick={refreshFromSap}
+            disabled={refreshing}
+            data-testid="open-pos-refresh-sap-button"
+          >
+            {refreshing ? <CircleNotch size={14} className="animate-spin mr-1.5" /> : <ArrowsClockwise size={14} className="mr-1.5" />}
+            {refreshing ? "Refreshing from SAP..." : "Refresh from SAP"}
+          </Button>
         </div>
 
         <div className="bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] p-4 space-y-2 relative" ref={wrapperRef} data-testid="open-pos-supplier-card">

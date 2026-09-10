@@ -7553,6 +7553,40 @@ async def post_admin_grn_reject(doc_code: str, payload: GrnRejectRequest, reques
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@api_router.post("/admin/purchase-orders/refresh-cache")
+async def refresh_po_cache_now():
+    """Sep 10 2026, user's explicit ask: a PO created DIRECTLY in SAP
+    (not via this app's own PO Creation flow, which already seeds
+    itself instantly - see /purchase-orders/create) has no way into
+    PO_CACHE_COLLECTION before the next SUPPLIER_PO_CACHE_REFRESH_INTERVAL_SECONDS
+    (10 min) background cycle. This runs that exact same fetch on
+    demand, as a background job (it's a single ~60-100s SAP call, too
+    slow for a live request - see start_supplier_po_cache_refresh_loop's
+    own docstring)."""
+    job_id = str(uuid.uuid4())
+    job_store.create_job(db, job_id, {"status": "running", "result": None, "error": None})
+
+    async def run():
+        try:
+            rows = await asyncio.to_thread(sap_po_client.fetch_recent_window, db)
+            stats = await asyncio.to_thread(supplier_shipment_service.refresh_all_vendor_caches, db, rows)
+            job_store.update_job(db, job_id, {"status": "done", "result": stats, "error": None})
+        except Exception as e:
+            logger.error(f"Manual PO cache refresh failed: {e}")
+            job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+@api_router.get("/admin/purchase-orders/refresh-cache/poll/{job_id}")
+async def refresh_po_cache_poll(job_id: str):
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return {"status": job["status"], "result": job["result"], "error": job["error"]}
+
+
 app.include_router(api_router)
 
 app.add_middleware(
