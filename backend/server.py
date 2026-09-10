@@ -5863,7 +5863,7 @@ async def create_purchase_order(payload: PurchaseOrderCreateRequest, request: Re
         for it in payload.items
     ]
     supplier_doc = await asyncio.to_thread(
-        db["suppliers"].find_one, {"sap_internal_id": payload.supplier_code}, {"cash_discount_terms_code": 1},
+        db["suppliers"].find_one, {"sap_internal_id": payload.supplier_code}, {"cash_discount_terms_code": 1, "name": 1},
     )
     cash_discount_terms_code = supplier_doc.get("cash_discount_terms_code") if supplier_doc else None
     try:
@@ -5928,6 +5928,27 @@ async def create_purchase_order(payload: PurchaseOrderCreateRequest, request: Re
     sap_po_number = await asyncio.to_thread(sap_po_write_client.get_purchase_order_number, result["po_number"])
     if sap_po_number:
         await asyncio.to_thread(supplier_shipment_service.store_sap_po_number, db, result["po_number"], sap_po_number)
+
+    # Sep 10 2026, user's explicit ask: "took 10 min to show in Supplier
+    # Dashboard" - seed this PO straight into the vendor PO cache instead
+    # of waiting for the next background SAP poll (see
+    # seed_po_cache_items's own docstring). SAP always assigns item
+    # numbers "1","2","3"... in the exact order items were submitted
+    # (confirmed against real created POs) - best-effort, a wrong guess
+    # here just self-heals within 30 min via the real background loop.
+    cache_items = [
+        {
+            "po_number": result["po_number"], "item_number": str(idx + 1),
+            "product_id": it["product_id"], "description": it["description"],
+            "po_qty": it["quantity"], "unit_of_measure": it["unit_of_measure"],
+            "due_date": it["delivery_date"], "ship_to_site_id": it["site_id"],
+            "po_date": payload.po_date, "buyer_code": company_code, "currency": payload.currency,
+            "unit_price": it["unit_price"], "subtotal": it["quantity"] * it["unit_price"],
+            "vendor_name": supplier_doc.get("name") if supplier_doc else None,
+        }
+        for idx, it in enumerate(items)
+    ]
+    await asyncio.to_thread(supplier_shipment_service.seed_po_cache_items, db, payload.supplier_code, cache_items)
 
     return {"po_number": result["po_number"], "po_uuid": result["po_uuid"], "sap_po_number": sap_po_number}
 

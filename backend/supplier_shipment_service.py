@@ -148,6 +148,30 @@ def refresh_po_cache(db, vendor_code: str, items: list) -> None:
     )
 
 
+def seed_po_cache_items(db, vendor_code: str, items: list) -> None:
+    """Sep 10 2026, user's explicit ask: a PO created via THIS app's own
+    PO Creation flow used to take up to REFRESH_INTERVAL_MINUTES (10 min)
+    to appear on the Supplier Dashboard / Open Purchase Orders page,
+    because those only ever read PO_CACHE_COLLECTION, which itself only
+    updates via the shared background SAP poll (refresh_all_vendor_caches,
+    server.py) - deliberately NOT done live on every page load (too
+    slow/unstable per that loop's own docstring). We already have this
+    PO's full item data right here at creation time - upsert it
+    immediately so it's visible right away. Unlike refresh_po_cache,
+    this NEVER touches/expires any of the vendor's OTHER cached rows
+    (this is a single-PO seed, not a full vendor resync) - the next
+    background cycle's real SAP read is still the source of truth and
+    will just overwrite this with itself."""
+    now = datetime.now(timezone.utc)
+    for it in items:
+        key = f"{vendor_code}::{it['po_number']}::{it['item_number']}"
+        db[PO_CACHE_COLLECTION].update_one(
+            {"_id": key},
+            {"$set": {**it, "vendor_code": vendor_code, "source": "sap_live", "updated_at": now, "missing_since": None, "expired": False}},
+            upsert=True,
+        )
+
+
 def refresh_all_vendor_caches(db, rows: list) -> dict:
     """Fans sap_po_client.fetch_recent_window's single global batch out
     per vendor (called from server.py's background refresh loop) - every
