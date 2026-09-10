@@ -398,10 +398,22 @@ def ensure_sap_po_numbers_live(db, items: list, sap_po_write_client) -> None:
 
 def list_po_numbers_missing_custom_number(db, limit: int = 15) -> list:
     """Background loop's worklist (server.py) - distinct PO numbers
-    currently in the vendor PO cache that have never been resolved to a
-    custom SAP PO Number yet, capped per cycle so a big backlog catches
-    up gradually instead of one very slow cycle."""
+    that have never been resolved to a custom SAP PO Number yet, capped
+    per cycle so a big backlog catches up gradually instead of one very
+    slow cycle. Sep 10 2026, user report: "Created Purchase Orders" page
+    showed many blanks even for POs created well after the one-off
+    fetch-at-creation was added - SAP's read side has a short propagation
+    lag right after a Create, so that immediate fetch can legitimately
+    come back empty. Union the vendor PO cache AND recent (last 30 days)
+    `purchase_order_creation_history` entries here so those get retried
+    automatically until they resolve, instead of staying blank forever."""
     known = set(list_active_po_numbers(db))
+    recent_created = {
+        d["po_number"] for d in db["purchase_order_creation_history"].find(
+            {"created_at": {"$gte": datetime.now(timezone.utc) - timedelta(days=30)}}, {"po_number": 1}
+        )
+    }
+    known |= recent_created
     already_fetched = set(db[SAP_PO_NUMBER_COLLECTION].distinct("_id"))
     return sorted(known - already_fetched)[:limit]
 

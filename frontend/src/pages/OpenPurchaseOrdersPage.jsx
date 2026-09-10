@@ -158,6 +158,9 @@ export default function OpenPurchaseOrdersPage() {
                   <div className="flex items-center gap-2">
                     <Package size={14} className="text-[#004B87]" />
                     <span className="font-data font-bold text-[#101828] text-sm">PO {poNumber}</span>
+                    {poItems[0]?.sap_po_number && (
+                      <span className="font-data text-xs text-[#475467]" data-testid={`open-pos-printed-po-${poNumber}`}>Printed PO #: {poItems[0].sap_po_number}</span>
+                    )}
                     <span className="text-xs text-[#667085]">Buyer: {poItems[0]?.buyer_entity_name || "-"} · PO Date: {poItems[0]?.po_date || "-"}</span>
                   </div>
                 </div>
