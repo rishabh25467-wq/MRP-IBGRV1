@@ -439,3 +439,21 @@ Extend the existing SAP BOM viewer application: Production Plan page (OMS Open-P
 - Extension fields under the tenant's `http://sap.com/xi/AP/CustomerExtension/BYD/A4CF6` namespace (PODate, PortalPRNumber - confirmed via SAP UI's own "Extension Field > Services" tab) must be placed right after `<Date>` at PurchaseOrder header level (NOT trailing after `<Item>`, which causes a full SOAP fault) - `PODate` specifically needs a plain `YYYY-MM-DD` value, a full ISO datetime there also faults the whole call.
 - The app's real established visual theme (JDE Enterprise) is `#004B87` primary/`#003A6A` hover/`#00294D` active, `#F2F4F7` page bg, `#D0D5DD` borders, `#EAECF0` table headers/`#344054` header text, `rounded-sm` everywhere, `h-16 bg-[#0E7C86]` teal header with NavTabs+SapConnectionStatus (see `GrnApprovalPage.jsx`) - always match this, don't invent a new palette for a single page even if a design_agent run suggests one.
 - `Intl.NumberFormat` locale must vary with currency (`en-US` for USD, `en-IN` for INR) - a fixed `en-IN` locale wrongly applies lakh-style digit grouping (7,61,840) to USD amounts too.
+
+## Session (Sep 10 2026, continued) - Printed PO Ref bug fix
+- User reported: "Printed PO ref" still not showing on Supplier Dashboard's Open PO list even after the manual "Refresh from SAP" fix from the previous session.
+- Root cause found: `list_po_numbers_missing_custom_number()` in `supplier_shipment_service.py` sorted the missing-PO worklist ASCENDING (plain `sorted()`), contradicting its own docstring (which says "sort DESCENDING, newest first"). With ~110 old unresolved POs and a 30-item cap, brand-new POs like 29430 never made it into the worklist, so their custom SAP PO Number was never fetched.
+- Fix: changed to `sorted(known - already_fetched, reverse=True)[:limit]` so newest POs are prioritized.
+- Verified end-to-end: fetched live from SAP (`P1PO-00649/26-27` for PO 29430), confirmed via `/api/supplier-portal/purchase-orders` API response, and visually confirmed on the Supplier Dashboard UI (screenshot) - "Printed PO #: P1PO-00649/26-27" now shows under PO 29430.
+- Status: FIXED and USER-FACING VERIFIED (via UI screenshot).
+- Deployment to production (mrp.radishtechnologies.com) still pending user's "go" signal.
+
+
+## Session (Sep 10 2026, continued #2) - SFG Shortage no longer blocks Proposal creation
+- User's explicit ask: "if SFG short then user not able to create a production proposal so now we allow user if SFG short then user can create proposal but IF BOP short then store request generated (SFG Shortage - Allowed with flag)".
+- Changed `_run_create_and_release_job` in `server.py`: a short Sub-Assembly (SFG, `is_sub_assembly=true`) component no longer hard-blocks order creation (previously: job failed with `reason=sfg_shortage`, no Proposal created). Now it's a NON-BLOCKING flag (`job.sfg_shortage = {site_id, short_components}`) that persists across every later job status, while the SAP Proposal + rest of the pipeline proceeds normally.
+- BOP/RM (`is_sub_assembly=false`) shortage behavior is UNCHANGED: still creates a real Store Approval request and pauses at `waiting_store_approval`. Both flags coexist if both SFG and BOP are short simultaneously.
+- Frontend (`ProductionConfirmationPage.js`): Active Orders table shows a new amber "SFG Shortage - Allowed with flag" badge + persistent (non-error styled) detail row listing each short sub-assembly, alongside (not replacing) the normal status/progress UI. Removed the now-dead "SFG Shortage - Blocked" red badge/detail-row code path.
+- Tested via `testing_agent` (iteration_154): 100% backend + frontend pass, no live SAP writes needed (seeded job docs directly to prove branching + persistence + UI rendering). No issues found.
+- Deployment to production (mrp.radishtechnologies.com) still pending user's "go" signal.
+

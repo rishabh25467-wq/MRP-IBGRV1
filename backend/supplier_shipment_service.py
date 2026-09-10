@@ -430,7 +430,14 @@ def list_po_numbers_missing_custom_number(db, limit: int = 15) -> list:
     lag right after a Create, so that immediate fetch can legitimately
     come back empty. Union the vendor PO cache AND recent (last 30 days)
     `purchase_order_creation_history` entries here so those get retried
-    automatically until they resolve, instead of staying blank forever."""
+    automatically until they resolve, instead of staying blank forever.
+    Sep 10 2026 follow-up bug: a chunk of OLD POs (from well before this
+    feature existed) genuinely never resolve in SAP at all (confirmed
+    live - not a bug on our side) and used to permanently occupy the
+    entire ascending-sorted cap, starving every NEWER PO from ever being
+    retried. Sort by PO number DESCENDING (newest first) so the PO a
+    user is actually looking at right now always gets tried before an
+    old, likely-permanently-unresolvable one."""
     known = set(list_active_po_numbers(db))
     recent_created = {
         d["po_number"] for d in db["purchase_order_creation_history"].find(
@@ -439,7 +446,13 @@ def list_po_numbers_missing_custom_number(db, limit: int = 15) -> list:
     }
     known |= recent_created
     already_fetched = set(db[SAP_PO_NUMBER_COLLECTION].distinct("_id"))
-    return sorted(known - already_fetched)[:limit]
+    # Sep 10 2026 bugfix: this was calling plain sorted() (ASCENDING),
+    # directly contradicting this function's own docstring above and
+    # permanently starving newer POs - a brand new PO like 29430 sorts
+    # well after hundreds of old, likely-permanently-unresolvable ones
+    # and never made it into the capped `limit` worklist. reverse=True
+    # actually sorts newest-first as intended.
+    return sorted(known - already_fetched, reverse=True)[:limit]
 
 
 def _generate_doc_code(db) -> str:

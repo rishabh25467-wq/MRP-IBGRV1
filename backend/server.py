@@ -3512,7 +3512,12 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
     job - it still creates the Proposal, then opens a Store Approval
     request and PAUSES (job status "waiting_store_approval") until a
     warehouse user (or the requester, for a partial issue) resolves it -
-    see store_approval_service.py + _continue_order_creation below."""
+    see store_approval_service.py + _continue_order_creation below. A
+    short Sub-Assembly (SFG) component is handled differently (Sep 10
+    2026, user's explicit ask): it never blocks or pauses anything - the
+    Store can't issue an in-house sub-assembly anyway, so it's just
+    recorded on the job as a non-blocking `sfg_shortage` flag while the
+    Proposal (and any BOP/RM Store Approval request) proceeds normally."""
     proposal_id = None  # bound up-front so the generic except below can always report it, even if the failure happens before it's ever assigned
     try:
         # Pre-flight stock check - LIVE from SAP (not the cache) since this
@@ -3565,33 +3570,19 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
         )
         short = [c for c in availability["components"] if not c["sufficient"]] if availability["checked"] else []
 
-        # Aug 2026 bug fix (user's explicit ask): a short Sub-Assembly (SFG)
-        # component is NOT something the physical Store can issue - it only
-        # exists once its own production order is confirmed. Block the
-        # whole order creation here, BEFORE any SAP write happens (no
-        # Proposal created at all), with a clear on-screen error instead of
-        # silently opening a Store Approval request the store can never
-        # actually fulfill.
+        # Sep 10 2026, user's explicit ask: a short Sub-Assembly (SFG)
+        # component used to hard-block the whole order here (no Proposal
+        # created at all). Now it's ALLOWED THROUGH - the Proposal is
+        # still created; the shortage is only ever surfaced as a
+        # non-blocking flag (`sfg_shortage` on the job doc, persists
+        # through every later status) since the Store can't issue an
+        # in-house-produced sub-assembly anyway, so blocking it here never
+        # actually helped. Only a genuine BOP/RM shortage (short_rm) below
+        # still pauses on a real Store Approval request.
         short_sfg = [c for c in short if c.get("is_sub_assembly")]
         short_rm = [c for c in short if not c.get("is_sub_assembly")]
         if short_sfg:
-            def _fmt(c):
-                have = "unknown" if c["available_qty"] is None else f"{c['available_qty']:g}"
-                return f"{c['product_id']} (need {c['required_qty']:g}, have {have} in the {payload.site_id}-SFG warehouse)"
-            error = (
-                "Cannot create this order - the following sub-assembly component(s) don't have enough stock yet: "
-                + ", ".join(_fmt(c) for c in short_sfg)
-                + ". These are produced in-house, not stocked by the Store - create/confirm a production order for "
-                "them first (use \"Refresh Live SFG Stock\" once that's done, then retry)."
-            )
-            # Structured "result" (not just the flattened `error` string
-            # above) so the frontend can render a persistent, dismissible
-            # detail row instead of a toast - user's explicit ask (Aug
-            # 2026) - listing EVERY short sub-assembly with its own
-            # required vs available qty, same as the existing "waiting on
-            # Store" detail row does for short RM components.
-            job_store.update_job(db, job_id, {"status": "failed", "error": error, "result": {
-                "reason": "sfg_shortage",
+            job_store.update_job(db, job_id, {"sfg_shortage": {
                 "site_id": payload.site_id,
                 "short_components": [
                     {"product_id": c["product_id"], "description": c.get("description"), "unit_of_measure": c.get("unit_of_measure"),
@@ -3599,7 +3590,6 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
                     for c in short_sfg
                 ],
             }})
-            return
 
         job_store.update_job(db, job_id, {"status": "creating_proposal"})
         # Same check, once more right before the one-way SAP write below -
@@ -7570,6 +7560,18 @@ async def refresh_po_cache_now():
         try:
             rows = await asyncio.to_thread(sap_po_client.fetch_recent_window, db)
             stats = await asyncio.to_thread(supplier_shipment_service.refresh_all_vendor_caches, db, rows)
+            # Sep 10 2026, user's explicit ask: "Printed PO # not
+            # visible" right after using this button - the PO cache and
+            # the Printed PO # cache are two SEPARATE background loops
+            # (this one only refreshed the former). Do one pass of the
+            # latter's own catch-up here too so a fresh PO shows BOTH
+            # immediately instead of needing this button once and then
+            # waiting on the separate 5-min loop as well.
+            po_numbers = await asyncio.to_thread(supplier_shipment_service.list_po_numbers_missing_custom_number, db, 30)
+            for po_number in po_numbers:
+                value = await asyncio.to_thread(sap_po_write_client.get_purchase_order_number, po_number)
+                if value:
+                    await asyncio.to_thread(supplier_shipment_service.store_sap_po_number, db, po_number, value)
             job_store.update_job(db, job_id, {"status": "done", "result": stats, "error": None})
         except Exception as e:
             logger.error(f"Manual PO cache refresh failed: {e}")
