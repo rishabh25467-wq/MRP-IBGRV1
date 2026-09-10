@@ -116,6 +116,20 @@ export default function GrnApprovalPage() {
 
   const inboundDeliveryIds = (s) => [...new Set((s.sap_gr_result?.per_po || []).map((p) => p.inbound_delivery_id).filter(Boolean))];
 
+  // Sep 10 2026, user's explicit ask: tabbed Pending/Confirmed instead of
+  // stacked tables, each with its own "PO number or Vendor code" filter.
+  const [activeTab, setActiveTab] = useState("pending");
+  const [pendingFilter, setPendingFilter] = useState("");
+  const [confirmedFilter, setConfirmedFilter] = useState("");
+  const matchesPoOrVendor = (s, term) => {
+    if (!term.trim()) return true;
+    const needle = term.trim().toLowerCase();
+    const haystack = [s.vendor_code, s.company_name, ...s.items.map((it) => it.po_number)].filter(Boolean).join(" ").toLowerCase();
+    return haystack.includes(needle);
+  };
+  const filteredPending = pending.filter((s) => matchesPoOrVendor(s, pendingFilter));
+  const filteredConfirmed = confirmed.filter((s) => matchesPoOrVendor(s, confirmedFilter));
+
   const loadSites = async () => {
     try {
       const { data } = await axios.get(`${API}/admin/grn/sites`);
@@ -624,64 +638,97 @@ export default function GrnApprovalPage() {
           </div>
         )}
 
-        <h2 className="font-heading text-sm font-bold uppercase tracking-wider text-[#344054] mt-8">Pending Shipments</h2>
-        <div className="mt-3 bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] overflow-x-auto">
-          <table className="w-full text-[13px] border-collapse">
-            <thead className="bg-[#EAECF0] text-[#344054] text-xs font-bold font-heading uppercase tracking-wide">
-              <tr>
-                <th className="border border-[#D0D5DD] p-1.5 text-left">Code</th>
-                <th className="border border-[#D0D5DD] p-1.5 text-left">Vendor</th>
-                <th className="border border-[#D0D5DD] p-1.5 text-left">PO Numbers</th>
-                <th className="border border-[#D0D5DD] p-1.5 text-left">Created</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pending.length === 0 && (
-                <tr><td colSpan={4} className="border border-[#D0D5DD] px-3 py-6 text-center text-[#475467]" data-testid="grn-pending-empty">No shipments awaiting GRN approval.</td></tr>
-              )}
-              {pending.map((s) => (
-                <tr key={s._id} className="cursor-pointer bg-white odd:bg-[#F9FAFB] hover:bg-[#F0F4F8] transition-colors duration-150" onClick={() => lookup(s._id)} data-testid={`grn-pending-row-${s._id}`}>
-                  <td className="border border-[#D0D5DD] px-2 py-1 font-data font-bold text-[#004B87]">{s._id}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1">{s.company_name}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1 font-data">{[...new Set(s.items.map((it) => it.po_number))].join(", ")}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]">{new Date(s.created_at).toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="flex gap-1 bg-white border border-[#D0D5DD] rounded-sm p-1 w-fit mt-6" data-testid="grn-tab-strip">
+          <button type="button" onClick={() => setActiveTab("pending")} className={`px-4 py-1.5 text-xs font-bold rounded-sm transition-colors ${activeTab === "pending" ? "bg-[#004B87] text-white" : "text-[#344054] hover:bg-[#F2F4F7]"}`} data-testid="grn-tab-pending">
+            Pending Shipments
+          </button>
+          <button type="button" onClick={() => setActiveTab("confirmed")} className={`px-4 py-1.5 text-xs font-bold rounded-sm transition-colors ${activeTab === "confirmed" ? "bg-[#004B87] text-white" : "text-[#344054] hover:bg-[#F2F4F7]"}`} data-testid="grn-tab-confirmed">
+            Confirmed GRNs
+          </button>
         </div>
 
-        <h2 className="font-heading text-sm font-bold uppercase tracking-wider text-[#344054] mt-8">Confirmed GRNs</h2>
-        <p className="text-xs text-[#475467] -mt-1">Click a row for the full receipt trail - supplier bill number, SAP inbound delivery #, and item-level qty/unit/warehouse.</p>
-        <div className="mt-3 bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] overflow-x-auto">
-          <table className="w-full text-[13px] border-collapse">
-            <thead className="bg-[#EAECF0] text-[#344054] text-xs font-bold font-heading uppercase tracking-wide">
-              <tr>
-                <th className="border border-[#D0D5DD] p-1.5 text-left">Code</th>
-                <th className="border border-[#D0D5DD] p-1.5 text-left">Vendor</th>
-                <th className="border border-[#D0D5DD] p-1.5 text-left">PO Numbers</th>
-                <th className="border border-[#D0D5DD] p-1.5 text-left">Supplier Invoice No</th>
-                <th className="border border-[#D0D5DD] p-1.5 text-left">SAP Inbound Delivery #</th>
-                <th className="border border-[#D0D5DD] p-1.5 text-left">Approved</th>
-              </tr>
-            </thead>
-            <tbody>
-              {confirmed.length === 0 && (
-                <tr><td colSpan={6} className="border border-[#D0D5DD] px-3 py-6 text-center text-[#475467]" data-testid="grn-confirmed-empty">No confirmed GRNs yet.</td></tr>
-              )}
-              {confirmed.map((s) => (
-                <tr key={s._id} className="cursor-pointer bg-white odd:bg-[#F9FAFB] hover:bg-[#F0F4F8] transition-colors duration-150" onClick={() => setConfirmedDetail(s)} data-testid={`grn-confirmed-row-${s._id}`}>
-                  <td className="border border-[#D0D5DD] px-2 py-1 font-data font-bold text-[#004B87]">{s._id}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1">{s.company_name}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1 font-data">{[...new Set(s.items.map((it) => it.po_number))].join(", ")}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1 font-data">{s.supplier_doc_num || "\u2014"}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1 font-data">{inboundDeliveryIds(s).join(", ") || "\u2014"}</td>
-                  <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]">{s.approved_at ? new Date(s.approved_at).toLocaleString() : "\u2014"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        {activeTab === "pending" && (
+          <>
+            <div className="flex items-center gap-3 mt-3">
+              <Input
+                placeholder="Search PO Number or Vendor Code..."
+                value={pendingFilter}
+                onChange={(e) => setPendingFilter(e.target.value)}
+                className="h-8 w-72 text-[13px] rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]"
+                data-testid="grn-pending-filter-input"
+              />
+            </div>
+            <div className="mt-3 bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] overflow-x-auto">
+              <table className="w-full text-[13px] border-collapse">
+                <thead className="bg-[#EAECF0] text-[#344054] text-xs font-bold font-heading uppercase tracking-wide">
+                  <tr>
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">Code</th>
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">Vendor</th>
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">PO Numbers</th>
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">Created</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredPending.length === 0 && (
+                    <tr><td colSpan={4} className="border border-[#D0D5DD] px-3 py-6 text-center text-[#475467]" data-testid="grn-pending-empty">{pending.length === 0 ? "No shipments awaiting GRN approval." : "No shipments match your search."}</td></tr>
+                  )}
+                  {filteredPending.map((s) => (
+                    <tr key={s._id} className="cursor-pointer bg-white odd:bg-[#F9FAFB] hover:bg-[#F0F4F8] transition-colors duration-150" onClick={() => lookup(s._id)} data-testid={`grn-pending-row-${s._id}`}>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data font-bold text-[#004B87]">{s._id}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1">{s.company_name}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data">{[...new Set(s.items.map((it) => it.po_number))].join(", ")}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]">{new Date(s.created_at).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
+        {activeTab === "confirmed" && (
+          <>
+            <p className="text-xs text-[#475467] mt-3">Click a row for the full receipt trail - supplier bill number, SAP inbound delivery #, and item-level qty/unit/warehouse.</p>
+            <div className="flex items-center gap-3 mt-2">
+              <Input
+                placeholder="Search PO Number or Vendor Code..."
+                value={confirmedFilter}
+                onChange={(e) => setConfirmedFilter(e.target.value)}
+                className="h-8 w-72 text-[13px] rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]"
+                data-testid="grn-confirmed-filter-input"
+              />
+            </div>
+            <div className="mt-3 bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] overflow-x-auto">
+              <table className="w-full text-[13px] border-collapse">
+                <thead className="bg-[#EAECF0] text-[#344054] text-xs font-bold font-heading uppercase tracking-wide">
+                  <tr>
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">Code</th>
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">Vendor</th>
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">PO Numbers</th>
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">Supplier Invoice No</th>
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">SAP Inbound Delivery #</th>
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">Approved</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredConfirmed.length === 0 && (
+                    <tr><td colSpan={6} className="border border-[#D0D5DD] px-3 py-6 text-center text-[#475467]" data-testid="grn-confirmed-empty">{confirmed.length === 0 ? "No confirmed GRNs yet." : "No confirmed GRNs match your search."}</td></tr>
+                  )}
+                  {filteredConfirmed.map((s) => (
+                    <tr key={s._id} className="cursor-pointer bg-white odd:bg-[#F9FAFB] hover:bg-[#F0F4F8] transition-colors duration-150" onClick={() => setConfirmedDetail(s)} data-testid={`grn-confirmed-row-${s._id}`}>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data font-bold text-[#004B87]">{s._id}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1">{s.company_name}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data">{[...new Set(s.items.map((it) => it.po_number))].join(", ")}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data">{s.supplier_doc_num || "\u2014"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data">{inboundDeliveryIds(s).join(", ") || "\u2014"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]">{s.approved_at ? new Date(s.approved_at).toLocaleString() : "\u2014"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </div>
 
       <Dialog open={rejectOpen} onOpenChange={setRejectOpen}>
