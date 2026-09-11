@@ -1053,6 +1053,7 @@ const CreateOrderTab = ({ actorName }) => {
 
   const [lastCheckedId, setLastCheckedId] = useState(null);
   const [sosCheckFailed, setSosCheckFailed] = useState(false);
+  const [sosRefreshing, setSosRefreshing] = useState(false);
 
   const checkSourceOfSupply = async (idOverride) => {
     const id = (idOverride ?? materialId).trim();
@@ -1105,6 +1106,24 @@ const CreateOrderTab = ({ actorName }) => {
     } finally {
       setSosLoading(false);
       setSosChecked(true);
+    }
+  };
+
+  // "Refresh Models" (Sep 11 2026, user's explicit ask): the custom SAP
+  // OData service backing Source of Supply can lag minutes-to-hours
+  // behind a just-created/released Production Model (confirmed live -
+  // not a bug in this app's own filtering, SAP's own raw response was
+  // missing it too). checkSourceOfSupply's own dedupe guard
+  // (`id === lastCheckedId`) would otherwise skip a re-fetch of the
+  // SAME Product ID - clearing it here forces a real fresh SAP call.
+  const refreshSourceOfSupply = async () => {
+    if (!materialId.trim()) return;
+    setSosRefreshing(true);
+    setLastCheckedId(null);
+    try {
+      await checkSourceOfSupply(materialId);
+    } finally {
+      setSosRefreshing(false);
     }
   };
 
@@ -1497,7 +1516,22 @@ const CreateOrderTab = ({ actorName }) => {
             )}
           </div>
           <div className="min-h-[26px]">
-            {sosLoading && <p className="text-xs text-[#667085]" data-testid="sos-loading-text">Checking available Production Models...</p>}
+            <div className="flex items-center justify-between gap-2">
+              {sosLoading && <p className="text-xs text-[#667085]" data-testid="sos-loading-text">Checking available Production Models...</p>}
+              {materialId.trim() && !sosLoading && (
+                <button
+                  type="button"
+                  onClick={refreshSourceOfSupply}
+                  disabled={sosRefreshing}
+                  className="text-xs text-[#7A1E1E] font-bold hover:underline disabled:opacity-50 flex items-center gap-1"
+                  data-testid="refresh-production-models-button"
+                  title="Re-check SAP for the latest Production Models - useful right after creating/releasing one in SAP, which can take a few minutes to show up here"
+                >
+                  <ArrowClockwise size={12} className={sosRefreshing ? "animate-spin" : ""} />
+                  {sosRefreshing ? "Refreshing..." : "Refresh Models"}
+                </button>
+              )}
+            </div>
             {sosChecked && sosOptions.length > 0 && (
               <div data-testid="source-of-supply-picker">
                 <Label className="text-xs font-bold text-[#344054]">Source of Supply (Production Model)</Label>

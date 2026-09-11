@@ -469,3 +469,11 @@ Extend the existing SAP BOM viewer application: Production Plan page (OMS Open-P
 - Deployed to production (mrp.radishtechnologies.com) via deployment_agent - scan passed, no blockers. Includes all of today's fixes: Printed PO Ref sort bug, SFG-shortage-allowed flag, GRN status-truthfulness + Reset Retry.
 - Status: DEPLOYED. Awaiting user/SAP admin to manually resolve the SAP-side lock on Delivery Request 60063 for PO 29118/29073 specifically.
 
+
+## Session (Sep 11 2026, continued #4) - Production Model not found for MAZ42117272-TA (investigated, not an app bug)
+- User re-released/updated Production Model MAZ42117272-TA_2 in SAP, then immediately checked the Production Confirmation Admin Test page (`/admin/production-confirmation-test`) and it wasn't reflecting the update.
+- Investigated live: queried `sap_production_model_client.get_source_of_supply_options()` directly and the RAW SAP OData response (no app-side filtering) - both confirmed SAP's own "productionmodelemergent" custom OData service (built by user's SAP admin via key-user OData Modeler) was still only returning the pre-update data just ~2 minutes after the SAP-side Release. This is a genuine SAP-side replication/reporting lag on that custom service, NOT a bug in this app's query/filter logic.
+- Added a "Refresh Models" button (data-testid `refresh-production-models-button`) next to the Source of Supply picker on the Admin Test page (`ProductionConfirmationTestPage.js` only, per user's explicit ask) - forces a fresh live SAP re-check bypassing the existing same-ID dedupe guard, so staff can manually retry every couple minutes after releasing a model in SAP instead of having to re-type the Product ID field.
+- Self-tested via screenshot (button renders, triggers a real SAP call, resolves to the picker).
+- No backend changes needed - `get_source_of_supply_options` was already a live, uncached SAP call.
+
