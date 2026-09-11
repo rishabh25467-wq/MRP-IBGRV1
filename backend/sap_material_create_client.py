@@ -122,56 +122,77 @@ class SAPMaterialCreateClient:
         Group per company, Finance/Basis-owned) that Planning/Availability/
         Logistics don't need. Splitting them means a missing Account
         Determination Group only blocks Valuation, not the 3 fields that
-        actually unblock the Stock Transfer check. Returns
-        {"planning_logistics": "ok"|<error str>, "valuation": "ok"|<error str>}."""
-        result = {}
-        planning_body = f"""<n0:MaterialBundleMaintainRequest_sync_V1>
+        actually unblock the Stock Transfer check.
+
+        BUG FIX (Sep 11 2026, real user report on 6800-004473): a site can
+        already have a SupplyPlanning/AvailabilityConfirmation/Logistics
+        NODE present while its own LifeCycleStatusCode is still "1" (In
+        Preparation, SAP's yellow-warning state on the Logistics tab) -
+        SAP rejects a plain actionCode="01" (create) against that with
+        "already exists", which the OLD code treated as an unconditional
+        success ("the site IS active") - false: the site was STILL stuck
+        at "In Preparation", never actually flipped to "2" (Active). Live-
+        confirmed the real fix: retry the exact same fields with
+        actionCode="02" (update) on the sub-nodes when SAP says "already
+        exists" - THIS actually flips LifeCycleStatusCode 1 -> 2 (verified
+        live: 6800-004473 @ P2 went from "1" to a real "2" after this
+        retry, matching SAP's own Logistics tab green check afterward).
+        Only a genuine create-or-update SUCCESS is ever reported "ok" now.
+
+        Returns {"planning_logistics": "ok"|<error str>, "valuation":
+        "ok"|<error str>}."""
+        def _planning_body(action_code: str) -> str:
+            return f"""<n0:MaterialBundleMaintainRequest_sync_V1>
     <BasicMessageHeader><ID>{uuid.uuid4().hex.upper()}</ID></BasicMessageHeader>
     <Material actionCode="02">
         <InternalID>{material_id}</InternalID>
         <Planning>
-            <SupplyPlanning actionCode="01">
+            <SupplyPlanning actionCode="{action_code}">
                 <SupplyPlanningAreaID>{site_id}</SupplyPlanningAreaID>
                 <LifeCycleStatusCode>2</LifeCycleStatusCode>
                 <ProcurementTypeCode>{procurement_type_code}</ProcurementTypeCode>
             </SupplyPlanning>
         </Planning>
-        <AvailabilityConfirmation actionCode="01">
+        <AvailabilityConfirmation actionCode="{action_code}">
             <PlanningAreaID>{site_id}</PlanningAreaID>
             <LifeCycleStatusCode>2</LifeCycleStatusCode>
         </AvailabilityConfirmation>
-        <Logistics actionCode="01">
+        <Logistics actionCode="{action_code}">
             <SiteID>{site_id}</SiteID>
             <LifeCycleStatusCode>2</LifeCycleStatusCode>
         </Logistics>
     </Material>
 </n0:MaterialBundleMaintainRequest_sync_V1>"""
-        try:
-            self._post(planning_body)
-            result["planning_logistics"] = "ok"
-        except SAPMaterialCreateError as e:
-            # Sep 5 2026: clicking Activate on a site that's already been
-            # activated (e.g. a retry, or 2 admins racing on the same
-            # notification) hits SAP's own "already exists" guard on this
-            # actionCode="01" create - functionally a success (the site
-            # IS active), just not spelled "ok" the way our caller checks
-            # for it.
-            result["planning_logistics"] = "ok" if "already exists" in str(e).lower() else str(e)
 
-        valuation_body = f"""<n0:MaterialBundleMaintainRequest_sync_V1>
+        def _valuation_body(action_code: str) -> str:
+            return f"""<n0:MaterialBundleMaintainRequest_sync_V1>
     <BasicMessageHeader><ID>{uuid.uuid4().hex.upper()}</ID></BasicMessageHeader>
     <Material actionCode="02">
         <InternalID>{material_id}</InternalID>
-        <Valuation actionCode="01">
+        <Valuation actionCode="{action_code}">
             <LifeCycleStatusCode>2</LifeCycleStatusCode>
             <CompanyID>{company_id}</CompanyID>
             <BusinessResidenceID>{site_id}</BusinessResidenceID>
         </Valuation>
     </Material>
 </n0:MaterialBundleMaintainRequest_sync_V1>"""
-        try:
-            self._post(valuation_body)
-            result["valuation"] = "ok"
-        except SAPMaterialCreateError as e:
-            result["valuation"] = "ok" if "already exists" in str(e).lower() else str(e)
+
+        def _create_then_update_on_conflict(body_fn) -> str:
+            try:
+                self._post(body_fn("01"))
+                return "ok"
+            except SAPMaterialCreateError as e:
+                if "already exists" not in str(e).lower():
+                    return str(e)
+            # Node already exists (possibly still "In Preparation") - retry
+            # as an update so a real 1->2 status flip actually happens.
+            try:
+                self._post(body_fn("02"))
+                return "ok"
+            except SAPMaterialCreateError as e:
+                return str(e)
+
+        result = {}
+        result["planning_logistics"] = _create_then_update_on_conflict(_planning_body)
+        result["valuation"] = _create_then_update_on_conflict(_valuation_body)
         return result

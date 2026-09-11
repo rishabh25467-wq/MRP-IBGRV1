@@ -167,13 +167,27 @@ class SAPMaterialClient:
             "uuid": material_uuid, "drawing_url": drawing_url, "comments": comments,
             "description": description, "base_unit": base_unit, "life_cycle_status_code": life_cycle_status_code,
             # Sep 11 2026, user's explicit ask (standalone "Activate Material
-            # at Site" page) - ProductCategoryID + which sites already have a
-            # SupplyPlanning entry, so the page can show "already active at:
-            # P1, P2..." before the user picks a target site.
+            # at Site" page) - ProductCategoryID + which sites are truly
+            # ACTIVE (not just present) at this material, so the page can
+            # show "already active at: P1, P2..." before the user picks a
+            # target site.
+            #
+            # BUG FIX (same day, user report on 6800-004473): a SupplyPlanning
+            # node can exist at a site while its own LifeCycleStatusCode is
+            # still "1" (In Preparation, SAP's yellow-warning Logistics tab
+            # state) rather than "2" (Active, green check) - the previous
+            # version counted ANY SupplyPlanning node as "active", which
+            # wrongly reported P2/P4 as already-active for 6800-004473 when
+            # SAP's own Logistics tab clearly showed them "In Preparation".
+            # Live-confirmed the fix: SAP returns P1/P3/P9 with code "2" and
+            # P2/P4/P6/P7 with code "1" for this exact material - now only
+            # code "2" sites are reported as active.
             "product_category_id": _first_tag(block, "ProductCategoryID"),
-            "active_sites": sorted(set(re.findall(
-                r"<(?:\w+:)?SupplyPlanning(?:\s[^>]*)?>.*?<SupplyPlanningAreaID>([^<]*)</SupplyPlanningAreaID>.*?</(?:\w+:)?SupplyPlanning>", block, re.S,
-            ))),
+            "active_sites": sorted({
+                _first_tag(sp_block.group(1), "SupplyPlanningAreaID")
+                for sp_block in re.finditer(r"<(?:\w+:)?SupplyPlanning(?:\s[^>]*)?>(.*?)</(?:\w+:)?SupplyPlanning>", block, re.S)
+                if _first_tag(sp_block.group(1), "SupplyPlanningAreaID") and _first_tag(sp_block.group(1), "LifeCycleStatusCode") == "2"
+            }),
         }
 
     def resolve_uuid(self, internal_id: str):
