@@ -236,11 +236,16 @@ export default function GrnApprovalPage() {
       .then(({ data }) => {
         const whs = data.warehouses || [];
         setWarehouses(whs);
-        // "Warehouse should always be QC default" (mrp vendor side changes.docx,
-        // Sep 2026) - pre-select QC when this site actually has one, still
-        // editable since not every site has a QC logistics area today.
-        const qc = whs.find((w) => (w.warehouse_id || "").split("-").pop() === "QC");
-        if (qc) setWarehouseId(qc.warehouse_id);
+        // Sep 11 2026, user's explicit ask: default Warehouse should be the
+        // site's RM (Raw Material) location, not QC - matched by warehouse_id
+        // suffix "RM" for most sites (P1-RM, P2-RM, P4-RM...). P3 has no
+        // "-RM" id at all (its RM location is zone-coded, "P3-Z1-01-A" named
+        // "P3-RM-Zone-1-01-A") - falls back to matching "RM" in the name so
+        // this rule generalizes to any site without a hardcoded site check.
+        const rmById = whs.find((w) => (w.warehouse_id || "").split("-").pop() === "RM");
+        const rmByName = whs.find((w) => /(^|[-\s])RM([-\s]|$)/i.test(w.warehouse_name || ""));
+        const rm = rmById || rmByName;
+        if (rm) setWarehouseId(rm.warehouse_id);
       })
       .catch((err) => toast.error("Could not load warehouses", { description: err?.response?.data?.detail || err.message }))
       .finally(() => setWarehousesLoading(false));
