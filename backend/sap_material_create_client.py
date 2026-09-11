@@ -102,7 +102,8 @@ class SAPMaterialCreateClient:
 </n0:MaterialBundleMaintainRequest_sync_V1>"""
         self._post(body)
 
-    def activate_site(self, material_id: str, site_id: str, company_id: str, procurement_type_code: str = "2") -> dict:
+    def activate_site(self, material_id: str, site_id: str, company_id: str, procurement_type_code: str = "2",
+                       valuation_data_client=None, product_category_id: str = None, set_of_books_id: str = None) -> dict:
         """Admin "Activate this site for this product" action (Aug 2026,
         user's explicit ask) - fixes the live "No valid planning data
         exists for product X in site Y" Stock Transfer failure by adding
@@ -138,6 +139,19 @@ class SAPMaterialCreateClient:
         live: 6800-004473 @ P2 went from "1" to a real "2" after this
         retry, matching SAP's own Logistics tab green check afterward).
         Only a genuine create-or-update SUCCESS is ever reported "ok" now.
+
+        VALUATION FULL FIX (Sep 11 2026, user's exact business rules) -
+        if the plain Valuation attempt fails with "Account det. group is
+        missing" AND a `valuation_data_client` + `product_category_id` +
+        `set_of_books_id` were given, calls
+        SAPMaterialValuationDataClient.set_account_determination_and_price
+        (see that module's docstring for the full live-derived schema)
+        to set the Account Determination Group + Perpetual Cost Method
+        (Moving Average) + an opening ValuationPrice of 0, THEN retries
+        the Valuation update once more - live-confirmed this genuinely
+        flips LifeCycleStatusCode 1 -> 2 for Valuation too (6800-004473 @
+        both P2 and P4). Without those 3 extra args, falls back to the
+        old behaviour (surfaces SAP's raw rejection reason).
 
         Returns {"planning_logistics": "ok"|<error str>, "valuation":
         "ok"|<error str>}."""
@@ -194,5 +208,14 @@ class SAPMaterialCreateClient:
 
         result = {}
         result["planning_logistics"] = _create_then_update_on_conflict(_planning_body)
-        result["valuation"] = _create_then_update_on_conflict(_valuation_body)
+
+        valuation_result = _create_then_update_on_conflict(_valuation_body)
+        if "account det. group is missing" in valuation_result.lower() and valuation_data_client and product_category_id and set_of_books_id:
+            try:
+                valuation_data_client.set_account_determination_and_price(
+                    material_id, company_id, site_id, product_category_id, set_of_books_id)
+                valuation_result = _create_then_update_on_conflict(_valuation_body)
+            except Exception as e:
+                valuation_result = str(e)
+        result["valuation"] = valuation_result
         return result

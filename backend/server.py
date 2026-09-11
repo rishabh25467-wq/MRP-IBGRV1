@@ -24,6 +24,7 @@ from starlette.middleware.cors import CORSMiddleware
 from sap_soap_client import SAPSoapBOMClient, SAPSoapError
 from sap_material_client import SAPMaterialClient, SAPMaterialError, SAPMaterialAuthError
 from sap_material_create_client import SAPMaterialCreateClient, SAPMaterialCreateError
+from sap_material_valuation_data_client import SAPMaterialValuationDataClient
 from sap_production_lot_client import SAPProductionLotClient, SAPProductionLotError, SAPProductionLotAuthError
 from sap_wip_clearing_client import SAPWipClearingClient, SAPWipClearingError, company_and_set_of_books_for_site
 from sap_production_proposal_client import SAPProductionProposalClient, SAPProductionProposalError
@@ -327,6 +328,12 @@ sap_material_client = SAPMaterialClient(
 
 sap_material_create_client = SAPMaterialCreateClient(
     endpoint=os.environ['SAP_SOAP_MATERIAL_MANAGE_ENDPOINT'],
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
+)
+
+sap_material_valuation_data_client = SAPMaterialValuationDataClient(
+    endpoint=os.environ['SAP_SOAP_MATERIAL_VALUATION_MANAGE_ENDPOINT'],
     username=os.environ['SAP_SOAP_USERNAME'],
     password=os.environ['SAP_SOAP_PASSWORD'],
 )
@@ -6800,12 +6807,24 @@ async def post_activate_material_site(payload: ActivateMaterialSiteRequest, requ
     user = await asyncio.to_thread(auth_service.get_current_user, request, db)
     if not user or not ({"stock_transfer", "admin_activate_material_site"} & set(user.get("allowed_pages", [])) or user.get("role") in ("super_admin", "admin")):
         raise HTTPException(status_code=403, detail="Access required")
-    company_id, _ = company_and_set_of_books_for_site(payload.site_id)
+    company_id, set_of_books_id = company_and_set_of_books_for_site(payload.site_id)
     # Sep 5 2026 fix (STO-135): derive the material's own established
     # ProcurementTypeCode from its existing sites instead of always
     # hardcoding "2" - see sap_material_client.get_existing_procurement_type_code.
     procurement_type_code = await asyncio.to_thread(sap_material_client.get_existing_procurement_type_code, payload.product_id) or "2"
-    result = await asyncio.to_thread(sap_material_create_client.activate_site, payload.product_id, payload.site_id, company_id, procurement_type_code)
+    # Sep 11 2026, user's exact business rules - lets activate_site() fall
+    # through to the full Account Determination Group + Moving Average +
+    # opening-price flow (sap_material_valuation_data_client.py) if the
+    # plain attempt hits "Account det. group is missing".
+    try:
+        material_info = await asyncio.to_thread(sap_material_client.resolve_material_info, payload.product_id)
+        product_category_id = material_info.get("product_category_id")
+    except Exception:
+        product_category_id = None
+    result = await asyncio.to_thread(
+        sap_material_create_client.activate_site, payload.product_id, payload.site_id, company_id, procurement_type_code,
+        sap_material_valuation_data_client, product_category_id, set_of_books_id,
+    )
     if payload.notification_id and result.get("planning_logistics") == "ok":
         await asyncio.to_thread(stock_transfer_service.resolve_admin_notification, db, payload.notification_id)
     return result
