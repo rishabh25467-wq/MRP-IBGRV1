@@ -954,3 +954,70 @@ def retry_goods_movement(db, doc_code: str, goods_movement_client, inventory_cli
         {"$set": {"sap_movement_status": sap_movement_status, "sap_movement_result": sap_movement_result}},
     )
     return get_shipment_by_code(db, doc_code)
+
+
+def fetch_inbound_delivery_ids_from_sap(doc: dict, report_client) -> dict:
+    """Sep 11 2026, user's explicit ask - live-matches a shipment
+    against SAP's "Inbound Delivery Detailed Details" analytics report
+    to recover a real Inbound Delivery ID our own Playwright automation
+    never captured (see sap_inbound_delivery_report_client.py's
+    docstring for the full field investigation). Matches per distinct
+    PO on the shipment by PO number + the EXACT supplier bill number on
+    file, cross-checked against the shipment's own item codes for that
+    PO (a bill number typo/reuse could otherwise silently match the
+    wrong delivery). Returns {"found": {po_number: inbound_delivery_id},
+    "errors": [str, ...]} - never raises for a single PO's no-match/
+    ambiguous case, so a multi-PO shipment can still get partial results."""
+    supplier_doc_num = (doc.get("supplier_doc_num") or "").strip()
+    if not supplier_doc_num:
+        raise ShipmentValidationError("This shipment has no supplier bill number on file to match against SAP")
+    po_numbers = sorted({it["po_number"] for it in doc["items"]})
+    found, errors = {}, []
+    for po_number in po_numbers:
+        product_ids = {it["product_id"] for it in doc["items"] if it["po_number"] == po_number}
+        try:
+            rows = report_client.find_confirmation_rows(po_number, supplier_doc_num)
+        except Exception as e:
+            errors.append(f"PO {po_number}: SAP query failed - {e}")
+            continue
+        matched_rows = [r for r in rows if r.get("CPRODUCT_UUID") in product_ids]
+        delivery_ids = {r["CDELIVERY_UUID"] for r in matched_rows if r.get("CDELIVERY_UUID")}
+        if not delivery_ids:
+            errors.append(f"PO {po_number}: no matching confirmation found in SAP yet for bill '{supplier_doc_num}'")
+        elif len(delivery_ids) > 1:
+            errors.append(f"PO {po_number}: found multiple different Inbound Delivery IDs ({', '.join(sorted(delivery_ids))}) in SAP - ambiguous, please check manually")
+        else:
+            found[po_number] = delivery_ids.pop()
+    return {"found": found, "errors": errors}
+
+
+def manually_confirm_inbound_delivery(db, doc_code: str, po_number: str, inbound_delivery_id: str, confirmed_by: str) -> dict:
+    """Applies a staff-triggered SAP-confirmed Inbound Delivery ID onto
+    one PO's entry in the shipment's sap_gr_result.per_po (see
+    fetch_inbound_delivery_ids_from_sap) - flips that PO's own status to
+    "posted" and tags it `manually_confirmed` (kept distinct from an
+    automated Playwright success everywhere in the UI). Only flips the
+    shipment's OVERALL sap_sync_status to "posted" once every PO on the
+    shipment has posted (mirrors finalize_goods_receipt's all-or-nothing
+    rule) - a multi-PO shipment with one PO still failed stays as-is."""
+    doc = get_shipment_by_code(db, doc_code)
+    per_po = list((doc.get("sap_gr_result") or {}).get("per_po") or [])
+    now = datetime.now(timezone.utc).isoformat()
+    entry = {
+        "po_number": po_number, "status": "posted", "inbound_delivery_id": inbound_delivery_id,
+        "manually_confirmed": True, "manually_confirmed_by": confirmed_by, "manually_confirmed_at": now,
+    }
+    replaced = False
+    for i, p in enumerate(per_po):
+        if p.get("po_number") == po_number:
+            per_po[i] = {**p, **entry}
+            replaced = True
+    if not replaced:
+        per_po.append(entry)
+    all_ok = bool(per_po) and all(p.get("status") == "posted" for p in per_po)
+    sap_sync_status = "posted" if all_ok else doc.get("sap_sync_status")
+    db[SHIPMENTS_COLLECTION].update_one(
+        {"_id": doc["_id"]},
+        {"$set": {"sap_gr_result": {"ok": all_ok, "per_po": per_po}, "sap_sync_status": sap_sync_status}},
+    )
+    return get_shipment_by_code(db, doc_code)

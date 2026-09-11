@@ -56,6 +56,7 @@ from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_hsn_client import SAPHSNClient
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_inventory_closing_client import SAPInventoryClosingClient, SAPInventoryClosingError
+from sap_inbound_delivery_report_client import SAPInboundDeliveryReportClient, SAPInboundDeliveryReportError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
 from inventory_service import get_cached_inventory, refresh_inventory_cache, refresh_stock_quantities_for_warehouses, refresh_stock_quantities_for_site, refresh_stock_quantities_for_products, deep_backfill_uuids, list_known_sites
 import l1_l2_report_service
@@ -487,6 +488,12 @@ sap_inventory_closing_client = SAPInventoryClosingClient(
     report_url=os.environ['SAP_INVENTORY_CLOSING_ODATA_URL'],
     username=os.environ['SAP_ODATA_USERNAME'],
     password=os.environ['SAP_ODATA_PASSWORD'],
+)
+
+sap_inbound_delivery_report_client = SAPInboundDeliveryReportClient(
+    report_url=os.environ['SAP_INBOUND_DELIVERY_REPORT_ODATA_URL'],
+    username=os.environ['SAP_ODATA_BUSINESS_USER'],
+    password=os.environ['SAP_ODATA_BUSINESS_PASSWORD'],
 )
 
 sap_hsn_client = SAPHSNClient(
@@ -7620,6 +7627,52 @@ async def refresh_po_cache_now():
 @api_router.get("/admin/purchase-orders/refresh-cache/poll/{job_id}")
 async def refresh_po_cache_poll(job_id: str):
     job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return {"status": job["status"], "result": job["result"], "error": job["error"]}
+
+
+@api_router.post("/admin/grn/{doc_code}/fetch-inbound-delivery")
+async def post_admin_grn_fetch_inbound_delivery(doc_code: str, request: Request):
+    """Sep 11 2026, user's explicit ask - a few live GRNs actually
+    posted in SAP but our own Playwright automation never captured the
+    resulting Inbound Delivery ID; staff can pull the real number
+    straight from SAP on demand (see supplier_shipment_service.
+    fetch_inbound_delivery_ids_from_sap's docstring). Runs as a
+    background job (a single live SAP analytics query here takes
+    30-100s+ per PO)."""
+    try:
+        doc = await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
+    except supplier_shipment_service.ShipmentNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    if doc.get("site_id") and not _has_site_access(request.state.user, doc["site_id"]):
+        raise HTTPException(status_code=403, detail="You are not bound to this site")
+    actor = request.state.user.get("email") or request.state.user.get("name") or "unknown"
+    job_id = str(uuid.uuid4())
+    job_store.create_job(db, job_id, {"status": "running", "result": None, "error": None})
+
+    async def run():
+        try:
+            match = await asyncio.to_thread(supplier_shipment_service.fetch_inbound_delivery_ids_from_sap, doc, sap_inbound_delivery_report_client)
+            if not match["found"]:
+                raise Exception("; ".join(match["errors"]) or "No matching confirmation found in SAP")
+            updated = None
+            for po_number, inbound_delivery_id in match["found"].items():
+                updated = await asyncio.to_thread(
+                    supplier_shipment_service.manually_confirm_inbound_delivery, db, doc_code, po_number, inbound_delivery_id, actor,
+                )
+            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "result": {"shipment": updated, "warnings": match["errors"]}, "error": None})
+        except Exception as e:
+            logger.error(f"Manual inbound-delivery fetch failed for {doc_code}: {e}")
+            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "result": None, "error": str(e)})
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+@api_router.get("/admin/grn/fetch-inbound-delivery/poll/{job_id}")
+async def get_admin_grn_fetch_inbound_delivery_poll(job_id: str):
+    job = await asyncio.to_thread(job_store.get_job, db, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id")
     return {"status": job["status"], "result": job["result"], "error": job["error"]}

@@ -1,0 +1,34 @@
+{
+  "summary": "Full end-to-end validation of the new 'Fetch from SAP' inbound-delivery button on Confirmed GRNs (iter 158). Backend: 7/7 pytest cases pass (auth guard, 404s, real live-SAP positive fetch of PO 29368 -> Inbound Delivery '52897', per_po flipped to manually_confirmed=True + sap_sync_status='posted'; negative case with fake bill 'NONEXISTENT-BILL-999' returns job status='failed' with clear error, no crash; Pending & Confirmed list endpoints unaffected). Frontend: Playwright e2e against the real preview URL confirmed - button visible only on Confirmed tab (0 buttons on Pending, as required), e.stopPropagation blocks row-click dialog, 'Fetching from SAP...' disabled loading state, after ~10s row updates to show '52897' + 'Manually confirmed from SAP' badge + 'Posted' green status, and detail dialog also shows both. One minor cosmetic bug found: literal '\\u2014' text instead of em-dash in the blank inbound-delivery cell.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "GrnApprovalPage - Confirmed table SAP Inbound Delivery # cell", "issue": "Literal string '\\u2014' rendered as text instead of an em-dash (—). JSX line 874 uses <span>\\u2014</span> which is an escaped-sequence string literal, not a JS-evaluated unicode escape. Visible in every Confirmed row that still has a blank inbound delivery (e.g. XGPEJ2, MU7DE2, T49E7Q...). Fix: replace with {'\\u2014'} or the literal em-dash character '—'.", "selector": "[data-testid^='grn-confirmed-inbound-id-'] span", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_grn_fetch_inbound_delivery_iter158.py",
+    "/app/test_reports/pytest/iter158_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL/LOW: fix `<span>\\u2014</span>` -> `<span>{'\\u2014'}</span>` (or literal '—') in GrnApprovalPage.jsx around line 874 so the em-dash placeholder renders correctly for blank inbound-delivery cells."
+  ],
+  "critical_code_review_comments": [
+    "Backend logic is clean: PO-level match uses PO number + exact supplier bill + item-code cross-check, handles multi-PO shipments, distinguishes no-match vs ambiguous, never raises for per-PO errors so partial success is possible.",
+    "manually_confirm_inbound_delivery correctly flips overall sap_sync_status only when ALL per_po entries are posted (mirrors finalize_goods_receipt's all-or-nothing rule).",
+    "Frontend polls with 40 iterations x 3s = 120s ceiling; live SAP query on this analytics report can take 30-100s+ - a slow SAP tenant could theoretically exceed this. Consider extending to 60 iterations x 3s (180s) for safety. Not blocking - main-agent live-verified ~90s previously.",
+    "Backend job_store uses asyncio.to_thread wrapping which is correct given the sync SAP client."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_grn_fetch_inbound_delivery_iter158.py (new)"
+  ],
+  "success_rate": {"backend": "100% (7/7 pytest)", "frontend": "100% (all UI assertions passed)"},
+  "test_credentials": "vms_session cookie '1_kcTPauhhZHOtN1pg8W3A8lLNhprB2jyZ-jsA4qC5s' (user id 'test-tid:inbound-fetch-verify-oid', super_admin); re-seeded auth_sessions row with 4h TTL during testing since original had expired.",
+  "seed_data_creation": "Re-seeded auth_sessions row for the provided cookie (was expired). Created and deleted synthetic negative-case shipment ZTESTIBD2 (PO 29368 + bill 'NONEXISTENT-BILL-999'). ZTESTIBD1 left in 'posted' state (as it was at start of test, after main agent's earlier live verification).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "iter158 feature (manual Fetch-from-SAP inbound-delivery button) is fully working E2E against real SAP. Pytest file /app/backend/tests/test_grn_fetch_inbound_delivery_iter158.py can be reused; note that the positive-case test genuinely calls SAP and takes 30-100s and will re-flip ZTESTIBD1 to posted+52897 each run. If the vms_session cookie is expired, upsert into auth_sessions with {_id: '<cookie>', user_id:'test-tid:inbound-fetch-verify-oid', expires_at: now+2h}. To retest the blank->fetch UI flow, first reset ZTESTIBD1: sap_sync_status='pending' and sap_gr_result.per_po[0] without inbound_delivery_id/manually_confirmed keys.",
+  "rca of the issue": "Not a bug fix session - new feature verification. Backend live SAP query for PO 29368 + bill 'FWIPL/26-27/T555' correctly returned CDELIVERY_UUID '52897' and persisted with manually_confirmed=True; negative case with fake bill number returned clear failure with error 'PO 29368: no matching confirmation found in SAP yet for bill NONEXISTENT-BILL-999'. Only finding is a cosmetic escape-sequence bug (\\u2014 rendered as literal text)."
+}

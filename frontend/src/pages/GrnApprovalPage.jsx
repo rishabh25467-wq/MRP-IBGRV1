@@ -158,6 +158,41 @@ export default function GrnApprovalPage() {
   };
 
   const inboundDeliveryIds = (s) => [...new Set((s.sap_gr_result?.per_po || []).map((p) => p.inbound_delivery_id).filter(Boolean))];
+  const hasManuallyConfirmedInbound = (s) => (s.sap_gr_result?.per_po || []).some((p) => p.manually_confirmed && p.inbound_delivery_id);
+
+  // Sep 11 2026, user's explicit ask: a few live GRNs actually posted in SAP
+  // but our own Playwright automation never captured the real Inbound
+  // Delivery ID (blank forever otherwise) - lets staff pull it straight
+  // from SAP on demand, mirroring OpenPurchaseOrdersPage's "Refresh from
+  // SAP" job-poll pattern (a single live query here takes 30-100s+).
+  const [fetchingInboundFor, setFetchingInboundFor] = useState(null);
+  const fetchInboundDelivery = async (s) => {
+    setFetchingInboundFor(s._id);
+    try {
+      const { data } = await axios.post(`${API}/admin/grn/${s._id}/fetch-inbound-delivery`);
+      const jobId = data.job_id;
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const { data: poll } = await axios.get(`${API}/admin/grn/fetch-inbound-delivery/poll/${jobId}`);
+        if (poll.status === "done") {
+          const ids = inboundDeliveryIds(poll.result.shipment);
+          toast.success(`Fetched from SAP: Inbound Delivery # ${ids.join(", ")}`);
+          loadConfirmed();
+          if (confirmedDetail?._id === s._id) setConfirmedDetail(poll.result.shipment);
+          return;
+        }
+        if (poll.status === "failed") {
+          toast.error("Could not fetch from SAP", { description: poll.error || "Unknown error" });
+          return;
+        }
+      }
+      toast.error("This is taking longer than expected - try again shortly");
+    } catch (err) {
+      toast.error("Could not start SAP fetch", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setFetchingInboundFor(null);
+    }
+  };
 
   // Sep 10 2026, user's explicit ask: tabbed Pending/Confirmed instead of
   // stacked tables, each with its own "PO number or Vendor code" filter.
@@ -826,7 +861,29 @@ export default function GrnApprovalPage() {
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data">{[...new Set(s.items.map((it) => it.po_number))].join(", ")}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data" data-testid={`grn-confirmed-printed-po-${s._id}`}>{[...new Set(s.items.map((it) => it.sap_po_number).filter(Boolean))].join(", ") || "\u2014"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data">{s.supplier_doc_num || "\u2014"}</td>
-                      <td className="border border-[#D0D5DD] px-2 py-1 font-data">{inboundDeliveryIds(s).join(", ") || "\u2014"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data" data-testid={`grn-confirmed-inbound-id-${s._id}`}>
+                        {inboundDeliveryIds(s).length > 0 ? (
+                          <span className="inline-flex items-center gap-1.5">
+                            {inboundDeliveryIds(s).join(", ")}
+                            {hasManuallyConfirmedInbound(s) && (
+                              <Badge className="bg-[#EFF4FF] text-[#3538CD] border border-[#C7D7FE] text-[10px]" data-testid={`grn-confirmed-manual-tag-${s._id}`}>Manually confirmed from SAP</Badge>
+                            )}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-2">
+                            <span>{"\u2014"}</span>
+                            <button
+                              type="button"
+                              className="text-[11px] text-[#004B87] font-bold hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+                              disabled={fetchingInboundFor === s._id}
+                              data-testid={`grn-fetch-inbound-delivery-button-${s._id}`}
+                              onClick={(e) => { e.stopPropagation(); fetchInboundDelivery(s); }}
+                            >
+                              {fetchingInboundFor === s._id ? "Fetching from SAP..." : "Fetch from SAP"}
+                            </button>
+                          </span>
+                        )}
+                      </td>
                       <td className="border border-[#D0D5DD] px-2 py-1" data-testid={`grn-confirmed-sap-status-${s._id}`}>
                         {s.sap_sync_status === "posted" ? (
                           <Badge className="bg-[#ECFDF3] text-[#027A48] border border-[#ABEFC6]">Posted</Badge>
@@ -909,7 +966,12 @@ export default function GrnApprovalPage() {
                 <div><span className="text-[#475467]">Bill Date:</span> <span className="font-data font-semibold">{confirmedDetail.bill_date || "\u2014"}</span></div>
                 <div><span className="text-[#475467]">SAP Inbound Delivery #:</span>{" "}
                   {confirmedDetail.sap_sync_status === "posted" ? (
-                    <span className="font-data font-semibold" data-testid="grn-confirmed-detail-inbound-id">{inboundDeliveryIds(confirmedDetail).join(", ") || "\u2014"}</span>
+                    <span className="font-data font-semibold" data-testid="grn-confirmed-detail-inbound-id">
+                      {inboundDeliveryIds(confirmedDetail).join(", ") || "\u2014"}
+                      {hasManuallyConfirmedInbound(confirmedDetail) && (
+                        <Badge className="bg-[#EFF4FF] text-[#3538CD] border border-[#C7D7FE] text-[10px] ml-1.5" data-testid="grn-confirmed-detail-manual-tag">Manually confirmed from SAP</Badge>
+                      )}
+                    </span>
                   ) : (
                     <span className="inline-flex items-center gap-1.5">
                       {confirmedDetail.sap_sync_status === "failed" ? (
