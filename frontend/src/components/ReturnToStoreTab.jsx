@@ -450,7 +450,18 @@ const ManualReturnStep = ({ actorName, reasons, editingReturn, onDone, onCancel 
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    axios.get(`${API}/store-requests/known-sites`).then(({ data }) => setSites(data.sites || [])).catch(() => {});
+    // Sep 11 2026 bug fix, real incident (sap.p9@rampgroup.co.in - bound
+    // site was correctly saved and confirmed in Access Management, yet
+    // this dropdown stayed empty with zero explanation): a silently
+    // swallowed error here means a genuine backend failure looks
+    // IDENTICAL to "you have no sites assigned" - impossible to tell
+    // apart or debug. Surface the real error instead of hiding it.
+    axios.get(`${API}/store-requests/known-sites`)
+      .then(({ data }) => setSites(data.sites || []))
+      .catch((e) => {
+        setSites([]);
+        toast.error("Could not load your assigned Site/Plant list", { description: e.response?.data?.detail || e.message });
+      });
   }, []);
 
   const setRow = (idx, patch) => setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));

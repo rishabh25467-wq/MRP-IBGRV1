@@ -173,7 +173,16 @@ PAGE_ROUTE_RULES = [
     # Aug 27 2026: Inter Plant Stock Transfer's "Refresh Site Stock"
     # dropdown reuses this same site list - harmless read-only endpoint,
     # same pattern as the /journal override right above.
-    ("/api/store-requests/known-sites", {"store_approval", "stock_transfer"}),
+    # Sep 11 2026 bug fix, real incident (sap.p9@rampgroup.co.in - Site
+    # Binding correctly saved "P9", but the Manual Return Site/Plant
+    # dropdown stayed empty with zero error shown): this rule was never
+    # updated when the Sep 9 2026 Return to Store workflow was added -
+    # a "user" with ONLY production_confirmation (no store_approval) can
+    # already reach the Return to Store tab (see /api/store-returns rule
+    # below) and is correctly Site-Bound, but got a silent 403 on this
+    # one site-list call specifically, since it didn't recognize
+    # production_confirmation as a valid page for it yet.
+    ("/api/store-requests/known-sites", {"store_approval", "stock_transfer", "production_confirmation"}),
     ("/api/store-requests", {"store_approval"}),
     # Sep 9 2026, user's explicit ask: Return to Store workflow - reuses
     # the SAME two existing page permissions rather than new grantable
