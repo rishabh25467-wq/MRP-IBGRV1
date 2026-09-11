@@ -40,6 +40,31 @@ logger = logging.getLogger(__name__)
 DEBUG_SCREENSHOT_DIR = "/app/backend/playwright_debug/supplier_pgr_failures"
 
 
+async def _ensure_draft_discarded(page, po_number: str) -> None:
+    """Sep 10 2026, real incident: SAP confirmed Inbound Delivery Request
+    60063 (PO 29118) stuck LOCKED BY ITADMIN (our own automation user) -
+    every prior error-exit here only ever fired-and-forgot a single
+    `_click_button(page, "Close")` with no check it actually worked, so
+    on any tenant response where "Close" isn't the visible/clickable
+    label at that moment (blocked by the very error banner it's meant to
+    dismiss, a slightly different Fiori label, etc.) the "Create Inbound
+    Delivery and Goods Receipt" draft this PO's row opened was silently
+    abandoned still checked out - every later Retry then just re-opens
+    (and re-locks under the same user) that same stuck draft, hence the
+    IDENTICAL SAP error on every single retry. Now tries "Close", then
+    "Cancel" as an alternate label some Fiori error states use, then
+    falls back to Escape - never raises (best-effort cleanup only, must
+    never block returning the real result to the caller)."""
+    try:
+        if await _click_button(page, "Close") == "clicked":
+            return
+        if await _click_button(page, "Cancel") == "clicked":
+            return
+        await page.keyboard.press("Escape")
+    except Exception as e:
+        logger.warning(f"Could not confirm the SAP draft for PO {po_number} was discarded (may still be locked): {e}")
+
+
 async def _open_purchase_orders(page) -> None:
     """Inbound Logistics work center -> Purchase Orders view (confirmed
     live during the Aug 29 2026 read-only investigation - distinct from
@@ -336,18 +361,18 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
     await step("entering_quantities")
     unfilled = await _fill_line_actual_quantities(page, item_products, item_qtys)
     if unfilled:
-        await _click_button(page, "Close")
+        await _ensure_draft_discarded(page, po_number)
         return {"po_number": po_number, "status": "failed", "error": f"Could not enter Actual Quantity for item(s) {', '.join(unfilled)}"}
 
     await step("saving")
     if await _click_button(page, "Save and Close") != "clicked":
-        await _click_button(page, "Close")
+        await _ensure_draft_discarded(page, po_number)
         return {"po_number": po_number, "status": "failed", "error": "Save and Close button not found"}
     await page.wait_for_timeout(6000)
 
     error_text = await _extract_error_text(page)
     if error_text:
-        await _click_button(page, "Close")
+        await _ensure_draft_discarded(page, po_number)
         return {"po_number": po_number, "status": "failed", "error": _humanize_error(error_text)}
     # Sep 2 2026 (user's ask: "show SAP inbound number for user's
     # reference") - the same message strip that would carry an error

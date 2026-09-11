@@ -7503,6 +7503,23 @@ async def post_admin_grn_retry_movement(doc_code: str, request: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@api_router.post("/admin/grn/{doc_code}/reset-retry")
+async def post_admin_grn_reset_retry(doc_code: str, request: Request):
+    """Sep 10 2026, user's explicit ask - once the SAP Admin confirms
+    the SAP-side issue behind a "SAP Sync Failed" shipment is actually
+    fixed, an admin can clear the failed escalation and let staff Retry
+    again with a fresh attempt budget. Admin-gated (not the regular
+    GRN staff role) since this overrides a deliberate safety stop."""
+    if request.state.user.get("role") not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403, detail="Admin access required to reset a failed SAP sync")
+    try:
+        return await asyncio.to_thread(supplier_shipment_service.reset_gr_retry_count, db, doc_code)
+    except supplier_shipment_service.ShipmentNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except supplier_shipment_service.ShipmentValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @api_router.post("/admin/grn/{doc_code}/retry-goods-receipt")
 async def post_admin_grn_retry_goods_receipt(doc_code: str, request: Request):
     try:

@@ -900,6 +900,24 @@ def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_c
 MAX_GR_RETRIES_BEFORE_FAILED = 3
 
 
+def reset_gr_retry_count(db, doc_code: str) -> dict:
+    """Manual staff override (Sep 10 2026, user's explicit ask) - once
+    an SAP Admin confirms whatever caused every prior Retry to hit the
+    IDENTICAL SAP error (see finalize_goods_receipt's own docstring) is
+    actually fixed on SAP's side, this clears the "failed" escalation so
+    the normal Retry button reappears with a fresh
+    MAX_GR_RETRIES_BEFORE_FAILED budget. Does NOT itself call SAP - the
+    next Retry click does that."""
+    doc = get_shipment_by_code(db, doc_code)
+    if doc.get("sap_sync_status") != "failed":
+        raise ShipmentValidationError("Only a shipment currently marked 'SAP Sync Failed' can have its retry count reset")
+    db[SHIPMENTS_COLLECTION].update_one(
+        {"_id": doc["_id"]},
+        {"$set": {"sap_sync_status": "pending", "sap_gr_retry_count": 0}},
+    )
+    return get_shipment_by_code(db, doc_code)
+
+
 def prepare_retry_goods_receipt(db, doc_code: str) -> dict:
     """Validates a shipment is eligible for a fresh Goods Receipt attempt
     (mirrors the old retry_goods_receipt's own guard) - no SAP call here,

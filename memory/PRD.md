@@ -457,3 +457,15 @@ Extend the existing SAP BOM viewer application: Production Plan page (OMS Open-P
 - Tested via `testing_agent` (iteration_154): 100% backend + frontend pass, no live SAP writes needed (seeded job docs directly to prove branching + persistence + UI rendering). No issues found.
 - Deployment to production (mrp.radishtechnologies.com) still pending user's "go" signal.
 
+
+## Session (Sep 10-11 2026, continued #3) - GRN stuck "In Process" investigation + fixes
+- User reported (screenshot) shipments T3X99F/4MW4P4 (PO 29118) and PNC9DW/X7SLJT (PO 29073) stuck "In Process" on PRODUCTION (mrp.radishtechnologies.com) even after retrying.
+- Investigation: those shipment records don't exist in this preview's DB - confirmed the screenshot is from production, which was last deployed Sep 9 ~10:15 PM IST, BEFORE an earlier same-day commit (c4a3ca8, Sep 10 ~7:38 PM IST) that fixed the "stuck In Process forever" symptom (auto-escalates to "Sync Failed" after 3 retries) - so production was running old code.
+- Real root cause for these 2 specific POs: SAP itself rejects the Goods Receipt with "Actual quantity for Delivery Item ID 40" - confirmed a genuine SAP-side data/validation issue, NOT an app bug. User's SAP admin found: Inbound Delivery Request 60063 is LOCKED BY USER ITADMIN (our own automation's technical user) - strongly suggests a prior failed "Save and Close" attempt left the SAP-side draft checked out because the old cleanup code (`_click_button(page, "Close")`) fired-and-forgot with no verification it worked.
+- Fixes shipped:
+  1. Hardened `sap_playwright_supplier_pgr_service.py`: new `_ensure_draft_discarded()` helper tries "Close" -> "Cancel" -> Escape key (verified, not fire-and-forget) on every error-exit path in `_post_one_po`, to prevent future stuck SAP-side locks.
+  2. New admin-only "Reset Retry" endpoint (`POST /api/admin/grn/{doc_code}/reset-retry`) + frontend button (GrnApprovalPage.jsx) - lets staff clear a "SAP Sync Failed" shipment's retry count once SAP Admin confirms the underlying SAP issue (e.g. the ITADMIN lock) is resolved, so Retry can be attempted fresh.
+- NOTE: the CURRENT lock on Inbound Delivery Request 60063 is NOT resolved by any of the above - it needs the user's SAP Admin to explicitly cancel/release that specific document inside SAP itself. Our automation has no confirmed API/UI action to force-unlock an already-stuck document from outside.
+- Deployed to production (mrp.radishtechnologies.com) via deployment_agent - scan passed, no blockers. Includes all of today's fixes: Printed PO Ref sort bug, SFG-shortage-allowed flag, GRN status-truthfulness + Reset Retry.
+- Status: DEPLOYED. Awaiting user/SAP admin to manually resolve the SAP-side lock on Delivery Request 60063 for PO 29118/29073 specifically.
+

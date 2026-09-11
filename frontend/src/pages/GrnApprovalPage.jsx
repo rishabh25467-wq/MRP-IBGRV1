@@ -336,6 +336,20 @@ export default function GrnApprovalPage() {
     }
   };
 
+  const resetRetry = async () => {
+    if (!window.confirm("Only do this after your SAP Admin has confirmed the underlying SAP error is fixed. Reset retry count for this shipment?")) return;
+    setBusy(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/grn/${shipment._id}/reset-retry`);
+      setShipment(data);
+      toast.success("Retry count reset - you can Retry the Goods Receipt again");
+    } catch (err) {
+      toast.error("Reset failed", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const retryMovement = async () => {
     setBusy(true);
     try {
@@ -664,6 +678,10 @@ export default function GrnApprovalPage() {
                   {shipment.sap_sync_status === "skipped" ? (
                     <Button size="sm" variant="outline" onClick={retryGoodsReceipt} disabled={busy} className="rounded-sm h-7 text-xs" data-testid="grn-retry-goods-receipt-button">
                       <ArrowsClockwise size={12} className="mr-1" /> Retry
+                    </Button>
+                  ) : shipment.sap_sync_status === "failed" ? (
+                    <Button size="sm" variant="outline" onClick={resetRetry} disabled={busy} className="rounded-sm h-7 text-xs" data-testid="grn-reset-retry-button" title="Only use once your SAP Admin confirms the underlying SAP error is fixed">
+                      <ArrowsClockwise size={12} className="mr-1" /> Reset Retry
                     </Button>
                   ) : shipment.sap_sync_status !== "posted" && (
                     retryUnlockInMin(shipment.approved_at) > 0 ? (
