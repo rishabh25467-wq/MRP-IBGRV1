@@ -26,7 +26,7 @@ const WORK_CENTER_GROUPS = [
   { label: "Procurement", keys: ["purchasing_plan", "purchase_order", "created_purchase_orders", "open_purchase_orders", "quota_allocation", "vendor_goods_receipt"] },
   { label: "Supplier Management", keys: ["supplier_master", "supplier_portal_invite", "supplier_portal_admin", "supplier_portal_documents", "supplier_dashboard"] },
   { label: "Inventory Management", keys: ["inventory", "stock_transfer", "inbound_stock_transfer", "store_approval"] },
-  { label: "Master Data", keys: ["admin", "admin_create_material"] },
+  { label: "Master Data", keys: ["admin", "admin_create_material", "admin_activate_material_site"] },
   { label: "Administration", keys: ["admin_sap_write"] },
 ];
 const GROUPED_PAGE_KEYS = new Set(WORK_CENTER_GROUPS.flatMap((g) => g.keys));

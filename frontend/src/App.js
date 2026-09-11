@@ -17,6 +17,7 @@ import CreatedPurchaseOrdersPage from "@/pages/CreatedPurchaseOrdersPage";
 import OpenPurchaseOrdersPage from "@/pages/OpenPurchaseOrdersPage";
 import SapWritePage from "@/pages/SapWritePage";
 import CreateMaterialPage from "@/pages/CreateMaterialPage";
+import ActivateMaterialSitePage from "@/pages/ActivateMaterialSitePage";
 import L1L2ReportPage from "@/pages/L1L2ReportPage";
 import InventoryClosingReportPage from "@/pages/InventoryClosingReportPage";
 import StoreApprovalPage from "@/pages/StoreApprovalPage";
@@ -72,6 +73,7 @@ const FIRST_ACCESSIBLE_PAGE_ROUTES = [
   ["admin", "/admin"],
   ["admin_sap_write", "/admin/sap-write"],
   ["admin_create_material", "/admin/create-material"],
+  ["admin_activate_material_site", "/admin/activate-material-site"],
   ["store_approval", "/storeapproval"],
   ["supplier_portal_admin", "/admin/supplier-portal-approvals"],
   ["supplier_portal_documents", "/admin/supplier-portal-approvals"],
@@ -146,6 +148,7 @@ function InternalApp() {
             <Route path="/admin" element={<ProtectedRoute page="admin"><AdminPage /></ProtectedRoute>} />
             <Route path="/admin/sap-write" element={<ProtectedRoute page="admin_sap_write"><SapWritePage /></ProtectedRoute>} />
             <Route path="/admin/create-material" element={<ProtectedRoute page="admin_create_material"><CreateMaterialPage /></ProtectedRoute>} />
+            <Route path="/admin/activate-material-site" element={<ProtectedRoute page="admin_activate_material_site"><ActivateMaterialSitePage /></ProtectedRoute>} />
             <Route path="/admin/l1-l2-report" element={<ProtectedRoute page="admin"><L1L2ReportPage /></ProtectedRoute>} />
             <Route path="/admin/closing-inventory-report" element={<ProtectedRoute page="admin"><InventoryClosingReportPage /></ProtectedRoute>} />
             <Route path="/admin/access-management" element={<ProtectedRoute superAdminOnly><AccessManagementPage /></ProtectedRoute>} />

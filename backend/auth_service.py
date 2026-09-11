@@ -72,6 +72,7 @@ PAGE_CATALOG = [
     {"key": "admin", "label": "Admin"},
     {"key": "admin_sap_write", "label": "Admin - SAP Write"},
     {"key": "admin_create_material", "label": "Admin - Create Material"},
+    {"key": "admin_activate_material_site", "label": "Admin - Activate Material Site"},
     # Aug 2026 - Store Approval moved from unauthenticated/public to
     # requiring Entra ID login (user's explicit ask), so it now needs its
     # own grantable page permission like every other page.

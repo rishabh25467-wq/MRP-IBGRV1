@@ -6776,10 +6776,29 @@ class ActivateMaterialSiteRequest(BaseModel):
     notification_id: str = None
 
 
+@api_router.get("/admin/material-sites/lookup/{material_id}")
+async def get_admin_material_site_lookup(material_id: str, request: Request):
+    """Sep 11 2026, user's explicit ask: standalone "Activate Material at
+    Site" page - lets staff search an existing material before picking a
+    target site, mirroring SAP's own Material master lookup."""
+    user = await asyncio.to_thread(auth_service.get_current_user, request, db)
+    if not user or not ({"stock_transfer", "admin_activate_material_site"} & set(user.get("allowed_pages", [])) or user.get("role") in ("super_admin", "admin")):
+        raise HTTPException(status_code=403, detail="Access required")
+    try:
+        info = await asyncio.to_thread(sap_material_client.resolve_material_info, material_id)
+    except SAPMaterialAuthError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except SAPMaterialError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    if not info.get("uuid"):
+        raise HTTPException(status_code=404, detail=f"No material found in SAP with ID '{material_id}'")
+    return info
+
+
 @api_router.post("/admin/material-sites/activate")
 async def post_activate_material_site(payload: ActivateMaterialSiteRequest, request: Request):
     user = await asyncio.to_thread(auth_service.get_current_user, request, db)
-    if not user or not ({"stock_transfer"} & set(user.get("allowed_pages", [])) or user.get("role") in ("super_admin", "admin")):
+    if not user or not ({"stock_transfer", "admin_activate_material_site"} & set(user.get("allowed_pages", [])) or user.get("role") in ("super_admin", "admin")):
         raise HTTPException(status_code=403, detail="Access required")
     company_id, _ = company_and_set_of_books_for_site(payload.site_id)
     # Sep 5 2026 fix (STO-135): derive the material's own established

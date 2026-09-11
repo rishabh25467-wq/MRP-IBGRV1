@@ -129,7 +129,7 @@ class SAPMaterialClient:
                 raise SAPMaterialAuthError(faultstring)
             raise SAPMaterialError(faultstring)
 
-        empty = {"uuid": None, "drawing_url": None, "comments": [], "description": None, "base_unit": None, "life_cycle_status_code": None}
+        empty = {"uuid": None, "drawing_url": None, "comments": [], "description": None, "base_unit": None, "life_cycle_status_code": None, "product_category_id": None, "active_sites": []}
         material_match = re.search(r"<(?:\w+:)?Material(?:\s[^>]*)?>(.*?)</(?:\w+:)?Material>", xml, re.S)
         if not material_match:
             return empty
@@ -166,6 +166,14 @@ class SAPMaterialClient:
         return {
             "uuid": material_uuid, "drawing_url": drawing_url, "comments": comments,
             "description": description, "base_unit": base_unit, "life_cycle_status_code": life_cycle_status_code,
+            # Sep 11 2026, user's explicit ask (standalone "Activate Material
+            # at Site" page) - ProductCategoryID + which sites already have a
+            # SupplyPlanning entry, so the page can show "already active at:
+            # P1, P2..." before the user picks a target site.
+            "product_category_id": _first_tag(block, "ProductCategoryID"),
+            "active_sites": sorted(set(re.findall(
+                r"<(?:\w+:)?SupplyPlanning(?:\s[^>]*)?>.*?<SupplyPlanningAreaID>([^<]*)</SupplyPlanningAreaID>.*?</(?:\w+:)?SupplyPlanning>", block, re.S,
+            ))),
         }
 
     def resolve_uuid(self, internal_id: str):

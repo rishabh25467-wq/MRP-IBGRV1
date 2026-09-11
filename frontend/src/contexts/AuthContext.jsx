@@ -42,6 +42,7 @@ export const PAGE_LABELS = {
   admin: "Component Master (Admin)",
   admin_sap_write: "SAP Write (Admin)",
   admin_create_material: "Create Material (Admin)",
+  admin_activate_material_site: "Activate Material Site (Admin)",
   store_approval: "Store Goods Issue",
   supplier_portal_admin: "Supplier Portal Approvals",
   purchase_order: "Purchase Order Creation",
