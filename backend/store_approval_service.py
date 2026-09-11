@@ -553,15 +553,26 @@ def run_issue_movements(db, request_id: str, sap_client, progress_cb=None) -> di
     }
     if not shortfall_exists:
         update.update({"status": "resolved", "resolution": "balance_completed" if is_reopen_round else "full_issue", "resolved_at": now})
+    elif sap_rejected_this_round:
+        # SAP itself rejected the movement - nothing actually landed in
+        # SAP's ledger, so this MUST stay reopenable (closing would
+        # falsely claim material moved to production when it didn't).
+        # User's explicit ask (Sep 11 2026): this is the ONLY case that
+        # still uses "resolved_balance_pending" - every other partial
+        # issue below now closes for good, see next branch.
+        update.update({"status": "resolved_balance_pending", "resolution": "balance_pending" if is_reopen_round else "store_proceeded_partial", "resolved_at": now})
     elif not is_reopen_round and decision == "send_to_planner":
         update.update({"status": "partial_pending_planner"})
     else:
-        # Rule 2: a remaining shortfall NEVER dead-ends the request anymore -
-        # "resolved_balance_pending" means the order pipeline has already
-        # been unblocked (see server.py's order_resumed guard) but the
-        # store can reopen this SAME request as many times as needed until
-        # the full quantity is eventually issued.
-        update.update({"status": "resolved_balance_pending", "resolution": "balance_pending" if is_reopen_round else "store_proceeded_partial", "resolved_at": now})
+        # Sep 11 2026 bug fix, user's explicit ask - reverses "Rule 2":
+        # a genuine partial issue (SAP actually accepted whatever amount
+        # was issued, just less than required) now closes the request
+        # for good, exactly like a full issue - it is NEVER reopenable
+        # again for the remaining shortfall (the old "Issue Remaining
+        # Balance" screen). Real production incident: request 685734147
+        # stayed reopenable (PALL3286, 32 of 83.87 issued) when it
+        # should have closed immediately.
+        update.update({"status": "resolved", "resolution": "balance_completed" if is_reopen_round else "store_proceeded_partial", "resolved_at": now})
     db[COLLECTION].update_one({"_id": request_id}, {"$set": update})
     return db[COLLECTION].find_one({"_id": request_id})
 
@@ -616,9 +627,11 @@ def recover_orphaned_issues(db, message: str) -> int:
 
 
 def list_balance_pending(db) -> list:
-    """New (Aug 2026, Rule 2) dedicated view for the store team - every
-    request with an outstanding balance they can reopen once more stock
-    physically arrives in the RM warehouse."""
+    """Dedicated view for the store team of requests where SAP itself
+    REJECTED the movement (nothing actually posted) - the only case that
+    still stays reopenable (Sep 11 2026, user's explicit ask reversed the
+    old "Rule 2": a genuine partial issue that SAP actually accepted now
+    closes for good instead of staying open for a later balance)."""
     docs = list(db[COLLECTION].find({"status": "resolved_balance_pending"}).sort("updated_at", -1))
     stock_by_product = load_stock_by_product(db)
     return [refresh_component_locations(db, d, stock_by_product) for d in docs]
@@ -633,14 +646,14 @@ def planner_decision(db, request_id: str, decision: str, planner_actor: str):
 
     now = datetime.now(timezone.utc)
     if decision == "approve":
-        # Rule 2: approving doesn't necessarily mean fully issued - if a
-        # shortfall remains, this stays reopenable instead of dead-ending.
-        shortfall_exists = any(c["shortfall"] > 0 for c in doc["components"])
-        new_status = "resolved_balance_pending" if shortfall_exists else "resolved"
+        # Sep 11 2026, same rule as run_issue_movements above: approving
+        # a partial now closes for good - it does NOT stay reopenable
+        # just because a shortfall remains.
+        new_status = "resolved"
     else:
         new_status = "cancelled"
     update = {"status": new_status, "planner_actor": planner_actor, "planner_decision": decision, "updated_at": now}
-    if new_status in ("resolved", "resolved_balance_pending"):
+    if new_status == "resolved":
         update.update({"resolution": "planner_approved_partial", "resolved_at": now})
     db[COLLECTION].update_one({"_id": request_id}, {"$set": update})
     return db[COLLECTION].find_one({"_id": request_id})

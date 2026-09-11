@@ -1,0 +1,22 @@
+{
+  "summary": "Verified Sep 11 2026 rule reversal in store_approval_service: a partial issue where SAP ACCEPTS the movement now closes as status='resolved' (resolution='store_proceeded_partial' or 'balance_completed' on a reopen round), never reopenable again. SAP-rejection branch still uses 'resolved_balance_pending' as a regression safety net. Planner approve on partial_pending_planner also now closes as 'resolved'/'planner_approved_partial'. Full issue unchanged. All 7 targeted service-level pytests pass; frontend code paths inspected and confirmed aligned (isReopenable check, updated reopen notice text, updated result messages).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_store_partial_close.py",
+    "/app/test_reports/pytest/iter155_partial_close.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py _run_store_issue_job at line 4298 correctly resumes order creation for both 'resolved' and 'resolved_balance_pending' - no change needed, works for new 'resolved'+'store_proceeded_partial' case.",
+    "Comment near line 4300 in server.py still refers to 'Rule 2' meaning a request can reach resolved_balance_pending again on reopen - true only for SAP-rejection now; consider updating comment to match Sep 11 2026 rule reversal (docs-only nit)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_store_partial_close.py (new)"
+  ],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "code-review only, no live UI test"},
+  "seed_data_creation": "Test creates and cleans up its own TEST-<uuid> store_requests docs; no residual data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "iter155 covers Sep 11 2026 rule reversal (partial issue closes for good unless SAP rejects). New pytest suite backend/tests/test_store_partial_close.py can be re-run as regression. UI flow was not exercised via Playwright because deterministic SAP accept/reject scenarios can't be reproduced on the live tenant; service-layer tests fully cover the state transitions the UI simply displays."
+}

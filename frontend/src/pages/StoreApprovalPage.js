@@ -1065,11 +1065,13 @@ export default function StoreApprovalPage() {
           } else if (freshRequest.status === "resolved") {
             setResultMessage(freshRequest.resolution === "balance_completed"
               ? "Balance fully issued - this request is now closed."
+              : freshRequest.resolution === "store_proceeded_partial" || freshRequest.resolution === "planner_approved_partial"
+              ? "Partial stock issued - this request is now closed for good. The automated Production Order pipeline is resuming now."
               : "Stock issue recorded - the automated Production Order pipeline is resuming now.");
             toast.success(freshRequest.resolution === "balance_completed" ? "Balance fully issued - closed" : "Recorded - order creation resuming");
           } else if (freshRequest.status === "resolved_balance_pending") {
-            setResultMessage("Recorded - a balance is still outstanding on this request. You'll find it under \"Balance Pending\" to reopen once more stock arrives.");
-            toast.success("Recorded - balance still outstanding");
+            setResultMessage("SAP rejected the movement - nothing actually posted, so this request stays open under \"Balance Pending\" until it's retried successfully.");
+            toast.error("SAP rejected the movement - still open");
           } else if (freshRequest.status === "partial_pending_planner") {
             setResultMessage("Sent to the requester for approval - they'll decide whether to proceed with the partial stock.");
             toast.success("Sent to requester for approval");
@@ -1281,10 +1283,10 @@ export default function StoreApprovalPage() {
           {isReopenable && !resultMessage && (
             <div className="space-y-2">
               <div className="bg-[#FEF6EE] border border-[#F9DBAF] rounded-sm px-3 py-2 text-xs text-[#B93815]" data-testid="store-reopen-notice">
-                This request still has an outstanding balance. Enter what you can issue now for the short component(s) above - you can reopen this again later if there's still a balance left.
+                SAP rejected the last attempt to move the short component(s) above - nothing actually posted, so this request stays open. Fix the underlying issue (e.g. stock status/negative stock) and try again.
               </div>
               <Button disabled={submitting || hasOverIssueError} onClick={() => submitIssue(null)} data-testid="store-submit-reopen-button">
-                Issue Remaining Balance
+                Retry Issue
               </Button>
             </div>
           )}

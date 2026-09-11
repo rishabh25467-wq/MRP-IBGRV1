@@ -4296,10 +4296,12 @@ async def _run_store_issue_job(job_id: str, request_id: str):
         )
         job_store.update_job(db, job_id, {"status": "done", "result": {"request_status": updated["status"], "request_id": request_id}})
         if updated["status"] in ("resolved", "resolved_balance_pending") and not updated.get("order_resumed"):
-            # order_resumed guard: fires exactly once - Rule 2 means this
-            # SAME request can reach "resolved_balance_pending" again on a
-            # later reopen round, but the order-creation job has already
-            # moved on by then and must NOT be resumed a second time.
+            # order_resumed guard: fires exactly once - a genuine partial
+            # issue now closes as "resolved" for good (Sep 11 2026), but
+            # a SAP-rejected movement can still reach "resolved_balance_
+            # pending" again on a later reopen round; the order-creation
+            # job has already moved on by then and must NOT be resumed a
+            # second time.
             await _resume_order_creation_job(updated["job_id"])
             await asyncio.to_thread(store_approval_service.mark_order_resumed, db, request_id)
         elif updated["status"] == "partial_pending_planner":
