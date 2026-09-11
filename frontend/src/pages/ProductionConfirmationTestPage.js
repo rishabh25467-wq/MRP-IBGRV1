@@ -227,7 +227,7 @@ const STATUS_TONE = {
 };
 
 // -------------------- Confirm dialog --------------------
-const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons, maxFromPrevStep, prevStepLabel }) => {
+const ConfirmDialog = ({ row, siblingRows, actorName, onClose, onConfirmed, reasons, maxFromPrevStep, prevStepLabel }) => {
   const [confirmedQty, setConfirmedQty] = useState(row ? (row.open_quantity ?? "") : "");
   const [confirmedScrap, setConfirmedScrap] = useState("0");
   const [hasScrap, setHasScrap] = useState(false);
@@ -320,7 +320,19 @@ const ConfirmDialog = ({ row, actorName, onClose, onConfirmed, reasons, maxFromP
   // brand-new MaterialOutput) - reuse the main output's own target
   // logistics area as the destination, since a by-product almost always
   // shares the main output's site/storage area.
-  const mainOutputRow = row.material_outputs?.find((mo) => mo.product_id === row.main_output_product) || null;
+  // Sep 11 2026 bug fix, real incident (lot 72647, MAZ42117272-TA): an
+  // intermediate Reporting Point (RP_10 "LEFT BLANK+PUNCHING") consumes
+  // the raw material (so by-product IS genuinely expected here), but in
+  // SAP only the LAST Reporting Point of a multi-op routing ("END") ever
+  // carries an Output Products/MaterialOutput line + target storage area
+  // - every intermediate RP's OWN material_outputs is legitimately empty
+  // by SAP's own design, not a data gap. Falling back to ANY sibling RP
+  // of this SAME lot that does have one (in practice always "END") gives
+  // a real, valid target storage area instead of hard-blocking every
+  // intermediate confirmation with "contact support".
+  const mainOutputRow = row.material_outputs?.find((mo) => mo.product_id === row.main_output_product)
+    || (siblingRows || []).flatMap((r) => r.material_outputs || []).find((mo) => mo.product_id === row.main_output_product)
+    || null;
   const canAutoCreateByproduct = !byproductMatch && !!mainOutputRow?.target_logistics_area_id;
 
   // Weight-based by-product quantity - fully independent of the manual
@@ -2506,6 +2518,7 @@ export default function ProductionConfirmationTestPage() {
 
       <ConfirmDialog
         row={confirmRow}
+        siblingRows={confirmRow ? rows.filter((r) => r.production_lot_id === confirmRow.production_lot_id) : []}
         actorName={actorName}
         onClose={() => setConfirmRow(null)}
         onConfirmed={onConfirmed}

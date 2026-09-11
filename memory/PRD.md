@@ -486,3 +486,11 @@ Extend the existing SAP BOM viewer application: Production Plan page (OMS Open-P
 - Verified live against real SAP data: lot 70539 (RP10/RP20/END, all with real awaiting qty >0) confirmed correct order + all buttons enabled; lot 33215 (MARK_001=0, END=15000, i.e. END artificially "ahead") confirmed END's Confirm button correctly greyed out with "-15,000 (after MARK_001)".
 - No testing_agent used - small, targeted, self-tested via direct SAP client queries + screenshot verification (2 real lots).
 
+
+## Session (Sep 11 2026, continued #6) - "Cannot confirm: a by-product is expected but there's no Output Products line..." bug fix
+- User hit this hard block trying to confirm RP_10 ("LEFT BLANK+PUNCHING") of lot 72647 (MAZ42117272-TA).
+- Root cause confirmed live against SAP: RP_10 genuinely consumes the raw material (HRCOIL2.0X80.5) so a by-product (Iron Scrap) IS correctly expected - but in SAP, only the LAST Reporting Point of a multi-op routing ("END") ever carries an Output Products/MaterialOutput line with a target storage area; every intermediate RP's own `material_outputs` is legitimately empty by SAP's own routing design, not a data gap. Our `mainOutputRow` lookup only ever checked THIS row's own (always-empty) material_outputs, so it could never find a valid target storage area to auto-create the by-product line at any intermediate RP - hard-blocking confirmation entirely.
+- Fix (both `ProductionConfirmationPage.js` and `ProductionConfirmationTestPage.js`): `ConfirmDialog` now accepts a `siblingRows` prop (all rows for the same lot) and falls back to any sibling RP's material_outputs (in practice always "END") to find a valid target storage area, instead of only checking the current row's own.
+- Verified live on lot 72647/RP_10: dialog now shows "will auto-create it and post 3 KGM to SAP" instead of the blocking error (screenshot-confirmed).
+- Self-tested (screenshot + code read), no testing_agent used - small, targeted 2-file fix.
+
