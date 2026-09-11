@@ -511,3 +511,9 @@ Extend the existing SAP BOM viewer application: Production Plan page (OMS Open-P
 - Tested via `testing_agent` (iteration_155): new pytest suite `backend/tests/test_store_partial_close.py`, 7/7 pass, covers both branches (SAP accepts -> closes; SAP rejects -> stays reopenable) + planner-approve + full-issue regression. No issues found.
 - REMINDER (carried from earlier this session): nothing in this session has actually been deployed to production yet - `deployment_agent` only runs a readiness scan. User must use the Emergent "Deploy" button themselves. The specific stuck request 685734147 lives only on production's DB and was NOT force-closed by this fix (only governs future issues going forward) - user may want to manually resolve that one existing record once deployed.
 
+
+## Session (Sep 11 2026, continued #9) - Retry button gated by actual movement failure, not just status
+- Real incident: legacy request P9-000051 (created BEFORE the Rule-2-reversal fix above) sat in "Balance Pending" with component 8201-000193's movement showing "Moved (275119)" (genuinely succeeded) - yet the Retry Issue button still showed, since it only checked the top-level status field.
+- Fix: `isReopenable` (StoreApprovalPage.js) and `list_balance_pending()` (store_approval_service.py) now both additionally require at least one short component to have a genuinely failed/not-ok `goods_movement` on record - not just `status === "resolved_balance_pending"`. A legacy record where every attempted movement actually succeeded no longer shows the Retry button or appears in the "Balance Pending" queue at all.
+- Verified directly: seeded the exact legacy scenario (successful movement + shortfall) and confirmed it's now excluded from `list_balance_pending()`.
+

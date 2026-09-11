@@ -954,7 +954,16 @@ export default function StoreApprovalPage() {
 
   const isPending = selected.status === "pending";
   const isIssuing = selected.status === "issuing";
-  const isReopenable = selected.status === "resolved_balance_pending";
+  // Sep 11 2026, user's explicit ask (real incident: legacy request
+  // P9-000051 sitting in "Balance Pending" from BEFORE the Sep 11 rule
+  // reversal, whose last movement actually succeeded - "Moved (275119)"
+  // - yet the button still showed): don't trust the top-level status
+  // alone for whether Retry makes sense - only show it if a component
+  // with a real shortfall ACTUALLY has a failed/not-ok goods movement
+  // on record. If every attempted movement genuinely succeeded, there's
+  // nothing to retry regardless of what the overall status says.
+  const hasFailedMovement = (selected.components || []).some((c) => c.shortfall > 0 && c.goods_movement && c.goods_movement.ok !== true);
+  const isReopenable = selected.status === "resolved_balance_pending" && hasFailedMovement;
   const hasShortfall = isPending && selected.components.some((c) => {
     const q = Number(issuedQty[c.product_id]);
     return Number.isNaN(q) || q < c.required_qty;

@@ -631,8 +631,17 @@ def list_balance_pending(db) -> list:
     REJECTED the movement (nothing actually posted) - the only case that
     still stays reopenable (Sep 11 2026, user's explicit ask reversed the
     old "Rule 2": a genuine partial issue that SAP actually accepted now
-    closes for good instead of staying open for a later balance)."""
+    closes for good instead of staying open for a later balance).
+
+    Extra defensive filter (Sep 11 2026, real incident: legacy request
+    P9-000051, created under the OLD rule before this reversal, sat here
+    with a component whose movement had actually SUCCEEDED - "Moved
+    (275119)" - yet still showed as actionable) - only surface requests
+    that genuinely have a failed/not-ok movement on a short component.
+    Doesn't trust the status field alone, since old records predating
+    this fix can carry it for a different reason."""
     docs = list(db[COLLECTION].find({"status": "resolved_balance_pending"}).sort("updated_at", -1))
+    docs = [d for d in docs if any(c.get("shortfall", 0) > 0 and c.get("goods_movement") and c["goods_movement"].get("ok") is not True for c in d.get("components", []))]
     stock_by_product = load_stock_by_product(db)
     return [refresh_component_locations(db, d, stock_by_product) for d in docs]
 
