@@ -262,7 +262,21 @@ class SAPProductionLotClient:
                     "material_outputs": material_outputs,
                     "material_inputs": material_inputs,
                 })
-        return rows
+        # Sep 11 2026 bug fix, real incident: SAP's own XML does NOT
+        # guarantee ConfirmationGroup/ReportingPoint blocks come back in
+        # actual routing sequence (a real lot returned RP_10, then END,
+        # then RP_20...) - every downstream consumer (the Admin Test
+        # page's "Awaiting Prev Step" adjacent-pair diff, and the RP-
+        # sequence Confirm-button gate) assumes array order == routing
+        # order, so a lot showing its terminal "END" step second instead
+        # of last silently corrupted every later step's numbers. Sort by
+        # the numeric suffix on reporting_point_id (RP_10 -> 10, RP_90 ->
+        # 90); "END" (or anything without a trailing number) always
+        # sorts last, matching how RP IDs are actually assigned in SAP.
+        def _rp_sort_key(row):
+            m = re.search(r"(\d+)$", row.get("reporting_point_id") or "")
+            return (0, int(m.group(1))) if m else (1, 0)
+        return sorted(rows, key=_rp_sort_key)
 
     def find_open_lots(self, status_codes=None, site_id: str = None, limit: int = 100) -> list:
         """Lists open production lots (default: Released + Started) with

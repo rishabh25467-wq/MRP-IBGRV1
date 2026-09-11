@@ -2459,9 +2459,13 @@ export default function ProductionConfirmationTestPage() {
                       <div className="flex items-center gap-1.5">
                         <Button
                           size="sm"
-                          disabled={loading || r.task_finished}
+                          disabled={loading || r.task_finished || (awaiting && awaiting.awaiting <= 0)}
                           onClick={() => setConfirmRow(r)}
-                          title={r.task_finished ? "Task genuinely Finished in SAP - re-confirmation disabled to avoid a duplicate posting" : undefined}
+                          title={
+                            r.task_finished ? "Task genuinely Finished in SAP - re-confirmation disabled to avoid a duplicate posting"
+                            : (awaiting && awaiting.awaiting <= 0) ? `Nothing has cleared ${awaiting.prevReportingPointId || "the previous step"} yet - confirm that step first`
+                            : undefined
+                          }
                           data-testid={`confirm-button-${i}`}
                         >
                           Confirm

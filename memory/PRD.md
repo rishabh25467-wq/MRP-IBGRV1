@@ -477,3 +477,12 @@ Extend the existing SAP BOM viewer application: Production Plan page (OMS Open-P
 - Self-tested via screenshot (button renders, triggers a real SAP call, resolves to the picker).
 - No backend changes needed - `get_source_of_supply_options` was already a live, uncached SAP call.
 
+
+## Session (Sep 11 2026, continued #5) - RP ordering bug + strict sequence gate on Confirm
+- User reported (screenshot, lot with MAZ42117272-TA): "TV ARM LEFT POWER COATING(END)" showed as the SECOND row right after RP_10, before RP_20..RP_90 - and asked for the Confirm button to be sequence-gated (can't confirm RP_90 before RP_80).
+- Root cause found: `sap_production_lot_client._parse_lot_block()` just returned rows in SAP's raw XML document order (ConfirmationGroup/ReportingPoint blocks are NOT guaranteed to arrive in actual routing sequence) - this silently fed the Admin Test page's "Awaiting Prev Step" adjacent-pair diff (`awaitingByRowKey` in `ProductionConfirmationTestPage.js`) the WRONG previous-row reference for every RP after the misplaced one.
+- Fix 1 (backend, affects both Production Confirmation pages since both use this shared parser): `_parse_lot_block` now sorts each lot's rows by the numeric suffix on `reporting_point_id` (RP_10->10 ... RP_90->90), with "END" (or anything non-numeric) always sorted last.
+- Fix 2 (frontend, Admin Test page only, per user's scoping in the previous request): the "Confirm" button is now disabled whenever `awaitingByRowKey[...].awaiting <= 0` (nothing has cleared the previous Reporting Point yet), with a tooltip explaining why - enforces strict RP-sequence confirmation.
+- Verified live against real SAP data: lot 70539 (RP10/RP20/END, all with real awaiting qty >0) confirmed correct order + all buttons enabled; lot 33215 (MARK_001=0, END=15000, i.e. END artificially "ahead") confirmed END's Confirm button correctly greyed out with "-15,000 (after MARK_001)".
+- No testing_agent used - small, targeted, self-tested via direct SAP client queries + screenshot verification (2 real lots).
+
