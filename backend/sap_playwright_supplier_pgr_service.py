@@ -29,15 +29,39 @@ the exact Actual Quantity grid column layout are BEST-EFFORT from the
 user's screenshots only, not live-confirmed - the very first real call
 into post_goods_receipt_via_ui MUST be supervised/reviewed by the user
 before this is trusted for unattended use."""
+import asyncio
 import logging
-import os
 import re
 from datetime import datetime, timezone
 
 from sap_playwright_pgr_service import _login, _wait_for_blocking_layer_clear, _extract_error_text, _humanize_error, _click_button
+import object_storage_client
 
 logger = logging.getLogger(__name__)
-DEBUG_SCREENSHOT_DIR = "/app/backend/playwright_debug/supplier_pgr_failures"
+
+
+async def _capture_failure(page, po_number: str, step: str, error: str) -> dict:
+    """Sep 11 2026, user's explicit ask ("any tool we can build to give
+    u that insight") - every failure path now uploads a real screenshot
+    of the exact SAP screen state to Object Storage (not local disk,
+    which is invisible/unshareable once deployed - production runs in a
+    separate container than this preview) so staff can open it directly
+    from the GRN Approval screen instead of a bare error string.
+
+    Sep 11 2026 follow-up (user's explicit ask, "make sure u do not slow
+    things down"): the actual upload is a blocking `requests` call -
+    running it directly here would stall the asyncio event loop (this
+    Playwright job's own page, plus every other concurrent GRN job/API
+    request sharing the same loop) for as long as the upload takes.
+    Offloaded to a worker thread via asyncio.to_thread so it can never
+    add latency to anything else."""
+    screenshot_path = None
+    try:
+        png = await page.screenshot()
+        screenshot_path = await asyncio.to_thread(object_storage_client.upload_failure_screenshot, png, po_number)
+    except Exception as e:
+        logger.warning(f"Could not capture failure screenshot for PO {po_number}: {e}")
+    return {"po_number": po_number, "status": "failed", "error": error, "failed_step": step, "screenshot_path": screenshot_path}
 
 
 async def _ensure_draft_discarded(page, po_number: str) -> None:
@@ -315,9 +339,9 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
 
     click_result = await _click_button(page, "Post Goods Receipt")
     if click_result == "disabled":
-        return {"po_number": po_number, "status": "failed", "error": "Post Goods Receipt is disabled for this PO in SAP"}
+        return await _capture_failure(page, po_number, "opening_receipt", "Post Goods Receipt is disabled for this PO in SAP")
     if click_result == "not_found":
-        return {"po_number": po_number, "status": "failed", "error": "Post Goods Receipt button not found for this PO"}
+        return await _capture_failure(page, po_number, "opening_receipt", "Post Goods Receipt button not found for this PO")
     await step("opening_receipt")
     # Sep 2 2026 fix (same investigation as the search/row-select fixes
     # above): the "Create Inbound Delivery and Goods Receipt" screen's
@@ -361,19 +385,22 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
     await step("entering_quantities")
     unfilled = await _fill_line_actual_quantities(page, item_products, item_qtys)
     if unfilled:
+        result = await _capture_failure(page, po_number, "entering_quantities", f"Could not enter Actual Quantity for item(s) {', '.join(unfilled)}")
         await _ensure_draft_discarded(page, po_number)
-        return {"po_number": po_number, "status": "failed", "error": f"Could not enter Actual Quantity for item(s) {', '.join(unfilled)}"}
+        return result
 
     await step("saving")
     if await _click_button(page, "Save and Close") != "clicked":
+        result = await _capture_failure(page, po_number, "saving", "Save and Close button not found")
         await _ensure_draft_discarded(page, po_number)
-        return {"po_number": po_number, "status": "failed", "error": "Save and Close button not found"}
+        return result
     await page.wait_for_timeout(6000)
 
     error_text = await _extract_error_text(page)
     if error_text:
+        result = await _capture_failure(page, po_number, "saving", _humanize_error(error_text))
         await _ensure_draft_discarded(page, po_number)
-        return {"po_number": po_number, "status": "failed", "error": _humanize_error(error_text)}
+        return result
     # Sep 2 2026 (user's ask: "show SAP inbound number for user's
     # reference") - the same message strip that would carry an error
     # carries this success confirmation instead; not every tenant
@@ -450,12 +477,7 @@ async def post_goods_receipt_via_ui(po_items: dict, progress_cb=None) -> dict:
                         )
                     except Exception as e:
                         logger.error(f"Playwright Supplier GRN failed for PO {po_number}: {e}")
-                        try:
-                            os.makedirs(DEBUG_SCREENSHOT_DIR, exist_ok=True)
-                            await page.screenshot(path=f"{DEBUG_SCREENSHOT_DIR}/{po_number}.png")
-                        except Exception:
-                            pass
-                        result = {"po_number": po_number, "status": "failed", "error": "Could not reach SAP's receipt screen - please retry"}
+                        result = await _capture_failure(page, po_number, "unexpected_crash", "Could not reach SAP's receipt screen - please retry")
                     results.append(result)
                     if result["status"] == "failed" and idx < total_pos:
                         try:

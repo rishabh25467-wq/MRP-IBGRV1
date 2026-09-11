@@ -91,6 +91,7 @@ import company_cache_service
 import object_storage_service
 import supplier_portal_service
 import supplier_shipment_service
+import object_storage_client
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -7520,6 +7521,22 @@ async def post_admin_grn_reset_retry(doc_code: str, request: Request):
         raise HTTPException(status_code=404, detail=str(e))
     except supplier_shipment_service.ShipmentValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@api_router.get("/admin/grn/failure-screenshot")
+async def get_admin_grn_failure_screenshot(path: str, request: Request):
+    """Sep 11 2026, user's explicit ask - serves a Playwright GRN
+    failure screenshot uploaded to Object Storage, so staff can see
+    exactly what SAP screen state a failure happened on directly from
+    the app - no infra/file access needed, works the same regardless of
+    which deployed instance (preview/production) generated it."""
+    if not path.startswith("sap-mrp/grn_failures/"):
+        raise HTTPException(status_code=400, detail="Invalid screenshot path")
+    try:
+        content, content_type = await asyncio.to_thread(object_storage_client.get_object, path)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Screenshot not found or no longer available")
+    return Response(content=content, media_type=content_type)
 
 
 @api_router.post("/admin/grn/{doc_code}/retry-goods-receipt")

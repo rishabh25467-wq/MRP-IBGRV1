@@ -78,6 +78,7 @@ export default function GrnApprovalPage() {
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
   const [busy, setBusy] = useState(false);
+  const [screenshotModal, setScreenshotModal] = useState(null);
 
   const [sites, setSites] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
@@ -698,6 +699,21 @@ export default function GrnApprovalPage() {
                     SAP Inbound Delivery #: {shipment.sap_gr_result.per_po.filter((p) => p.inbound_delivery_id).map((p) => p.inbound_delivery_id).join(", ")}
                   </div>
                 )}
+                {shipment.sap_sync_status !== "posted" && shipment.sap_gr_result?.per_po?.some((p) => p.screenshot_path) && (
+                  <div className="px-3">
+                    <button
+                      type="button"
+                      className="text-xs text-[#7A1E1E] font-bold hover:underline"
+                      data-testid="grn-view-failure-screenshot-button"
+                      onClick={() => {
+                        const failed = shipment.sap_gr_result.per_po.find((p) => p.screenshot_path);
+                        setScreenshotModal(failed);
+                      }}
+                    >
+                      View exact SAP screen at time of failure ({shipment.sap_gr_result.per_po.find((p) => p.screenshot_path)?.failed_step || "unknown step"})
+                    </button>
+                  </div>
+                )}
                 <div className="text-sm px-3 py-2 rounded-sm flex items-center justify-between gap-2 border" data-testid="grn-sap-movement-status"
                      style={shipment.sap_movement_status === "posted" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : { color: "#B45309", background: "rgba(227,160,8,0.1)", borderColor: "rgba(227,160,8,0.3)" }}>
                   <span className="flex items-center gap-2">
@@ -914,6 +930,21 @@ export default function GrnApprovalPage() {
                 <div><span className="text-[#475467]">Site:</span> <span className="font-data font-semibold">{confirmedDetail.site_id}</span></div>
                 <div><span className="text-[#475467]">Approved By:</span> <span className="font-semibold">{confirmedDetail.approved_by} · {confirmedDetail.approved_at ? new Date(confirmedDetail.approved_at).toLocaleString() : "\u2014"}</span></div>
               </div>
+              {confirmedDetail.sap_sync_status !== "posted" && confirmedDetail.sap_gr_result?.per_po?.some((p) => p.screenshot_path) && (
+                <div>
+                  <button
+                    type="button"
+                    className="text-xs text-[#7A1E1E] font-bold hover:underline"
+                    data-testid="grn-confirmed-detail-view-failure-screenshot-button"
+                    onClick={() => {
+                      const failed = confirmedDetail.sap_gr_result.per_po.find((p) => p.screenshot_path);
+                      setScreenshotModal(failed);
+                    }}
+                  >
+                    View exact SAP screen at time of failure ({confirmedDetail.sap_gr_result.per_po.find((p) => p.screenshot_path)?.failed_step || "unknown step"})
+                  </button>
+                </div>
+              )}
               <table className="border-collapse w-full text-[13px] mt-2 border border-[#D0D5DD] rounded-sm overflow-hidden">
                 <thead className="bg-[#EAECF0] text-[#344054] text-xs font-bold font-heading uppercase tracking-wide">
                   <tr>
@@ -948,6 +979,29 @@ export default function GrnApprovalPage() {
                   })}
                 </tbody>
               </table>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!screenshotModal} onOpenChange={(o) => !o && setScreenshotModal(null)}>
+        <DialogContent className="rounded-sm max-w-3xl" data-testid="grn-failure-screenshot-dialog">
+          {screenshotModal && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="font-heading text-[#7A1E1E]">PO {screenshotModal.po_number} - failed at "{screenshotModal.failed_step || "unknown step"}"</DialogTitle>
+                <DialogDescription className="font-data text-xs">{screenshotModal.error}</DialogDescription>
+              </DialogHeader>
+              {screenshotModal.screenshot_path ? (
+                <img
+                  src={`${API}/admin/grn/failure-screenshot?path=${encodeURIComponent(screenshotModal.screenshot_path)}`}
+                  alt="SAP screen at time of failure"
+                  className="w-full border border-[#D0D5DD] rounded-sm"
+                  data-testid="grn-failure-screenshot-image"
+                />
+              ) : (
+                <p className="text-sm text-[#667085]">No screenshot could be captured for this attempt.</p>
+              )}
             </>
           )}
         </DialogContent>

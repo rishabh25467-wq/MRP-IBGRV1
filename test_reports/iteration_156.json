@@ -1,0 +1,34 @@
+{
+  "summary": "Verified GRN failure-screenshot feature end-to-end. Backend (all 3 endpoints) + non-blocking asyncio.to_thread fix are CORRECT and working. However, a UI gap was found: the 'View Failure Screenshot' button is NOT rendered inside the Confirmed GRNs row-click detail dialog (only inside the Lookup->pending-shipment card), so from the Confirmed GRNs tab (where a failed GRN actually lives) the button is unreachable. Direct backend endpoint serves the PNG correctly (200 image/png).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "GrnApprovalPage.jsx - grn-confirmed-detail-dialog (lines 895-969)",
+        "issue": "The 'View exact SAP screen at time of failure' button (data-testid='grn-view-failure-screenshot-button') is only rendered inside the shipment-lookup card at line ~702 (guarded by `shipment.status === 'approved' && !busy` on the LOOKUP-loaded shipment). It is NOT rendered inside the Confirmed GRNs row-click dialog (`grn-confirmed-detail-dialog`), which is the ONLY UI path that surfaces a failed sync for an already-approved shipment. Result: on Confirmed GRNs tab, opening a Sync-Failed row shows the Sync Failed badge + Retry button but no way to view the SAP failure screenshot at all. Reproduced with the pre-seeded ZTESTSCR1 (sap_sync_status=failed, screenshot_path populated). Also Lookup input has maxLength=6 so 9-char doc codes cannot be looked up as a workaround.",
+        "selector": "[data-testid='grn-confirmed-detail-dialog']",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Add the failure-screenshot button/link inside the `grn-confirmed-detail-dialog` block (GrnApprovalPage.jsx ~line 928) using the same condition: `confirmedDetail.sap_sync_status !== 'posted' && confirmedDetail.sap_gr_result?.per_po?.some((p) => p.screenshot_path)` -> onClick sets screenshotModal. Without this, the whole failure-screenshot feature is unreachable via the Confirmed GRNs tab in production."
+  ],
+  "critical_code_review_comments": [
+    "sap_playwright_supplier_pgr_service.py:61 - `await asyncio.to_thread(object_storage_client.upload_failure_screenshot, png, po_number)` correctly offloads the blocking `requests.put` in object_storage_client.py off the event loop. Return shape preserved (screenshot_path key). Non-blocking fix is CORRECT.",
+    "server.py:7526 - `GET /admin/grn/failure-screenshot` correctly validates prefix `sap-mrp/grn_failures/` (400 on invalid) and uses asyncio.to_thread for the blocking get_object. Good.",
+    "GrnApprovalPage.jsx - the failure-screenshot button lives only in the pending-lookup shipment card and is duplicated-in-spirit but missing from the Confirmed GRNs detail dialog. Refactor to a shared subcomponent so both flows show it consistently."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "50%"},
+  "test_credentials": "Used pre-seeded vms_session=aef5rDPCHaKXCq8YMwsESh1SIoFbUAFrcGl1N8tt8MU (re-seeded 1d expiry). Cleaned up (deleted) auth_users test-tid:screenshot-verify-oid, auth_sessions aef5..., and supplier_portal_shipments ZTESTSCR1 after testing per user's ask.",
+  "seed_data_creation": "None (used pre-seeded ZTESTSCR1; deleted after testing).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend endpoints and asyncio.to_thread non-blocking fix are verified. Only pending item: E1 should add the failure-screenshot button to grn-confirmed-detail-dialog (GrnApprovalPage.jsx). If retesting, re-seed ZTESTSCR1 + auth_users + auth_sessions using the same _id values documented in the review request.",
+  "rca of the issue": "The screenshot-viewing feature was built into the pending-shipment/Lookup path only. When user later shifted the sync-failed state into the Confirmed GRNs tab detail dialog (a separate dialog that reads from `confirmedDetail` state, not the `shipment` state), no one added the parallel button there. So the whole feature is functionally dead from the tab where users will actually see failed syncs. Mitigation: add ~10 lines of JSX inside `grn-confirmed-detail-dialog` mirroring lines 702-716."
+}

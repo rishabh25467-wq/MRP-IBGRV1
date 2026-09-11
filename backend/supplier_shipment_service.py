@@ -306,7 +306,7 @@ def attach_po_pricing(db, vendor_code: str, items: list) -> None:
     simply leaves unit_price as None, the frontend then just omits that
     column for that row rather than showing a wrong number."""
     for it in items:
-        cached = db[PO_CACHE_COLLECTION].find_one({"_id": f"{vendor_code}::{it['po_number']}::{it['item_number']}"})
+        cached = db[PO_CACHE_COLLECTION].find_one({"_id": f"{vendor_code}::{it.get('po_number')}::{it.get('item_number')}"})
         it["unit_price"] = cached.get("unit_price") if cached else None
         it["currency"] = cached.get("currency") if cached else None
 
