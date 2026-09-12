@@ -463,6 +463,20 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
     # matching the real intended behavior: only the lines that actually
     # arrived get received, everything else is simply not part of this
     # delivery at all.
+    #
+    # A PARTIAL line (e.g. a delivery covering 2.5 of 5 equal-qty PO
+    # lines: 2 lines shipped in full + the 3rd line's vendor-entered
+    # ship_qty is only HALF that line's Planned/Open Quantity) is
+    # already handled correctly by the exact same logic, no special
+    # case needed: the Supplier Portal only ever lets a vendor ship
+    # against a real, specific PO line item_number with whatever
+    # partial qty is still open on it (see supplier_shipment_service.py
+    # create_shipment/_compute_qty_state) - so item_qtys already holds
+    # that line's real partial amount, gets filled with exactly that
+    # (not the full Planned Quantity), and is NOT a zero-quantity row -
+    # "Remove Zero Quantity Items" leaves it alone and only strips the
+    # 2 lines nobody shipped anything against at all (items 4 and 5,
+    # never present in item_qtys to begin with).
     await _click_button(page, "Remove Zero Quantity Items")
     await page.wait_for_timeout(1000)
 
