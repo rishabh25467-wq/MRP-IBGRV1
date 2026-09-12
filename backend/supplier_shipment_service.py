@@ -484,6 +484,15 @@ def _resolve_items(db, vendor_code: str, requested_items: list, exclude_doc_code
         cached = db[PO_CACHE_COLLECTION].find_one({"vendor_code": vendor_code, "po_number": po_number, "item_number": item_number, "expired": {"$ne": True}})
         if not cached:
             raise ShipmentValidationError(f"Item {item_number} was not found on Purchase Order {po_number}")
+        # Sep 13 2026, user's explicit ask ("why did this delivery come in
+        # when PO is not valid") - a supplier could previously create a
+        # shipment against a PO line whose cached product_id is missing
+        # (a pre-existing SAP product-master link gap on that line, see
+        # sap_playwright_supplier_pgr_service.py's missing_products fix),
+        # only discovering it much later at GRN time when SAP itself
+        # rejects/skips that line. Blocked here at the source instead.
+        if not cached.get("product_id"):
+            raise ShipmentValidationError(f"Item {item_number} on PO {po_number} cannot be shipped - its Product ID is missing in SAP (ask your buyer/SAP Admin to fix this PO line's product master link)")
         if ship_qty <= 0:
             raise ShipmentValidationError(f"Ship quantity for item {item_number} on PO {po_number} must be greater than 0")
         already_shipped = _shipped_qty_so_far(db, vendor_code, po_number, item_number, exclude_doc_code=exclude_doc_code)
@@ -735,7 +744,18 @@ def _resolve_source_stock_status(inventory_client, site_id: str, source_area_id:
     return ""
 
 
-def _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id: str, site_id: str, warehouse_id: str) -> dict:
+def _skipped_line_items_from_gr_results(per_po: list) -> set:
+    """Sep 13 2026, user's explicit ask - a PO can now come back "posted"
+    while still carrying `skipped_items` for the specific line(s) whose
+    Goods Receipt was dropped (missing product_id, see
+    sap_playwright_supplier_pgr_service.py's _post_one_po). Those exact
+    lines never actually got received in SAP, so step 2 (Goods Movement)
+    below must not try to move stock for them - returns the
+    (po_number, item_number) pairs to exclude."""
+    return {(r.get("po_number"), s.get("item_number")) for r in (per_po or []) for s in (r.get("skipped_items") or [])}
+
+
+def _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id: str, site_id: str, warehouse_id: str, skipped_line_items: set = None) -> dict:
     """Step 2 of the live SAP write - moves each shipment line's
     received qty into the receiver's chosen warehouse. Source area
     defaults to this app's own "{site}-RM" convention (same one used
@@ -774,7 +794,11 @@ def _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_cli
     balance there, hence the negative-stock/no-items-found errors)."""
     per_item = []
     all_ok = True
+    skipped_line_items = skipped_line_items or set()
     for it in doc["items"]:
+        if (it["po_number"], it["item_number"]) in skipped_line_items:
+            per_item.append({"po_number": it["po_number"], "item_number": it["item_number"], "product_id": it["product_id"], "ok": True, "skipped": True, "note": "Goods Receipt for this line was skipped in SAP (missing Product ID) - no stock to move"})
+            continue
         qty = it.get("actual_qty", it["ship_qty"])
         source_area = f"{site_id}-RM"
         # Sep 12 2026 bug fix (real incident, shipment LFG29A/PO 29482 -
@@ -909,7 +933,8 @@ def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_c
     sap_movement_status = "not_applicable"
     sap_movement_result = None
     if sap_sync_status == "posted":
-        sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id, doc["site_id"], doc["warehouse_id"])
+        skipped_line_items = _skipped_line_items_from_gr_results(gr_results)
+        sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id, doc["site_id"], doc["warehouse_id"], skipped_line_items)
         sap_movement_status = "posted" if sap_movement_result.get("ok") else "pending"
     else:
         sap_movement_result = {"ok": False, "reason": "Skipped - Goods Receipt (step 1) did not succeed yet"}
@@ -974,7 +999,8 @@ def retry_goods_movement(db, doc_code: str, goods_movement_client, inventory_cli
         raise ShipmentValidationError("The Goods Receipt (step 1) has not posted to SAP yet - nothing to retry")
     if not doc.get("site_id") or not doc.get("warehouse_id"):
         raise ShipmentValidationError("This shipment has no warehouse recorded to retry into")
-    sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id, doc["site_id"], doc["warehouse_id"])
+    skipped_line_items = _skipped_line_items_from_gr_results((doc.get("sap_gr_result") or {}).get("per_po"))
+    sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id, doc["site_id"], doc["warehouse_id"], skipped_line_items)
     sap_movement_status = "posted" if sap_movement_result.get("ok") else "pending"
     db[SHIPMENTS_COLLECTION].update_one(
         {"_id": doc["_id"]},

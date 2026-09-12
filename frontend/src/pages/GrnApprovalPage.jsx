@@ -813,13 +813,13 @@ export default function GrnApprovalPage() {
                     </button>
                   </div>
                 )}
-                {shipment.sap_sync_status !== "posted" && shipment.sap_gr_result?.per_po?.some((p) => p.status !== "posted" && p.events?.length) && (
+                {shipment.sap_gr_result?.per_po?.some((p) => (p.status !== "posted" && p.events?.length) || p.skipped_items?.length) && (
                   <div className="px-3">
                     <button
                       type="button"
                       className="text-xs text-[#475467] font-bold hover:underline"
                       data-testid="grn-view-diagnostics-button"
-                      onClick={() => setDiagnosticsModal(shipment.sap_gr_result.per_po.find((p) => p.status !== "posted" && p.events?.length))}
+                      onClick={() => setDiagnosticsModal(shipment.sap_gr_result.per_po.find((p) => (p.status !== "posted" && p.events?.length) || p.skipped_items?.length))}
                     >
                       View Diagnostics
                     </button>
@@ -1102,13 +1102,13 @@ export default function GrnApprovalPage() {
                   </button>
                 </div>
               )}
-              {confirmedDetail.sap_sync_status !== "posted" && confirmedDetail.sap_gr_result?.per_po?.some((p) => p.status !== "posted" && p.events?.length) && (
+              {confirmedDetail.sap_gr_result?.per_po?.some((p) => (p.status !== "posted" && p.events?.length) || p.skipped_items?.length) && (
                 <div>
                   <button
                     type="button"
                     className="text-xs text-[#475467] font-bold hover:underline"
                     data-testid="grn-confirmed-detail-view-diagnostics-button"
-                    onClick={() => setDiagnosticsModal(confirmedDetail.sap_gr_result.per_po.find((p) => p.status !== "posted" && p.events?.length))}
+                    onClick={() => setDiagnosticsModal(confirmedDetail.sap_gr_result.per_po.find((p) => (p.status !== "posted" && p.events?.length) || p.skipped_items?.length))}
                   >
                     View Diagnostics
                   </button>
@@ -1185,17 +1185,31 @@ export default function GrnApprovalPage() {
                 <DialogDescription className="font-data text-xs">
                   {diagnosticsModal.status === "skipped" ? (
                     <span className="text-[#B54708] font-semibold">Skipped - never sent to SAP</span>
+                  ) : diagnosticsModal.status === "posted" ? (
+                    <span className="text-[#B54708] font-semibold">Posted to SAP - but item(s) below were dropped from this PO</span>
                   ) : (
                     <>Failed at step: <strong className="text-[#7A1E1E]">{diagnosticsModal.failed_step || "unknown step"}</strong></>
                   )}
                 </DialogDescription>
               </DialogHeader>
-              <div className="text-sm text-[#7A1E1E] bg-[#FEF3F2] border border-[#FDA29B] rounded-sm p-2" data-testid="grn-diagnostics-sap-error">
-                <strong>{diagnosticsModal.status === "skipped" ? "Reason:" : "SAP Error:"}</strong> {diagnosticsModal.error || "No error text captured"}
-              </div>
+              {diagnosticsModal.error && (
+                <div className="text-sm text-[#7A1E1E] bg-[#FEF3F2] border border-[#FDA29B] rounded-sm p-2" data-testid="grn-diagnostics-sap-error">
+                  <strong>{diagnosticsModal.status === "skipped" ? "Reason:" : "SAP Error:"}</strong> {diagnosticsModal.error}
+                </div>
+              )}
+              {diagnosticsModal.skipped_items?.length > 0 && (
+                <div className="text-sm text-[#93370D] bg-[#FFFAEB] border border-[#FEC84B] rounded-sm p-2" data-testid="grn-diagnostics-skipped-items">
+                  <strong>Dropped item(s) - not received in SAP:</strong>
+                  <ul className="mt-1 space-y-1">
+                    {diagnosticsModal.skipped_items.map((s, i) => (
+                      <li key={i} data-testid={`grn-diagnostics-skipped-item-${i}`}>{s.item_number}: {s.reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <div>
                 <p className="text-xs font-heading font-bold uppercase tracking-wide text-[#667085] mb-1.5">
-                  {diagnosticsModal.status === "skipped" ? "What happened before it was skipped" : "Events completed successfully before the failure"}
+                  {diagnosticsModal.status === "skipped" ? "What happened before it was skipped" : diagnosticsModal.status === "posted" ? "Events completed for this PO" : "Events completed successfully before the failure"}
                 </p>
                 {diagnosticsModal.events?.length ? (
                   <ol className="text-sm space-y-1.5" data-testid="grn-diagnostics-events-list">

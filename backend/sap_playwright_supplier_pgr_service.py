@@ -371,12 +371,26 @@ async def _post_one_po(page, po_number: str, doc_code: str, supplier_doc_num: st
     # ItemProduct/ProductID and letting SAP's own confusing error
     # surface instead.
     missing_products = [item_number for item_number in item_qtys if not item_products.get(item_number)]
+    skipped_items = []
     if missing_products:
-        return {
-            "po_number": po_number, "status": "skipped",
-            "error": f"Cannot receive PO {po_number} item(s) {', '.join(missing_products)} via SAP - Product ID is missing in the cached PO data (ask SAP Admin to check this PO line's product master link)",
-            "events": events,
-        }
+        # Sep 13 2026, user's explicit ask ("if 1 PO or 1 line is skipped,
+        # other POs should get written with GRN completed") - this used to
+        # abort the WHOLE PO whenever ANY one of its lines had this
+        # data-quality gap, even when the rest of the PO's lines were
+        # perfectly fine. Now only the bad line(s) are dropped (kept out
+        # of soap_items/item_qtys below, so neither the SOAP create nor
+        # the Actual Quantity fill ever sees them) - the good lines still
+        # go through. Only skip the ENTIRE PO if every single line on it
+        # has this problem (nothing valid left to post).
+        skipped_items = [{"item_number": item_number, "reason": "Product ID is missing in the cached PO data (ask SAP Admin to check this PO line's product master link)"} for item_number in missing_products]
+        events.append(f"Skipping item(s) {', '.join(missing_products)} on PO {po_number} - Product ID missing in cached PO data; remaining valid line(s) will still be processed")
+        item_qtys = {k: v for k, v in item_qtys.items() if k not in missing_products}
+        if not item_qtys:
+            return {
+                "po_number": po_number, "status": "skipped",
+                "error": f"Cannot receive PO {po_number} via SAP - Product ID is missing in the cached PO data for item(s) {', '.join(missing_products)} (ask SAP Admin to check this PO line's product master link)",
+                "skipped_items": skipped_items, "events": events,
+            }
     soap_items = [
         {"item_number": item_number, "quantity": qty, "unit_of_measure": item_uoms.get(item_number) or "EA", "product_id": item_products.get(item_number)}
         for item_number, qty in item_qtys.items()
@@ -491,7 +505,7 @@ async def _post_one_po(page, po_number: str, doc_code: str, supplier_doc_num: st
     # best-effort (None if it can't be found, never blocks the result).
     confirmation_text = await _extract_confirmation_text(page)
     events.append("SAP confirmed the Goods Receipt was posted")
-    return {"po_number": po_number, "status": "posted", "inbound_delivery_id": _extract_inbound_delivery_id(confirmation_text), "events": events}
+    return {"po_number": po_number, "status": "posted", "inbound_delivery_id": _extract_inbound_delivery_id(confirmation_text), "skipped_items": skipped_items, "events": events}
 
 
 STEPS_PER_PO = 4
@@ -524,7 +538,11 @@ async def post_goods_receipt_via_ui(po_items: dict, notification_client, progres
     end to end - see `total_progress_steps()`.
 
     Returns {"results": [{"po_number", "status": "posted"|"failed"|
-    "skipped", "error"?, "inbound_delivery_id"?}], "total_steps"}."""
+    "skipped", "error"?, "inbound_delivery_id"?, "skipped_items"?:
+    [{"item_number", "reason"}]}], "total_steps"}. `skipped_items` can be
+    non-empty even on a "posted" PO (Sep 13 2026) - see _post_one_po's
+    missing_products handling: only the bad line(s) are dropped, the
+    rest of the PO still posts."""
     from playwright.async_api import async_playwright
     import playwright_concurrency
 
