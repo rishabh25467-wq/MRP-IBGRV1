@@ -323,18 +323,40 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
     ]
     try:
         await asyncio.to_thread(notification_client.maintain_bundle, notification_id, po_number, vendor_code, delivery_date, soap_items, False)
+        events.append(f"Created Inbound Delivery Notification {notification_id} in SAP (SOAP, references PO {po_number} directly)")
     except Exception as e:
-        return {"po_number": po_number, "status": "skipped", "error": f"Could not create the Inbound Delivery Notification in SAP for PO {po_number}: {e}", "events": events}
-    events.append(f"Created Inbound Delivery Notification {notification_id} in SAP (SOAP, references PO {po_number} directly)")
+        # Sep 12 2026 - a Retry re-derives the SAME notification_id
+        # (it's built from supplier_doc_num+po_number, both fixed on
+        # the shipment doc) and re-calls this on a doc that already
+        # exists in SAP from the PREVIOUS attempt (e.g. the earlier
+        # attempt got this far but failed further down, in the UI
+        # steps) - SAP correctly rejects the duplicate create. Treat
+        # that specific case as already-done and continue to search
+        # for it, instead of failing the whole retry outright.
+        if "already exist" in str(e).lower():
+            events.append(f"Inbound Delivery Notification {notification_id} already exists in SAP from a previous attempt - continuing")
+        else:
+            return {"po_number": po_number, "status": "skipped", "error": f"Could not create the Inbound Delivery Notification in SAP for PO {po_number}: {e}", "events": events}
 
     await _open_inbound_delivery_notifications(page)
     events.append("Opened Inbound Logistics - Inbound Delivery Notifications")
     await _switch_to_all_deliveries_view(page)
-    hits = await _search_delivery(page, notification_id)
+    # Sep 12 2026 fix (real incident, shipment 5XL5EE/PO 29482): SAP's
+    # UI search index lags a few seconds behind a SOAP create - the
+    # notification exists (confirmed: SOAP call above already
+    # succeeded) but doesn't show up in the list on the very first
+    # search. Retry the search itself (not just re-navigate) with a
+    # short backoff before giving up.
+    hits = 0
+    for attempt in range(4):
+        hits = await _search_delivery(page, notification_id)
+        if hits > 0:
+            break
+        await page.wait_for_timeout(4000)
     if hits == 0:
         return await _capture_failure(
             page, po_number, "searching",
-            f"Notification {notification_id} was created in SAP but could not be found in the list right after - may still be indexing, please Retry",
+            f"Notification {notification_id} was created in SAP but could not be found in the list after retrying - may still be indexing, please Retry",
             events=events,
         )
     rows = await page.query_selector_all('tr[id^="__table"]')
