@@ -216,6 +216,27 @@ class SAPMaterialCreateClient:
                     material_id, company_id, site_id, product_category_id, set_of_books_id)
                 valuation_result = _create_then_update_on_conflict(_valuation_body)
             except Exception as e:
-                valuation_result = str(e)
+                # Sep 11 2026, real user report on 6700-302359 @ P9 - a site
+                # that NEVER had ANY prior Valuation presence (unlike
+                # 6800-004473's sites, which already had "In Preparation"
+                # stub rows from some earlier point) hits a DIFFERENT, harder
+                # wall here: "Valuation data missing for material X business
+                # residence Y" - confirmed live this is NOT fixable via
+                # either SOAP service (tried both ManageMaterialIn's plain
+                # create AND ManageMaterialValuationDataIn's own actionCode
+                # ="01" create - both refuse to bootstrap a level from
+                # absolute zero). Per SAP's own docs, the very FIRST
+                # valuation level for a site must be created once, manually,
+                # via SAP UI (Inventory Valuation work center -> Material
+                # valuation tab -> Maintain Product Specification Valuation)
+                # - only AFTER that exists can either API adjust it further.
+                if "valuation data missing" in str(e).lower():
+                    valuation_result = (
+                        f"{e} - this site has NEVER had a Valuation record for this material; ask your SAP admin "
+                        f"to create it ONCE via Inventory Valuation work center -> Material valuation tab -> "
+                        f"Maintain Product Specification Valuation, then Activate here again"
+                    )
+                else:
+                    valuation_result = str(e)
         result["valuation"] = valuation_result
         return result
