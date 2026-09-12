@@ -461,7 +461,18 @@ def start_issue(db, request_id: str, issued: list, decision: str, store_actor: s
         if issued_this_round < 0:
             raise ValueError("Issued quantities must be valid, non-negative numbers")
         prev_cumulative = (c.get("issued_qty") or 0) if is_reopen else 0
-        cumulative = min(c["required_qty"], prev_cumulative + issued_this_round)
+        # Sep 12 2026 bug fix (real incident, request P1-000007/SI-4426SF):
+        # store staff can deliberately issue MORE than the calculated
+        # required_qty (e.g. rounding up to a convenient pack size) - the
+        # frontend already allows this (validates against actual usable
+        # RM stock, not required_qty - see StoreApprovalPage.js's
+        # usableRmQty check). This used to clamp the stored cumulative
+        # down to required_qty, silently discarding the store's real
+        # over-issue (10 KG typed -> only 9.3 KG ever recorded/shown) even
+        # though the correct full amount was already being sent to SAP
+        # via issued_this_round below - display and SAP were out of sync.
+        # No cap here anymore; shortfall still floors at 0 for an over-issue.
+        cumulative = prev_cumulative + issued_this_round
         shortfall = max(0.0, round(c["required_qty"] - cumulative, 4))
         if shortfall > 0:
             shortfall_exists = True
