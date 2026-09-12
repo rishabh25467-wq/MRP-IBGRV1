@@ -69,6 +69,28 @@ function describeGrnPhase(phase) {
 // going negative or over-promising.
 const GRN_SECONDS_PER_STEP = 9;
 
+// Sep 12 2026 (user's ask - the raw `JSON.stringify(sap_gr_result)` dump
+// in the toast description was unreadable AND the toast disappears
+// before anyone can read it anyway). Short, human sentence for the
+// toast; the FULL per-PO detail always goes into the persistent
+// Diagnostics modal instead (see openDiagnosticsIfFailed below).
+function summarizeGrResult(grResult) {
+  const perPo = grResult?.per_po || [];
+  if (!perPo.length) return "No SAP posting was attempted.";
+  const posted = perPo.filter((p) => p.status === "posted");
+  const notPosted = perPo.filter((p) => p.status !== "posted");
+  if (!notPosted.length) return `All ${posted.length} PO(s) posted to SAP.`;
+  const details = notPosted.map((p) => `PO ${p.po_number}: ${p.error || "failed - see Diagnostics"}`).join(" | ");
+  return `${posted.length} of ${perPo.length} PO(s) posted. ${details}`;
+}
+
+function summarizeMovementResult(movementResult) {
+  const perItem = movementResult?.per_item || [];
+  const failed = perItem.filter((i) => !i.ok);
+  if (!failed.length) return "Stock movement is still pending.";
+  return failed.map((i) => `${i.product_id || `item ${i.item_number}`}: ${i.error || "failed"}`).join(" | ");
+}
+
 export default function GrnApprovalPage() {
   const [code, setCode] = useState("");
   const [shipment, setShipment] = useState(null);
@@ -117,6 +139,14 @@ export default function GrnApprovalPage() {
   // each per_po entry, built up live by sap_playwright_supplier_pgr_
   // service.py's _post_one_po).
   const [diagnosticsModal, setDiagnosticsModal] = useState(null);
+  // Sep 12 2026 (user's ask - "put them in diagnostics report, currently
+  // toast disappears"): auto-open the modal on any failure/partial
+  // success, instead of making the user hunt for a "View Diagnostics"
+  // button under a toast that's already gone.
+  const openDiagnosticsIfFailed = (grResult) => {
+    const failing = grResult?.per_po?.find((p) => p.status !== "posted" && p.events?.length);
+    if (failing) setDiagnosticsModal(failing);
+  };
 
   // Sep 10 2026, user's explicit ask: don't let anyone hit Retry while the
   // background job might still legitimately be running - the whole flow
@@ -155,7 +185,8 @@ export default function GrnApprovalPage() {
       if (result.sap_sync_status === "posted") {
         toast.success("Goods Receipt posted to SAP");
       } else {
-        toast.warning("Still not posted - check Diagnostics for the latest attempt", { description: JSON.stringify(result.sap_gr_result) });
+        toast.warning("Still not posted", { description: summarizeGrResult(result.sap_gr_result), duration: 8000 });
+        openDiagnosticsIfFailed(result.sap_gr_result);
       }
       loadConfirmed();
     } catch (err) {
@@ -368,9 +399,10 @@ export default function GrnApprovalPage() {
       if (result.sap_sync_status === "posted" && result.sap_movement_status === "posted") {
         toast.success(`Goods Receipt posted + stock moved to ${result.site_id}/${result.warehouse_id}`);
       } else if (result.sap_sync_status === "posted") {
-        toast.warning("Goods Receipt posted to SAP - warehouse movement still pending", { description: JSON.stringify(result.sap_movement_result) });
+        toast.warning("Goods Receipt posted - warehouse movement still pending", { description: summarizeMovementResult(result.sap_movement_result), duration: 8000 });
       } else {
-        toast.error("Approved internally - SAP posting failed, use Retry Goods Receipt below", { description: JSON.stringify(result.sap_gr_result) });
+        toast.error("Approved internally - SAP posting failed, use Retry Goods Receipt below", { description: summarizeGrResult(result.sap_gr_result), duration: 8000 });
+        openDiagnosticsIfFailed(result.sap_gr_result);
       }
       loadPending();
       loadConfirmed();
@@ -393,7 +425,8 @@ export default function GrnApprovalPage() {
       if (result.sap_sync_status === "posted") {
         toast.success("Goods Receipt posted to SAP");
       } else {
-        toast.warning("Still pending", { description: JSON.stringify(result.sap_gr_result) });
+        toast.warning("Still pending", { description: summarizeGrResult(result.sap_gr_result), duration: 8000 });
+        openDiagnosticsIfFailed(result.sap_gr_result);
       }
     } catch (err) {
       toast.error("Retry failed", { description: err?.response?.data?.detail || err.message });
@@ -425,7 +458,7 @@ export default function GrnApprovalPage() {
       if (data.sap_movement_status === "posted") {
         toast.success(`Stock moved to ${data.site_id}/${data.warehouse_id}`);
       } else {
-        toast.warning("Movement still pending", { description: JSON.stringify(data.sap_movement_result) });
+        toast.warning("Movement still pending", { description: summarizeMovementResult(data.sap_movement_result), duration: 8000 });
       }
     } catch (err) {
       toast.error("Retry failed", { description: err?.response?.data?.detail || err.message });
@@ -1150,14 +1183,20 @@ export default function GrnApprovalPage() {
               <DialogHeader>
                 <DialogTitle className="font-heading text-[#344054]">PO {diagnosticsModal.po_number} - Diagnostics</DialogTitle>
                 <DialogDescription className="font-data text-xs">
-                  Failed at step: <strong className="text-[#7A1E1E]">{diagnosticsModal.failed_step || "unknown step"}</strong>
+                  {diagnosticsModal.status === "skipped" ? (
+                    <span className="text-[#B54708] font-semibold">Skipped - never sent to SAP</span>
+                  ) : (
+                    <>Failed at step: <strong className="text-[#7A1E1E]">{diagnosticsModal.failed_step || "unknown step"}</strong></>
+                  )}
                 </DialogDescription>
               </DialogHeader>
               <div className="text-sm text-[#7A1E1E] bg-[#FEF3F2] border border-[#FDA29B] rounded-sm p-2" data-testid="grn-diagnostics-sap-error">
-                <strong>SAP Error:</strong> {diagnosticsModal.error || "No error text captured"}
+                <strong>{diagnosticsModal.status === "skipped" ? "Reason:" : "SAP Error:"}</strong> {diagnosticsModal.error || "No error text captured"}
               </div>
               <div>
-                <p className="text-xs font-heading font-bold uppercase tracking-wide text-[#667085] mb-1.5">Events completed successfully before the failure</p>
+                <p className="text-xs font-heading font-bold uppercase tracking-wide text-[#667085] mb-1.5">
+                  {diagnosticsModal.status === "skipped" ? "What happened before it was skipped" : "Events completed successfully before the failure"}
+                </p>
                 {diagnosticsModal.events?.length ? (
                   <ol className="text-sm space-y-1.5" data-testid="grn-diagnostics-events-list">
                     {diagnosticsModal.events.map((e, i) => (

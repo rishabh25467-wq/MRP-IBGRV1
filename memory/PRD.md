@@ -664,3 +664,11 @@ Extend the existing SAP BOM viewer application: Production Plan page (OMS Open-P
 - Verified live: retried `K7G2N5` - PO 29429/29482 stayed posted (53067/53068), PO 29456 now cleanly skipped with the new clear error, no wasted SAP call.
 
 
+## Session (Sep 12 2026, continued #4) - Readable error messages, persistent Diagnostics instead of a vanishing toast
+- User's ask: raw `JSON.stringify(sap_gr_result)`/`JSON.stringify(sap_movement_result)` dumps in toast descriptions were unreadable, and the toast disappears before anyone can read it anyway.
+- Added `summarizeGrResult()`/`summarizeMovementResult()` (GrnApprovalPage.jsx) - short human sentences ("2 of 3 PO(s) posted. PO 29456: <reason>") replacing every raw JSON dump across approve/retry-goods-receipt/retry-movement toasts.
+- Added `openDiagnosticsIfFailed()` - auto-opens the (already persistent, doesn't auto-dismiss) Diagnostics modal on any partial failure, instead of relying on the user finding a "View Diagnostics" button under a toast that's already gone.
+- Diagnostics modal itself now distinguishes "Skipped - never sent to SAP" (data-issue POs like 29456, no `failed_step`) from "Failed at step: X" (genuine Playwright/SAP crashes) - previously always showed the crash-only wording even for skips.
+- Verified via screenshot: modal auto-opens on K7G2N5, shows "Skipped - never sent to SAP" + the exact Product ID reason, no JSON anywhere.
+
+
