@@ -131,96 +131,27 @@ async def _wait_for_table_load(page, timeout: int = 60000) -> None:
 
 
 async def _search_po_exact(page, po_number: str) -> int:
-    """Exact "Purchase Order ID" filter (NOT the free-text search box -
-    confirmed live it can return 0 hits for a real, valid PO number
-    depending on which saved-query preset is active). Switches the base
-    view to "All Purchase Orders by Selection" first (broadest possible,
-    no hidden status/date scoping) then fills the Filter panel's own
-    "Purchase Order ID" field. Returns the row count found.
-
-    Sep 2 2026 BUG FOUND + FIXED (user report: PO 29086 genuinely
-    Released in SAP but the GRN screen said "PO not found... check its
-    status"): the base-view dropdown's CURRENTLY SELECTED label is not
-    stable across logins/bot credential slots - it was hardcoded to
-    look for the text "Open Purchase Orders" specifically, but this run
-    landed on "Due and Overdue Purchase Orders" instead (a real, valid
-    SAP-remembered variant, just a narrower one that silently excludes
-    perfectly valid POs like 29086), so the locator matched 0 elements,
-    the broaden-to-"All Purchase Orders by Selection" step never ran,
-    and the PO ID filter then searched the WRONG, narrower scope - per
-    user's explicit instruction ("do not search with due and overdue
-    filter, search in all purchase orders"). FIRST attempted fix
-    (`.sapMSlt` class) was ALSO wrong - live DOM inspection found 3
-    `.sapMSlt` elements on this page (the global header's "All
-    Categories" search-category selector is #0, this base-view select
-    is #1, "Group By" is #2), so `.first` kept grabbing the unrelated
-    header control. Real fix: `[id$="-defaultSetDDLB"]` - SAPUI5's own
-    stable ID suffix for a list report's "default view set" dropdown,
-    confirmed live to always resolve to the correct control regardless
-    of its current label or how many other `.sapMSlt`s are on the page."""
-    base_dd = page.locator('[id$="-defaultSetDDLB"]').first
-    if await base_dd.count() > 0:
-        await base_dd.click(force=True)
-        await page.wait_for_timeout(1000)
-        broad_opt = page.get_by_text("All Purchase Orders by Selection", exact=True).first
-        if await broad_opt.count() > 0:
-            await broad_opt.click(force=True)
-            await page.wait_for_timeout(1500)
-            await _wait_for_table_load(page)
-
-    filter_btn = None
-    for b in await page.query_selector_all(".sapMBtnIconLeft, .sapMBtnBase"):
-        if not await b.is_visible():
-            continue
-        aria = (await b.get_attribute("aria-label")) or ""
-        title = (await b.get_attribute("title")) or ""
-        if "filter" in (aria + title).lower():
-            filter_btn = b
-            break
-    if filter_btn is None:
-        raise RuntimeError("Could not find the Filter icon on the Purchase Orders screen")
-
-    def _find_po_id_label():
-        return page.query_selector_all("label")
-
-    async def _po_id_input():
-        for lbl in await _find_po_id_label():
-            if (await lbl.inner_text()).strip() == "Purchase Order ID" and await lbl.is_visible():
-                for_id = await lbl.get_attribute("for")
-                if for_id:
-                    return await page.query_selector(f"#{for_id}")
-        return None
-
-    # Sep 2 2026 fix (found while batch-reading multiple POs in one
-    # session for fetch_open_po_quantities): this toggle button CLOSES
-    # the panel if it's already open from a PREVIOUS PO's search in the
-    # same session (navigating into/out of a PO detail screen does NOT
-    # reset it) - clicking blindly every time is a coin flip. Checks
-    # for the real input first; only toggles (and re-checks) if it's
-    # not there yet, so this stays correct whichever state it starts in.
-    po_id_input = await _po_id_input()
-    if po_id_input is None:
-        await filter_btn.click(force=True)
-        await page.wait_for_timeout(1500)
-        po_id_input = await _po_id_input()
-    if po_id_input is None:
-        raise RuntimeError("Could not find the 'Purchase Order ID' filter field")
-    await po_id_input.fill(po_number)
-    go_btn = page.get_by_text("Go", exact=True).first
-    if await go_btn.count() > 0:
-        await go_btn.click(force=True)
-        # Sep 12 2026 fix (real incident, PO 29455 crashed at
-        # "unexpected_crash" - the failure screenshot showed a
-        # COMPLETELY DIFFERENT, unrelated PO still highlighted in the
-        # list): a fixed 4000ms wait was not always long enough for this
-        # tenant to actually re-render the filtered table after "Go" -
-        # the old blind wait then read the row count (and later, row[0])
-        # from the STALE pre-filter table, so the automation went on to
-        # click/act on the wrong PO's row entirely. Same
-        # loading-text-based wait already proven reliable elsewhere in
-        # this module (_wait_for_table_load) now gates this too.
-        await page.wait_for_timeout(1500)
-        await _wait_for_table_load(page)
+    """Sep 12 2026, user's explicit instruction: replaces the entire old
+    flow below (base-view dropdown + Filter panel toggle + "Purchase
+    Order ID" field + "Go" button - the source of most of today's PO-
+    search-related crashes) with the list toolbar's own free-text
+    Search box, per the user's own SAP-side change: "All Purchase
+    Orders by Selection" is now the tenant-remembered DEFAULT view for
+    ALL 3 pooled bot accounts (itadmin/STOREBOT1/STOREBOT2), so there is
+    no base-view dropdown left to fight with at all, and no Filter
+    panel to open/track. Just type the PO number into the visible
+    "Search" box and press Enter - SAPUI5's own free-text search
+    already filters the list to matching rows. Returns the row count
+    found. NOT YET LIVE-VERIFIED - awaiting confirmation on the next
+    real PO; if this ever needs reverting, the old Filter-panel-based
+    version is in git history (search commits mentioning "defaultSetDDLB")."""
+    await _wait_for_table_load(page)
+    search_input = page.get_by_placeholder("Search", exact=True).first
+    await search_input.click(force=True)
+    await search_input.fill(po_number)
+    await search_input.press("Enter")
+    await page.wait_for_timeout(1500)
+    await _wait_for_table_load(page)
     return len(await page.query_selector_all('tr[id^="__table"]'))
 
 
