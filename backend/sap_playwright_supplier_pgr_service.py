@@ -218,13 +218,33 @@ async def _search_po_exact(page, po_number: str) -> int:
     return len(await page.query_selector_all('tr[id^="__table"]'))
 
 
-async def _fill_line_actual_quantities(page, item_products: dict, item_qtys: dict) -> list:
+async def _fill_line_actual_quantities(page, item_products: dict, item_qtys: dict, po_number: str = None) -> list:
     """item_products: {item_number: product_id}, item_qtys: {item_number:
-    qty}. Matches each grid row to a PO line by its Product ID TEXT,
-    never by row order (a real, confirmed-dangerous bug found by
-    testing_agent code review, Aug 29 2026: order-based matching could
-    silently post a quantity against the WRONG line on a real PO if the
-    dialog's own row order ever differs from the shipment's item order).
+    qty}. Matches each grid row to a PO line, never by row order (a real,
+    confirmed-dangerous bug found by testing_agent code review, Aug 29
+    2026: order-based matching could silently post a quantity against
+    the WRONG line on a real PO if the dialog's own row order ever
+    differs from the shipment's item order).
+
+    Sep 12 2026 BUG FOUND + FIXED (real incident, PO 29455 - a genuine
+    5-line PO where EVERY line is the SAME Product ID, split across
+    delivery items 10/20/30/40/50): Product ID alone is NOT a unique
+    match key once a PO has more than one line for the identical
+    product - matching by Product ID always resolved to the very FIRST
+    such row for every item_number, so items 20/30/40/50 never got
+    their own Actual Quantity filled at all (confirmed live: those
+    cells stayed empty, SAP's own "Actual quantity ... missing"
+    validation fired on save), while item 10's single cell was silently
+    overwritten by each later item's quantity in turn. SAP's own
+    "Reference Details Description" grid column echoes back our own
+    "{po_number}-{item_number}" reference for each line (confirmed live
+    in the crash screenshot - "29455-1".."29455-5") - a genuinely unique
+    per-row key, tried FIRST when `po_number` is given; Product ID stays
+    as the fallback for the single-line-per-product case or if that
+    reference text isn't present. `used_rows` stops two different
+    item_numbers from ever matching the SAME row via the Product ID
+    fallback (the exact class of bug this whole fix addresses).
+
     Scoped to the #sap-ui-static popup container when it exists and has
     rows (SAPUI5's usual place to render dialogs/popovers) - falls back
     to the whole page only if that container is empty, so this can never
@@ -245,18 +265,28 @@ async def _fill_line_actual_quantities(page, item_products: dict, item_qtys: dic
         return list(item_qtys.keys())
 
     rows = await scope.locator('tr[id^="__table"]').all()
+    row_texts = [await row.inner_text() for row in rows]
+    used_rows = set()
     unfilled = []
     for item_number, qty in item_qtys.items():
         product_id = item_products.get(item_number)
-        matched_row = None
-        for row in rows:
-            row_text = await row.inner_text()
-            if product_id and product_id in row_text:
-                matched_row = row
-                break
-        if matched_row is None:
+        reference_key = f"{po_number}-{item_number}" if po_number else None
+        matched_idx = None
+        if reference_key:
+            for i, text in enumerate(row_texts):
+                if i not in used_rows and reference_key in text:
+                    matched_idx = i
+                    break
+        if matched_idx is None and product_id:
+            for i, text in enumerate(row_texts):
+                if i not in used_rows and product_id in text:
+                    matched_idx = i
+                    break
+        if matched_idx is None:
             unfilled.append(item_number)
             continue
+        used_rows.add(matched_idx)
+        matched_row = rows[matched_idx]
         # Sep 2 2026 BUG FOUND + FIXED (same investigation as the
         # PO-search/row-select/loading-time fixes above, confirmed live
         # via backend logs: "'Locator' object has no attribute
@@ -412,7 +442,7 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
             await date_input.press("Tab")
 
     await step("entering_quantities")
-    unfilled = await _fill_line_actual_quantities(page, item_products, item_qtys)
+    unfilled = await _fill_line_actual_quantities(page, item_products, item_qtys, po_number)
     if unfilled:
         result = await _capture_failure(page, po_number, "entering_quantities", f"Could not enter Actual Quantity for item(s) {', '.join(unfilled)}")
         await _ensure_draft_discarded(page, po_number)
