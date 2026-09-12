@@ -203,7 +203,18 @@ async def _search_po_exact(page, po_number: str) -> int:
     go_btn = page.get_by_text("Go", exact=True).first
     if await go_btn.count() > 0:
         await go_btn.click(force=True)
-        await page.wait_for_timeout(4000)
+        # Sep 12 2026 fix (real incident, PO 29455 crashed at
+        # "unexpected_crash" - the failure screenshot showed a
+        # COMPLETELY DIFFERENT, unrelated PO still highlighted in the
+        # list): a fixed 4000ms wait was not always long enough for this
+        # tenant to actually re-render the filtered table after "Go" -
+        # the old blind wait then read the row count (and later, row[0])
+        # from the STALE pre-filter table, so the automation went on to
+        # click/act on the wrong PO's row entirely. Same
+        # loading-text-based wait already proven reliable elsewhere in
+        # this module (_wait_for_table_load) now gates this too.
+        await page.wait_for_timeout(1500)
+        await _wait_for_table_load(page)
     return len(await page.query_selector_all('tr[id^="__table"]'))
 
 
@@ -334,6 +345,24 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
     if hits == 0:
         return {"po_number": po_number, "status": "skipped", "error": "PO not found in SAP's Purchase Orders view - check its status is actually released/receivable (not 'In Preparation')"}
     rows = await page.query_selector_all('tr[id^="__table"]')
+    # Sep 12 2026 fix (real incident, PO 29455): `hits` being non-zero
+    # only ever meant "some row exists", never that it's really OUR PO -
+    # a stale/still-loading table (see _search_po_exact's own fix above)
+    # could return a leftover row from a PREVIOUS PO's search. Verify
+    # the actual row text before ever clicking/acting on it; if it still
+    # doesn't match after one clean re-search, fail with a precise,
+    # diagnosable reason instead of crashing generically deep inside the
+    # Post Goods Receipt screen for the WRONG PO.
+    row_text = await rows[0].inner_text()
+    if po_number not in row_text:
+        await _wait_for_table_load(page)
+        rows = await page.query_selector_all('tr[id^="__table"]')
+        row_text = (await rows[0].inner_text()) if rows else ""
+        if not rows or po_number not in row_text:
+            return await _capture_failure(
+                page, po_number, "searching",
+                f"SAP's Purchase Orders list did not refresh to show PO {po_number} after searching - it was still showing a different PO's row",
+            )
     await _click_po_row(page, rows[0], po_number)
     await page.wait_for_timeout(1500)
 
