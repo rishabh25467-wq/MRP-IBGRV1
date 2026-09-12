@@ -18,6 +18,7 @@ import {
   X,
   CaretRight,
   CaretDown,
+  DownloadSimple,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -2162,6 +2163,14 @@ export default function ProductionConfirmationPage() {
   const [stockByRow, setStockByRow] = useState({});
   const [lastConfirmationByLot, setLastConfirmationByLot] = useState({});
   const [outputProductFilter, setOutputProductFilter] = useState("");
+  // Sep 12 2026, user's explicit ask: "between" date range on this
+  // table's own Last Confirmation date (client-side, from data already
+  // fetched into lastConfirmationByLot - no extra SAP/backend call), plus
+  // WIP Clearing and By-product posting status filters.
+  const [lastConfDateFrom, setLastConfDateFrom] = useState("");
+  const [lastConfDateTo, setLastConfDateTo] = useState("");
+  const [wipFilter, setWipFilter] = useState("all");
+  const [byproductFilter, setByproductFilter] = useState("all");
   const [todayStats, setTodayStats] = useState({
     today_confirmed_output_qty: 0, today_scrap_posted_qty: 0, today_released_output_qty: 0, today_output_open_qty: 0,
   });
@@ -2253,6 +2262,30 @@ export default function ProductionConfirmationPage() {
       const q = outputProductFilter.trim().toLowerCase();
       out = out.filter((r) => (r.main_output_product || "").toLowerCase().includes(q));
     }
+    if (lastConfDateFrom || lastConfDateTo) {
+      const fromTs = lastConfDateFrom ? new Date(lastConfDateFrom + "T00:00:00").getTime() : -Infinity;
+      const toTs = lastConfDateTo ? new Date(lastConfDateTo + "T23:59:59.999").getTime() : Infinity;
+      out = out.filter((r) => {
+        const conf = lastConfirmationByLot[`${r.production_lot_id}::${r.reporting_point_id}`];
+        if (!conf?.at) return false;
+        const t = new Date(conf.at).getTime();
+        return t >= fromTs && t <= toTs;
+      });
+    }
+    if (wipFilter !== "all") {
+      out = out.filter((r) => {
+        const wip = lastConfirmationByLot[`${r.production_lot_id}::${r.reporting_point_id}`]?.wip_clearing;
+        if (!wip || wip.skipped) return false;
+        return wipFilter === "posted" ? !!wip.success : !wip.success;
+      });
+    }
+    if (byproductFilter !== "all") {
+      out = out.filter((r) => {
+        const bp = lastConfirmationByLot[`${r.production_lot_id}::${r.reporting_point_id}`]?.byproduct_confirmation;
+        if (!bp) return false;
+        return byproductFilter === "posted" ? !!bp.success : !bp.success;
+      });
+    }
     if (sortLatestFirst) {
       out = [...out].sort((a, b) => {
         const at = a.order_created_at ? new Date(a.order_created_at).getTime() : -Infinity;
@@ -2261,7 +2294,7 @@ export default function ProductionConfirmationPage() {
       });
     }
     return out;
-  }, [rows, creatorFilter, sortLatestFirst, actorName, outputProductFilter]);
+  }, [rows, creatorFilter, sortLatestFirst, actorName, outputProductFilter, lastConfirmationByLot, lastConfDateFrom, lastConfDateTo, wipFilter, byproductFilter]);
 
   // "How many pcs are sitting at OP10" (user's explicit ask, Aug 2026):
   // for a multi-step routing lot, the pieces that cleared THIS operation
@@ -2286,6 +2319,33 @@ export default function ProductionConfirmationPage() {
     });
     return map;
   }, [rows]);
+
+  // Sep 12 2026, user's explicit ask: "Download report in Excel same as
+  // table" - exports exactly the currently visible (filtered) rows, with
+  // the same columns shown on screen, including the WIP Clearing/By-
+  // product status this same ask added filters for.
+  const exportToExcel = () => {
+    const header = ["Lot ID", "Output Product", "Site", "Status", "Reporting Point", "Planned", "Confirmed So Far", "Open", "Waiting Next Stage", "UOM", "Finished", "Created By", "Production Model", "Stock", "WIP Clearing", "By-product", "Last Confirmed At"];
+    const dataRows = visibleRows.map((r) => {
+      const conf = lastConfirmationByLot[`${r.production_lot_id}::${r.reporting_point_id}`];
+      const stock = stockByRow[rowKey(r)];
+      const wipLabel = !conf?.wip_clearing ? "—" : conf.wip_clearing.skipped ? "Pending" : conf.wip_clearing.success ? "Posted" : "Error";
+      const byproductLabel = !conf?.byproduct_confirmation ? "—" : conf.byproduct_confirmation.success ? "Posted" : "Error";
+      return [
+        r.production_lot_id, r.main_output_product || "—", r.site_id || "—", r.life_cycle_status_label,
+        r.reporting_point_description || r.operation_description || r.reporting_point_id || "—",
+        r.planned_quantity, r.total_confirmed_quantity, r.open_quantity, stageWaitingByRowKey[rowKey(r)] || 0,
+        formatUnit(r.unit_code) || "—", r.task_finished ? "Yes" : "No", r.created_by || "—", r.production_model_id || "—",
+        !stock ? "—" : !stock.checked ? "No BOM cached" : stock.sufficient_all ? "OK" : `Short (${stock.short_components.length})`,
+        wipLabel, byproductLabel, conf?.at ? new Date(conf.at).toLocaleString("en-IN") : "—",
+      ];
+    });
+    const sheet = XLSX.utils.aoa_to_sheet([header, ...dataRows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "Production Confirmation");
+    XLSX.writeFile(workbook, `production_confirmation_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
 
   return (
     <div className="print:hidden h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]">
@@ -2404,6 +2464,42 @@ export default function ProductionConfirmationPage() {
           </Button>
           <Button variant="outline" onClick={() => setShowReasons(true)} data-testid="open-manage-reasons-button">
             <Gear size={14} className="mr-1.5" /> Manage Reasons
+          </Button>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-heading font-bold uppercase tracking-wide text-[#667085]">Last Confirmed:</span>
+          <Input type="date" value={lastConfDateFrom} onChange={(e) => setLastConfDateFrom(e.target.value)} className="w-36 bg-white h-8 text-xs" data-testid="last-conf-date-from-input" />
+          <span className="text-[#98A2B3] text-xs">to</span>
+          <Input type="date" value={lastConfDateTo} onChange={(e) => setLastConfDateTo(e.target.value)} className="w-36 bg-white h-8 text-xs" data-testid="last-conf-date-to-input" />
+          <Select value={wipFilter} onValueChange={setWipFilter}>
+            <SelectTrigger className="w-36 bg-white h-8 text-xs" data-testid="wip-filter-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">WIP: All</SelectItem>
+              <SelectItem value="posted">WIP: Posted</SelectItem>
+              <SelectItem value="error">WIP: Error</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={byproductFilter} onValueChange={setByproductFilter}>
+            <SelectTrigger className="w-44 bg-white h-8 text-xs" data-testid="byproduct-filter-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">By-product: All</SelectItem>
+              <SelectItem value="posted">By-product: Posted</SelectItem>
+              <SelectItem value="error">By-product: Error</SelectItem>
+            </SelectContent>
+          </Select>
+          {(lastConfDateFrom || lastConfDateTo || wipFilter !== "all" || byproductFilter !== "all") && (
+            <Button
+              variant="outline" size="sm" className="h-8 text-xs"
+              onClick={() => { setLastConfDateFrom(""); setLastConfDateTo(""); setWipFilter("all"); setByproductFilter("all"); }}
+              data-testid="lots-clear-filters-button"
+            >
+              Clear Filters
+            </Button>
+          )}
+          <div className="flex-1" />
+          <Button variant="outline" size="sm" className="h-8 text-xs" onClick={exportToExcel} data-testid="export-excel-button">
+            <DownloadSimple size={14} className="mr-1.5" /> Export Excel
           </Button>
         </div>
 

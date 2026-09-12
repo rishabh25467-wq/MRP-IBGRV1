@@ -1,0 +1,23 @@
+{
+  "summary": "Frontend-only testing of the new second-row filter bar (Last Confirmed date range, WIP filter, By-product filter, Clear Filters button) and Export Excel button on /production-confirmation > Production Confirmation tab. All 6 new data-testid elements render and are interactive. Filter state changes correctly toggle the Clear Filters button visibility (hidden by default, appears when any of the 4 controls is non-default, disappears again on click). Export Excel triggers a proper .xlsx download (filename production_confirmation_2026-09-12.xlsx) with no JS errors, both unfiltered and with a date-range filter applied. No console errors or page errors captured during the whole flow. Regression checks: status-filter-select, refresh-lots-button, output-product-filter-input, manual-lot-id-input, open-history-button, open-manage-reasons-button, and all 4 KPI stat cards remain visible; Create Production Order tab still loads correctly. Note: this dev env currently has 0 open lots for the super_admin session (rows=0 for every filter combination) so Posted/Error data-driven filtering could not be positively verified with live SAP rows - filter LOGIC was verified via code review of the visibleRows useMemo (lines 2265-2288 of ProductionConfirmationPage.js) which correctly excludes rows lacking wip_clearing/byproduct_confirmation from Posted/Error subsets, and rows without conf.at from date filter, matching the spec.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/test_reports/iteration_161.json"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ProductionConfirmationPage.js is now 2641 lines - well past the 700-line guideline. Consider splitting the Production Confirmation tab (state, filters, table, export, dialogs) into a separate file/hook to reduce cognitive load and enable finer-grained rerenders.",
+    "exportToExcel does not guard against an empty visibleRows array - it will still write a workbook containing only the header. Not a bug per user's spec ('exports exactly what's currently visible') but consider a toast when 0 rows are exported so users don't get confused by a 'blank' file."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (skipped per request)", "frontend": "100% of testable paths (data-limited: 0 open lots in dev env prevented positive Posted/Error data assertions)"},
+  "test_credentials": "vms_session=6e8c7c0c6a154691ae23819e13dc7712 (super_admin, test-tid:pc-fork-agent)",
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 161 verified the new date range + WIP + By-product + Clear Filters + Export Excel controls on Production Confirmation tab. Env has 0 open SAP lots (super_admin), so Posted/Error positive filtering couldn't be tested with live data - logic verified by code review. If future runs get live rows with wip_clearing/byproduct_confirmation data, positively assert Posted vs Error row counts. All existing testids (status/creator/output-product/manual-lot/history/manage-reasons/stat cards) remain intact. Create Production Order tab unchanged and still loads.",
+  "rca of the issue": "N/A - no bugs found"
+}
