@@ -448,6 +448,24 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
         await _ensure_draft_discarded(page, po_number)
         return result
 
+    # Sep 12 2026 fix (real incident, PO 29455 - user's explicit
+    # clarification): "Post Goods Receipt" on a PO opens SAP's Inbound
+    # Delivery draft with ALL of that PO's still-open lines by default,
+    # not just the ones this particular shipment actually covers. A PO
+    # with 5 open lines but a delivery for only 1 of them left the
+    # other 4 sitting with a blank/zero Actual Quantity - SAP's own
+    # save-time validation then rejected the whole draft ("Actual
+    # quantity for Delivery Item ID 20 missing"...) rather than simply
+    # ignoring the lines nobody delivered. `item_qtys` only ever
+    # contains what THIS shipment covers, so any other line is
+    # correctly left untouched (still zero) by the fill step above -
+    # SAP's own toolbar action removes exactly those before Save,
+    # matching the real intended behavior: only the lines that actually
+    # arrived get received, everything else is simply not part of this
+    # delivery at all.
+    await _click_button(page, "Remove Zero Quantity Items")
+    await page.wait_for_timeout(1000)
+
     await step("saving")
     if await _click_button(page, "Save and Close") != "clicked":
         result = await _capture_failure(page, po_number, "saving", "Save and Close button not found")
