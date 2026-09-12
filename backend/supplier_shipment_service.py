@@ -820,6 +820,7 @@ def group_items_by_po_for_gr(doc: dict) -> dict:
     grouped = {}
     for it in doc["items"]:
         po = grouped.setdefault(it["po_number"], {
+            "doc_code": doc.get("_id"),
             "supplier_doc_num": doc.get("supplier_doc_num"),
             "bill_date": doc.get("bill_date"),
             "vendor_code": doc.get("vendor_code"),

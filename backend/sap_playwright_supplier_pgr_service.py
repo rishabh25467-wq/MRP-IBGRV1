@@ -127,21 +127,38 @@ async def _ensure_draft_discarded(page, po_number: str) -> None:
         logger.warning(f"Could not confirm the SAP draft for PO {po_number} was discarded (may still be locked): {e}")
 
 
-async def _switch_to_all_deliveries_view(page) -> None:
+async def _switch_to_all_deliveries_view(page) -> bool:
     """Inbound Delivery Notifications defaults to "Advised Delivery
     Notifications" (STO-originated only) - our SOAP-created supplier
     notifications don't appear there until the base view is switched to
     "All Delivery Notifications by Selection" (confirmed live, Sep 12
     2026: 0 hits in the default view, 1 hit immediately after this
-    switch, for the identical ID)."""
-    combo = page.locator('.sapMSelect, [role="combobox"]').first
-    await combo.click(force=True)
-    await page.wait_for_timeout(800)
+    switch, for the identical ID).
+
+    Sep 12 2026 BUG FOUND + FIXED (real incident, PO 29482 search
+    failing with "No records found" even after the retry loop below):
+    the old selector `.sapMSelect, [role="combobox"]").first` is not
+    scoped to this page's own view-selector dropdown at all - it can
+    just as easily match the SAP Fiori shell's own "All Categories"
+    global-search dropdown at the very top of the screen (loads first,
+    same CSS class), silently opening/clicking THAT instead and leaving
+    "Advised Delivery Notifications" untouched. Real fix: target the
+    element by its actual CURRENT visible text ("Advised Delivery
+    Notifications") instead of a generic role/class selector, so it's
+    unambiguous which dropdown gets clicked. Returns False (never
+    raises) if the option genuinely can't be found, so the caller can
+    retry the whole thing instead of silently searching the wrong view."""
+    trigger = page.get_by_text("Advised Delivery Notifications", exact=True).first
+    if await trigger.count() == 0:
+        return False
+    await trigger.click(force=True)
+    await page.wait_for_timeout(1000)
     for o in await page.query_selector_all('li, [role="option"]'):
         if (await o.inner_text()).strip() == "All Delivery Notifications by Selection":
             await o.click(force=True)
             await page.wait_for_timeout(2500)
-            return
+            return True
+    return False
 
 
 async def _fill_line_actual_quantities(page, item_products: dict, item_qtys: dict, po_number: str = None) -> list:
@@ -292,7 +309,7 @@ def _extract_inbound_delivery_id(confirmation_text: str) -> str:
     return m.group(1) if m else None
 
 
-async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: str, item_qtys: dict, item_products: dict,
+async def _post_one_po(page, po_number: str, doc_code: str, supplier_doc_num: str, bill_date: str, item_qtys: dict, item_products: dict,
                         item_uoms: dict, vendor_code: str, notification_client, on_step=None, events: list = None) -> dict:
     # Sep 12 2026, user's explicit ask - a plain-English trail of every
     # milestone actually reached in SAP before a failure (or success),
@@ -311,12 +328,22 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
     # Sep 12 2026 - the whole PO-search step is now a single SOAP call
     # (see module docstring): creates the Inbound Delivery Notification
     # referencing each item by PO+ItemID directly, so there is no PO
-    # search or row-matching left to get wrong. `notification_id` reuses
-    # the vendor's own supplier_doc_num for traceability (falls back to
-    # a timestamp-based one if blank), suffixed with the PO number so a
-    # multi-PO shipment never collides on the same ID twice.
+    # search or row-matching left to get wrong.
+    #
+    # Sep 12 2026 BUG FOUND + FIXED (real incident: two DIFFERENT real
+    # shipments, 5XL5EE (supplier_doc_num "test_grn") and FYXUKN
+    # (supplier_doc_num "test_GRN"), both for PO 29482 - SAP normalizes/
+    # uppercases Delivery Notification IDs, so the OLD scheme
+    # (`{supplier_doc_num}-{po_number}`) silently collided: FYXUKN's
+    # SOAP create hit "already exists" (correctly handled below) and
+    # then went on to open/select/report success on 5XL5EE's ALREADY-
+    # FINISHED document instead of its own - FYXUKN's actual goods were
+    # never received in SAP at all. `notification_id` now always keys
+    # off `doc_code` (this app's own unique 6-char shipment code, never
+    # user-typed, never case-collidable in practice) instead of the
+    # free-text supplier_doc_num - guaranteed unique per shipment+PO.
     delivery_date = (bill_date or datetime.now(timezone.utc).strftime("%Y-%m-%d"))[:10]
-    notification_id = f"{supplier_doc_num}-{po_number}" if supplier_doc_num else f"GRN{po_number}{int(datetime.now(timezone.utc).timestamp())}"
+    notification_id = f"{doc_code}-{po_number}"
     soap_items = [
         {"item_number": item_number, "quantity": qty, "unit_of_measure": item_uoms.get(item_number) or "EA", "product_id": item_products.get(item_number)}
         for item_number, qty in item_qtys.items()
@@ -340,15 +367,20 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
 
     await _open_inbound_delivery_notifications(page)
     events.append("Opened Inbound Logistics - Inbound Delivery Notifications")
-    await _switch_to_all_deliveries_view(page)
+    view_switched = await _switch_to_all_deliveries_view(page)
+    events.append("Switched to 'All Delivery Notifications by Selection' view" if view_switched else "Could not switch view - will retry")
     # Sep 12 2026 fix (real incident, shipment 5XL5EE/PO 29482): SAP's
     # UI search index lags a few seconds behind a SOAP create - the
     # notification exists (confirmed: SOAP call above already
     # succeeded) but doesn't show up in the list on the very first
     # search. Retry the search itself (not just re-navigate) with a
-    # short backoff before giving up.
+    # short backoff before giving up. Re-attempt the view switch each
+    # time too (see that function's docstring for the real incident
+    # where it silently clicked the wrong dropdown and never retried).
     hits = 0
     for attempt in range(4):
+        if not view_switched:
+            view_switched = await _switch_to_all_deliveries_view(page)
         hits = await _search_delivery(page, notification_id)
         if hits > 0:
             break
@@ -433,10 +465,10 @@ STEPS_PER_PO = 4
 
 
 async def post_goods_receipt_via_ui(po_items: dict, notification_client, progress_cb=None) -> dict:
-    """po_items: {po_number: {"supplier_doc_num": str, "bill_date": str,
-    "vendor_code": str, "item_qtys": {item_number: qty}, "item_products":
-    {item_number: product_id}, "item_uoms": {item_number: unit_code}}} -
-    one call per distinct PO, grouping every line item of that PO into
+    """po_items: {po_number: {"doc_code": str, "supplier_doc_num": str,
+    "bill_date": str, "vendor_code": str, "item_qtys": {item_number:
+    qty}, "item_products": {item_number: product_id}, "item_uoms":
+    {item_number: unit_code}}} - one call per distinct PO, grouping every line item of that PO into
     a single submission (user's explicit ask, Aug 29 2026), matching
     the manual flow exactly. `notification_client` is a
     SAPInboundDeliveryNotificationClient (see that module) - the SOAP
@@ -496,7 +528,7 @@ async def post_goods_receipt_via_ui(po_items: dict, notification_client, progres
                     events = [f"Logged in to SAP as {username}"]
                     try:
                         result = await _post_one_po(
-                            page, po_number, spec.get("supplier_doc_num"), spec.get("bill_date"),
+                            page, po_number, spec.get("doc_code"), spec.get("supplier_doc_num"), spec.get("bill_date"),
                             spec.get("item_qtys") or {}, spec.get("item_products") or {}, spec.get("item_uoms") or {},
                             spec.get("vendor_code"), notification_client, on_step=on_step, events=events,
                         )
