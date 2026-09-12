@@ -7576,9 +7576,20 @@ def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> st
     """Shared by approve + retry-goods-receipt - kicks off the Playwright
     Goods Receipt job (see sap_playwright_supplier_pgr_service.py) as a
     background job, same job_store pattern as inbound_receipt's
-    /receive endpoint - Playwright is too slow to block the request."""
+    /receive endpoint - Playwright is too slow to block the request.
+
+    Sep 12 2026 fix (real incident, multi-PO shipment 4EBPH2: PO 29429
+    posted fine on attempt 1, PO 29482 crashed - a Retry resubmitted
+    BOTH POs, since `group_items_by_po_for_gr` has no memory of a
+    previous attempt on its own). Re-processing an already-"posted" PO
+    is not just wasteful now - its Inbound Delivery Notification is
+    already "Finished" in SAP, so "Post Goods Receipt" is disabled for
+    it, which would make an already-successful PO look like a fresh
+    failure. Skip any PO the last attempt already posted."""
     job_id = str(uuid.uuid4())
     po_items = supplier_shipment_service.group_items_by_po_for_gr(doc)
+    already_posted = {r["po_number"] for r in (doc.get("sap_gr_result") or {}).get("per_po", []) if r.get("status") == "posted"}
+    po_items = {po: spec for po, spec in po_items.items() if po not in already_posted}
     total_steps = sap_playwright_supplier_pgr_service.total_progress_steps(len(po_items) or 1)
     job_store.create_job(db, job_id, {
         "doc_code": doc_code, "kind": "supplier_grn", "status": "running", "phase": "queued",
@@ -7590,6 +7601,8 @@ def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> st
             "phase": phase, "progress_current": current, "progress_total": total,
         }))
 
+    previously_posted_results = [r for r in (doc.get("sap_gr_result") or {}).get("per_po", []) if r.get("status") == "posted"]
+
     async def run():
         try:
             gr_result = await _run_playwright_job_with_retries(
@@ -7599,8 +7612,8 @@ def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> st
             )
             on_progress("moving_stock", gr_result["total_steps"] - 1, gr_result["total_steps"])
             final = await asyncio.to_thread(
-                supplier_shipment_service.finalize_goods_receipt, db, doc_code, gr_result["results"],
-                sap_goods_movement_client, sap_inventory_client, owner_party_id, gr_result.get("sap_username"),
+                supplier_shipment_service.finalize_goods_receipt, db, doc_code, previously_posted_results + gr_result["results"],
+                sap_goods_movement_client, sap_inventory_client, owner_party_id, gr_result.get("sap_username") or doc.get("sap_gr_result", {}).get("sap_username"),
             )
             on_progress("done", gr_result["total_steps"], gr_result["total_steps"])
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})

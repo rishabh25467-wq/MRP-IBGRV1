@@ -135,26 +135,43 @@ async def _switch_to_all_deliveries_view(page) -> bool:
     2026: 0 hits in the default view, 1 hit immediately after this
     switch, for the identical ID).
 
-    Sep 12 2026 BUG FOUND + FIXED (real incident, PO 29482 search
-    failing with "No records found" even after the retry loop below):
-    the old selector `.sapMSelect, [role="combobox"]").first` is not
-    scoped to this page's own view-selector dropdown at all - it can
-    just as easily match the SAP Fiori shell's own "All Categories"
-    global-search dropdown at the very top of the screen (loads first,
-    same CSS class), silently opening/clicking THAT instead and leaving
-    "Advised Delivery Notifications" untouched. Real fix: target the
-    element by its actual CURRENT visible text ("Advised Delivery
-    Notifications") instead of a generic role/class selector, so it's
-    unambiguous which dropdown gets clicked. Returns False (never
-    raises) if the option genuinely can't be found, so the caller can
-    retry the whole thing instead of silently searching the wrong view."""
-    trigger = page.get_by_text("Advised Delivery Notifications", exact=True).first
-    if await trigger.count() == 0:
+    Sep 12 2026 BUG FOUND + FIXED, TWICE, real incidents:
+    (1) the old selector `.sapMSelect, [role="combobox"]").first` is
+    not scoped to this page's own view-selector dropdown at all - it
+    can just as easily match the SAP Fiori shell's own "All
+    Categories" global-search dropdown at the very top of the screen
+    (loads first, same CSS class), silently opening/clicking THAT
+    instead and leaving "Advised Delivery Notifications" untouched.
+    (2) switching to matching by visible text instead ("Advised
+    Delivery Notifications") fixed that, but crashed on a real
+    multi-PO shipment's SECOND po: `get_by_text(...).first` matched a
+    STALE, HIDDEN `<li role="option">` left in the DOM from the FIRST
+    PO's own earlier interaction with this exact dropdown (same page/
+    browser session is reused across every PO in one shipment) instead
+    of the actual visible closed-state trigger - `force=True` can't
+    click an element with no bounding box, so `.click()` raised
+    "Element is not visible" and crashed the whole PO
+    (unexpected_crash), confirmed via the app's own error logs. Real
+    fix: explicitly filter candidates to the one that `is_visible()`,
+    never trust `.first` alone when the same text can legitimately
+    exist twice (once as the live trigger, once as a leftover/hidden
+    option from a previous open+close).
+
+    Returns False (never raises) if no visible match is found, so the
+    caller can retry the whole thing instead of crashing the PO."""
+    candidates = page.get_by_text("Advised Delivery Notifications", exact=True)
+    trigger = None
+    for i in range(await candidates.count()):
+        el = candidates.nth(i)
+        if await el.is_visible():
+            trigger = el
+            break
+    if trigger is None:
         return False
     await trigger.click(force=True)
     await page.wait_for_timeout(1000)
     for o in await page.query_selector_all('li, [role="option"]'):
-        if (await o.inner_text()).strip() == "All Delivery Notifications by Selection":
+        if (await o.inner_text()).strip() == "All Delivery Notifications by Selection" and await o.is_visible():
             await o.click(force=True)
             await page.wait_for_timeout(2500)
             return True
