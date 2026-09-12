@@ -588,7 +588,7 @@ async def post_goods_receipt_via_ui(po_items: dict, progress_cb=None) -> dict:
                     def on_step(name, _po=po_number, _idx=idx):
                         _progress(f"{name}:{_po}:{_idx}/{total_pos}")
 
-                    events = []
+                    events = [f"Logged in to SAP as {username}"]
                     try:
                         result = await _post_one_po(
                             page, po_number, spec.get("supplier_doc_num"), spec.get("bill_date"),
@@ -623,7 +623,7 @@ async def post_goods_receipt_via_ui(po_items: dict, progress_cb=None) -> dict:
     finally:
         playwright_concurrency.release((username, password))
 
-    return {"results": results, "completed_at": datetime.now(timezone.utc).isoformat(), "total_steps": total_steps}
+    return {"results": results, "completed_at": datetime.now(timezone.utc).isoformat(), "total_steps": total_steps, "sap_username": username}
 
 
 def total_progress_steps(total_pos: int) -> int:

@@ -7006,7 +7006,7 @@ async def post_inbound_receipt(sto_id: str, payload: InboundReceiptRequest, requ
                     doc.get("outbound_delivery_ids") or [], line_overrides=line_overrides, progress_cb=on_progress,
                 ),
             )
-            final = await asyncio.to_thread(inbound_receipt_service.finalize_receipt, db, sto_id, pgr_result["results"], actor, bool(line_overrides))
+            final = await asyncio.to_thread(inbound_receipt_service.finalize_receipt, db, sto_id, pgr_result["results"], actor, bool(line_overrides), pgr_result.get("sap_username"))
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
         except Exception as e:
             logger.error(f"Inbound receipt job {job_id} ({sto_id}) failed: {e}")
@@ -7586,7 +7586,7 @@ def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> st
             on_progress("moving_stock", gr_result["total_steps"] - 1, gr_result["total_steps"])
             final = await asyncio.to_thread(
                 supplier_shipment_service.finalize_goods_receipt, db, doc_code, gr_result["results"],
-                sap_goods_movement_client, sap_inventory_client, owner_party_id,
+                sap_goods_movement_client, sap_inventory_client, owner_party_id, gr_result.get("sap_username"),
             )
             on_progress("done", gr_result["total_steps"], gr_result["total_steps"])
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})

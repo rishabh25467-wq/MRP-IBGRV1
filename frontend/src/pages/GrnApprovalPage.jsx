@@ -1007,6 +1007,9 @@ export default function GrnApprovalPage() {
                 )}
                 <div><span className="text-[#475467]">Supplier Invoice No:</span> <span className="font-data font-semibold">{confirmedDetail.supplier_doc_num || "\u2014"}</span></div>
                 <div><span className="text-[#475467]">Bill Date:</span> <span className="font-data font-semibold">{confirmedDetail.bill_date || "\u2014"}</span></div>
+                {confirmedDetail.sap_gr_result?.sap_username && (
+                  <div><span className="text-[#475467]">SAP User Used:</span> <span className="font-data font-semibold" data-testid="grn-confirmed-detail-sap-username">{confirmedDetail.sap_gr_result.sap_username}</span></div>
+                )}
                 <div><span className="text-[#475467]">SAP Inbound Delivery #:</span>{" "}
                   {confirmedDetail.sap_sync_status === "posted" ? (
                     <span className="font-data font-semibold" data-testid="grn-confirmed-detail-inbound-id">

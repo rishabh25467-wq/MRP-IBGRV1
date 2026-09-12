@@ -352,4 +352,4 @@ async def post_goods_receipts_via_ui(delivery_ids: list, line_overrides: dict = 
         playwright_concurrency.release((username, password))
 
     _progress("done", total)
-    return {"results": results, "completed_at": datetime.now(timezone.utc).isoformat()}
+    return {"results": results, "completed_at": datetime.now(timezone.utc).isoformat(), "sap_username": username}

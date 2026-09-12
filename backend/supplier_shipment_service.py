@@ -848,12 +848,19 @@ def prepare_approval(db, doc_code: str, approved_by: str, supplier_doc_num: str,
     return get_shipment_by_code(db, doc_code)
 
 
-def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_client, inventory_client, owner_party_id: str) -> dict:
+def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_client, inventory_client, owner_party_id: str, sap_username: str = None) -> dict:
     """Called after sap_playwright_supplier_pgr_service.
     post_goods_receipt_via_ui returns - `gr_results` is its
     results list. All POs in the shipment must have posted for step 2
     (Goods Movement) to run, matching approve_shipment's old
     all-or-nothing behaviour.
+
+    Sep 12 2026, user's explicit ask ("which user you used while
+    receiving the recent grn... in SAP") - `sap_username` (whichever of
+    the pooled SAP UI logins actually ran this specific attempt, see
+    playwright_concurrency.py) is now stamped onto every attempt so this
+    is always answerable from the shipment's own data going forward,
+    without needing to dig through backend logs after the fact.
 
     Sep 10 2026, user's explicit ask ("do not show status received
     until SAP inbound number is received" + "retry... not work...you
@@ -869,7 +876,7 @@ def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_c
     doc = get_shipment_by_code(db, doc_code)
     all_ok = bool(gr_results) and all(r.get("status") == "posted" for r in gr_results)
     all_skipped = bool(gr_results) and all(r.get("status") == "skipped" for r in gr_results)
-    sap_gr_result = {"ok": all_ok, "per_po": gr_results}
+    sap_gr_result = {"ok": all_ok, "per_po": gr_results, "sap_username": sap_username}
     if all_ok:
         sap_sync_status = "posted"
     elif all_skipped:

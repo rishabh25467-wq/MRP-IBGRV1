@@ -203,7 +203,7 @@ def build_line_overrides(doc: dict, quantity_overrides: dict) -> dict:
     return result
 
 
-def finalize_receipt(db, sto_id: str, results: list, actor: str, had_overrides: bool = False) -> dict:
+def finalize_receipt(db, sto_id: str, results: list, actor: str, had_overrides: bool = False, sap_username: str = None) -> dict:
     """Persists the final receipt outcome after the Playwright PGR run -
     same status rollup this feature has always used. Also stamps
     `receipt_completed_at` and, when `receipt_started_at` was recorded
@@ -212,7 +212,11 @@ def finalize_receipt(db, sto_id: str, results: list, actor: str, had_overrides: 
     THIS attempt (user's explicit ask, Aug 2026: "time taken to complete
     receipt in SAP"). Recomputed fresh on every attempt (including
     retries after a failure), so a retry's duration reflects just that
-    retry's run, not cumulative time since the very first attempt."""
+    retry's run, not cumulative time since the very first attempt.
+
+    Sep 12 2026, user's explicit ask ("which user you used while
+    receiving...in SAP") - `sap_username` stamps which pooled SAP UI
+    login (see playwright_concurrency.py) actually ran THIS attempt."""
     doc = db[STO_COLLECTION].find_one({"_id": sto_id}) or {}
     any_failed = any(r["status"] != "received" for r in results)
     overall = "failed" if all(r["status"] != "received" for r in results) else ("partial" if any_failed else "received")
@@ -225,12 +229,13 @@ def finalize_receipt(db, sto_id: str, results: list, actor: str, had_overrides: 
         "receipt_status": overall,
         "receipt_results": results,
         "receipt_error": error_summary,
+        "receipt_sap_username": sap_username,
         "received_at": now if overall == "received" else doc.get("received_at"),
         "received_by": actor,
         "receipt_completed_at": now,
         "receipt_duration_seconds": round((now - started_at).total_seconds()) if started_at else None,
     }})
-    return {"status": overall, "results": results, "had_overrides": had_overrides, "error": error_summary}
+    return {"status": overall, "results": results, "had_overrides": had_overrides, "error": error_summary, "sap_username": sap_username}
 
 
 def _humanize_sap_error(raw: str) -> str:
