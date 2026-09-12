@@ -780,13 +780,13 @@ export default function GrnApprovalPage() {
                     </button>
                   </div>
                 )}
-                {shipment.sap_sync_status !== "posted" && shipment.sap_gr_result?.per_po?.some((p) => p.events?.length) && (
+                {shipment.sap_sync_status !== "posted" && shipment.sap_gr_result?.per_po?.some((p) => p.status !== "posted" && p.events?.length) && (
                   <div className="px-3">
                     <button
                       type="button"
                       className="text-xs text-[#475467] font-bold hover:underline"
                       data-testid="grn-view-diagnostics-button"
-                      onClick={() => setDiagnosticsModal(shipment.sap_gr_result.per_po.find((p) => p.events?.length))}
+                      onClick={() => setDiagnosticsModal(shipment.sap_gr_result.per_po.find((p) => p.status !== "posted" && p.events?.length))}
                     >
                       View Diagnostics
                     </button>
@@ -1069,13 +1069,13 @@ export default function GrnApprovalPage() {
                   </button>
                 </div>
               )}
-              {confirmedDetail.sap_sync_status !== "posted" && confirmedDetail.sap_gr_result?.per_po?.some((p) => p.events?.length) && (
+              {confirmedDetail.sap_sync_status !== "posted" && confirmedDetail.sap_gr_result?.per_po?.some((p) => p.status !== "posted" && p.events?.length) && (
                 <div>
                   <button
                     type="button"
                     className="text-xs text-[#475467] font-bold hover:underline"
                     data-testid="grn-confirmed-detail-view-diagnostics-button"
-                    onClick={() => setDiagnosticsModal(confirmedDetail.sap_gr_result.per_po.find((p) => p.events?.length))}
+                    onClick={() => setDiagnosticsModal(confirmedDetail.sap_gr_result.per_po.find((p) => p.status !== "posted" && p.events?.length))}
                   >
                     View Diagnostics
                   </button>

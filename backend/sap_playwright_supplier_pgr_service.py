@@ -361,6 +361,22 @@ async def _post_one_po(page, po_number: str, doc_code: str, supplier_doc_num: st
     # free-text supplier_doc_num - guaranteed unique per shipment+PO.
     delivery_date = (bill_date or datetime.now(timezone.utc).strftime("%Y-%m-%d"))[:10]
     notification_id = f"{doc_code}-{po_number}"
+    # Sep 12 2026 fix (real incident, PO 29456: SAP rejected the SOAP
+    # create with the confusing "No inbound delivery request exists
+    # for purchase order reference 29456 - 1" - traced to this PO
+    # line's cached product_id genuinely being None in SAP's own PO
+    # data, a pre-existing data-quality gap, not something this flow
+    # can resolve). Catch it here with a clear, actionable message
+    # instead of sending a literal "None" string as the SOAP
+    # ItemProduct/ProductID and letting SAP's own confusing error
+    # surface instead.
+    missing_products = [item_number for item_number in item_qtys if not item_products.get(item_number)]
+    if missing_products:
+        return {
+            "po_number": po_number, "status": "skipped",
+            "error": f"Cannot receive PO {po_number} item(s) {', '.join(missing_products)} via SAP - Product ID is missing in the cached PO data (ask SAP Admin to check this PO line's product master link)",
+            "events": events,
+        }
     soap_items = [
         {"item_number": item_number, "quantity": qty, "unit_of_measure": item_uoms.get(item_number) or "EA", "product_id": item_products.get(item_number)}
         for item_number, qty in item_qtys.items()
