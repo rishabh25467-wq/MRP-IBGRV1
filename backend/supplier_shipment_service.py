@@ -777,6 +777,20 @@ def _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_cli
     for it in doc["items"]:
         qty = it.get("actual_qty", it["ship_qty"])
         source_area = f"{site_id}-RM"
+        # Sep 12 2026 bug fix (real incident, shipment LFG29A/PO 29482 -
+        # user's explicit report "after success grn why an error
+        # occurred": "SAP rejected the movement: Source and target
+        # logistics area are same"): this app's own default RM warehouse
+        # for most sites IS literally "{site}-RM" (see the site-specific
+        # default warehouse feature) - the exact same string this
+        # function assumes the Goods Receipt already landed in. When the
+        # shipment's chosen target warehouse happens to be that same
+        # default, source == target and SAP correctly rejects the
+        # movement as a no-op. There's genuinely nothing to move in that
+        # case - the stock is already exactly where it needs to be.
+        if source_area == warehouse_id:
+            per_item.append({"po_number": it["po_number"], "item_number": it["item_number"], "product_id": it["product_id"], "ok": True, "skipped": True, "note": f"Already in {warehouse_id} on receipt - no movement needed"})
+            continue
         stock_status = _resolve_source_stock_status(inventory_client, site_id, source_area, it["product_id"], qty)
         try:
             result = goods_movement_client.goods_movement(

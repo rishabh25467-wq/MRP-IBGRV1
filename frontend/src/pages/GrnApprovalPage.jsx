@@ -808,6 +808,20 @@ export default function GrnApprovalPage() {
                     </Button>
                   )}
                 </div>
+                {/* Sep 12 2026, user's explicit ask ("after success grn
+                    why an error occurred") - the badge above only ever
+                    said "pending", never WHY. The real SAP error per
+                    item was already being captured (sap_movement_result.
+                    per_item[].error) but only ever surfaced in a toast
+                    at the moment Retry was clicked - invisible on a
+                    plain page load/lookup like this screenshot. */}
+                {shipment.sap_movement_status !== "posted" && shipment.sap_movement_result?.per_item?.some((p) => p.error) && (
+                  <div className="text-xs text-[#B54708] bg-[#FFFAEB] border border-[#FEDF89] rounded-sm px-3 py-2 space-y-1" data-testid="grn-movement-error-detail">
+                    {shipment.sap_movement_result.per_item.filter((p) => p.error).map((p, i) => (
+                      <div key={i} data-testid={`grn-movement-error-${i}`}><strong>{p.product_id}:</strong> {p.error}</div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
