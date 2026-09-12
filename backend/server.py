@@ -3253,6 +3253,47 @@ async def get_scrap_trend(request: Request):
     return {"breakdown": breakdown, "days": 7}
 
 
+def _ist_today_range():
+    now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    start_ist_naive = datetime(now_ist.year, now_ist.month, now_ist.day)
+    start_utc = (start_ist_naive - timedelta(hours=5, minutes=30)).replace(tzinfo=timezone.utc)
+    return start_utc, start_utc + timedelta(days=1)
+
+
+@api_router.get("/production-confirmation/today-stats")
+async def get_today_output_stats(request: Request):
+    """KPI card redesign (Sep 12 2026, user's explicit ask) - replaces
+    the old Reporting-Points-Shown/Distinct-Lots/Confirmed-Today/Scrap-
+    Trend tiles with 4 output-focused figures for today (midnight IST):
+    Confirmed Output Qty + Scrap Posted Qty (from our own confirmation
+    history - fast, exact), and Released Output Qty + still-Open Qty
+    for whatever was Released today (production_order_creation_
+    history's `released_at`, tracked from today onward per user's
+    explicit ask - won't be accurate for lots released before this
+    fix shipped). Open Qty is worked out with ONE live SAP open-lots
+    call (not per-order), matched back to today's released order IDs -
+    uses each lot's terminal (last routing step) Reporting Point, since
+    that's the true "still not confirmed" bottleneck for a lot."""
+    start_utc, end_utc = _ist_today_range()
+    site_ids = _site_scope_for(request.state.user)
+    stats = await asyncio.to_thread(production_confirmation_service.get_today_output_stats, db, start_utc, end_utc, site_ids)
+    released_order_ids = set(stats.pop("released_today_order_ids", []))
+    open_qty = 0.0
+    if released_order_ids:
+        try:
+            open_rows = await asyncio.to_thread(sap_production_lot_client.find_open_lots, ["2", "3", "4"], None, 500)
+        except SAPProductionLotError:
+            open_rows = []
+        by_lot = {}
+        for r in open_rows:
+            if r.get("production_order_id") in released_order_ids:
+                by_lot.setdefault(r["production_lot_id"], []).append(r)
+        for lot_rows in by_lot.values():
+            open_qty += lot_rows[-1].get("open_quantity") or 0
+    stats["today_output_open_qty"] = open_qty
+    return stats
+
+
 class LatestConfirmationBatchRequest(BaseModel):
     production_lot_ids: List[str]
 
@@ -4576,8 +4617,15 @@ async def release_production_order(payload: ReleaseProductionOrderRequest, reque
 
 
 @api_router.get("/production-confirmation/proposal-history")
-async def get_proposal_and_release_history(request: Request):
-    entries = await asyncio.to_thread(production_confirmation_service.get_proposal_and_release_history, db)
+async def get_proposal_and_release_history(request: Request, start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None)):
+    # Sep 12 2026, user's explicit ask: "created on" date range filter
+    # for this table (uses our own Mongo history - fast, no SAP call).
+    try:
+        start_utc = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) if start_date else None
+        end_utc = (datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)) if end_date else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="start_date/end_date must be in YYYY-MM-DD format")
+    entries = await asyncio.to_thread(production_confirmation_service.get_proposal_and_release_history, db, 200, start_utc, end_utc)
     # Aug 25 2026, user's explicit follow-up ask (same rule as the
     # open-lots table): a plain "user" account only sees entries THEY
     # created/released - admin/super_admin still see every entry.

@@ -182,6 +182,37 @@ def count_confirmed_today(db, start_utc, end_utc, site_ids) -> int:
     return len(db[HISTORY_COLLECTION].distinct("production_lot_id", query))
 
 
+def get_today_output_stats(db, start_utc, end_utc, site_ids) -> dict:
+    """Sep 12 2026, user's explicit ask - KPI card redesign on the
+    Production Confirmation page. Returns the 2 confirmation-side
+    figures directly from our own history (accurate, fast) plus the
+    list of production_order_id's actually Released today (server.py
+    then does ONE live SAP open-lots call to work out how much of
+    today's released output is still open - see the endpoint)."""
+    conf_match = {"at": {"$gte": start_utc, "$lt": end_utc}, "success": True}
+    if site_ids is not None:
+        conf_match["site_id"] = {"$in": list(site_ids)}
+    conf_agg = list(db[HISTORY_COLLECTION].aggregate([
+        {"$match": conf_match},
+        {"$group": {"_id": None, "confirmed_qty": {"$sum": "$confirmed_quantity"}, "scrap_qty": {"$sum": "$confirmed_scrap"}}},
+    ]))
+    confirmed_qty = conf_agg[0]["confirmed_qty"] if conf_agg else 0
+    scrap_qty = conf_agg[0]["scrap_qty"] if conf_agg else 0
+
+    release_match = {"released_at": {"$gte": start_utc, "$lt": end_utc}, "released": True}
+    if site_ids is not None:
+        release_match["site_id"] = {"$in": list(site_ids)}
+    release_docs = list(db[PROPOSAL_HISTORY_COLLECTION].find(release_match, {"quantity": 1, "production_order_id": 1}))
+    released_qty = sum(d.get("quantity") or 0 for d in release_docs)
+    released_order_ids = [d["production_order_id"] for d in release_docs if d.get("production_order_id")]
+    return {
+        "today_confirmed_output_qty": confirmed_qty or 0,
+        "today_scrap_posted_qty": scrap_qty or 0,
+        "today_released_output_qty": released_qty or 0,
+        "released_today_order_ids": released_order_ids,
+    }
+
+
 def get_scrap_reason_breakdown(db, start_utc, site_ids) -> list:
     """Aug 25 2026, user's explicit ask - "Scrap Trend" dashboard tile:
     total scrap qty + confirmation count grouped by Deviation/Scrap
@@ -425,17 +456,34 @@ def log_order_release(db, actor: str, production_order_id: str, result: dict, jo
         "actor_user_id": actor_user_id,
         "production_order_id": production_order_id,
         "success": result.get("success"),
+        "released": result.get("success"),
+        "released_at": datetime.now(timezone.utc),
         "at": datetime.now(timezone.utc),
     })
 
 
-def get_proposal_and_release_history(db, limit: int = 200) -> list:
+def get_proposal_and_release_history(db, limit: int = 200, start_utc=None, end_utc=None) -> list:
     """can_retry (Aug 28 2026): only true for a "Created"-only row whose
     job has genuinely stopped trying - see ACTIVE_ORDER_JOB_STATUSES
     above for exactly why "still actively polling" and "paused on a
     Store Approval decision" are both excluded, not just "job doc
-    expired". Looked up in one batched query, not per-row."""
-    docs = list(db[PROPOSAL_HISTORY_COLLECTION].find({}).sort("at", -1).limit(limit))
+    expired". Looked up in one batched query, not per-row.
+
+    Sep 12 2026, user's explicit ask: an optional "created on" date
+    range filter ([start_utc, end_utc), on the row's own `at` field) -
+    when given, the usual `limit` cap is dropped so an older range
+    can't silently get truncated."""
+    query = {}
+    if start_utc is not None or end_utc is not None:
+        query["at"] = {}
+        if start_utc is not None:
+            query["at"]["$gte"] = start_utc
+        if end_utc is not None:
+            query["at"]["$lt"] = end_utc
+    cursor = db[PROPOSAL_HISTORY_COLLECTION].find(query).sort("at", -1)
+    if query.get("at") is None:
+        cursor = cursor.limit(limit)
+    docs = list(cursor)
     pending_job_ids = [d["job_id"] for d in docs if d.get("type") == "proposal_created" and not d.get("production_order_id") and d.get("job_id")]
     active_job_ids = set()
     if pending_job_ids:

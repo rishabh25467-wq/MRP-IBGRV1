@@ -891,6 +891,14 @@ const CreateOrderTab = ({ actorName }) => {
   const [releasing, setReleasing] = useState(false);
   const [history, setHistory] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
+  // Sep 12 2026, user's explicit ask: filter header on this history
+  // table - date range refetches from Mongo (fast, "created on"), the
+  // rest filter client-side against the already-loaded rows.
+  const [historyStartDate, setHistoryStartDate] = useState("");
+  const [historyEndDate, setHistoryEndDate] = useState("");
+  const [historyResultFilter, setHistoryResultFilter] = useState("all");
+  const [historyModelFilter, setHistoryModelFilter] = useState("");
+  const [historyProductFilter, setHistoryProductFilter] = useState("");
   const [sosOptions, setSosOptions] = useState([]);
   const [sosLoading, setSosLoading] = useState(false);
   const [sosChecked, setSosChecked] = useState(false);
@@ -1131,10 +1139,30 @@ const CreateOrderTab = ({ actorName }) => {
 
   const loadHistory = useCallback(() => {
     setLoadingHistory(true);
-    axios.get(`${API}/production-confirmation/proposal-history`).then(({ data }) => setHistory(data.entries)).catch(() => toast.error("Failed to load Proposal/Release history")).finally(() => setLoadingHistory(false));
-  }, []);
+    axios.get(`${API}/production-confirmation/proposal-history`, {
+      params: { start_date: historyStartDate || undefined, end_date: historyEndDate || undefined },
+    }).then(({ data }) => setHistory(data.entries)).catch(() => toast.error("Failed to load Proposal/Release history")).finally(() => setLoadingHistory(false));
+  }, [historyStartDate, historyEndDate]);
 
   useEffect(() => { loadHistory(); }, [loadHistory]);
+
+  // "Result" for filtering - mirrors the exact badge logic already
+  // rendered per-row below (Released/Failed/Release Failed/Created/
+  // In Progress) so the dropdown options match what's actually shown.
+  const historyResultOf = (h) => {
+    if (h.type !== "proposal_created") return h.success ? "released" : "failed";
+    if (h.production_order_id) return h.released ? "released" : "failed";
+    return h.can_retry ? "created" : "in_progress";
+  };
+
+  const filteredHistory = useMemo(() => {
+    return history.filter((h) => {
+      if (historyResultFilter !== "all" && historyResultOf(h) !== historyResultFilter) return false;
+      if (historyModelFilter.trim() && !(h.production_model_id || "").toLowerCase().includes(historyModelFilter.trim().toLowerCase())) return false;
+      if (historyProductFilter.trim() && !(h.material_id || "").toLowerCase().includes(historyProductFilter.trim().toLowerCase())) return false;
+      return true;
+    });
+  }, [history, historyResultFilter, historyModelFilter, historyProductFilter]);
 
   const removeActiveJob = (jobId) => setActiveJobs((prev) => prev.filter((j) => j.job_id !== jobId));
   const toggleJobExpand = (jobId) => setActiveJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, expanded: !j.expanded } : j)));
@@ -2022,6 +2050,32 @@ const CreateOrderTab = ({ actorName }) => {
       </div>
 
       <div className="bg-white border border-[#D0D5DD] rounded-sm overflow-auto">
+        <div className="flex flex-wrap items-center gap-2 p-2 border-b border-[#D0D5DD] bg-[#F9FAFB]">
+          <Input type="date" value={historyStartDate} onChange={(e) => setHistoryStartDate(e.target.value)} className="w-36 bg-white h-8 text-xs" data-testid="history-start-date-input" />
+          <span className="text-[#98A2B3] text-xs">to</span>
+          <Input type="date" value={historyEndDate} onChange={(e) => setHistoryEndDate(e.target.value)} className="w-36 bg-white h-8 text-xs" data-testid="history-end-date-input" />
+          <Select value={historyResultFilter} onValueChange={setHistoryResultFilter}>
+            <SelectTrigger className="w-36 bg-white h-8 text-xs" data-testid="history-result-filter-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Results</SelectItem>
+              <SelectItem value="released">Released</SelectItem>
+              <SelectItem value="failed">Failed</SelectItem>
+              <SelectItem value="created">Created</SelectItem>
+              <SelectItem value="in_progress">In Progress</SelectItem>
+            </SelectContent>
+          </Select>
+          <Input placeholder="Filter by Model ID..." value={historyModelFilter} onChange={(e) => setHistoryModelFilter(e.target.value)} className="w-44 bg-white h-8 text-xs" data-testid="history-model-filter-input" />
+          <Input placeholder="Filter by Product..." value={historyProductFilter} onChange={(e) => setHistoryProductFilter(e.target.value)} className="w-44 bg-white h-8 text-xs" data-testid="history-product-filter-input" />
+          {(historyStartDate || historyEndDate || historyResultFilter !== "all" || historyModelFilter || historyProductFilter) && (
+            <Button
+              variant="outline" size="sm" className="h-8 text-xs"
+              onClick={() => { setHistoryStartDate(""); setHistoryEndDate(""); setHistoryResultFilter("all"); setHistoryModelFilter(""); setHistoryProductFilter(""); }}
+              data-testid="history-clear-filters-button"
+            >
+              Clear Filters
+            </Button>
+          )}
+        </div>
         <table className="w-full text-[12px] border-collapse" data-testid="proposal-history-table">
           <thead>
             <tr>
@@ -2031,7 +2085,7 @@ const CreateOrderTab = ({ actorName }) => {
             </tr>
           </thead>
           <tbody>
-            {history.map((h, i) => (
+            {filteredHistory.map((h, i) => (
               <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`proposal-history-row-${i}`}>
                 <td className="border border-[#D0D5DD] px-2 py-1">{new Date(h.at).toLocaleString("en-IN")}</td>
                 <td className="border border-[#D0D5DD] px-2 py-1">{h.actor}</td>
@@ -2073,7 +2127,11 @@ const CreateOrderTab = ({ actorName }) => {
                 </td>
               </tr>
             ))}
-            {!loadingHistory && history.length === 0 && <tr><td colSpan={8} className="text-center py-6 text-[#98A2B3] border border-[#D0D5DD]">No Production Orders created yet.</td></tr>}
+            {!loadingHistory && filteredHistory.length === 0 && (
+              <tr><td colSpan={8} className="text-center py-6 text-[#98A2B3] border border-[#D0D5DD]">
+                {(historyStartDate || historyEndDate || historyResultFilter !== "all" || historyModelFilter || historyProductFilter) ? "No rows match the current filters." : "No Production Orders created yet."}
+              </td></tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -2082,26 +2140,6 @@ const CreateOrderTab = ({ actorName }) => {
 };
 
 // -------------------- Main page --------------------
-const ScrapTrendCard = ({ scrapTrend }) => {
-  const total = scrapTrend.breakdown.reduce((s, r) => s + (r.total_scrap || 0), 0);
-  return (
-    <div className="bg-white border border-[#D0D5DD] rounded-sm p-3 shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] flex flex-col gap-1.5" data-testid="stat-scrap-trend">
-      <div className="flex items-center gap-1.5 text-[#475467]">
-        <WarningCircle size={14} weight="bold" />
-        <span className="font-heading text-xs font-bold uppercase tracking-wider">Scrap ({scrapTrend.days}d)</span>
-      </div>
-      <span className="font-sans text-2xl font-bold tabular-nums text-[#1D2939]">{formatQty(total)}</span>
-      {scrapTrend.breakdown.length > 0 && (
-        <div className="text-[11px] text-[#667085] space-y-0.5">
-          {scrapTrend.breakdown.slice(0, 3).map((r) => (
-            <div key={r.code || "none"} data-testid={`scrap-trend-reason-${r.code || "none"}`}>{r.label}: {formatQty(r.total_scrap)} ({r.count})</div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-};
-
 export default function ProductionConfirmationPage() {
   // Aug 2026, user's explicit ask (same change as Store Approval): the
   // manual "Your name" box is gone - this page already requires Entra ID
@@ -2123,12 +2161,13 @@ export default function ProductionConfirmationPage() {
   const [showHistory, setShowHistory] = useState(false);
   const [stockByRow, setStockByRow] = useState({});
   const [lastConfirmationByLot, setLastConfirmationByLot] = useState({});
-  const [confirmedToday, setConfirmedToday] = useState(0);
-  const [scrapTrend, setScrapTrend] = useState({ breakdown: [], days: 7 });
+  const [outputProductFilter, setOutputProductFilter] = useState("");
+  const [todayStats, setTodayStats] = useState({
+    today_confirmed_output_qty: 0, today_scrap_posted_qty: 0, today_released_output_qty: 0, today_output_open_qty: 0,
+  });
 
   useEffect(() => {
-    axios.get(`${API}/production-confirmation/confirmed-today`).then(({ data }) => setConfirmedToday(data.confirmed_today)).catch(() => {});
-    axios.get(`${API}/production-confirmation/scrap-trend`).then(({ data }) => setScrapTrend(data)).catch(() => {});
+    axios.get(`${API}/production-confirmation/today-stats`).then(({ data }) => setTodayStats(data)).catch(() => {});
   }, []);
 
   const loadReasons = useCallback(() => {
@@ -2210,6 +2249,10 @@ export default function ProductionConfirmationPage() {
       const mine = actorName.trim().toLowerCase();
       out = out.filter((r) => (r.created_by || "").trim().toLowerCase() === mine);
     }
+    if (outputProductFilter.trim()) {
+      const q = outputProductFilter.trim().toLowerCase();
+      out = out.filter((r) => (r.main_output_product || "").toLowerCase().includes(q));
+    }
     if (sortLatestFirst) {
       out = [...out].sort((a, b) => {
         const at = a.order_created_at ? new Date(a.order_created_at).getTime() : -Infinity;
@@ -2218,7 +2261,7 @@ export default function ProductionConfirmationPage() {
       });
     }
     return out;
-  }, [rows, creatorFilter, sortLatestFirst, actorName]);
+  }, [rows, creatorFilter, sortLatestFirst, actorName, outputProductFilter]);
 
   // "How many pcs are sitting at OP10" (user's explicit ask, Aug 2026):
   // for a multi-step routing lot, the pieces that cleared THIS operation
@@ -2311,6 +2354,7 @@ export default function ProductionConfirmationPage() {
             <SelectTrigger className="w-56 bg-white" data-testid="status-filter-select"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="open">Open (Released/Started)</SelectItem>
+              <SelectItem value="4" data-testid="status-filter-finished">Finished</SelectItem>
               <SelectItem value="all">All Statuses</SelectItem>
             </SelectContent>
           </Select>
@@ -2327,6 +2371,13 @@ export default function ProductionConfirmationPage() {
               </SelectContent>
             </Select>
           )}
+          <Input
+            placeholder="Filter by Output Product..."
+            value={outputProductFilter}
+            onChange={(e) => setOutputProductFilter(e.target.value)}
+            className="w-52 bg-white"
+            data-testid="output-product-filter-input"
+          />
           <Button
             variant="outline"
             onClick={() => setSortLatestFirst((s) => !s)}
@@ -2357,10 +2408,10 @@ export default function ProductionConfirmationPage() {
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <StatCard icon={ListChecks} label="Reporting Points Shown" value={visibleRows.length} testId="stat-reporting-points" />
-          <StatCard icon={CheckCircle} label="Distinct Lots" value={new Set(visibleRows.map((r) => r.production_lot_id)).size} testId="stat-distinct-lots" />
-          <StatCard icon={CheckCircle} label="Confirmed Today" value={confirmedToday} testId="stat-confirmed-today" />
-          <ScrapTrendCard scrapTrend={scrapTrend} />
+          <StatCard icon={CheckCircle} label="Today Confirmed Output Qty" value={formatQty(todayStats.today_confirmed_output_qty)} testId="stat-today-confirmed-output" />
+          <StatCard icon={ListChecks} label="Today Released Output Qty" value={formatQty(todayStats.today_released_output_qty)} testId="stat-today-released-output" />
+          <StatCard icon={ClockCounterClockwise} label="Today Output Open Qty" value={formatQty(todayStats.today_output_open_qty)} testId="stat-today-output-open" />
+          <StatCard icon={WarningCircle} label="Today Scrap Posted Qty" value={formatQty(todayStats.today_scrap_posted_qty)} testId="stat-today-scrap-posted" />
         </div>
 
         {loading ? (

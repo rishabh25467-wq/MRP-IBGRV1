@@ -1,0 +1,34 @@
+{
+  "summary": "Tested the new Production Confirmation filter + KPI redesign (Sep 12 2026). Backend: 10/10 pytest cases passed against live external URL - today-stats endpoint returns all 4 required keys as numerics for both super_admin and site-bound 'user' role; proposal-history accepts start_date/end_date and correctly filters; open-lots?status=4 (Finished) works. Frontend: all new UI elements (4 new KPI cards, history filter bar with 5 controls + Clear button, Finished status option, Output Product filter input) render and function correctly on /production-confirmation. Old KPIs (Reporting Points Shown, Distinct Lots, Confirmed Today, Scrap Trend) confirmed gone. Date filter triggers correct backend refetch with query params. Model/Product filter inputs are pure client-side (no extra network call verified). Clear Filters button hides when no filter active and appears when any is set.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/production-confirmation/proposal-history", "issue": "Invalid start_date/end_date (e.g. 'not-a-date') returns HTTP 500 with generic 'Internal Server Error' - should validate and return 400/422 with a clear message. Currently strptime ValueError bubbles up. Low priority (UI uses <input type=date> so users won't hit it, but a user with a manual URL/curl call gets a 500)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "ProductionConfirmationPage - Create Order tab, proposal history table empty state", "issue": "When a date-range filter is applied and the API returns zero rows, the table shows 'No Production Orders created yet.' instead of the expected 'No rows match the current filters.' The check at line 2130 uses `history.length === 0` for the copy switch, but with a server-side date filter `history` itself becomes [] on an empty result, so the 'no filters applied' copy fires incorrectly. Fix: also treat any active filter (historyStartDate || historyEndDate || historyResultFilter !== 'all' || historyModelFilter || historyProductFilter) as the 'filtered' branch.", "selector": "[data-testid=\"proposal-history-table\"]", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_production_confirmation_filters.py", "/app/test_reports/pytest/pc_filters.xml"],
+  "action_items": [
+    "Fix empty-state copy in CreateOrderTab proposal history table (line 2130) so that when any history filter is active (date range/result/model/product), the message reads 'No rows match the current filters.' regardless of whether the API returned []",
+    "(Low priority) Wrap start_date/end_date parsing in server.py get_proposal_and_release_history endpoint with try/except -> HTTPException(400) instead of letting strptime bubble up as a 500"
+  ],
+  "critical_code_review_comments": [
+    "ProductionConfirmationPage.js is now ~2541 lines - past the 700-line guideline. Consider splitting CreateOrderTab and the confirm-tab body into separate files.",
+    "Frontend guards KPI values with `todayStats.today_confirmed_output_qty` default 0 - good, no crash on error path.",
+    "Backend today-stats: `open_qty += lot_rows[-1].get('open_quantity') or 0` - relies on SAP returning rows in stable order per lot. Grouping order is insertion order from `find_open_lots` results; if not deterministic, 'last row' could differ per call. Acceptable per the 'best-effort approximation' note but worth a comment reference."
+  ],
+  "updated_files": ["/app/backend/tests/test_production_confirmation_filters.py"],
+  "success_rate": {"backend": "100%", "frontend": "95%"},
+  "test_credentials": "super_admin session cookie vms_session=6e8c7c0c6a154691ae23819e13dc7712 (test-tid:pc-fork-agent); site P1 user session cookie vms_session=d82a7ffc9b17d9adf588149565b7fe1d (test-tid:pc-user-p1, role=user, bound_sites=[P1], allowed_pages=[production_confirmation]) - both created/verified in this iteration and left in place for reuse.",
+  "seed_data_creation": "Inserted synthetic site-user session (test-tid:pc-user-p1) into auth_users + auth_sessions for testing the site-bound user path on today-stats.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "New enhancement (filter bar + 4 new KPI cards + Finished status option + Output Product filter) is functional end-to-end on /production-confirmation. Only one MEDIUM UI bug remaining (empty-state copy for filtered-history table showing wrong message when API returns 0 rows for a server-side date filter). Backend contract is solid: /api/production-confirmation/today-stats and /api/production-confirmation/proposal-history?start_date=&end_date= both verified. Regression testing of Confirm-tab existing controls (Refresh/Show mine/History dialog/Manage Reasons) NOT performed in-depth by this iteration - only smoke-verified the tab renders without errors; recommend the next iteration cover a full regression pass after the empty-state fix.",
+  "rca of the issue": "Empty-state bug RCA: line 2130 uses `history.length === 0` (source array from state) as the toggle between 'no data yet' vs 'filtered empty' copy. Date range/result filters are applied server-side (setHistory(response)); when the server returns [], history becomes empty and the toggle picks the wrong branch. Model/Product filters are client-side (filteredHistory), so those paths correctly show 'No rows match the current filters.' - only the date/result server-side filter paths hit this bug. Fix: switch condition to check whether any filter state is active instead of history.length."
+}
