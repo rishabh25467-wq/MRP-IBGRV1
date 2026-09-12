@@ -76,9 +76,10 @@ SAP does not expose a per-item "already delivered" quantity on this
 query (only header-level status codes) - `already_shipped_qty` /
 `remaining_qty` are computed entirely from OUR OWN
 `supplier_portal_shipments` history (see supplier_shipment_service.py),
-same as before this endpoint existed. "Open" here just means
-`DeliveryProcessingStatusCode` is not yet `3` (Finished) - SAP still
-expects some delivery against this PO."""
+same as before this endpoint existed. "Open" here means
+`DeliveryProcessingStatusCode` is not yet `3` (Finished) AND
+`PurchaseOrderLifeCycleStatusCode` is not `8` (Cancelled, added Sep 13
+2026 fix - see CANCELLED_LIFECYCLE_STATUS_CODE)."""
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
@@ -89,6 +90,18 @@ from sap_rate_limiter import sap_semaphore
 
 SOAP_ACTION = ""
 FINISHED_DELIVERY_STATUS_CODE = "3"
+# Sep 13 2026 bug fix (real incident, user report: "PO 29480 cancel
+# status in the SAP but its showing pending in the supplier dashboard" -
+# confirmed live against this tenant's real response for PO 29480:
+# `PurchaseOrderLifeCycleStatusCode` is 8 on a cancelled PO (with
+# `DeliveryProcessingStatusCode` 4, "Not Relevant" - NOT the "3"/Finished
+# code this client already excluded), so a cancelled PO was never
+# filtered out at all and kept showing as an open/pending PO to the
+# vendor. Cross-checked against every other PO in a 500-ID window: the
+# (LifeCycle=8, Delivery=4) pair was unique to exactly the 3 POs SAP
+# itself shows as "Canceled" (29480, 29275, 29179) - every other
+# combination seen was a genuinely open/in-process/finished PO.
+CANCELLED_LIFECYCLE_STATUS_CODE = "8"
 
 # The buying company legal entity for a PO (`PartyBuyerPartyKey/PartyID`,
 # e.g. "RI") - same 2-entity setup already used elsewhere in this app
@@ -235,7 +248,11 @@ class SAPPurchaseOrderClient:
             except (TypeError, ValueError):
                 pass
             vendor_code = po.findtext("PartySellerPartyKey/PartyID")
-            if not vendor_code or po.findtext("DeliveryProcessingStatusCode") == FINISHED_DELIVERY_STATUS_CODE:
+            if (
+                not vendor_code
+                or po.findtext("DeliveryProcessingStatusCode") == FINISHED_DELIVERY_STATUS_CODE
+                or po.findtext("PurchaseOrderLifeCycleStatusCode") == CANCELLED_LIFECYCLE_STATUS_CODE
+            ):
                 continue
             po_date = po.findtext("SystemAdministrativeData/CreationDateTime")
             buyer_code = po.findtext("PartyBuyerPartyKey/PartyID")
