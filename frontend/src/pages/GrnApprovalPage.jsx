@@ -133,11 +133,31 @@ export default function GrnApprovalPage() {
   const retryUnlockInMin = (dateStr) => Math.max(0, Math.ceil(RETRY_COOLDOWN_MIN - minutesSince(dateStr)));
 
   const retryConfirmedGoodsReceipt = async (doc) => {
+    // Sep 12 2026 bug fix (user's explicit report: "retry does not
+    // work... nothing shows diagnostics", "retry history shows
+    // nowhere, still shows original date/time"): this used to fire the
+    // retry job and just hope a single 3-second-later list reload
+    // would pick up the result. A real SAP GRN attempt takes 1-2+
+    // minutes, so that reload almost always ran while the job was
+    // still in progress - and it only ever refreshed the closed LIST,
+    // never the currently OPEN detail dialog (`confirmedDetail`), which
+    // kept showing the pre-retry sap_gr_result/screenshot/events
+    // forever, looking exactly like "retry did nothing". Now polls the
+    // job the same way the main Approve/Retry flow already does
+    // (pollGrnJob) and pushes the real, final result straight into the
+    // open dialog + the list once it's actually done.
     setConfirmedRetryBusy(true);
     try {
       const { data } = await axios.post(`${API}/admin/grn/${doc._id}/retry-goods-receipt`);
       toast.success("Retry started - checking SAP now, this can take a couple of minutes");
-      setTimeout(loadConfirmed, 3000);
+      const result = await pollGrnJob(data.job_id);
+      if (confirmedDetail?._id === doc._id) setConfirmedDetail(result);
+      if (result.sap_sync_status === "posted") {
+        toast.success("Goods Receipt posted to SAP");
+      } else {
+        toast.warning("Still not posted - check Diagnostics for the latest attempt", { description: JSON.stringify(result.sap_gr_result) });
+      }
+      loadConfirmed();
     } catch (err) {
       toast.error("Retry failed", { description: err?.response?.data?.detail || err.message });
     } finally {
@@ -1002,7 +1022,9 @@ export default function GrnApprovalPage() {
                       ) : (
                         <Badge className="bg-[#FFFAEB] text-[#B54708] border border-[#FEDF89]" data-testid="grn-confirmed-detail-in-process-badge">In Process</Badge>
                       )}
-                      {retryUnlockInMin(confirmedDetail.approved_at) > 0 ? (
+                      {confirmedRetryBusy ? (
+                        <span className="text-xs text-[#B54708] font-semibold" data-testid="grn-confirmed-detail-retrying-label">Retrying - checking SAP now...</span>
+                      ) : retryUnlockInMin(confirmedDetail.approved_at) > 0 ? (
                         <span className="text-xs text-[#98A2B3]" data-testid="grn-confirmed-detail-retry-cooldown">Retry available in {retryUnlockInMin(confirmedDetail.approved_at)}m</span>
                       ) : (
                         <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={confirmedRetryBusy} onClick={() => retryConfirmedGoodsReceipt(confirmedDetail)} data-testid="grn-confirmed-detail-retry-button">
