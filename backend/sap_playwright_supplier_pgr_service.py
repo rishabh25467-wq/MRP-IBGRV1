@@ -16,25 +16,57 @@ ops team showed the manual screen that actually works for real stock:
     line (-> staff-confirmed received qty, NOT the vendor's own claimed
     ship_qty - user's explicit ask) -> Save and Close.
 
+Sep 12 2026 - HYBRID ARCHITECTURE, replaces the PO-search half of the
+flow above. The user's SAP Admin set up a new Communication Arrangement
+("Input of Advanced Shipping Notification") exposing
+`ManageStandardInboundDeliveryNotificationIn` (see
+sap_inbound_delivery_notification_client.py). `_post_one_po` now:
+  1. Calls that SOAP service directly (`MaintainBundle`, actionCode=01,
+     release=False) - creates the Inbound Delivery Notification
+     referencing this PO's items by PO+ItemID (never by product text),
+     with the real Delivery Notification ID/Date/Vendor/Quantity
+     already set. Confirmed live (Sep 12 2026, real PO 29482, all 5
+     lines sharing one product) this structurally eliminates the whole
+     class of PO-search-flakiness and multi-line-same-product
+     row-matching bugs the OLD flow (`_search_po_exact`/`_click_po_row`,
+     removed) kept hitting - there is no PO search or row-matching left
+     to get wrong, SAP resolves the PO+ItemID reference itself.
+  2. Playwright then opens that notification BY ITS OWN ID (not by PO
+     number) in the Inbound Delivery Notifications view - reusing
+     `_open_inbound_delivery_notifications`/`_search_delivery` from
+     sap_playwright_pgr_service.py (same underlying SAP business object
+     as the STO flow, confirmed live). Only Actual Quantity entry +
+     Save and Close remain manual/UI-driven - releasing the notification
+     via SOAP was tried and confirmed to require a task-based Warehouse
+     Logistics Model this tenant doesn't use for inbound (real live
+     test, Sep 12 2026: release succeeded but Delivery Status stayed
+     "Not Started", and neither InboundDeliveryRelease nor
+     InboundDeliveryPGRBackground OData actions can complete it either -
+     both return "action is disabled", the same KBA 3583076 restriction
+     documented in inbound_receipt_service.py). Save and Close (PGR
+     Ground, non-task-based) is the only path that actually completes
+     the Goods Receipt on this tenant.
+
 Scope (user's explicit ask, Aug 29 2026): Goods Receipt only. Invoice
 creation (a separate SAP screen, Supplier Invoicing work center) is a
 later phase, done by a different user - never touched here.
 
 UNVERIFIED end-to-end (no sandbox/dry-run exists for this - every SAP
-write here is real and irreversible). Read-only navigate+search+fill was
-verified live up to (never including) the final Save and Close click -
-see /app/backend/playwright_debug/grn_investigation/ screenshots from
-that investigation. The exact "Actual Delivery Date" input format and
-the exact Actual Quantity grid column layout are BEST-EFFORT from the
-user's screenshots only, not live-confirmed - the very first real call
-into post_goods_receipt_via_ui MUST be supervised/reviewed by the user
-before this is trusted for unattended use."""
+write here is real and irreversible). The SOAP create step and the
+Playwright open-by-ID + Save and Close were each confirmed live on a
+real test PO (Sep 12 2026) - the very first real call into
+post_goods_receipt_via_ui on a genuine multi-PO/multi-line shipment
+MUST still be supervised/reviewed by the user before this is trusted
+for unattended use."""
 import asyncio
 import logging
 import re
 from datetime import datetime, timezone
 
-from sap_playwright_pgr_service import _login, _wait_for_blocking_layer_clear, _extract_error_text, _humanize_error, _click_button
+from sap_playwright_pgr_service import (
+    _login, _wait_for_blocking_layer_clear, _extract_error_text, _humanize_error, _click_button,
+    _open_inbound_delivery_notifications, _search_delivery,
+)
 import object_storage_client
 
 logger = logging.getLogger(__name__)
@@ -95,64 +127,21 @@ async def _ensure_draft_discarded(page, po_number: str) -> None:
         logger.warning(f"Could not confirm the SAP draft for PO {po_number} was discarded (may still be locked): {e}")
 
 
-async def _open_purchase_orders(page) -> None:
-    """Inbound Logistics work center -> Purchase Orders view (confirmed
-    live during the Aug 29 2026 read-only investigation - distinct from
-    _open_inbound_delivery_notifications in sap_playwright_pgr_service.py,
-    which is the STO/internal-transfer screen, not this one)."""
-    await _wait_for_blocking_layer_clear(page)
-    await page.locator('[aria-label="Inbound Logistics"]').first.click(force=True)
-    await page.wait_for_timeout(2500)
-    po_link = page.get_by_text("Purchase Orders", exact=True)
-    for i in range(await po_link.count()):
-        el = po_link.nth(i)
-        if await el.is_visible():
-            await el.click(force=True)
-            await page.wait_for_timeout(3000)
-            await _wait_for_table_load(page)
+async def _switch_to_all_deliveries_view(page) -> None:
+    """Inbound Delivery Notifications defaults to "Advised Delivery
+    Notifications" (STO-originated only) - our SOAP-created supplier
+    notifications don't appear there until the base view is switched to
+    "All Delivery Notifications by Selection" (confirmed live, Sep 12
+    2026: 0 hits in the default view, 1 hit immediately after this
+    switch, for the identical ID)."""
+    combo = page.locator('.sapMSelect, [role="combobox"]').first
+    await combo.click(force=True)
+    await page.wait_for_timeout(800)
+    for o in await page.query_selector_all('li, [role="option"]'):
+        if (await o.inner_text()).strip() == "All Delivery Notifications by Selection":
+            await o.click(force=True)
+            await page.wait_for_timeout(2500)
             return
-    raise RuntimeError("Could not find the 'Purchase Orders' view under Inbound Logistics")
-
-
-async def _wait_for_table_load(page, timeout: int = 60000) -> None:
-    """The Purchase Orders list shows its own inline "Loading..." text
-    while fetching rows (distinct from `_wait_for_blocking_layer_clear`'s
-    full-page modal overlay) - toolbar buttons (incl. the Filter icon)
-    stay disabled/unclickable the whole time. Root cause of the very
-    first live supervised test (Sep 1 2026) failing with "Could not find
-    the 'Purchase Order ID' filter field" on 2/2 real POs: the fixed
-    2500/3000ms waits were shorter than this tenant's actual load time,
-    so the Filter click landed while the list was still loading."""
-    try:
-        await page.get_by_text("Loading...", exact=True).first.wait_for(state="hidden", timeout=timeout)
-    except Exception:
-        pass
-    await page.wait_for_timeout(500)
-
-
-async def _search_po_exact(page, po_number: str) -> int:
-    """Sep 12 2026, user's explicit instruction: replaces the entire old
-    flow below (base-view dropdown + Filter panel toggle + "Purchase
-    Order ID" field + "Go" button - the source of most of today's PO-
-    search-related crashes) with the list toolbar's own free-text
-    Search box, per the user's own SAP-side change: "All Purchase
-    Orders by Selection" is now the tenant-remembered DEFAULT view for
-    ALL 3 pooled bot accounts (itadmin/STOREBOT1/STOREBOT2), so there is
-    no base-view dropdown left to fight with at all, and no Filter
-    panel to open/track. Just type the PO number into the visible
-    "Search" box and press Enter - SAPUI5's own free-text search
-    already filters the list to matching rows. Returns the row count
-    found. NOT YET LIVE-VERIFIED - awaiting confirmation on the next
-    real PO; if this ever needs reverting, the old Filter-panel-based
-    version is in git history (search commits mentioning "defaultSetDDLB")."""
-    await _wait_for_table_load(page)
-    search_input = page.get_by_placeholder("Search", exact=True).first
-    await search_input.click(force=True)
-    await search_input.fill(po_number)
-    await search_input.press("Enter")
-    await page.wait_for_timeout(1500)
-    await _wait_for_table_load(page)
-    return len(await page.query_selector_all('tr[id^="__table"]'))
 
 
 async def _fill_line_actual_quantities(page, item_products: dict, item_qtys: dict, po_number: str = None) -> list:
@@ -252,24 +241,26 @@ async def _fill_line_actual_quantities(page, item_products: dict, item_qtys: dic
     return unfilled
 
 
-async def _click_po_row(page, row, po_number: str) -> None:
+async def _click_po_row(page, row, row_label: str) -> None:
     """SELECTS (does not navigate into) the row so the list's own
     toolbar "Post Goods Receipt" button becomes enabled - matches the
     real manual flow ("search the exact PO -> select its row -> 'Post
-    Goods Receipt' button", see module docstring). Sep 2 2026 BUG FOUND
-    + FIXED (same investigation as the PO-search fix above), THREE
-    attempts: (1) original `row.click()` landed at the row's bounding-
-    box CENTER, which falls on the "Supplier Name" cell and navigates
-    to that Business Partner's own detail screen instead of selecting
-    the row; (2) clicking the first `<td>`'s link was wrong too - that
-    cell has no link, it's an empty row-selection indicator column;
-    (3) clicking the "Purchase Order ID" link cell (matched by its own
-    text) navigates INTO the PO's own detail screen - confirmed live
-    that screen has NO "Post Goods Receipt" button at all (it's a
-    LIST-toolbar-only action, requires the row merely selected, not
-    opened). Real fix: click the empty first `<td>` (the selection
-    indicator column itself, no link) - this selects the row in place
-    without navigating anywhere."""
+    Goods Receipt' button", see module docstring). Reused unchanged for
+    the Sep 12 2026 hybrid flow's Inbound Delivery Notifications list -
+    same row-selection-indicator-column trick applies there too. Sep 2
+    2026 BUG FOUND + FIXED (same investigation as the PO-search fix
+    above), THREE attempts: (1) original `row.click()` landed at the
+    row's bounding-box CENTER, which falls on the "Supplier Name" cell
+    and navigates to that Business Partner's own detail screen instead
+    of selecting the row; (2) clicking the first `<td>`'s link was
+    wrong too - that cell has no link, it's an empty row-selection
+    indicator column; (3) clicking the "Purchase Order ID" link cell
+    (matched by its own text) navigates INTO the PO's own detail screen
+    - confirmed live that screen has NO "Post Goods Receipt" button at
+    all (it's a LIST-toolbar-only action, requires the row merely
+    selected, not opened). Real fix: click the empty first `<td>` (the
+    selection indicator column itself, no link) - this selects the row
+    in place without navigating anywhere."""
     cells = await row.query_selector_all("td")
     if cells:
         await cells[0].click(force=True)
@@ -301,7 +292,8 @@ def _extract_inbound_delivery_id(confirmation_text: str) -> str:
     return m.group(1) if m else None
 
 
-async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: str, item_qtys: dict, item_products: dict, on_step=None, events: list = None) -> dict:
+async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: str, item_qtys: dict, item_products: dict,
+                        item_uoms: dict, vendor_code: str, notification_client, on_step=None, events: list = None) -> dict:
     # Sep 12 2026, user's explicit ask - a plain-English trail of every
     # milestone actually reached in SAP before a failure (or success),
     # surfaced verbatim in the GRN Approval screen's new "Diagnostics"
@@ -316,52 +308,57 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
             on_step(name)
 
     await step("searching")
-    await _open_purchase_orders(page)
-    events.append("Opened Inbound Logistics - Purchase Orders")
-    hits = await _search_po_exact(page, po_number)
+    # Sep 12 2026 - the whole PO-search step is now a single SOAP call
+    # (see module docstring): creates the Inbound Delivery Notification
+    # referencing each item by PO+ItemID directly, so there is no PO
+    # search or row-matching left to get wrong. `notification_id` reuses
+    # the vendor's own supplier_doc_num for traceability (falls back to
+    # a timestamp-based one if blank), suffixed with the PO number so a
+    # multi-PO shipment never collides on the same ID twice.
+    delivery_date = (bill_date or datetime.now(timezone.utc).strftime("%Y-%m-%d"))[:10]
+    notification_id = f"{supplier_doc_num}-{po_number}" if supplier_doc_num else f"GRN{po_number}{int(datetime.now(timezone.utc).timestamp())}"
+    soap_items = [
+        {"item_number": item_number, "quantity": qty, "unit_of_measure": item_uoms.get(item_number) or "EA", "product_id": item_products.get(item_number)}
+        for item_number, qty in item_qtys.items()
+    ]
+    try:
+        await asyncio.to_thread(notification_client.maintain_bundle, notification_id, po_number, vendor_code, delivery_date, soap_items, False)
+    except Exception as e:
+        return {"po_number": po_number, "status": "skipped", "error": f"Could not create the Inbound Delivery Notification in SAP for PO {po_number}: {e}", "events": events}
+    events.append(f"Created Inbound Delivery Notification {notification_id} in SAP (SOAP, references PO {po_number} directly)")
+
+    await _open_inbound_delivery_notifications(page)
+    events.append("Opened Inbound Logistics - Inbound Delivery Notifications")
+    await _switch_to_all_deliveries_view(page)
+    hits = await _search_delivery(page, notification_id)
     if hits == 0:
-        return {"po_number": po_number, "status": "skipped", "error": "PO not found in SAP's Purchase Orders view - check its status is actually released/receivable (not 'In Preparation')", "events": events}
+        return await _capture_failure(
+            page, po_number, "searching",
+            f"Notification {notification_id} was created in SAP but could not be found in the list right after - may still be indexing, please Retry",
+            events=events,
+        )
     rows = await page.query_selector_all('tr[id^="__table"]')
-    # Sep 12 2026 fix (real incident, PO 29455): `hits` being non-zero
-    # only ever meant "some row exists", never that it's really OUR PO -
-    # a stale/still-loading table (see _search_po_exact's own fix above)
-    # could return a leftover row from a PREVIOUS PO's search. Verify
-    # the actual row text before ever clicking/acting on it; if it still
-    # doesn't match after one clean re-search, fail with a precise,
-    # diagnosable reason instead of crashing generically deep inside the
-    # Post Goods Receipt screen for the WRONG PO.
-    row_text = await rows[0].inner_text()
-    if po_number not in row_text:
-        await _wait_for_table_load(page)
-        rows = await page.query_selector_all('tr[id^="__table"]')
-        row_text = (await rows[0].inner_text()) if rows else ""
-        if not rows or po_number not in row_text:
-            return await _capture_failure(
-                page, po_number, "searching",
-                f"SAP's Purchase Orders list did not refresh to show PO {po_number} after searching - it was still showing a different PO's row",
-                events=events,
-            )
-    events.append(f"Found PO {po_number} in the list")
-    await _click_po_row(page, rows[0], po_number)
+    events.append(f"Found Notification {notification_id} in the list")
+    await _click_po_row(page, rows[0], notification_id)
     await page.wait_for_timeout(1500)
-    events.append(f"Selected PO {po_number}'s row")
+    events.append(f"Selected Notification {notification_id}'s row")
 
     click_result = await _click_button(page, "Post Goods Receipt")
     if click_result == "disabled":
-        return await _capture_failure(page, po_number, "opening_receipt", "Post Goods Receipt is disabled for this PO in SAP", events=events)
+        return await _capture_failure(page, po_number, "opening_receipt", "Post Goods Receipt is disabled for this notification in SAP", events=events)
     if click_result == "not_found":
-        return await _capture_failure(page, po_number, "opening_receipt", "Post Goods Receipt button not found for this PO", events=events)
+        return await _capture_failure(page, po_number, "opening_receipt", "Post Goods Receipt button not found for this notification", events=events)
     events.append("Clicked 'Post Goods Receipt'")
     await step("opening_receipt")
     # Sep 2 2026 fix (same investigation as the search/row-select fixes
     # above): the "Create Inbound Delivery and Goods Receipt" screen's
     # own Line Items grid shows an inline "Loading..." text while its
-    # data fetches (same pattern as `_wait_for_table_load` on the list
-    # screen) - a fixed 4000ms wait was shorter than this tenant's real
-    # load time, so `_fill_line_actual_quantities` used to run against
-    # an empty/still-loading grid and report every item "could not be
-    # filled". Also waits for the full-page blocking overlay to clear
-    # first (this screen briefly shows one during its own navigation).
+    # data fetches - a fixed 4000ms wait was shorter than this tenant's
+    # real load time, so `_fill_line_actual_quantities` used to run
+    # against an empty/still-loading grid and report every item "could
+    # not be filled". Also waits for the full-page blocking overlay to
+    # clear first (this screen briefly shows one during its own
+    # navigation).
     await page.wait_for_timeout(3000)
     await _wait_for_blocking_layer_clear(page)
     try:
@@ -370,71 +367,22 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
         pass
     await page.wait_for_timeout(2000)
     events.append("Opened Create Inbound Delivery and Goods Receipt screen")
-
-    notif_input = None
-    for lbl in await page.query_selector_all("label"):
-        if "Delivery Notification ID" in (await lbl.inner_text()).strip():
-            for_id = await lbl.get_attribute("for")
-            if for_id:
-                notif_input = await page.query_selector(f"#{for_id}")
-            break
-    if notif_input:
-        await notif_input.fill(supplier_doc_num or "")
-        events.append(f"Entered Delivery Notification ID: {supplier_doc_num or '(blank)'}")
-
-    if bill_date:
-        date_input = None
-        for lbl in await page.query_selector_all("label"):
-            if "Actual Delivery Date" in (await lbl.inner_text()).strip():
-                for_id = await lbl.get_attribute("for")
-                if for_id:
-                    date_input = await page.query_selector(f"#{for_id}")
-                break
-        if date_input:
-            await date_input.fill(bill_date)
-            await date_input.press("Tab")
-            events.append(f"Entered Actual Delivery Date: {bill_date}")
+    # Delivery Notification ID / Actual Delivery Date / Vendor are
+    # already pre-filled from the SOAP create above (confirmed live,
+    # Sep 12 2026) - no more manual label-lookup + fill needed here.
 
     await step("entering_quantities")
+    # Sep 12 2026: the dialog now only ever shows the exact lines THIS
+    # notification was created with (one row per item_qtys entry, via
+    # the SOAP call above) - unlike the old PO-search flow, there are no
+    # other-lines-of-the-same-PO to worry about, so "Remove Zero
+    # Quantity Items" is no longer needed at all.
     unfilled = await _fill_line_actual_quantities(page, item_products, item_qtys, po_number)
     if unfilled:
         result = await _capture_failure(page, po_number, "entering_quantities", f"Could not enter Actual Quantity for item(s) {', '.join(unfilled)}", events=events)
         await _ensure_draft_discarded(page, po_number)
         return result
     events.append(f"Entered Actual Quantity for item(s): {', '.join(item_qtys.keys())}")
-
-    # Sep 12 2026 fix (real incident, PO 29455 - user's explicit
-    # clarification): "Post Goods Receipt" on a PO opens SAP's Inbound
-    # Delivery draft with ALL of that PO's still-open lines by default,
-    # not just the ones this particular shipment actually covers. A PO
-    # with 5 open lines but a delivery for only 1 of them left the
-    # other 4 sitting with a blank/zero Actual Quantity - SAP's own
-    # save-time validation then rejected the whole draft ("Actual
-    # quantity for Delivery Item ID 20 missing"...) rather than simply
-    # ignoring the lines nobody delivered. `item_qtys` only ever
-    # contains what THIS shipment covers, so any other line is
-    # correctly left untouched (still zero) by the fill step above -
-    # SAP's own toolbar action removes exactly those before Save,
-    # matching the real intended behavior: only the lines that actually
-    # arrived get received, everything else is simply not part of this
-    # delivery at all.
-    #
-    # A PARTIAL line (e.g. a delivery covering 2.5 of 5 equal-qty PO
-    # lines: 2 lines shipped in full + the 3rd line's vendor-entered
-    # ship_qty is only HALF that line's Planned/Open Quantity) is
-    # already handled correctly by the exact same logic, no special
-    # case needed: the Supplier Portal only ever lets a vendor ship
-    # against a real, specific PO line item_number with whatever
-    # partial qty is still open on it (see supplier_shipment_service.py
-    # create_shipment/_compute_qty_state) - so item_qtys already holds
-    # that line's real partial amount, gets filled with exactly that
-    # (not the full Planned Quantity), and is NOT a zero-quantity row -
-    # "Remove Zero Quantity Items" leaves it alone and only strips the
-    # 2 lines nobody shipped anything against at all (items 4 and 5,
-    # never present in item_qtys to begin with).
-    await _click_button(page, "Remove Zero Quantity Items")
-    await page.wait_for_timeout(1000)
-    events.append("Removed any zero-quantity line(s) not part of this shipment")
 
     await step("saving")
     if await _click_button(page, "Save and Close") != "clicked":
@@ -462,15 +410,19 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
 STEPS_PER_PO = 4
 
 
-async def post_goods_receipt_via_ui(po_items: dict, progress_cb=None) -> dict:
+async def post_goods_receipt_via_ui(po_items: dict, notification_client, progress_cb=None) -> dict:
     """po_items: {po_number: {"supplier_doc_num": str, "bill_date": str,
-    "item_qtys": {item_number: qty}, "item_products": {item_number:
-    product_id}}} - one call per distinct PO, grouping every line item
-    of that PO into a single submission (user's explicit ask, Aug 29
-    2026), matching the manual flow exactly. `item_products` is required
-    for the Actual Quantity grid to match the right row by Product ID
-    (see _fill_line_actual_quantities' docstring for why row-order
-    matching alone is not safe to trust).
+    "vendor_code": str, "item_qtys": {item_number: qty}, "item_products":
+    {item_number: product_id}, "item_uoms": {item_number: unit_code}}} -
+    one call per distinct PO, grouping every line item of that PO into
+    a single submission (user's explicit ask, Aug 29 2026), matching
+    the manual flow exactly. `notification_client` is a
+    SAPInboundDeliveryNotificationClient (see that module) - the SOAP
+    create step run inside `_post_one_po` before any browser
+    navigation. `item_products`/`item_uoms` feed both the SOAP create
+    call and the Actual Quantity grid match by Product ID (see
+    _fill_line_actual_quantities' docstring for why row-order matching
+    alone is not safe to trust).
 
     progress_cb(phase, current, total) - Sep 2 2026 (user's ask: real
     step-by-step visibility instead of a single spinner): `phase` is
@@ -523,7 +475,8 @@ async def post_goods_receipt_via_ui(po_items: dict, progress_cb=None) -> dict:
                     try:
                         result = await _post_one_po(
                             page, po_number, spec.get("supplier_doc_num"), spec.get("bill_date"),
-                            spec.get("item_qtys") or {}, spec.get("item_products") or {}, on_step=on_step, events=events,
+                            spec.get("item_qtys") or {}, spec.get("item_products") or {}, spec.get("item_uoms") or {},
+                            spec.get("vendor_code"), notification_client, on_step=on_step, events=events,
                         )
                     except Exception as e:
                         logger.error(f"Playwright Supplier GRN failed for PO {po_number}: {e}")

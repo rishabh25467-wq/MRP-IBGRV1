@@ -809,22 +809,27 @@ def _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_cli
 
 def group_items_by_po_for_gr(doc: dict) -> dict:
     """Shapes a shipment's items into the {po_number: {supplier_doc_num,
-    bill_date, item_qtys, item_products}} form sap_playwright_
-    supplier_pgr_service.post_goods_receipt_via_ui expects - one entry
-    per distinct PO, grouping every line item of that PO (user's
-    explicit ask). `item_products` lets the Playwright side match each
-    grid row by Product ID rather than trusting row order (see that
-    module's docstring)."""
+    bill_date, vendor_code, item_qtys, item_products, item_uoms}} form
+    sap_playwright_supplier_pgr_service.post_goods_receipt_via_ui
+    expects - one entry per distinct PO, grouping every line item of
+    that PO (user's explicit ask). `item_products`/`item_uoms` let the
+    hybrid flow's SOAP create step (Sep 12 2026) reference each PO line
+    directly and set its real Delivery Quantity, and let the Playwright
+    side match each grid row by Product ID rather than trusting row
+    order (see that module's docstring)."""
     grouped = {}
     for it in doc["items"]:
         po = grouped.setdefault(it["po_number"], {
             "supplier_doc_num": doc.get("supplier_doc_num"),
             "bill_date": doc.get("bill_date"),
+            "vendor_code": doc.get("vendor_code"),
             "item_qtys": {},
             "item_products": {},
+            "item_uoms": {},
         })
         po["item_qtys"][it["item_number"]] = it.get("actual_qty", it["ship_qty"])
         po["item_products"][it["item_number"]] = it["product_id"]
+        po["item_uoms"][it["item_number"]] = it.get("unit_of_measure")
     return grouped
 
 

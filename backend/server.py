@@ -59,6 +59,7 @@ from sap_inventory_client import SAPInventoryClient, SAPInventoryError
 from sap_inventory_closing_client import SAPInventoryClosingClient, SAPInventoryClosingError
 from sap_inbound_delivery_report_client import SAPInboundDeliveryReportClient, SAPInboundDeliveryReportError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
+from sap_inbound_delivery_notification_client import SAPInboundDeliveryNotificationClient
 from inventory_service import get_cached_inventory, refresh_inventory_cache, refresh_stock_quantities_for_warehouses, refresh_stock_quantities_for_site, refresh_stock_quantities_for_products, deep_backfill_uuids, list_known_sites
 import l1_l2_report_service
 import inventory_closing_report_service
@@ -307,6 +308,17 @@ if _recovered_issues:
 
 sap_soap_client = SAPSoapBOMClient(
     endpoint=os.environ['SAP_SOAP_ENDPOINT'],
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
+)
+
+# Sep 12 2026 - creates the Inbound Delivery Notification directly
+# against a supplier PO+ItemID reference (SOAP MaintainBundle,
+# release=False), replacing the old Playwright PO-search step in
+# sap_playwright_supplier_pgr_service.py. See that module's docstring
+# for the full hybrid architecture.
+sap_inbound_delivery_notification_client = SAPInboundDeliveryNotificationClient(
+    endpoint=os.environ['SAP_SOAP_INBOUND_DELIVERY_NOTIFICATION_ENDPOINT'],
     username=os.environ['SAP_SOAP_USERNAME'],
     password=os.environ['SAP_SOAP_PASSWORD'],
 )
@@ -7581,7 +7593,9 @@ def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> st
     async def run():
         try:
             gr_result = await _run_playwright_job_with_retries(
-                job_id, lambda: sap_playwright_supplier_pgr_service.post_goods_receipt_via_ui(po_items, progress_cb=on_progress),
+                job_id, lambda: sap_playwright_supplier_pgr_service.post_goods_receipt_via_ui(
+                    po_items, sap_inbound_delivery_notification_client, progress_cb=on_progress,
+                ),
             )
             on_progress("moving_stock", gr_result["total_steps"] - 1, gr_result["total_steps"])
             final = await asyncio.to_thread(
