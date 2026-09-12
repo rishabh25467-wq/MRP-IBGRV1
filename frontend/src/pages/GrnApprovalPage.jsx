@@ -196,6 +196,30 @@ export default function GrnApprovalPage() {
     }
   };
 
+  // Sep 13 2026, user's explicit ask ("align it and choose best for
+  // users interest") - the top-level lookup detail panel already hid
+  // "Retry" behind "Reset Retry" once sap_sync_status hits "failed"
+  // (MAX_GR_RETRIES_BEFORE_FAILED reached, same unresolved SAP error
+  // reproducing every time), but this Confirmed-detail dialog still
+  // showed a plain Retry button in that exact same state - letting
+  // staff keep hammering a known-broken SAP-side issue instead of
+  // waiting on SAP Admin confirmation first. Mirrors resetRetry, but
+  // targets confirmedDetail/loadConfirmed instead of shipment.
+  const resetConfirmedRetry = async (doc) => {
+    if (!window.confirm("Only do this after your SAP Admin has confirmed the underlying SAP error is fixed. Reset retry count for this shipment?")) return;
+    setConfirmedRetryBusy(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/grn/${doc._id}/reset-retry`);
+      if (confirmedDetail?._id === doc._id) setConfirmedDetail(data);
+      toast.success("Retry count reset - you can Retry the Goods Receipt again");
+      loadConfirmed();
+    } catch (err) {
+      toast.error("Reset failed", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setConfirmedRetryBusy(false);
+    }
+  };
+
   const loadPending = async () => {
     try {
       const { data } = await axios.get(`${API}/admin/grn/shipments`, { params: { status: "in_transit" } });
@@ -1075,6 +1099,10 @@ export default function GrnApprovalPage() {
                       )}
                       {confirmedRetryBusy ? (
                         <span className="text-xs text-[#B54708] font-semibold" data-testid="grn-confirmed-detail-retrying-label">Retrying - checking SAP now...</span>
+                      ) : confirmedDetail.sap_sync_status === "failed" ? (
+                        <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={confirmedRetryBusy} onClick={() => resetConfirmedRetry(confirmedDetail)} title="Only use once your SAP Admin confirms the underlying SAP error is fixed" data-testid="grn-confirmed-detail-reset-retry-button">
+                          <ArrowsClockwise size={11} className="mr-1" /> Reset Retry
+                        </Button>
                       ) : retryUnlockInMin(confirmedDetail.approved_at) > 0 ? (
                         <span className="text-xs text-[#98A2B3]" data-testid="grn-confirmed-detail-retry-cooldown">Retry available in {retryUnlockInMin(confirmedDetail.approved_at)}m</span>
                       ) : (
