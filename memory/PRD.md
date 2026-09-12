@@ -8,6 +8,10 @@ Extend the existing SAP BOM viewer application: Production Plan page (OMS Open-P
 - `/app/frontend/src/`: React. `GrnApprovalPage.jsx` (internal GRN approval), `pages/supplier-portal/*` (vendor-facing: Dashboard, Shipments, Login, Signup, Pending).
 - Theme: JDE Enterprise ERP (`/app/design_guidelines.json`) - Chivo headings, IBM Plex Sans body, JetBrains Mono data, #004B87 primary, #0E7C86 header teal, #EAECF0 table headers, grid-bordered zebra tables. `tailwind.config.js` defines `fontFamily.heading/sans/data`.
 
+## FEATURE: Supplier Invoice Number input capped at 14 characters (Sep 13, 2026 session, same-day follow-up)
+- GRN Approval page's "Supplier Invoice Number" field (GrnApprovalPage.jsx, `grn-supplier-doc-num-input`) now hard-caps at 14 characters (`maxLength={14}` + `.slice(0, 14)` on change) - any characters still allowed (not digits-only, per user's explicit confirmation), just length-limited.
+- Verified live via screenshot: typing 18 characters into the field results in exactly 14 characters retained.
+
 ## FEATURE: SAP Delivery Notification ID now includes the Supplier Invoice No for traceability (Sep 13, 2026 session, same-day follow-up)
 - **User's ask** ("Can we go for a number like inv number / doc code"): the SAP Notification ID (e.g. `9TJP96-29510`) didn't reflect the supplier's own typed Invoice No (`GRN_TEST_10`) at all, purely by design from the Sep 12 collision fix - user wanted the invoice number visible again without reopening that bug.
 - **Fix**: new `_build_notification_id(supplier_doc_num, doc_code, po_number)` helper (sap_playwright_supplier_pgr_service.py) now builds `{sanitized_invoice_no}-{doc_code}-{po_number}` - the `{doc_code}-{po_number}` tail is ALWAYS kept intact as the uniqueness guarantee (same as the Sep 12 fix), invoice number is just a prepended, sanitized (SAP ID fields don't reliably take spaces/slashes), length-capped (~35 chars, SAP's real BusinessTransactionDocumentID limit) prefix. Falls back to the old `{doc_code}-{po_number}`-only ID when the invoice number is blank.

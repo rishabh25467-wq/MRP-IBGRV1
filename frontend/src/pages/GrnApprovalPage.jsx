@@ -692,7 +692,8 @@ export default function GrnApprovalPage() {
                     <Input
                       placeholder="e.g. INV-4521"
                       value={supplierDocNum}
-                      onChange={(e) => setSupplierDocNum(e.target.value)}
+                      onChange={(e) => setSupplierDocNum(e.target.value.slice(0, 14))}
+                      maxLength={14}
                       className="rounded-sm border-[#D0D5DD] mt-1"
                       data-testid="grn-supplier-doc-num-input"
                     />
