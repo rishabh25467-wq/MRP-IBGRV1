@@ -3675,6 +3675,25 @@ async def _run_create_and_release_job(job_id: str, payload: "CreateProductionPro
                 "note": "Stopped before anything was created in SAP - nothing to clean up.",
             }})
             return
+        # Sep 12 2026 bug fix (real user report): checked BEFORE creating
+        # the SAP Proposal at all - a retry (whether from a timeout or any
+        # other failure) for the exact same material/site/quantity/
+        # requester used to blindly create ANOTHER Proposal + ANOTHER Store
+        # Request even while an earlier one for this same need was still
+        # sitting open/unresolved. See store_approval_service.find_open_
+        # request's docstring for why no time cutoff is needed here.
+        if short_rm:
+            dup_request = await asyncio.to_thread(
+                store_approval_service.find_open_request, db, payload.site_id, payload.material_id, payload.quantity, payload.actor,
+            )
+            if dup_request:
+                job_store.update_job(db, job_id, {"status": "failed", "error": (
+                    f"An open Store Request ({dup_request['_id']}) already exists for this exact material "
+                    f"({payload.material_id}), quantity ({payload.quantity}), site ({payload.site_id}) and requester - "
+                    "resolve or check that one on the Store Approval screen instead of creating a new order for the "
+                    "same shortage."
+                ), "result": {"reason": "duplicate_store_request", "production_proposal_id": None, "production_order_id": None}})
+                return
         proposal_id = await _create_proposal_for_payload(payload, avail_dt, job_id)
         job_actor_user_id = (job_store.get_job(db, job_id) or {}).get("actor_user_id")
         await asyncio.to_thread(

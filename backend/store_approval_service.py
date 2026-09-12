@@ -27,6 +27,7 @@ import re
 import time
 
 from datetime import datetime, timezone
+from typing import Optional
 
 from production_confirmation_service import apply_goods_movement_to_cache, is_usable_stock_status, load_stock_by_product, site_locations_for_product
 
@@ -250,6 +251,26 @@ def _generate_issue_id_for_site(db, site_id: str) -> str:
 def ensure_indexes(db) -> None:
     db[COLLECTION].create_index("job_id")
     db[COLLECTION].create_index("status")
+
+
+def find_open_request(db, site_id: str, material_id: str, quantity: float, requester: str) -> Optional[dict]:
+    """Sep 12 2026 bug fix (user's explicit report): a real SAP timeout
+    (or any other pipeline failure) followed by the user simply retrying
+    "Create Production Order" for the exact same material/site/quantity
+    used to open a SECOND, genuinely duplicate Store Request every time -
+    the store team then saw two (or more) open asks for what was really
+    the same need, even though the first one was often already sitting
+    there unresolved. Called BEFORE the SAP Proposal is even created (see
+    _run_create_and_release_job) so a duplicate retry is blocked before
+    it wastes a second real SAP write too, not just before a second
+    request doc. No time cutoff needed - if an identical request is
+    still open (unresolved), there is never a legitimate reason to open
+    a second one for it; a genuinely NEW need can always be created once
+    the first is resolved."""
+    return db[COLLECTION].find_one({
+        "status": {"$in": ["pending", "issuing", "partial_pending_planner"]},
+        "site_id": site_id, "material_id": material_id, "quantity": quantity, "requester": requester,
+    })
 
 
 def create_request(db, job_id: str, payload_dict: dict, proposal_id: str, short_components: list, actor: str) -> dict:

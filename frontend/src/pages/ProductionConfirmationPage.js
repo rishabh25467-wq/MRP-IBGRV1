@@ -1979,7 +1979,12 @@ const CreateOrderTab = ({ actorName }) => {
                         <p className="text-[11px] text-[#B42318] mb-1" data-testid={`active-order-pipeline-error-reason-${i}`}>
                           <strong>Why this failed:</strong> {j.error || "SAP reported an unexpected error"}
                         </p>
-                        {j.failure.production_proposal_id ? (
+                        {j.failure.reason === "duplicate_store_request" ? (
+                          <p className="text-[11px] text-[#93370D]">
+                            Nothing new was created in SAP - an identical open Store Request already covers this need.
+                            Check the Store Approval screen instead of creating another order for the same shortage.
+                          </p>
+                        ) : j.failure.production_proposal_id ? (
                           <p className="text-[11px] text-[#93370D]">
                             Proposal <strong>{j.failure.production_proposal_id}</strong>
                             {j.failure.production_order_id ? <> and Order <strong>{j.failure.production_order_id}</strong></> : null} already exist in SAP -
