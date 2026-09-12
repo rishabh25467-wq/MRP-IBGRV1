@@ -341,6 +341,33 @@ def _extract_inbound_delivery_id(confirmation_text: str) -> str:
     return m.group(1) if m else None
 
 
+MAX_NOTIFICATION_ID_LENGTH = 35
+
+
+def _build_notification_id(supplier_doc_num: str, doc_code: str, po_number: str) -> str:
+    """Sep 13 2026, user's explicit ask ("can we go for a number like
+    inv number / doc code") - the supplier's own invoice/bill number is
+    now visible in the SAP Delivery Notification ID for traceability,
+    while keeping the exact uniqueness guarantee from the Sep 12 fix
+    above (`{doc_code}-{po_number}` alone, never user-typed text, never
+    case-collidable) as a fixed SUFFIX that's always present - so two
+    shipments whose supplier-typed invoice numbers collide (even after
+    SAP's own case-normalization) still can never produce the same ID.
+    Invoice number is sanitized (SAP ID fields don't reliably accept
+    spaces/slashes) and truncated to fit SAP's ~35-char BusinessTransac-
+    tionDocumentID limit, suffix always wins the space if the invoice
+    number alone would overflow it. Falls back to the old suffix-only
+    ID when there's no invoice number on file (field is optional)."""
+    suffix = f"{doc_code}-{po_number}"
+    prefix = re.sub(r"[^A-Za-z0-9_.]", "", (supplier_doc_num or "").strip())
+    if not prefix:
+        return suffix
+    max_prefix_len = MAX_NOTIFICATION_ID_LENGTH - len(suffix) - 1
+    if max_prefix_len <= 0:
+        return suffix
+    return f"{prefix[:max_prefix_len]}-{suffix}"
+
+
 async def _post_one_po(page, po_number: str, doc_code: str, supplier_doc_num: str, bill_date: str, item_qtys: dict, item_products: dict,
                         item_uoms: dict, vendor_code: str, notification_client, on_step=None, events: list = None) -> dict:
     # Sep 12 2026, user's explicit ask - a plain-English trail of every
@@ -374,8 +401,16 @@ async def _post_one_po(page, po_number: str, doc_code: str, supplier_doc_num: st
     # off `doc_code` (this app's own unique 6-char shipment code, never
     # user-typed, never case-collidable in practice) instead of the
     # free-text supplier_doc_num - guaranteed unique per shipment+PO.
+    #
+    # Sep 13 2026 update (user's explicit ask, "can we go for a number
+    # like inv number / doc code") - the supplier's invoice number is
+    # now prepended for traceability via `_build_notification_id`,
+    # WITHOUT reopening the collision bug above: `{doc_code}-{po_number}`
+    # is always kept intact as the tail, so uniqueness never depends on
+    # the free-text invoice number even if two suppliers reuse the same
+    # one.
     delivery_date = (bill_date or datetime.now(timezone.utc).strftime("%Y-%m-%d"))[:10]
-    notification_id = f"{doc_code}-{po_number}"
+    notification_id = _build_notification_id(supplier_doc_num, doc_code, po_number)
     # Sep 12 2026 fix (real incident, PO 29456: SAP rejected the SOAP
     # create with the confusing "No inbound delivery request exists
     # for purchase order reference 29456 - 1" - traced to this PO
