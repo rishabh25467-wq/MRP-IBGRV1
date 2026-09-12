@@ -77,9 +77,10 @@ query (only header-level status codes) - `already_shipped_qty` /
 `remaining_qty` are computed entirely from OUR OWN
 `supplier_portal_shipments` history (see supplier_shipment_service.py),
 same as before this endpoint existed. "Open" here means
-`DeliveryProcessingStatusCode` is not yet `3` (Finished) AND
-`PurchaseOrderLifeCycleStatusCode` is not `8` (Cancelled, added Sep 13
-2026 fix - see CANCELLED_LIFECYCLE_STATUS_CODE)."""
+`DeliveryProcessingStatusCode` is not yet `3` (Finished), AND
+`PurchaseOrderLifeCycleStatusCode` is not `8` (Cancelled, Sep 13 2026
+fix), AND `ApprovalStatusCode` is not `1` (still In Preparation/not yet
+released, Sep 13 2026 follow-up fix - see NOT_YET_RELEASED_APPROVAL_STATUS_CODE)."""
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
@@ -102,6 +103,18 @@ FINISHED_DELIVERY_STATUS_CODE = "3"
 # itself shows as "Canceled" (29480, 29275, 29179) - every other
 # combination seen was a genuinely open/in-process/finished PO.
 CANCELLED_LIFECYCLE_STATUS_CODE = "8"
+# Sep 13 2026 follow-up bug fix (user's question: "Why is it visible to
+# supplier in their vendor control" - re: a PO still "In Preparation" in
+# SAP): confirmed live in a real 500-ID window that `ApprovalStatusCode`
+# "1" (not yet approved/released internally) pairs ONLY with
+# (LifeCycle=1, Delivery=1) - a genuine draft PO, never sent to the
+# supplier by the buyer yet - across 42 real POs found in this state.
+# Every other PO in the same window (open, finished, cancelled) had
+# `ApprovalStatusCode` "2" (Released). This client never checked this
+# field at all, so a still-in-draft PO was fully visible/shippable-
+# against on the Supplier Dashboard the moment it existed in SAP, well
+# before the buyer had actually approved/released it.
+NOT_YET_RELEASED_APPROVAL_STATUS_CODE = "1"
 
 # The buying company legal entity for a PO (`PartyBuyerPartyKey/PartyID`,
 # e.g. "RI") - same 2-entity setup already used elsewhere in this app
@@ -252,6 +265,7 @@ class SAPPurchaseOrderClient:
                 not vendor_code
                 or po.findtext("DeliveryProcessingStatusCode") == FINISHED_DELIVERY_STATUS_CODE
                 or po.findtext("PurchaseOrderLifeCycleStatusCode") == CANCELLED_LIFECYCLE_STATUS_CODE
+                or po.findtext("ApprovalStatusCode") == NOT_YET_RELEASED_APPROVAL_STATUS_CODE
             ):
                 continue
             po_date = po.findtext("SystemAdministrativeData/CreationDateTime")
