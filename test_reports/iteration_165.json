@@ -1,0 +1,54 @@
+{
+  "summary": "Verified GRN retry+diagnostics refresh behavior on /admin/grn-approval end-to-end with mocked retry POST + polling GET (no real SAP call). BOTH retry code paths (top-level pending-lookup retryGoodsReceipt and confirmed-detail retryConfirmedGoodsReceipt) correctly poll the job to completion, then replace the shipment state with the LATEST attempt's result. Diagnostics dialog shows only NEW error/events after retry, OLD stale diagnostics are fully removed from the DOM. The Sep 12 2026 fix (open confirmed-detail dialog refreshes in-place, not just the closed list) is confirmed working.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_scenarios_executed": [
+    {
+      "name": "TEST 2 - Confirmed-Detail Retry Path (failed -> posted)",
+      "result": "PASS",
+      "details": "Opened Confirmed GRNs tab, clicked TSTRTY row -> ConfirmedDetail dialog opened showing OLD 'SAP Error: OLD_SAP_ERROR_ATTEMPT1' via View Diagnostics. Mocked retry-goods-receipt POST -> {job_id:'mock-job-1'}, mocked receipt-status polling GET (first 2 calls status=running, 3rd status=done with NEW posted result). Clicked grn-confirmed-detail-retry-button. After polling: dialog updated IN PLACE showing SAP Inbound Delivery # IND12345, badge changed to posted. Full body scan confirmed no OLD_SAP_ERROR_ATTEMPT1 / OLD_EVENT_LOGIN / OLD_EVENT_OPENED_SCREEN text present anywhere on page."
+    },
+    {
+      "name": "TEST 1 - Pending-Lookup Retry Path (retryGoodsReceipt) - required seed flip to sap_sync_status='pending' (see notes)",
+      "result": "PASS (after seed flip)",
+      "details": "With seed flipped to sap_sync_status='pending' (retry_count=1, cooldown passed), grn-retry-goods-receipt-button rendered. Pre-retry View Diagnostics correctly showed OLD_SAP_ERROR_ATTEMPT1. After clicking Retry with mocked endpoints, pollGrnJob (~2.5s poll interval) completed after 3 polls (2 running + 1 done). Diagnostics modal AUTO-OPENED on failure (openDiagnosticsIfFailed) showing 'SAP Error: NEW_SAP_ERROR_ATTEMPT2' and events [NEW_EVENT_LOGIN, NEW_EVENT_OPENED_SCREEN, NEW_EVENT_ENTERED_QTY]. Shipment detail card also shows NEW_SAP_ERROR_ATTEMPT2 inline. No OLD text anywhere. Seed reverted to original (sap_sync_status='failed', retry_count=1, OLD diagnostics) after the test."
+    },
+    {
+      "name": "NEGATIVE CHECK - stale-data leak",
+      "result": "PASS in both paths",
+      "details": "Full document.body.innerText scan post-retry in both paths confirmed OLD_SAP_ERROR_ATTEMPT1, OLD_EVENT_LOGIN, OLD_EVENT_OPENED_SCREEN are all absent - state was replaced, not merged."
+    }
+  ],
+  "seed_fixture_issue": {
+    "issue": "Seeded shipment TSTRTY had sap_sync_status='failed' with sap_gr_retry_count=1, but per frontend logic (GrnApprovalPage.jsx lines 783-786) the top-level shipment detail renders 'Reset Retry' (grn-reset-retry-button) instead of 'Retry' (grn-retry-goods-receipt-button) whenever sap_sync_status==='failed', regardless of retry_count. This is intentional escalation UX (per Sep 10 2026 comment: after MAX_GR_RETRIES_BEFORE_FAILED, force manual SAP intervention), but it made the requested TEST 1 selector unreachable with the exact seed described. On backend, finalize_goods_receipt only flips to 'failed' when retry_count >= MAX_GR_RETRIES_BEFORE_FAILED, so 'failed + retry_count=1' is not a naturally producible state - the seed is internally inconsistent with the state machine.",
+    "workaround_used": "Temporarily set sap_sync_status='pending' on TSTRTY, ran TEST 1, reverted seed back to the exact original shape (sap_sync_status='failed', retry_count=1, per_po OLD diagnostics preserved).",
+    "recommendation": "For any future reruns of this specific pending-lookup retry test, seed with sap_sync_status='pending' (or 'skipped') + retry_count < MAX to make the top-level Retry button reachable. The confirmed-detail Retry path does NOT have this restriction - its Retry button shows for any non-posted status once cooldown has passed."
+  },
+  "code_review_findings": [
+    "retryGoodsReceipt (line 418) and retryConfirmedGoodsReceipt (line 165) both correctly: (1) call POST retry, (2) await pollGrnJob to final result, (3) setShipment/setConfirmedDetail with the fresh result, (4) call openDiagnosticsIfFailed on non-posted outcomes. Contract with backend GET /admin/grn/receipt-status/{job_id} response ({status, phase, progress_current, progress_total, result, error}) is correct.",
+    "pollGrnJob (line 369) has a 6-minute deadline and 2.5s poll interval - reasonable for the described 1-2 minute real SAP scenarios.",
+    "Diagnostics dialog (line 1180) correctly rebuilds from the fresh per_po entry passed in - no memoized/stale state.",
+    "Minor UX inconsistency (not a bug): the top-level detail hides Retry once sap_sync_status='failed' and forces 'Reset Retry', while the confirmed-detail dialog still shows Retry in that same state. The two UIs disagree on whether user should be allowed to retry a fully-failed shipment. Confirm with product whether this intentional divergence is desired, or the top-level should also show 'Retry' as long as retry_count < MAX."
+  ],
+  "test_report_links": [],
+  "action_items": [
+    "None functional - both retry+diagnostics-refresh flows work correctly.",
+    "Consider aligning the top-level pending-lookup detail button logic with the confirmed-detail dialog logic (or vice versa) so 'failed' status offers a consistent set of actions in both places.",
+    "If reseeding TSTRTY for future retests of the top-level Retry button, use sap_sync_status='pending' + retry_count < MAX_GR_RETRIES_BEFORE_FAILED - not 'failed'."
+  ],
+  "critical_code_review_comments": [
+    "GrnApprovalPage.jsx is 1235 lines - approaching the >700 line threshold recommending module split; retry/diagnostics logic (~lines 130-450) and confirmed-detail dialog (~lines 1000-1155) could each be extracted."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (not tested per request)", "frontend": "100% (2/2 retry paths + negative stale-data check all PASS)"},
+  "test_credentials": "vms_session cookie XAlQkzY5hG8PB3MdokeHOlLvQVFkAQuFFqwSgDD6Dpk (Supplier Approver Test) - worked correctly, ~7 day expiry",
+  "seed_data_creation": "None created. Temporarily flipped TSTRTY.sap_sync_status pending<->failed to exercise TEST 1 code path, reverted to original exact shape after.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "TSTRTY fixture still present in supplier_portal_shipments with original OLD_* diagnostics. Both frontend retry code paths (retryGoodsReceipt, retryConfirmedGoodsReceipt) share the same pollGrnJob + setShipment/setConfirmedDetail + openDiagnosticsIfFailed pattern and both correctly refresh state to the latest attempt with no stale-data leakage. If you need to retest the top-level Retry button, first flip TSTRTY.sap_sync_status to 'pending' since 'failed' hides the Retry button behind 'Reset Retry'.",
+  "rca of the issue": "N/A - Sep 12 2026 fix (dialog-in-place refresh + poll-to-completion + auto-open diagnostics) is confirmed working end-to-end for both retry entry points."
+}
