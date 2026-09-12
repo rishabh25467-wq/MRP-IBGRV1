@@ -111,6 +111,12 @@ export default function GrnApprovalPage() {
   const [confirmed, setConfirmed] = useState([]);
   const [confirmedDetail, setConfirmedDetail] = useState(null);
   const [confirmedRetryBusy, setConfirmedRetryBusy] = useState(false);
+  // Sep 12 2026, user's explicit ask: "diagnostics" popup - which SAP
+  // screen the automation failed on, the SAP error itself, and every
+  // milestone it successfully got through beforehand (see `events` on
+  // each per_po entry, built up live by sap_playwright_supplier_pgr_
+  // service.py's _post_one_po).
+  const [diagnosticsModal, setDiagnosticsModal] = useState(null);
 
   // Sep 10 2026, user's explicit ask: don't let anyone hit Retry while the
   // background job might still legitimately be running - the whole flow
@@ -754,6 +760,18 @@ export default function GrnApprovalPage() {
                     </button>
                   </div>
                 )}
+                {shipment.sap_sync_status !== "posted" && shipment.sap_gr_result?.per_po?.some((p) => p.events?.length) && (
+                  <div className="px-3">
+                    <button
+                      type="button"
+                      className="text-xs text-[#475467] font-bold hover:underline"
+                      data-testid="grn-view-diagnostics-button"
+                      onClick={() => setDiagnosticsModal(shipment.sap_gr_result.per_po.find((p) => p.events?.length))}
+                    >
+                      View Diagnostics
+                    </button>
+                  </div>
+                )}
                 <div className="text-sm px-3 py-2 rounded-sm flex items-center justify-between gap-2 border" data-testid="grn-sap-movement-status"
                      style={shipment.sap_movement_status === "posted" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : { color: "#B45309", background: "rgba(227,160,8,0.1)", borderColor: "rgba(227,160,8,0.3)" }}>
                   <span className="flex items-center gap-2">
@@ -1012,6 +1030,18 @@ export default function GrnApprovalPage() {
                   </button>
                 </div>
               )}
+              {confirmedDetail.sap_sync_status !== "posted" && confirmedDetail.sap_gr_result?.per_po?.some((p) => p.events?.length) && (
+                <div>
+                  <button
+                    type="button"
+                    className="text-xs text-[#475467] font-bold hover:underline"
+                    data-testid="grn-confirmed-detail-view-diagnostics-button"
+                    onClick={() => setDiagnosticsModal(confirmedDetail.sap_gr_result.per_po.find((p) => p.events?.length))}
+                  >
+                    View Diagnostics
+                  </button>
+                </div>
+              )}
               <table className="border-collapse w-full text-[13px] mt-2 border border-[#D0D5DD] rounded-sm overflow-hidden">
                 <thead className="bg-[#EAECF0] text-[#344054] text-xs font-bold font-heading uppercase tracking-wide">
                   <tr>
@@ -1069,6 +1099,39 @@ export default function GrnApprovalPage() {
               ) : (
                 <p className="text-sm text-[#667085]">No screenshot could be captured for this attempt.</p>
               )}
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!diagnosticsModal} onOpenChange={(o) => !o && setDiagnosticsModal(null)}>
+        <DialogContent className="rounded-sm max-w-xl" data-testid="grn-diagnostics-dialog">
+          {diagnosticsModal && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="font-heading text-[#344054]">PO {diagnosticsModal.po_number} - Diagnostics</DialogTitle>
+                <DialogDescription className="font-data text-xs">
+                  Failed at step: <strong className="text-[#7A1E1E]">{diagnosticsModal.failed_step || "unknown step"}</strong>
+                </DialogDescription>
+              </DialogHeader>
+              <div className="text-sm text-[#7A1E1E] bg-[#FEF3F2] border border-[#FDA29B] rounded-sm p-2" data-testid="grn-diagnostics-sap-error">
+                <strong>SAP Error:</strong> {diagnosticsModal.error || "No error text captured"}
+              </div>
+              <div>
+                <p className="text-xs font-heading font-bold uppercase tracking-wide text-[#667085] mb-1.5">Events completed successfully before the failure</p>
+                {diagnosticsModal.events?.length ? (
+                  <ol className="text-sm space-y-1.5" data-testid="grn-diagnostics-events-list">
+                    {diagnosticsModal.events.map((e, i) => (
+                      <li key={i} className="flex gap-2" data-testid={`grn-diagnostics-event-${i}`}>
+                        <span className="text-[#12B76A] font-bold shrink-0">{i + 1}.</span>
+                        <span className="text-[#344054]">{e}</span>
+                      </li>
+                    ))}
+                  </ol>
+                ) : (
+                  <p className="text-sm text-[#98A2B3]">No events were logged before this failure - it likely crashed immediately.</p>
+                )}
+              </div>
             </>
           )}
         </DialogContent>

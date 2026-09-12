@@ -40,7 +40,7 @@ import object_storage_client
 logger = logging.getLogger(__name__)
 
 
-async def _capture_failure(page, po_number: str, step: str, error: str) -> dict:
+async def _capture_failure(page, po_number: str, step: str, error: str, events: list = None) -> dict:
     """Sep 11 2026, user's explicit ask ("any tool we can build to give
     u that insight") - every failure path now uploads a real screenshot
     of the exact SAP screen state to Object Storage (not local disk,
@@ -54,14 +54,20 @@ async def _capture_failure(page, po_number: str, step: str, error: str) -> dict:
     Playwright job's own page, plus every other concurrent GRN job/API
     request sharing the same loop) for as long as the upload takes.
     Offloaded to a worker thread via asyncio.to_thread so it can never
-    add latency to anything else."""
+    add latency to anything else.
+
+    Sep 12 2026, user's explicit ask ("a flow of events that happened
+    in playwright successfully before it hit a failure") - `events` is
+    whatever milestone log `_post_one_po` had already built up before
+    this failure, always included even on a crash caught by the OUTER
+    try/except (that caller passes its own possibly-partial list in)."""
     screenshot_path = None
     try:
         png = await page.screenshot()
         screenshot_path = await asyncio.to_thread(object_storage_client.upload_failure_screenshot, png, po_number)
     except Exception as e:
         logger.warning(f"Could not capture failure screenshot for PO {po_number}: {e}")
-    return {"po_number": po_number, "status": "failed", "error": error, "failed_step": step, "screenshot_path": screenshot_path}
+    return {"po_number": po_number, "status": "failed", "error": error, "failed_step": step, "screenshot_path": screenshot_path, "events": events or []}
 
 
 async def _ensure_draft_discarded(page, po_number: str) -> None:
@@ -364,16 +370,26 @@ def _extract_inbound_delivery_id(confirmation_text: str) -> str:
     return m.group(1) if m else None
 
 
-async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: str, item_qtys: dict, item_products: dict, on_step=None) -> dict:
+async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: str, item_qtys: dict, item_products: dict, on_step=None, events: list = None) -> dict:
+    # Sep 12 2026, user's explicit ask - a plain-English trail of every
+    # milestone actually reached in SAP before a failure (or success),
+    # surfaced verbatim in the GRN Approval screen's new "Diagnostics"
+    # modal. Mutated in place (not just returned) so the OUTER
+    # try/except in post_goods_receipt_via_ui still has whatever was
+    # logged so far even when this whole function raises unhandled.
+    if events is None:
+        events = []
+
     async def step(name):
         if on_step:
             on_step(name)
 
     await step("searching")
     await _open_purchase_orders(page)
+    events.append("Opened Inbound Logistics - Purchase Orders")
     hits = await _search_po_exact(page, po_number)
     if hits == 0:
-        return {"po_number": po_number, "status": "skipped", "error": "PO not found in SAP's Purchase Orders view - check its status is actually released/receivable (not 'In Preparation')"}
+        return {"po_number": po_number, "status": "skipped", "error": "PO not found in SAP's Purchase Orders view - check its status is actually released/receivable (not 'In Preparation')", "events": events}
     rows = await page.query_selector_all('tr[id^="__table"]')
     # Sep 12 2026 fix (real incident, PO 29455): `hits` being non-zero
     # only ever meant "some row exists", never that it's really OUR PO -
@@ -392,15 +408,19 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
             return await _capture_failure(
                 page, po_number, "searching",
                 f"SAP's Purchase Orders list did not refresh to show PO {po_number} after searching - it was still showing a different PO's row",
+                events=events,
             )
+    events.append(f"Found PO {po_number} in the list")
     await _click_po_row(page, rows[0], po_number)
     await page.wait_for_timeout(1500)
+    events.append(f"Selected PO {po_number}'s row")
 
     click_result = await _click_button(page, "Post Goods Receipt")
     if click_result == "disabled":
-        return await _capture_failure(page, po_number, "opening_receipt", "Post Goods Receipt is disabled for this PO in SAP")
+        return await _capture_failure(page, po_number, "opening_receipt", "Post Goods Receipt is disabled for this PO in SAP", events=events)
     if click_result == "not_found":
-        return await _capture_failure(page, po_number, "opening_receipt", "Post Goods Receipt button not found for this PO")
+        return await _capture_failure(page, po_number, "opening_receipt", "Post Goods Receipt button not found for this PO", events=events)
+    events.append("Clicked 'Post Goods Receipt'")
     await step("opening_receipt")
     # Sep 2 2026 fix (same investigation as the search/row-select fixes
     # above): the "Create Inbound Delivery and Goods Receipt" screen's
@@ -418,6 +438,7 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
     except Exception:
         pass
     await page.wait_for_timeout(2000)
+    events.append("Opened Create Inbound Delivery and Goods Receipt screen")
 
     notif_input = None
     for lbl in await page.query_selector_all("label"):
@@ -428,6 +449,7 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
             break
     if notif_input:
         await notif_input.fill(supplier_doc_num or "")
+        events.append(f"Entered Delivery Notification ID: {supplier_doc_num or '(blank)'}")
 
     if bill_date:
         date_input = None
@@ -440,13 +462,15 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
         if date_input:
             await date_input.fill(bill_date)
             await date_input.press("Tab")
+            events.append(f"Entered Actual Delivery Date: {bill_date}")
 
     await step("entering_quantities")
     unfilled = await _fill_line_actual_quantities(page, item_products, item_qtys, po_number)
     if unfilled:
-        result = await _capture_failure(page, po_number, "entering_quantities", f"Could not enter Actual Quantity for item(s) {', '.join(unfilled)}")
+        result = await _capture_failure(page, po_number, "entering_quantities", f"Could not enter Actual Quantity for item(s) {', '.join(unfilled)}", events=events)
         await _ensure_draft_discarded(page, po_number)
         return result
+    events.append(f"Entered Actual Quantity for item(s): {', '.join(item_qtys.keys())}")
 
     # Sep 12 2026 fix (real incident, PO 29455 - user's explicit
     # clarification): "Post Goods Receipt" on a PO opens SAP's Inbound
@@ -479,17 +503,19 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
     # never present in item_qtys to begin with).
     await _click_button(page, "Remove Zero Quantity Items")
     await page.wait_for_timeout(1000)
+    events.append("Removed any zero-quantity line(s) not part of this shipment")
 
     await step("saving")
     if await _click_button(page, "Save and Close") != "clicked":
-        result = await _capture_failure(page, po_number, "saving", "Save and Close button not found")
+        result = await _capture_failure(page, po_number, "saving", "Save and Close button not found", events=events)
         await _ensure_draft_discarded(page, po_number)
         return result
+    events.append("Clicked 'Save and Close'")
     await page.wait_for_timeout(6000)
 
     error_text = await _extract_error_text(page)
     if error_text:
-        result = await _capture_failure(page, po_number, "saving", _humanize_error(error_text))
+        result = await _capture_failure(page, po_number, "saving", _humanize_error(error_text), events=events)
         await _ensure_draft_discarded(page, po_number)
         return result
     # Sep 2 2026 (user's ask: "show SAP inbound number for user's
@@ -498,7 +524,8 @@ async def _post_one_po(page, po_number: str, supplier_doc_num: str, bill_date: s
     # response includes the ID in a parseable form, so this is
     # best-effort (None if it can't be found, never blocks the result).
     confirmation_text = await _extract_confirmation_text(page)
-    return {"po_number": po_number, "status": "posted", "inbound_delivery_id": _extract_inbound_delivery_id(confirmation_text)}
+    events.append("SAP confirmed the Goods Receipt was posted")
+    return {"po_number": po_number, "status": "posted", "inbound_delivery_id": _extract_inbound_delivery_id(confirmation_text), "events": events}
 
 
 STEPS_PER_PO = 4
@@ -561,14 +588,15 @@ async def post_goods_receipt_via_ui(po_items: dict, progress_cb=None) -> dict:
                     def on_step(name, _po=po_number, _idx=idx):
                         _progress(f"{name}:{_po}:{_idx}/{total_pos}")
 
+                    events = []
                     try:
                         result = await _post_one_po(
                             page, po_number, spec.get("supplier_doc_num"), spec.get("bill_date"),
-                            spec.get("item_qtys") or {}, spec.get("item_products") or {}, on_step=on_step,
+                            spec.get("item_qtys") or {}, spec.get("item_products") or {}, on_step=on_step, events=events,
                         )
                     except Exception as e:
                         logger.error(f"Playwright Supplier GRN failed for PO {po_number}: {e}")
-                        result = await _capture_failure(page, po_number, "unexpected_crash", "Could not reach SAP's receipt screen - please retry")
+                        result = await _capture_failure(page, po_number, "unexpected_crash", "Could not reach SAP's receipt screen - please retry", events=events)
                     results.append(result)
                     if result["status"] == "failed" and idx < total_pos:
                         try:
