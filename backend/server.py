@@ -2847,8 +2847,25 @@ async def _confirm_production_inner(job_id: str, payload: ConfirmProductionReque
     # calls finish_task() in that case, which fully closes the lot/task, and
     # SAP then rejects ANY further MaterialOutput update with "Processing
     # not possible due to status Finished" (reproduced live on Lot 69962).
-    byproduct_confirmation = None
-    if payload.byproduct_material_output_uuid and payload.byproduct_confirmed_quantity is not None:
+    #
+    # Sep 12 2026 bug fix (real incident, Lot 72722): the by-product SAP
+    # calls below are NOT idempotent - each one ADDS the confirmed
+    # quantity to SAP's own running total. If the main confirmation below
+    # then fails for its own separate reason and this whole flow gets
+    # retried, blindly re-running the by-product call again would
+    # silently double (triple, quadruple...) SAP's real scrap inventory
+    # every retry while the main output never posts. Check FIRST whether
+    # the immediately-prior attempt for this exact lot+reporting point
+    # already posted this exact by-product successfully - if so, reuse
+    # that result instead of calling SAP again.
+    byproduct_confirmation = await asyncio.to_thread(
+        production_confirmation_service.find_successful_byproduct_confirmation,
+        db, payload.production_lot_id, payload.reporting_point_id,
+        payload.byproduct_material_output_uuid, payload.new_byproduct_product_id,
+    )
+    if byproduct_confirmation is not None:
+        pass  # already posted in a previous attempt - do not call SAP again
+    elif payload.byproduct_material_output_uuid and payload.byproduct_confirmed_quantity is not None:
         try:
             byproduct_confirmation = await asyncio.to_thread(
                 sap_production_lot_client.confirm_material_output,

@@ -2274,9 +2274,18 @@ export default function ProductionConfirmationPage() {
     }
     if (wipFilter !== "all") {
       out = out.filter((r) => {
-        const wip = lastConfirmationByLot[`${r.production_lot_id}::${r.reporting_point_id}`]?.wip_clearing;
-        if (!wip || wip.skipped) return false;
-        return wipFilter === "posted" ? !!wip.success : !wip.success;
+        const conf = lastConfirmationByLot[`${r.production_lot_id}::${r.reporting_point_id}`];
+        const wip = conf?.wip_clearing;
+        if (wipFilter === "posted") return !!wip && !wip.skipped && !!wip.success;
+        // Sep 12 2026, user's explicit ask (real incident, Lot 72722): a
+        // lot whose MAIN confirmation itself keeps failing never even
+        // reaches the WIP Clearing step (wip_clearing stays null/blank
+        // forever) - it used to be invisible under "WIP: Error" even
+        // though it's clearly stuck. "Error" now also catches a failed
+        // main confirmation, not just a failed WIP Clearing Run.
+        const wipRunFailed = !!wip && !wip.skipped && !wip.success;
+        const mainConfirmFailed = conf?.success === false;
+        return wipRunFailed || mainConfirmFailed;
       });
     }
     if (byproductFilter !== "all") {

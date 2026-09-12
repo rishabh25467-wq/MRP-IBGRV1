@@ -163,10 +163,52 @@ def log_confirmation(db, actor: str, request_payload: dict, result: dict) -> Non
         "byproduct_material_output_uuid": request_payload.get("byproduct_material_output_uuid"),
         "byproduct_confirmed_quantity": request_payload.get("byproduct_confirmed_quantity"),
         "byproduct_unit_code": request_payload.get("byproduct_unit_code"),
+        # Sep 12 2026 bug fix: also stored so a later retry can tell it
+        # was THIS same "create a brand-new by-product line" target that
+        # already succeeded (see find_successful_byproduct_confirmation).
+        "new_byproduct_product_id": request_payload.get("new_byproduct_product_id"),
         "byproduct_confirmation": result.get("byproduct_confirmation"),
         "fg_movement": result.get("fg_movement"),
         "at": datetime.now(timezone.utc),
     })
+
+
+def find_successful_byproduct_confirmation(db, production_lot_id: str, reporting_point_id: str,
+                                            byproduct_material_output_uuid: str = None, new_byproduct_product_id: str = None):
+    """Sep 12 2026 bug fix (real incident, Lot 72722 - by-product/scrap
+    posted 4x in SAP while the main output never posted at all):
+    confirm_material_output/create_material_output are NOT idempotent -
+    each SAP call ADDS the confirmed quantity to SAP's own running total,
+    it never overwrites it. If the by-product step succeeds but the
+    MAIN ReportingPoint step then fails for its own separate reason, a
+    naive retry used to re-post the exact same by-product quantity AGAIN
+    every single attempt - silently multiplying real SAP scrap inventory
+    by however many times the user retried, while the main output stayed
+    at 0.
+
+    Only looks at the MOST RECENT history record for this exact lot +
+    reporting point: if it shows a successful by-product post but the
+    overall confirmation failed (main output not yet posted), that
+    by-product is already sitting in SAP for real and must NOT be sent
+    again - the caller should reuse this returned result instead of
+    calling SAP again. Also checks the by-product's own target identity
+    matches (existing line UUID, or the same new-line product) so a
+    genuinely DIFFERENT by-product target on this retry is never
+    wrongly skipped."""
+    latest = db[HISTORY_COLLECTION].find_one(
+        {"production_lot_id": production_lot_id, "reporting_point_id": reporting_point_id},
+        sort=[("at", -1)],
+    )
+    if not latest or latest.get("success") is not False:
+        return None
+    bp = latest.get("byproduct_confirmation")
+    if not bp or not bp.get("success"):
+        return None
+    if byproduct_material_output_uuid and latest.get("byproduct_material_output_uuid") != byproduct_material_output_uuid:
+        return None
+    if new_byproduct_product_id and latest.get("new_byproduct_product_id") != new_byproduct_product_id:
+        return None
+    return bp
 
 
 def count_confirmed_today(db, start_utc, end_utc, site_ids) -> int:
