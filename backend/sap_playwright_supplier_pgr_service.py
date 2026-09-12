@@ -158,7 +158,22 @@ async def _switch_to_all_deliveries_view(page) -> bool:
     option from a previous open+close).
 
     Returns False (never raises) if no visible match is found, so the
-    caller can retry the whole thing instead of crashing the PO."""
+    caller can retry the whole thing instead of crashing the PO.
+
+    Sep 13 2026 update: the SAP Admin changed this screen's own
+    personalization so it now DEFAULTS to "All Delivery Notifications by
+    Selection" directly (no more "Advised Delivery Notifications" to
+    switch away from) - without this check, every run would keep
+    "failing" to find that old default label and burn through the
+    caller's full retry/backoff loop (~16s) for nothing, while also
+    logging a confusing "Could not switch view" event on an already-
+    correct screen. Checked first, before touching the dropdown at all;
+    falls back to the old click-based switch if the personalization
+    ever reverts or differs for a different SAP login."""
+    already_all = page.get_by_text("All Delivery Notifications by Selection", exact=True)
+    for i in range(await already_all.count()):
+        if await already_all.nth(i).is_visible():
+            return True
     candidates = page.get_by_text("Advised Delivery Notifications", exact=True)
     trigger = None
     for i in range(await candidates.count()):
