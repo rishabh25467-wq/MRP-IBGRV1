@@ -95,6 +95,17 @@ def ensure_indexes(db) -> None:
     db[PO_CACHE_COLLECTION].create_index("vendor_code")
 
 
+def expire_po_cache(db, po_number: str, item_number: str = None) -> int:
+    """Sep 14 2026 - after a real SAP cancellation succeeds, immediately
+    drop the cancelled PO (or just the one item) from the local cache
+    instead of waiting on the next background refresh cycle - same
+    immediacy concern as the Open PO Qty targeted-refresh fix above."""
+    query = {"po_number": po_number, "expired": {"$ne": True}}
+    if item_number:
+        query["item_number"] = item_number
+    return db[PO_CACHE_COLLECTION].update_many(query, {"$set": {"expired": True}}).modified_count
+
+
 def refresh_po_cache(db, vendor_code: str, items: list) -> None:
     """Called every time a LIVE SAP PO fetch succeeds - keeps a durable
     local copy so the vendor's open-PO list (and shipment creation) still

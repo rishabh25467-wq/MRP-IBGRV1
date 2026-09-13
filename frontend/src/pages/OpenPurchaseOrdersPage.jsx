@@ -1,11 +1,15 @@
 import { useState, useRef, useEffect } from "react";
 import axios from "axios";
-import { MagnifyingGlass, ShieldCheck, Package, CheckCircle, CircleNotch, ArrowsClockwise } from "@phosphor-icons/react";
+import { MagnifyingGlass, ShieldCheck, Package, CheckCircle, CircleNotch, ArrowsClockwise, XCircle } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
+} from "@/components/ui/alert-dialog";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
@@ -37,6 +41,8 @@ export default function OpenPurchaseOrdersPage() {
   const [items, setItems] = useState(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState(null); // {po_number} or {po_number, item_id, description}
+  const [cancelling, setCancelling] = useState(false);
   const wrapperRef = useRef(null);
   const debounceRef = useRef(null);
 
@@ -131,6 +137,33 @@ export default function OpenPurchaseOrdersPage() {
       toast.error("Could not start SAP refresh");
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  // Sep 14 2026, user's explicit ask ("build cancel PO... for full PO
+  // and also individual line items... anyone who can see a PO").
+  const reSearch = async () => {
+    if (selectedSupplier) await pickSupplier(selectedSupplier);
+    else if (poSearchActive) await searchByPoNumber();
+  };
+
+  const confirmCancel = async () => {
+    if (!cancelTarget) return;
+    setCancelling(true);
+    try {
+      if (cancelTarget.item_id) {
+        await axios.post(`${API}/purchase-orders/${cancelTarget.po_number}/items/${cancelTarget.item_id}/cancel`);
+        toast.success(`Item ${cancelTarget.item_id} on PO ${cancelTarget.po_number} cancelled in SAP`);
+      } else {
+        await axios.post(`${API}/purchase-orders/${cancelTarget.po_number}/cancel`);
+        toast.success(`PO ${cancelTarget.po_number} cancelled in SAP`);
+      }
+      setCancelTarget(null);
+      await reSearch();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Cancellation failed in SAP");
+    } finally {
+      setCancelling(false);
     }
   };
 
@@ -267,11 +300,19 @@ export default function OpenPurchaseOrdersPage() {
                     )}
                     <span className="text-xs text-[#667085]">Buyer: {poItems[0]?.buyer_entity_name || "-"} · PO Date: {poItems[0]?.po_date || "-"}</span>
                   </div>
+                  <Button
+                    size="sm" variant="outline"
+                    className="h-7 rounded-sm text-[11px] border-[#FDA29B] text-[#B42318] hover:bg-[#FEF3F2]"
+                    onClick={() => setCancelTarget({ po_number: poNumber })}
+                    data-testid={`open-pos-cancel-po-button-${poNumber}`}
+                  >
+                    <XCircle size={12} className="mr-1" /> Cancel Whole PO
+                  </Button>
                 </div>
                 <table className="w-full text-xs border-collapse" data-testid={`open-pos-items-table-${poNumber}`}>
                   <thead>
                     <tr>
-                      {["Item#", "Product", "Description", "PO Qty", "Shipped", "Open Qty", "UoM", "Value", "Due Date", "SAP Verified"].map((h) => (
+                      {["Item#", "Product", "Description", "PO Qty", "Shipped", "Open Qty", "UoM", "Value", "Due Date", "SAP Verified", ""].map((h) => (
                         <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
@@ -297,6 +338,16 @@ export default function OpenPurchaseOrdersPage() {
                           <td className="border border-[#D0D5DD] px-2 py-1.5 font-data text-right whitespace-nowrap">{fmtMoney(it.subtotal, it.currency)}</td>
                           <td className="border border-[#D0D5DD] px-2 py-1.5 whitespace-nowrap">{it.due_date || "-"}</td>
                           <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#98A2B3] whitespace-nowrap">{fmtRelative(it.sap_verified_at)}</td>
+                          <td className="border border-[#D0D5DD] px-2 py-1.5 whitespace-nowrap">
+                            <button
+                              type="button"
+                              className="text-[11px] text-[#B42318] hover:underline"
+                              onClick={() => setCancelTarget({ po_number: poNumber, item_id: it.item_number, description: it.description })}
+                              data-testid={`open-pos-cancel-item-button-${poNumber}-${it.item_number}`}
+                            >
+                              Cancel item
+                            </button>
+                          </td>
                         </tr>
                       );
                     })}
@@ -306,6 +357,35 @@ export default function OpenPurchaseOrdersPage() {
             ))}
           </div>
         )}
+
+        <AlertDialog open={!!cancelTarget} onOpenChange={(open) => !open && setCancelTarget(null)}>
+          <AlertDialogContent data-testid="open-pos-cancel-confirm-dialog">
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {cancelTarget?.item_id
+                  ? `Cancel Item ${cancelTarget?.item_id} on PO ${cancelTarget?.po_number}?`
+                  : `Cancel the whole PO ${cancelTarget?.po_number}?`}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {cancelTarget?.item_id
+                  ? `This cancels only "${cancelTarget?.description || "this line"}" in SAP - the rest of the PO stays active. `
+                  : `This cancels the ENTIRE PO in SAP - every line on it. `}
+                This is a real, irreversible write to SAP. SAP only allows cancelling a PO while it's still "Sent" or "Not Yet Acknowledged" - if a delivery/Follow-Up document already exists against it, SAP will reject this with a real error.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel data-testid="open-pos-cancel-confirm-dismiss">Never mind</AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-[#B42318] hover:bg-[#912018]"
+                disabled={cancelling}
+                onClick={(e) => { e.preventDefault(); confirmCancel(); }}
+                data-testid="open-pos-cancel-confirm-submit"
+              >
+                {cancelling ? "Cancelling in SAP..." : "Yes, cancel in SAP"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </main>
     </div>
   );

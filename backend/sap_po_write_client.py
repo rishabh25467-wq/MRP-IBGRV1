@@ -268,6 +268,39 @@ _ENVELOPE_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 </soapenv:Envelope>"""
 
 
+_CANCEL_PO_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+<soapenv:Body>
+<n0:PurchaseOrderBundleMaintainRequest_sync xmlns:n0="{namespace}">
+ <BasicMessageHeader/>
+ <PurchaseOrderMaintainBundle actionCode="02">
+  <ObjectNodeSenderTechnicalID>1</ObjectNodeSenderTechnicalID>
+  <BusinessTransactionDocumentTypeCode>001</BusinessTransactionDocumentTypeCode>
+  <PurchaseOrderID>{po_number}</PurchaseOrderID>
+  <CancelPurchaseOrderActionIndicator>true</CancelPurchaseOrderActionIndicator>
+ </PurchaseOrderMaintainBundle>
+</n0:PurchaseOrderBundleMaintainRequest_sync>
+</soapenv:Body>
+</soapenv:Envelope>"""
+
+_CANCEL_ITEM_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+<soapenv:Body>
+<n0:PurchaseOrderBundleMaintainRequest_sync xmlns:n0="{namespace}">
+ <BasicMessageHeader/>
+ <PurchaseOrderMaintainBundle actionCode="02">
+  <ObjectNodeSenderTechnicalID>1</ObjectNodeSenderTechnicalID>
+  <BusinessTransactionDocumentTypeCode>001</BusinessTransactionDocumentTypeCode>
+  <PurchaseOrderID>{po_number}</PurchaseOrderID>
+  <Item actionCode="03">
+   <ItemID>{item_id}</ItemID>
+  </Item>
+ </PurchaseOrderMaintainBundle>
+</n0:PurchaseOrderBundleMaintainRequest_sync>
+</soapenv:Body>
+</soapenv:Envelope>"""
+
+
 class SAPPurchaseOrderWriteClient:
     def __init__(self, endpoint: str, username: str, password: str, timeout: int = 60):
         self.endpoint = endpoint or None
@@ -386,6 +419,104 @@ class SAPPurchaseOrderWriteClient:
             "po_uuid": po_uuid_match.group(1) if po_uuid_match else None,
             "raw_xml": resp.text[:3000],
         }
+
+    def _post_maintain(self, envelope: str) -> str:
+        """Shared by cancel_purchase_order/cancel_purchase_order_item -
+        posts the given MaintainBundle envelope and returns the raw
+        response text, raising on any transport/HTTP-level failure. A
+        business-rule rejection (e.g. PO no longer in "Sent"/"Not Yet
+        Acknowledged" status) comes back HTTP 200 with errors only in
+        the response's own <Log> section - callers must still check
+        that themselves via _extract_log_errors, same as create."""
+        if not self.endpoint:
+            raise SAPPurchaseOrderWriteNotConfiguredError(
+                "SAP Purchase Order cancellation isn't wired up yet - SAP_SOAP_PO_MANAGE_ENDPOINT is not set."
+            )
+        try:
+            with sap_semaphore:
+                resp = requests.post(
+                    self.endpoint, data=envelope.encode("utf-8"),
+                    headers={"Content-Type": "text/xml; charset=utf-8", "SOAPAction": SOAP_ACTION},
+                    auth=self.auth, timeout=self.timeout,
+                )
+        except requests.exceptions.RequestException as e:
+            raise SAPPurchaseOrderWriteError(f"SAP Purchase Order service unreachable: {e}")
+        if resp.status_code != 200:
+            raise SAPPurchaseOrderWriteError(
+                f"SAP rejected the cancellation (HTTP {resp.status_code}): {_extract_fault_message(resp.text)}"
+            )
+        errors = _extract_log_errors(resp.text)
+        if errors:
+            raise SAPPurchaseOrderWriteError("; ".join(errors))
+        return resp.text
+
+    def cancel_purchase_order(self, po_number: str) -> dict:
+        """Sep 14 2026, user's explicit ask ("build cancel PO... for
+        full PO and also individual line items"). Confirmed via SAP's
+        own official ManagePurchaseOrderIn docs (help.sap.com,
+        PSM_ISI_R_II_SRM_PO_MBO): actionCode="02" (update) on
+        PurchaseOrderMaintainBundle + CancelPurchaseOrderActionIndicator
+        =true cancels the WHOLE PO. SAP's own rule: only works while the
+        PO's PurchaseOrderLifeCycleStatusCode is "Sent"(6) or "Not Yet
+        Acknowledged"(5) - anything past that (e.g. a delivery/Follow-Up
+        doc already exists) comes back as a real, readable business
+        fault via the Log, not a silent no-op."""
+        envelope = _CANCEL_PO_TEMPLATE.format(namespace=NAMESPACE, po_number=escape(str(po_number)))
+        self._post_maintain(envelope)
+        return {"po_number": po_number, "cancelled": True}
+
+    def cancel_purchase_order_item(self, po_number: str, item_id: str) -> dict:
+        """Same SAP mechanism as cancel_purchase_order above, just
+        nesting the indicator inside a single <Item actionCode="02">
+        node instead of at the PO header - cancels only that one line,
+        leaving the rest of the PO untouched."""
+        envelope = _CANCEL_ITEM_TEMPLATE.format(
+            namespace=NAMESPACE, po_number=escape(str(po_number)), item_id=escape(str(item_id)),
+        )
+        self._post_maintain(envelope)
+        return {"po_number": po_number, "item_id": item_id, "cancelled": True}
+
+    def get_purchase_order_status(self, po_number: str) -> dict:
+        """Read-back verification (same PurchaseOrderByIDQuery_sync
+        operation get_purchase_order_number already uses) - confirms a
+        cancel actually landed rather than trusting the write
+        response's own silence. Returns
+        {"lifecycle_status_code", "items": [{"item_id",
+        "cancellation_status_code"}, ...]} or None on any failure."""
+        if not self.endpoint:
+            return None
+        body = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">'
+            '<soapenv:Body>'
+            f'<glob:PurchaseOrderByIDQuery_sync xmlns:glob="{NAMESPACE}">'
+            f'<PurchaseOrder><ID>{escape(str(po_number))}</ID></PurchaseOrder>'
+            '</glob:PurchaseOrderByIDQuery_sync>'
+            '</soapenv:Body></soapenv:Envelope>'
+        )
+        try:
+            with sap_semaphore:
+                resp = requests.post(
+                    self.endpoint, data=body.encode("utf-8"),
+                    headers={"Content-Type": "text/xml; charset=utf-8", "SOAPAction": SOAP_ACTION},
+                    auth=self.auth, timeout=self.timeout,
+                )
+            if resp.status_code != 200:
+                return None
+            lifecycle_match = re.search(r"<PurchaseOrderLifeCycleStatusCode>([^<]*)</PurchaseOrderLifeCycleStatusCode>", resp.text)
+            items = [
+                {"item_id": m.group(1), "cancellation_status_code": m.group(2)}
+                for m in re.finditer(
+                    r"<Item><ItemID>([^<]*)</ItemID>.*?<CancellationStatusCode>([^<]*)</CancellationStatusCode>",
+                    resp.text, re.DOTALL,
+                )
+            ]
+            return {
+                "lifecycle_status_code": lifecycle_match.group(1) if lifecycle_match else None,
+                "items": items,
+            }
+        except Exception:
+            return None
 
     def get_purchase_order_number(self, po_number: str) -> str:
         """Sep 10 2026, user's explicit ask: read back the tenant's own

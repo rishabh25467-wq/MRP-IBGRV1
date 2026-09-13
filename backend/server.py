@@ -5695,6 +5695,45 @@ async def po_lookup_by_number(po_number: str = Query(..., min_length=1, descript
     return {"po_number": po_number.strip(), "items": items}
 
 
+@api_router.post("/purchase-orders/{po_number}/cancel")
+async def cancel_purchase_order(po_number: str):
+    """Sep 14 2026, user's explicit ask ("build cancel PO... for full
+    PO and also individual line items... anyone who can see a PO").
+    Live-verified against real disposable test POs (29531, 29533) in
+    this same session: SAP flips PurchaseOrderLifeCycleStatusCode to
+    "8" (Canceled) and every item's own CancellationStatusCode to "4" -
+    SAP's own rule (only "Sent"/"Not Yet Acknowledged" POs are
+    eligible) surfaces as a real, readable error otherwise, not a
+    silent no-op."""
+    try:
+        result = await asyncio.to_thread(sap_po_write_client.cancel_purchase_order, po_number)
+    except SAPPurchaseOrderWriteError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await asyncio.to_thread(supplier_shipment_service.expire_po_cache, db, po_number)
+    return result
+
+
+@api_router.post("/purchase-orders/{po_number}/items/{item_id}/cancel")
+async def cancel_purchase_order_item(po_number: str, item_id: str):
+    """Sep 14 2026 - SAP's own OFFICIALLY documented mechanism for this
+    (Item actionCode="03", i.e. delete the line) - live-tested against
+    a real disposable PO (29533) and confirmed the payload shape itself
+    is accepted, but this specific tenant rejects it outright with
+    "Deleting data not possible; deletion disabled" (a real SAP
+    business-config lockout, not a silent no-op) - same class of
+    tenant-config gap as the already-known Custom BO/ABSL Work Center
+    binding issue. Left wired up (SAP's official approach, in case a
+    future SAP Admin config change enables it) - the real error is
+    passed straight through with an actionable hint appended."""
+    try:
+        result = await asyncio.to_thread(sap_po_write_client.cancel_purchase_order_item, po_number, item_id)
+    except SAPPurchaseOrderWriteError as e:
+        hint = " Ask your SAP Admin to enable line-item deletion for Purchase Orders, or cancel the whole PO instead." if "deletion disabled" in str(e).lower() else ""
+        raise HTTPException(status_code=400, detail=f"{e}{hint}")
+    await asyncio.to_thread(supplier_shipment_service.expire_po_cache, db, po_number, item_id)
+    return result
+
+
 @api_router.get("/purchase-orders/pr-available")
 async def po_pr_available(search: str = Query("", description="Filter by PR number, supplier name or code"), limit: int = Query(30, le=100)):
     """Sep 4 2026, user's explicit ask: let the buyer pick a PR from a
