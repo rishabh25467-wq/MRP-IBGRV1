@@ -1146,6 +1146,7 @@ export default function GrnApprovalPage() {
               <table className="border-collapse w-full text-[13px] mt-2 border border-[#D0D5DD] rounded-sm overflow-hidden">
                 <thead className="bg-[#EAECF0] text-[#344054] text-xs font-bold font-heading uppercase tracking-wide">
                   <tr>
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">PO Number</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-left">Item Code</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-left">Description</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-right">Qty</th>
@@ -1161,6 +1162,7 @@ export default function GrnApprovalPage() {
                     const lineValue = it.unit_price != null ? qty * it.unit_price : null;
                     return (
                       <tr key={i} className="bg-white odd:bg-[#F9FAFB]" data-testid={`grn-confirmed-detail-item-${i}`}>
+                        <td className="border border-[#D0D5DD] px-2 py-1 font-data" data-testid={`grn-confirmed-detail-po-number-${i}`}>{it.po_number}</td>
                         <td className="border border-[#D0D5DD] px-2 py-1 font-data font-semibold">{it.product_id || "\u2014"}</td>
                         <td className="border border-[#D0D5DD] px-2 py-1">{it.description}</td>
                         <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data">{qty}</td>

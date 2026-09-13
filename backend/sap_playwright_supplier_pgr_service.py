@@ -317,6 +317,35 @@ async def _click_po_row(page, row, row_label: str) -> None:
         await row.click(force=True)
 
 
+async def _open_notification_detail(page, row, notification_id: str) -> bool:
+    """Sep 14 2026 fix (continuation of the Sep 13 2026 "already Finished"
+    detection - see the disabled-button branch in `_post_one_po`): the
+    list row's own text check alone (`"finish" in row_text`) silently
+    misses a genuinely Finished notification whenever this tenant's
+    current column personalization for Inbound Delivery Notifications
+    doesn't happen to render a "Delivery Status"/"Finished" column at
+    all - the text simply never exists anywhere in that row's DOM to
+    find, no matter how the check is written. Rather than depend on
+    whichever columns the list view happens to show, this clicks INTO
+    the notification's own ID link to open its detail screen instead -
+    Delivery/Life-Cycle Status always renders there as a real header
+    field (SAPUI5 object-page pattern), independent of any list column
+    configuration. Returns False (never raises) if the ID link can't be
+    found - caller falls back to the existing row-text check result."""
+    link = None
+    for cell in await row.query_selector_all("td"):
+        a = await cell.query_selector("a")
+        if a and notification_id in (await a.inner_text()):
+            link = a
+            break
+    if link is None:
+        return False
+    await link.click(force=True)
+    await page.wait_for_timeout(3000)
+    await _wait_for_blocking_layer_clear(page)
+    return True
+
+
 async def _extract_confirmation_text(page) -> str:
     """Sep 2 2026 addition (user's ask: "show SAP inbound number for
     user's reference"): the SAME role='alert' region `_extract_error_text`
@@ -496,6 +525,36 @@ async def _post_one_po(page, po_number: str, doc_code: str, supplier_doc_num: st
 
     click_result = await _click_button(page, "Post Goods Receipt")
     if click_result == "disabled":
+        # Sep 13 2026 BUG FOUND + FIXED (real incident, shipment WFRRSL/
+        # PO 29482, confirmed live by the user directly in SAP: Delivery
+        # 53117, Delivery Status "Finished", Release Status "Released",
+        # every line's Fulfilled Quantity already matched its Delivery
+        # Notification Quantity) - "disabled" here does NOT always mean
+        # a corrupted/stuck document needing SAP Basis. It ALSO means
+        # "this notification was already fully received in SAP" - a
+        # Retry re-derives the SAME notification_id (see the Sep 12 fix
+        # above) and finds a document a PREVIOUS attempt already
+        # completed end-to-end (real SAP save succeeded), but THIS
+        # app's own sap_gr_result never got updated to "posted" because
+        # that earlier attempt crashed/restarted right after the save.
+        # Read the selected row's own text for "Finished" before
+        # concluding it's actually stuck - if so, treat as success
+        # instead of failing forever on every future retry too.
+        row_text = (await rows[0].inner_text()).lower()
+        already_finished = "finish" in row_text
+        if not already_finished:
+            # Sep 14 2026 fix: this tenant's current column personalization
+            # doesn't always render a "Delivery Status" column in the list
+            # itself (real gap found mid the Sep 13 2026 fix above) - open
+            # the notification's own detail screen instead, where the
+            # status always renders as a structured field regardless of
+            # which list columns happen to be shown. See
+            # `_open_notification_detail`'s docstring.
+            if await _open_notification_detail(page, rows[0], notification_id):
+                already_finished = "finish" in (await page.inner_text("body")).lower()
+        if already_finished:
+            events.append(f"Notification {notification_id} was already fully received in SAP (Delivery Status: Finished) from a previous attempt - treating as posted")
+            return {"po_number": po_number, "status": "posted", "inbound_delivery_id": None, "skipped_items": skipped_items, "events": events}
         return await _capture_failure(page, po_number, "opening_receipt", "Post Goods Receipt is disabled for this notification in SAP", events=events)
     if click_result == "not_found":
         return await _capture_failure(page, po_number, "opening_receipt", "Post Goods Receipt button not found for this notification", events=events)
