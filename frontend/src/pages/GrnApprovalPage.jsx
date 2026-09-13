@@ -71,6 +71,22 @@ function describeGrnPhase(phase) {
   const label = GRN_STEP_LABELS[step] || step;
   return po ? `${label} ${po}${poCount ? ` (${poCount})` : ""}` : label;
 }
+// Sep 14 2026 fix (same investigation as GRN_STEP_LABELS above) - the
+// Diagnostics modal, the failure screenshot dialog's title, and both
+// "View exact SAP screen at time of failure (...)" links all rendered
+// the raw internal `failed_step` string (e.g. "searching") straight to
+// the user - same stale-wording problem, now fixed everywhere it's
+// shown, not just the live progress bar.
+const FAILED_STEP_LABELS = {
+  searching: "creating/locating the SAP Delivery Notification",
+  opening_receipt: "opening the Goods Receipt screen",
+  entering_quantities: "entering item quantities",
+  saving: "saving to SAP",
+  unexpected_crash: "an unexpected error",
+};
+function describeFailedStep(step) {
+  return FAILED_STEP_LABELS[step] || step || "unknown step";
+}
 // Rough empirical average per discrete step, purely for the countdown's
 // display - the real remaining time is unknowable in advance (live SAP
 // UI automation), so this clamps at "Almost there..." instead of ever
@@ -842,7 +858,7 @@ export default function GrnApprovalPage() {
                         setScreenshotModal(failed);
                       }}
                     >
-                      View exact SAP screen at time of failure ({shipment.sap_gr_result.per_po.find((p) => p.screenshot_path)?.failed_step || "unknown step"})
+                      View exact SAP screen at time of failure ({describeFailedStep(shipment.sap_gr_result.per_po.find((p) => p.screenshot_path)?.failed_step)})
                     </button>
                   </div>
                 )}
@@ -1135,7 +1151,7 @@ export default function GrnApprovalPage() {
                       setScreenshotModal(failed);
                     }}
                   >
-                    View exact SAP screen at time of failure ({confirmedDetail.sap_gr_result.per_po.find((p) => p.screenshot_path)?.failed_step || "unknown step"})
+                    View exact SAP screen at time of failure ({describeFailedStep(confirmedDetail.sap_gr_result.per_po.find((p) => p.screenshot_path)?.failed_step)})
                   </button>
                 </div>
               )}
@@ -1197,7 +1213,7 @@ export default function GrnApprovalPage() {
           {screenshotModal && (
             <>
               <DialogHeader>
-                <DialogTitle className="font-heading text-[#7A1E1E]">PO {screenshotModal.po_number} - failed at "{screenshotModal.failed_step || "unknown step"}"</DialogTitle>
+                <DialogTitle className="font-heading text-[#7A1E1E]">PO {screenshotModal.po_number} - failed while {describeFailedStep(screenshotModal.failed_step)}</DialogTitle>
                 <DialogDescription className="font-data text-xs">{screenshotModal.error}</DialogDescription>
               </DialogHeader>
               {screenshotModal.screenshot_path ? (
@@ -1227,7 +1243,7 @@ export default function GrnApprovalPage() {
                   ) : diagnosticsModal.status === "posted" ? (
                     <span className="text-[#B54708] font-semibold">Posted to SAP - but item(s) below were dropped from this PO</span>
                   ) : (
-                    <>Failed at step: <strong className="text-[#7A1E1E]">{diagnosticsModal.failed_step || "unknown step"}</strong></>
+                    <>Failed while: <strong className="text-[#7A1E1E]">{describeFailedStep(diagnosticsModal.failed_step)}</strong></>
                   )}
                 </DialogDescription>
               </DialogHeader>
