@@ -317,33 +317,39 @@ async def _click_po_row(page, row, row_label: str) -> None:
         await row.click(force=True)
 
 
-async def _open_notification_detail(page, row, notification_id: str) -> bool:
-    """Sep 14 2026 fix (continuation of the Sep 13 2026 "already Finished"
-    detection - see the disabled-button branch in `_post_one_po`): the
-    list row's own text check alone (`"finish" in row_text`) silently
-    misses a genuinely Finished notification whenever this tenant's
-    current column personalization for Inbound Delivery Notifications
-    doesn't happen to render a "Delivery Status"/"Finished" column at
-    all - the text simply never exists anywhere in that row's DOM to
-    find, no matter how the check is written. Rather than depend on
-    whichever columns the list view happens to show, this clicks INTO
-    the notification's own ID link to open its detail screen instead -
-    Delivery/Life-Cycle Status always renders there as a real header
-    field (SAPUI5 object-page pattern), independent of any list column
-    configuration. Returns False (never raises) if the ID link can't be
-    found - caller falls back to the existing row-text check result."""
-    link = None
-    for cell in await row.query_selector_all("td"):
-        a = await cell.query_selector("a")
-        if a and notification_id in (await a.inner_text()):
-            link = a
-            break
-    if link is None:
-        return False
-    await link.click(force=True)
-    await page.wait_for_timeout(3000)
-    await _wait_for_blocking_layer_clear(page)
-    return True
+async def _is_notification_finished_in_details_panel(page) -> bool:
+    """Sep 14 2026 CORRECTED fix (continuation of the Sep 13 2026
+    "already Finished" detection - the first attempt at this, which
+    tried clicking an ID link to "navigate into" a detail screen, was
+    WRONG - disproven by the user's own live screenshot, real PO 29482/
+    notification TEST_0506-WFRRSL-29482): the list's own columns
+    (Delivery Notification ID/Status/Release Status/Planned Delivery/
+    Sender Name/Created By/Delivery Type) never include "Delivery
+    Status" at all - that field only ever appears in the "Details:
+    Delivery Notification ..." panel SAP's own master-detail layout
+    renders BELOW the list the INSTANT a row is selected (confirmed
+    live: `_click_po_row` above already selects the row before this
+    check even runs, and the screenshot shows that Details panel
+    already fully populated with "Delivery Status: Finished" - no
+    extra click/navigation was ever needed, that's what made the first
+    attempt's ID-link click a no-op - there IS no such link in the
+    list row). Scans the whole page's text line-by-line for a line
+    containing "Delivery Status" and checks that SAME line (or, for a
+    stacked label/value layout, the next non-empty line) for
+    "Finished" - deliberately NOT a blind "finish" anywhere on the
+    page, since a status filter dropdown's own hidden option list can
+    genuinely contain the word "Finished" in its DOM regardless of
+    the current document's real status."""
+    text = await page.inner_text("body")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    for i, line in enumerate(lines):
+        if "delivery status" not in line.lower():
+            continue
+        if "finish" in line.lower():
+            return True
+        if i + 1 < len(lines) and "finish" in lines[i + 1].lower():
+            return True
+    return False
 
 
 async def _extract_confirmation_text(page) -> str:
@@ -541,17 +547,16 @@ async def _post_one_po(page, po_number: str, doc_code: str, supplier_doc_num: st
         # concluding it's actually stuck - if so, treat as success
         # instead of failing forever on every future retry too.
         row_text = (await rows[0].inner_text()).lower()
-        already_finished = "finish" in row_text
-        if not already_finished:
-            # Sep 14 2026 fix: this tenant's current column personalization
-            # doesn't always render a "Delivery Status" column in the list
-            # itself (real gap found mid the Sep 13 2026 fix above) - open
-            # the notification's own detail screen instead, where the
-            # status always renders as a structured field regardless of
-            # which list columns happen to be shown. See
-            # `_open_notification_detail`'s docstring.
-            if await _open_notification_detail(page, rows[0], notification_id):
-                already_finished = "finish" in (await page.inner_text("body")).lower()
+        # Sep 14 2026 CORRECTED fix (real incident, PO 29482/notification
+        # TEST_0506-WFRRSL-29482, confirmed by the user's own live
+        # screenshot): "Delivery Status" is never one of the list's own
+        # columns - it only renders in the "Details: Delivery
+        # Notification ..." panel already shown BELOW the list the
+        # instant `_click_po_row` selected this row above, no extra
+        # click/navigation needed. See `_is_notification_finished_in_details_panel`'s
+        # docstring for why the first (wrong) attempt at this fix tried
+        # clicking a non-existent ID link instead.
+        already_finished = "finish" in row_text or await _is_notification_finished_in_details_panel(page)
         if already_finished:
             events.append(f"Notification {notification_id} was already fully received in SAP (Delivery Status: Finished) from a previous attempt - treating as posted")
             return {"po_number": po_number, "status": "posted", "inbound_delivery_id": None, "skipped_items": skipped_items, "events": events}

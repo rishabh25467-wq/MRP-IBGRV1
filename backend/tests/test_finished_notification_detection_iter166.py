@@ -1,12 +1,15 @@
-"""Iteration 166 - Sep 14 2026 fix verification.
+"""Iteration 166 - Sep 14 2026 fix verification (CORRECTED).
 
-Continuation of Issue 1 from the previous session: when SAP's "Post
-Goods Receipt" button is disabled because the notification was already
-fully received in SAP on a previous attempt, the app must detect this
-via `_open_notification_detail` (open the notification's own detail
-screen) whenever the list row's own visible columns don't carry a
-"Finished" status text at all - instead of failing every retry forever
-with a confusing "Post Goods Receipt is disabled" error.
+Continuation of Issue 1 from the previous session. The FIRST attempt at
+this fix (clicking a notification ID link to "navigate into" a detail
+screen) was proven wrong by the user's own live screenshot of real PO
+29482/notification TEST_0506-WFRRSL-29482: there is no such link in the
+list row at all. The real gap is that "Delivery Status" is never one of
+the list's own columns - it only ever renders in the "Details: Delivery
+Notification ..." panel SAP's own master-detail layout shows BELOW the
+list the instant a row is selected (already done by `_click_po_row`
+before this check runs) - so the fix just needs to read the WHOLE page's
+text, not just the row's own text, no extra navigation needed.
 
 No live SAP sandbox exists to dry-run Playwright DOM interactions
 against - all Playwright objects here are mocked. Real confirmation
@@ -25,60 +28,51 @@ def _run(coro):
     return asyncio.get_event_loop().run_until_complete(coro)
 
 
-class TestOpenNotificationDetail:
-    def _make_row(self, link_text: str = None):
-        row = MagicMock()
-        cell = MagicMock()
-        cell.query_selector_all = AsyncMock()
-        if link_text is not None:
-            link = MagicMock()
-            link.inner_text = AsyncMock(return_value=link_text)
-            link.click = AsyncMock()
-            cell.query_selector = AsyncMock(return_value=link)
-        else:
-            cell.query_selector = AsyncMock(return_value=None)
-        row.query_selector_all = AsyncMock(return_value=[cell])
-        return row, cell
-
-    def test_finds_and_clicks_matching_id_link(self):
-        row, cell = self._make_row(link_text="NOTIF123-DOC001-29482")
+class TestIsNotificationFinishedInDetailsPanel:
+    def _page_with_text(self, body_text: str):
         page = MagicMock()
-        page.wait_for_timeout = AsyncMock()
-        orig_wait = pgr._wait_for_blocking_layer_clear
-        pgr._wait_for_blocking_layer_clear = AsyncMock()
-        try:
-            result = _run(pgr._open_notification_detail(page, row, "NOTIF123-DOC001-29482"))
-        finally:
-            pgr._wait_for_blocking_layer_clear = orig_wait
-        assert result is True
-        link = _run(cell.query_selector())
-        link.click.assert_awaited_once_with(force=True)
+        page.inner_text = AsyncMock(return_value=body_text)
+        return page
 
-    def test_no_matching_link_returns_false(self):
-        row, cell = self._make_row(link_text=None)
-        page = MagicMock()
-        page.wait_for_timeout = AsyncMock()
-        result = _run(pgr._open_notification_detail(page, row, "NOTIF123-DOC001-29482"))
-        assert result is False
+    def test_finished_on_same_line_as_label(self):
+        page = self._page_with_text("Some header\nDelivery Status: Finished\nOther field")
+        assert _run(pgr._is_notification_finished_in_details_panel(page)) is True
+
+    def test_finished_on_next_line_stacked_layout(self):
+        page = self._page_with_text("Delivery Status\nFinished\nCancellation Status\nNot Canceled")
+        assert _run(pgr._is_notification_finished_in_details_panel(page)) is True
+
+    def test_not_started_returns_false(self):
+        page = self._page_with_text("Delivery Status: Not Started\nRelease Status: Released")
+        assert _run(pgr._is_notification_finished_in_details_panel(page)) is False
+
+    def test_no_delivery_status_line_at_all_returns_false(self):
+        page = self._page_with_text("Some unrelated page\nFinished appears elsewhere in a dropdown option")
+        assert _run(pgr._is_notification_finished_in_details_panel(page)) is False
+
+    def test_no_false_positive_from_unrelated_finished_text(self):
+        """A status FILTER dropdown's hidden option list can genuinely
+        contain the word "Finished" elsewhere on the page - must not
+        count unless it's actually on/next-to the Delivery Status line."""
+        page = self._page_with_text("Filter: Advised, Received, Finished, Canceled\nDelivery Status: Not Started")
+        assert _run(pgr._is_notification_finished_in_details_panel(page)) is False
 
 
 class TestPostOnePoDisabledButtonHandling:
     """Drives `_post_one_po` all the way to the "disabled" branch via
     monkeypatched Playwright helpers (same technique as iteration_164's
-    test_partial_missing_only_bad_lines_dropped), then verifies the new
-    detail-screen fallback correctly distinguishes a genuinely-Finished
-    notification from a truly stuck one."""
+    test_partial_missing_only_bad_lines_dropped)."""
 
-    def _run_to_disabled_branch(self, row_text: str, detail_opens: bool, detail_text: str):
+    def _run_to_disabled_branch(self, row_text: str, page_body_text: str):
         page = MagicMock()
         page.wait_for_timeout = AsyncMock()
         page.query_selector_all = AsyncMock(return_value=[self._fake_row(row_text)])
-        page.inner_text = AsyncMock(return_value=detail_text)
+        page.inner_text = AsyncMock(return_value=page_body_text)
+        page.screenshot = AsyncMock(return_value=b"fake")
         by_text = MagicMock()
         by_text.first = MagicMock()
         by_text.first.wait_for = AsyncMock()
         page.get_by_text = MagicMock(return_value=by_text)
-        page.screenshot = AsyncMock(return_value=b"fake")
 
         orig = {
             "_open_inbound_delivery_notifications": pgr._open_inbound_delivery_notifications,
@@ -86,15 +80,12 @@ class TestPostOnePoDisabledButtonHandling:
             "_search_delivery": pgr._search_delivery,
             "_click_po_row": pgr._click_po_row,
             "_click_button": pgr._click_button,
-            "_open_notification_detail": pgr._open_notification_detail,
         }
         pgr._open_inbound_delivery_notifications = AsyncMock()
         pgr._switch_to_all_deliveries_view = AsyncMock(return_value=True)
         pgr._search_delivery = AsyncMock(return_value=1)
         pgr._click_po_row = AsyncMock()
         pgr._click_button = AsyncMock(return_value="disabled")
-        detail_mock = AsyncMock(return_value=detail_opens)
-        pgr._open_notification_detail = detail_mock
         notif_client = MagicMock()
         notif_client.maintain_bundle = MagicMock()
         try:
@@ -106,34 +97,37 @@ class TestPostOnePoDisabledButtonHandling:
         finally:
             for k, v in orig.items():
                 setattr(pgr, k, v)
-        return result, detail_mock
+        return result
 
     def _fake_row(self, text: str):
         row = MagicMock()
         row.inner_text = AsyncMock(return_value=text)
         return row
 
-    def test_list_row_already_shows_finished_no_detail_navigation_needed(self):
-        result, detail_mock = self._run_to_disabled_branch(row_text="NOTIF123 ... Finished", detail_opens=False, detail_text="")
-        assert result["status"] == "posted"
-        detail_mock.assert_not_called()
-
-    def test_list_row_missing_status_detail_screen_confirms_finished(self):
-        result, detail_mock = self._run_to_disabled_branch(
-            row_text="NOTIF123  29482  V1", detail_opens=True, detail_text="Delivery Status: Finished",
+    def test_real_incident_repro_details_panel_shows_finished(self):
+        """Exact repro of the user's real report: PO 29482/notification
+        TEST_0506-WFRRSL-29482 - list row has no "Finished" text at all
+        (no such column shown), but the Details panel below it (already
+        rendered from row selection, no click needed) does."""
+        result = self._run_to_disabled_branch(
+            row_text="TEST_0506-WFRRSL-29482  Received  Released  13.09.2026  Radish Technologies ALIGARH P2  Technical User  Supplier Delivery",
+            page_body_text=(
+                "Inbound Delivery Notifications\n"
+                "Details: Delivery Notification TEST_0506-WFRRSL-29482\n"
+                "Status\n"
+                "Consistency Status: Consistent\n"
+                "Delivery Notification Status: Received\n"
+                "Release Status: Released\n"
+                "Delivery Status: Finished\n"
+                "Cancellation Status: Not Canceled\n"
+            ),
         )
-        assert result["status"] == "posted"
-        detail_mock.assert_called_once()
+        assert result["status"] == "posted", f"Expected posted, got {result}"
 
-    def test_neither_row_nor_detail_show_finished_fails_cleanly(self):
-        result, _ = self._run_to_disabled_branch(
-            row_text="NOTIF123  29482  V1", detail_opens=True, detail_text="Delivery Status: Not Started",
+    def test_genuinely_stuck_document_still_fails(self):
+        result = self._run_to_disabled_branch(
+            row_text="NOTIF123  29482  V1",
+            page_body_text="Details: Delivery Notification NOTIF123\nDelivery Status: Not Started\n",
         )
         assert result["status"] == "failed"
         assert result["failed_step"] == "opening_receipt"
-
-    def test_detail_screen_unreachable_falls_back_to_failure(self):
-        result, _ = self._run_to_disabled_branch(
-            row_text="NOTIF123  29482  V1", detail_opens=False, detail_text="",
-        )
-        assert result["status"] == "failed"
