@@ -377,6 +377,7 @@ def _extract_inbound_delivery_id(confirmation_text: str) -> str:
 
 
 MAX_NOTIFICATION_ID_LENGTH = 35
+MAX_INVOICE_PREFIX_LENGTH = 20
 
 
 def _build_notification_id(supplier_doc_num: str, doc_code: str, po_number: str) -> str:
@@ -388,16 +389,20 @@ def _build_notification_id(supplier_doc_num: str, doc_code: str, po_number: str)
     case-collidable) as a fixed SUFFIX that's always present - so two
     shipments whose supplier-typed invoice numbers collide (even after
     SAP's own case-normalization) still can never produce the same ID.
-    Invoice number is sanitized (SAP ID fields don't reliably accept
-    spaces/slashes) and truncated to fit SAP's ~35-char BusinessTransac-
-    tionDocumentID limit, suffix always wins the space if the invoice
-    number alone would overflow it. Falls back to the old suffix-only
-    ID when there's no invoice number on file (field is optional)."""
+    Aug 2026 update (user confirmed "SAP accepts /") - the invoice
+    number is no longer character-sanitized (SAP's SOAP field accepts
+    "/" and other characters fine, and it's XML-escaped before going
+    on the wire in sap_inbound_delivery_notification_client.py), and is
+    capped at MAX_INVOICE_PREFIX_LENGTH (20) chars instead of eating
+    whatever space happens to be left after the suffix, while the
+    overall ID still respects SAP's ~35-char BusinessTransactionDocum-
+    entID limit. Falls back to the old suffix-only ID when there's no
+    invoice number on file (field is optional)."""
     suffix = f"{doc_code}-{po_number}"
-    prefix = re.sub(r"[^A-Za-z0-9_.]", "", (supplier_doc_num or "").strip())
+    prefix = (supplier_doc_num or "").strip()
     if not prefix:
         return suffix
-    max_prefix_len = MAX_NOTIFICATION_ID_LENGTH - len(suffix) - 1
+    max_prefix_len = min(MAX_INVOICE_PREFIX_LENGTH, MAX_NOTIFICATION_ID_LENGTH - len(suffix) - 1)
     if max_prefix_len <= 0:
         return suffix
     return f"{prefix[:max_prefix_len]}-{suffix}"
