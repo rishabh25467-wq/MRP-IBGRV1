@@ -7625,6 +7625,19 @@ def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> st
                 supplier_shipment_service.finalize_goods_receipt, db, doc_code, previously_posted_results + gr_result["results"],
                 sap_goods_movement_client, sap_inventory_client, owner_party_id, gr_result.get("sap_username") or doc.get("sap_gr_result", {}).get("sap_username"),
             )
+            # Sep 14 2026, user report ("this is not updated" on a
+            # just-received GRN's own Open PO Qty column) - same fast
+            # OData refresh already used on the Supplier Dashboard above,
+            # scoped to just this shipment's own PO numbers, so the
+            # approver isn't staring at the pre-receipt number for up to
+            # SAP_OPEN_QTY_CACHE_REFRESH_INTERVAL_SECONDS (5 min) waiting
+            # on the shared background loop to catch up.
+            try:
+                po_numbers = list({it["po_number"] for it in doc.get("items", [])})
+                results = await asyncio.to_thread(sap_po_analytics_client.fetch_open_po_quantities, po_numbers)
+                await asyncio.to_thread(supplier_shipment_service.store_sap_open_qty_cache, db, results)
+            except Exception as e:
+                logger.warning(f"Targeted Open PO Qty refresh after GRN {doc_code} failed, shared loop will catch up: {e}")
             on_progress("done", gr_result["total_steps"], gr_result["total_steps"])
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
         except Exception as e:
