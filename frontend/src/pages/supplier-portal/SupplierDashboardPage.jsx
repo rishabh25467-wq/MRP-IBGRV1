@@ -67,6 +67,10 @@ export default function SupplierDashboardPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  // Sep 14 2026, user's explicit ask: toggle between only-open PO lines
+  // (default, less clutter - matches "Your Open Purchase Orders" title)
+  // and every cached line including fully-shipped ones.
+  const [showAllPos, setShowAllPos] = useState(false);
 
   const [cart, setCart] = useState({});
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -192,10 +196,11 @@ export default function SupplierDashboardPage() {
   }, [vendorSearch, account?.testing_mode]);
 
   const filteredPos = useMemo(() => {
+    const scoped = showAllPos ? entityPos : entityPos.filter((po) => po.remaining_qty > 0);
     const q = search.trim().toLowerCase();
-    if (!q) return entityPos;
-    return entityPos.filter((po) => [po.po_number, po.item_number, po.description, po.product_id].some((v) => (v || "").toString().toLowerCase().includes(q)));
-  }, [entityPos, search]);
+    if (!q) return scoped;
+    return scoped.filter((po) => [po.po_number, po.item_number, po.description, po.product_id].some((v) => (v || "").toString().toLowerCase().includes(q)));
+  }, [entityPos, search, showAllPos]);
 
   const sortedPos = useMemo(() => {
     if (!sortColumn) return filteredPos;
@@ -366,16 +371,36 @@ export default function SupplierDashboardPage() {
         </div>
 
         <div className="mt-6 flex items-center justify-between flex-wrap gap-3">
-          <h2 className="font-heading text-lg font-bold text-[#0F172A]">Your Open Purchase Orders</h2>
-          <div className="relative">
-            <MagnifyingGlass size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#475569]" />
-            <Input
-              placeholder="Search PO #, Item #, or description..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="h-8 pl-8 pr-2 w-72 text-[13px] rounded-sm border-[#E2E8F0] focus-visible:border-[#1E40AF] focus-visible:ring-1 focus-visible:ring-[#1E40AF]"
-              data-testid="supplier-po-search-input"
-            />
+          <h2 className="font-heading text-lg font-bold text-[#0F172A]">Your {showAllPos ? "" : "Open "}Purchase Orders</h2>
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center rounded-sm border border-[#E2E8F0] bg-white p-0.5" data-testid="supplier-po-filter-toggle">
+              <button
+                type="button"
+                onClick={() => setShowAllPos(false)}
+                className={`text-xs font-semibold px-3 py-1 rounded-sm transition-colors duration-150 ${!showAllPos ? "bg-[#1E40AF] text-white" : "text-[#475569] hover:text-[#0F172A]"}`}
+                data-testid="supplier-po-filter-open-only"
+              >
+                Open Only
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowAllPos(true)}
+                className={`text-xs font-semibold px-3 py-1 rounded-sm transition-colors duration-150 ${showAllPos ? "bg-[#1E40AF] text-white" : "text-[#475569] hover:text-[#0F172A]"}`}
+                data-testid="supplier-po-filter-all"
+              >
+                All (incl. Fully Shipped)
+              </button>
+            </div>
+            <div className="relative">
+              <MagnifyingGlass size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#475569]" />
+              <Input
+                placeholder="Search PO #, Item #, or description..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="h-8 pl-8 pr-2 w-72 text-[13px] rounded-sm border-[#E2E8F0] focus-visible:border-[#1E40AF] focus-visible:ring-1 focus-visible:ring-[#1E40AF]"
+                data-testid="supplier-po-search-input"
+              />
+            </div>
           </div>
         </div>
 
@@ -583,7 +608,9 @@ export default function SupplierDashboardPage() {
           </div>
         )}
         {!loading && (entities.length <= 1 || selectedEntity) && pos.length > 0 && filteredPos.length === 0 && (
-          <div className="mt-6 text-sm text-[#475569] text-center" data-testid="supplier-po-search-empty">No POs match "{search}".</div>
+          <div className="mt-6 text-sm text-[#475569] text-center" data-testid="supplier-po-search-empty">
+            {search ? `No POs match "${search}".` : "No open PO lines right now - everything's fully shipped. Switch to \"All (incl. Fully Shipped)\" to see them."}
+          </div>
         )}
 
         {cartItems.length > 0 && (
