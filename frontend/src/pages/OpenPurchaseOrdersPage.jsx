@@ -256,7 +256,9 @@ export default function OpenPurchaseOrdersPage() {
                   <div className="flex items-center gap-2">
                     <Package size={14} className="text-[#004B87]" />
                     <span className="font-data font-bold text-[#101828] text-sm">PO {poNumber}</span>
-                    <Badge className="bg-[#ECFDF3] text-[#027A48] border border-[#ABEFC6] rounded-sm text-[10px]" data-testid={`open-pos-status-badge-${poNumber}`}>Open in SAP</Badge>
+                    <Badge className="bg-[#ECFDF3] text-[#027A48] border border-[#ABEFC6] rounded-sm text-[10px]" data-testid={`open-pos-status-badge-${poNumber}`}>
+                      {poItems[0]?.lifecycle_status_text || "Open in SAP"}
+                    </Badge>
                     {poItems[0]?.sap_po_number && (
                       <span className="font-data text-xs text-[#475467]" data-testid={`open-pos-printed-po-${poNumber}`}>Printed PO #: {poItems[0].sap_po_number}</span>
                     )}

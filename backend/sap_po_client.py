@@ -124,6 +124,19 @@ NOT_YET_RELEASED_APPROVAL_STATUS_CODE = "1"
 # never surface on the Supplier Dashboard as if it were still open.
 REJECTED_LIFECYCLE_STATUS_CODE = "4"
 
+# Sep 14 2026, user's explicit ask ("need to see status of PO for
+# now") - full SAP ByDesign PurchaseOrderLifeCycleStatusCode code list
+# (confirmed via SAP's own web service docs), used to attach a
+# human-readable status onto every cached row - note that codes 1/4/8
+# (In Preparation/Rejected/Canceled) are excluded above BEFORE caching,
+# so a cached row will only ever show one of the other, still-open
+# states below - kept here anyway for completeness/no-guessing.
+LIFECYCLE_STATUS_TEXT = {
+    "1": "In Preparation", "2": "In Approval", "3": "In Revision", "4": "Rejected",
+    "5": "Not Yet Acknowledged", "6": "Sent", "7": "Acknowledgment Received",
+    "8": "Canceled", "9": "Follow-Up Document Created", "10": "Finished",
+}
+
 # The buying company legal entity for a PO (`PartyBuyerPartyKey/PartyID`,
 # e.g. "RI") - same 2-entity setup already used elsewhere in this app
 # (see stock_transfer_service.py's identical mapping) - added for the
@@ -280,6 +293,7 @@ class SAPPurchaseOrderClient:
             po_date = po.findtext("SystemAdministrativeData/CreationDateTime")
             buyer_code = po.findtext("PartyBuyerPartyKey/PartyID")
             currency = po.findtext("CurrencyCode")
+            lifecycle_status_code = po.findtext("PurchaseOrderLifeCycleStatusCode")
             vendor_name = None
             for item in po.findall("PurchaseOrderItem"):
                 qty_el = item.find("Quantity")
@@ -301,6 +315,8 @@ class SAPPurchaseOrderClient:
                     "po_date": po_date.split("T")[0] if po_date else None,
                     "buyer_code": buyer_code,
                     "currency": currency,
+                    "lifecycle_status_code": lifecycle_status_code,
+                    "lifecycle_status_text": LIFECYCLE_STATUS_TEXT.get(lifecycle_status_code, lifecycle_status_code),
                     "unit_price": float(unit_price_el.text) if unit_price_el is not None and unit_price_el.text else None,
                     "subtotal": float(subtotal_el.text) if subtotal_el is not None and subtotal_el.text else None,
                     # Sep 2 2026 fix (user report: "why is SITE not fixed in
