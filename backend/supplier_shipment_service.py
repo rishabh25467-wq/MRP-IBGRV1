@@ -777,15 +777,25 @@ def _resolve_source_stock_status(inventory_client, site_id: str, source_area_id:
     return ""
 
 
-def _skipped_line_items_from_gr_results(per_po: list) -> set:
+def _skipped_line_items_from_gr_results(doc: dict, per_po: list) -> set:
     """Sep 13 2026, user's explicit ask - a PO can now come back "posted"
     while still carrying `skipped_items` for the specific line(s) whose
     Goods Receipt was dropped (missing product_id, see
     sap_playwright_supplier_pgr_service.py's _post_one_po). Those exact
     lines never actually got received in SAP, so step 2 (Goods Movement)
     below must not try to move stock for them - returns the
-    (po_number, item_number) pairs to exclude."""
-    return {(r.get("po_number"), s.get("item_number")) for r in (per_po or []) for s in (r.get("skipped_items") or [])}
+    (po_number, item_number) pairs to exclude.
+
+    Sep 14 2026 fix (real incident, shipment AB54TT: PO 29533/29534 came
+    back with a WHOLE-PO status="skipped", e.g. because the PO was
+    Cancelled in SAP - not merely a partial per-line skip within an
+    otherwise-posted PO) - every line belonging to a non-"posted" PO
+    result must ALSO be excluded, or this would try to move stock for
+    material that was never actually received in SAP at all."""
+    excluded = {(r.get("po_number"), s.get("item_number")) for r in (per_po or []) for s in (r.get("skipped_items") or [])}
+    non_posted_pos = {r.get("po_number") for r in (per_po or []) if r.get("status") != "posted"}
+    excluded.update((it["po_number"], it["item_number"]) for it in doc.get("items", []) if it["po_number"] in non_posted_pos)
+    return excluded
 
 
 def _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id: str, site_id: str, warehouse_id: str, skipped_line_items: set = None) -> dict:
@@ -953,11 +963,24 @@ def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_c
     doc = get_shipment_by_code(db, doc_code)
     all_ok = bool(gr_results) and all(r.get("status") == "posted" for r in gr_results)
     all_skipped = bool(gr_results) and all(r.get("status") == "skipped" for r in gr_results)
+    # Sep 14 2026 fix (real incident, shipment AB54TT: 1 of 3 POs posted,
+    # the other 2 permanently skipped because they were Cancelled in
+    # SAP mid-flight) - a mix of posted+skipped, with nothing left that
+    # a Retry could ever fix, used to fall through to "pending" forever
+    # (or eventually "failed" after MAX_GR_RETRIES_BEFORE_FAILED) even
+    # though it's genuinely done - the skipped PO(s) will NEVER succeed
+    # on retry (SAP's Cancelled state doesn't revert), and the posted
+    # one already has real stock to move. New "partial" status is a
+    # distinct, terminal, no-more-retry-needed outcome.
+    all_settled = bool(gr_results) and all(r.get("status") in ("posted", "skipped") for r in gr_results)
+    any_posted = any(r.get("status") == "posted" for r in gr_results)
     sap_gr_result = {"ok": all_ok, "per_po": gr_results, "sap_username": sap_username}
     if all_ok:
         sap_sync_status = "posted"
     elif all_skipped:
         sap_sync_status = "skipped"
+    elif all_settled and any_posted:
+        sap_sync_status = "partial"
     elif doc.get("sap_gr_retry_count", 0) >= MAX_GR_RETRIES_BEFORE_FAILED:
         sap_sync_status = "failed"
     else:
@@ -965,8 +988,8 @@ def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_c
 
     sap_movement_status = "not_applicable"
     sap_movement_result = None
-    if sap_sync_status == "posted":
-        skipped_line_items = _skipped_line_items_from_gr_results(gr_results)
+    if sap_sync_status in ("posted", "partial"):
+        skipped_line_items = _skipped_line_items_from_gr_results(doc, gr_results)
         sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id, doc["site_id"], doc["warehouse_id"], skipped_line_items)
         sap_movement_status = "posted" if sap_movement_result.get("ok") else "pending"
     else:
@@ -1013,8 +1036,8 @@ def prepare_retry_goods_receipt(db, doc_code: str) -> dict:
     doc = get_shipment_by_code(db, doc_code)
     if doc["status"] != "approved":
         raise ShipmentValidationError("This shipment has not been approved yet")
-    if doc.get("sap_sync_status") == "posted":
-        raise ShipmentValidationError("The Goods Receipt has already posted to SAP - nothing to retry")
+    if doc.get("sap_sync_status") in ("posted", "partial"):
+        raise ShipmentValidationError("The Goods Receipt has already posted to SAP (or is permanently partially posted) - nothing left to retry")
     db[SHIPMENTS_COLLECTION].update_one({"_id": doc["_id"]}, {"$inc": {"sap_gr_retry_count": 1}})
     return get_shipment_by_code(db, doc_code)
 
@@ -1028,11 +1051,11 @@ def retry_goods_movement(db, doc_code: str, goods_movement_client, inventory_cli
     doc = get_shipment_by_code(db, doc_code)
     if doc["status"] != "approved":
         raise ShipmentValidationError("This shipment has not been approved yet")
-    if doc.get("sap_sync_status") != "posted":
+    if doc.get("sap_sync_status") not in ("posted", "partial"):
         raise ShipmentValidationError("The Goods Receipt (step 1) has not posted to SAP yet - nothing to retry")
     if not doc.get("site_id") or not doc.get("warehouse_id"):
         raise ShipmentValidationError("This shipment has no warehouse recorded to retry into")
-    skipped_line_items = _skipped_line_items_from_gr_results((doc.get("sap_gr_result") or {}).get("per_po"))
+    skipped_line_items = _skipped_line_items_from_gr_results(doc, (doc.get("sap_gr_result") or {}).get("per_po"))
     sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id, doc["site_id"], doc["warehouse_id"], skipped_line_items)
     sap_movement_status = "posted" if sap_movement_result.get("ok") else "pending"
     db[SHIPMENTS_COLLECTION].update_one(

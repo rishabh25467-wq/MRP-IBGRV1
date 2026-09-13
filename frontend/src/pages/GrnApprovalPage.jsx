@@ -32,10 +32,13 @@ const STATUS_BADGE = {
 // SAP), so the top badge must NOT say "Received" (implying fully done)
 // until sap_sync_status actually confirms SAP posted the Goods Receipt.
 const resolveStatusBadge = (shipment) => {
-  if (shipment.status === "approved" && shipment.sap_sync_status !== "posted") {
+  if (shipment.status === "approved" && shipment.sap_sync_status !== "posted" && shipment.sap_sync_status !== "partial") {
     return shipment.sap_sync_status === "failed"
       ? { label: "SAP Sync Failed", className: "bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA] rounded-sm" }
       : { label: "Pending SAP Sync", className: "bg-[#FFFAEB] text-[#B54708] border border-[#FEDF89] rounded-sm" };
+  }
+  if (shipment.status === "approved" && shipment.sap_sync_status === "partial") {
+    return { label: "Partially Posted", className: "bg-[#ECFDF3] text-[#027A48] border border-[#ABEFC6] rounded-sm" };
   }
   return STATUS_BADGE[shipment.status];
 };
@@ -803,11 +806,18 @@ export default function GrnApprovalPage() {
             {shipment.status === "approved" && !busy && (
               <div className="mt-4 space-y-2">
                 <div className="text-sm px-3 py-2 rounded-sm flex items-center justify-between gap-2 border" data-testid="grn-sap-sync-status"
-                     style={shipment.sap_sync_status === "posted" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : shipment.sap_sync_status === "failed" ? { color: "#B42318", background: "rgba(180,35,24,0.08)", borderColor: "rgba(180,35,24,0.3)" } : { color: "#B45309", background: "rgba(227,160,8,0.1)", borderColor: "rgba(227,160,8,0.3)" }}>
+                     style={shipment.sap_sync_status === "posted" || shipment.sap_sync_status === "partial" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : shipment.sap_sync_status === "failed" ? { color: "#B42318", background: "rgba(180,35,24,0.08)", borderColor: "rgba(180,35,24,0.3)" } : { color: "#B45309", background: "rgba(227,160,8,0.1)", borderColor: "rgba(227,160,8,0.3)" }}>
                   <span className="flex items-center gap-2">
-                    {shipment.sap_sync_status === "posted" ? <CheckCircle size={16} /> : <PlugsConnected size={16} />}
+                    {shipment.sap_sync_status === "posted" || shipment.sap_sync_status === "partial" ? <CheckCircle size={16} /> : <PlugsConnected size={16} />}
                     {shipment.sap_sync_status === "posted"
                       ? "Goods Receipt posted to SAP"
+                      : shipment.sap_sync_status === "partial"
+                      ? (
+                        <span className="flex items-center gap-2">
+                          <Badge className="bg-[#ECFDF3] text-[#027A48] border border-[#ABEFC6]" data-testid="grn-sap-partial-badge">Partially Posted</Badge>
+                          {`${(shipment.sap_gr_result?.per_po || []).filter((p) => p.status === "posted").length} of ${(shipment.sap_gr_result?.per_po || []).length} PO(s) posted - the rest were permanently skipped (see per-PO diagnostics below), nothing left to retry`}
+                        </span>
+                      )
                       : shipment.sap_sync_status === "skipped"
                       ? (shipment.sap_gr_result?.per_po?.[0]?.error || "PO not found in SAP - check it's released")
                       : shipment.sap_sync_status === "failed"
@@ -824,7 +834,7 @@ export default function GrnApprovalPage() {
                         </span>
                       )}
                   </span>
-                  {shipment.sap_sync_status === "skipped" ? (
+                  {shipment.sap_sync_status === "partial" ? null : shipment.sap_sync_status === "skipped" ? (
                     <Button size="sm" variant="outline" onClick={retryGoodsReceipt} disabled={busy} className="rounded-sm h-7 text-xs" data-testid="grn-retry-goods-receipt-button">
                       <ArrowsClockwise size={12} className="mr-1" /> Retry
                     </Button>
@@ -842,12 +852,12 @@ export default function GrnApprovalPage() {
                     )
                   )}
                 </div>
-                {shipment.sap_sync_status === "posted" && shipment.sap_gr_result?.per_po?.some((p) => p.inbound_delivery_id) && (
+                {(shipment.sap_sync_status === "posted" || shipment.sap_sync_status === "partial") && shipment.sap_gr_result?.per_po?.some((p) => p.inbound_delivery_id) && (
                   <div className="text-xs text-[#667085] px-3 font-data" data-testid="grn-inbound-delivery-ids">
                     SAP Inbound Delivery #: {shipment.sap_gr_result.per_po.filter((p) => p.inbound_delivery_id).map((p) => p.inbound_delivery_id).join(", ")}
                   </div>
                 )}
-                {shipment.sap_sync_status !== "posted" && shipment.sap_gr_result?.per_po?.some((p) => p.screenshot_path) && (
+                {shipment.sap_sync_status !== "posted" && shipment.sap_sync_status !== "partial" && shipment.sap_gr_result?.per_po?.some((p) => p.screenshot_path) && (
                   <div className="px-3">
                     <button
                       type="button"

@@ -174,12 +174,20 @@ class TestPostOnePoMissingProducts:
 # --------------------------------------------------------------------
 class TestPostGoodsMovementFiltering:
     def test_skipped_line_items_from_gr_results(self):
+        doc = {
+            "items": [
+                {"po_number": "PO1", "item_number": "10"},
+                {"po_number": "PO1", "item_number": "20"},
+                {"po_number": "PO2", "item_number": "10"},
+                {"po_number": "PO3", "item_number": "10"},
+            ]
+        }
         per_po = [
             {"po_number": "PO1", "status": "posted", "skipped_items": [{"item_number": "20", "reason": "x"}]},
             {"po_number": "PO2", "status": "posted", "skipped_items": []},
             {"po_number": "PO3", "status": "skipped", "skipped_items": [{"item_number": "10", "reason": "y"}]},
         ]
-        skipped = sss._skipped_line_items_from_gr_results(per_po)
+        skipped = sss._skipped_line_items_from_gr_results(doc, per_po)
         assert skipped == {("PO1", "20"), ("PO3", "10")}
 
     def test_goods_movement_skips_flagged_lines(self):
