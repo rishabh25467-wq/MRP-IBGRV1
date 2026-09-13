@@ -43,8 +43,16 @@ const resolveStatusBadge = (shipment) => {
 // Sep 2 2026 (user's ask: step-by-step visibility + a reverse timer
 // instead of a plain spinner) - matches the `phase` strings server.py
 // forwards from sap_playwright_supplier_pgr_service.py's progress_cb.
+// Sep 14 2026 fix (user's question: "is 'Searching for PO' relevant in
+// the new method of GRN?") - it wasn't. The step name "searching" is
+// still emitted as-is by sap_playwright_supplier_pgr_service.py (kept
+// unchanged there so server.py's phase-string contract doesn't need to
+// change), but since the Sep 12 2026 hybrid rewrite that step is a SOAP
+// call creating the Inbound Delivery Notification directly - there is
+// no more UI "search for the PO" at all (see that module's own
+// docstring). Relabeled here to describe what's actually happening now.
 const GRN_STEP_LABELS = {
-  searching: "Searching for PO",
+  searching: "Creating Delivery Notification for PO",
   opening_receipt: "Opening Goods Receipt for PO",
   entering_quantities: "Entering quantities for PO",
   saving: "Saving to SAP for PO",
