@@ -77,6 +77,10 @@ agenthub/agents/youtube/db
 .cache/
 
 memory/test_credentials.md
+.env
+.env.*
+**/.env
+**/.env.*
 
 # Mobile development
 android-sdk/frontend/node_modules/.cache/default-development/59.pack
