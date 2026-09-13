@@ -5685,6 +5685,16 @@ async def po_open_orders(supplier_code: str = Query(..., description="SAP suppli
     return {"supplier_code": supplier_code, "items": items}
 
 
+@api_router.get("/purchase-orders/lookup-by-number")
+async def po_lookup_by_number(po_number: str = Query(..., min_length=1, description="Exact SAP PurchaseOrderID")):
+    """Sep 14 2026, user's explicit ask ("allow to search by PO number
+    and supplier name driven list") - same cache/enrichment as
+    /purchase-orders/open above, just looked up by PO number directly
+    instead of requiring a vendor to be picked first."""
+    items = await asyncio.to_thread(supplier_shipment_service.get_cached_po_by_number, db, po_number.strip())
+    return {"po_number": po_number.strip(), "items": items}
+
+
 @api_router.get("/purchase-orders/pr-available")
 async def po_pr_available(search: str = Query("", description="Filter by PR number, supplier name or code"), limit: int = Query(30, le=100)):
     """Sep 4 2026, user's explicit ask: let the buyer pick a PR from a

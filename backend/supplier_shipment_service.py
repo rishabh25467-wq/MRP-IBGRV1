@@ -366,6 +366,28 @@ def get_cached_pos_with_remaining(db, vendor_code: str) -> list:
     return items
 
 
+def get_cached_po_by_number(db, po_number: str) -> list:
+    """Sep 14 2026, user's explicit ask: let internal staff search the
+    Open Purchase Orders page by PO number directly, not only by
+    picking a vendor first. Same enrichment as
+    `get_cached_pos_with_remaining`, just filtered by `po_number`
+    (across any vendor, cache `_id` isn't scoped to one) instead of
+    `vendor_code` - each cached row already carries its own
+    `vendor_code`, used per-item here since a lookup by number spans
+    whichever vendor that PO actually belongs to."""
+    items = list(db[PO_CACHE_COLLECTION].find({"po_number": po_number, "expired": {"$ne": True}}, {"_id": 0}).sort("item_number", 1))
+    for it in items:
+        state = _compute_qty_state(db, it["vendor_code"], it["po_number"], it["item_number"], it.get("po_qty") or 0)
+        it["already_shipped_qty"] = _shipped_qty_so_far(db, it["vendor_code"], it["po_number"], it["item_number"])
+        it["in_transit_qty"] = state["in_transit_qty"]
+        it["received_qty"] = state["received_qty"]
+        it["remaining_qty"] = state["remaining_qty"]
+        it["sap_verified_at"] = state["sap_verified_at"]
+        it["buyer_entity_name"] = sap_po_client.buyer_entity_name(it.get("buyer_code"))
+    attach_sap_po_numbers(db, items)
+    return items
+
+
 def get_sap_po_number(db, po_number: str) -> str:
     """Sep 10 2026, user's explicit ask: the tenant's own custom
     "Purchase Order Number" field (e.g. 'P1PO-00641/26-27', the number

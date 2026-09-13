@@ -32,6 +32,8 @@ export default function OpenPurchaseOrdersPage() {
   const [supplierSuggestions, setSupplierSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedSupplier, setSelectedSupplier] = useState(null);
+  const [poNumberQuery, setPoNumberQuery] = useState("");
+  const [poSearchActive, setPoSearchActive] = useState(false);
   const [items, setItems] = useState(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -49,6 +51,7 @@ export default function OpenPurchaseOrdersPage() {
   const onQueryChange = (v) => {
     setSupplierQuery(v);
     setSelectedSupplier(null);
+    setPoSearchActive(false);
     setItems(null);
     setShowSuggestions(true);
     clearTimeout(debounceRef.current);
@@ -63,11 +66,30 @@ export default function OpenPurchaseOrdersPage() {
 
   const pickSupplier = async (s) => {
     setSelectedSupplier(s);
+    setPoSearchActive(false);
     setSupplierQuery(`${s.supplier_code} - ${s.name}`);
     setShowSuggestions(false);
     setLoading(true);
     try {
       const { data } = await axios.get(`${API}/purchase-orders/open`, { params: { supplier_code: s.supplier_code } });
+      setItems(data.items || []);
+    } catch {
+      setItems([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Sep 14 2026, user's explicit ask: search this same screen by PO
+  // number directly, without picking a vendor first.
+  const searchByPoNumber = async () => {
+    if (!poNumberQuery.trim()) return;
+    setSelectedSupplier(null);
+    setPoSearchActive(true);
+    setShowSuggestions(false);
+    setLoading(true);
+    try {
+      const { data } = await axios.get(`${API}/purchase-orders/lookup-by-number`, { params: { po_number: poNumberQuery.trim() } });
       setItems(data.items || []);
     } catch {
       setItems([]);
@@ -94,8 +116,9 @@ export default function OpenPurchaseOrdersPage() {
         await new Promise((r) => setTimeout(r, 3000));
         const { data: poll } = await axios.get(`${API}/admin/purchase-orders/refresh-cache/poll/${jobId}`);
         if (poll.status === "done") {
-          toast.success("Refreshed from SAP - re-searching this supplier");
+          toast.success("Refreshed from SAP - re-searching");
           if (selectedSupplier) await pickSupplier(selectedSupplier);
+          else if (poSearchActive) await searchByPoNumber();
           return;
         }
         if (poll.status === "failed") {
@@ -153,35 +176,62 @@ export default function OpenPurchaseOrdersPage() {
           </Button>
         </div>
 
-        <div className="bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] p-4 space-y-2 relative" ref={wrapperRef} data-testid="open-pos-supplier-card">
-          <Label className="text-xs font-medium text-[#344054]">Supplier</Label>
-          <div className="relative">
-            <MagnifyingGlass size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
-            <Input
-              value={supplierQuery}
-              onChange={(e) => onQueryChange(e.target.value)}
-              onFocus={() => setShowSuggestions(true)}
-              placeholder="Search SAP supplier by name or code..."
-              className="h-9 text-[13px] rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87] pl-9"
-              data-testid="open-pos-supplier-search-input"
-            />
-          </div>
-          {showSuggestions && supplierSuggestions.length > 0 && (
-            <div className="absolute z-20 left-4 right-4 mt-0.5 bg-white border border-[#D0D5DD] rounded-sm shadow-lg max-h-56 overflow-y-auto" data-testid="open-pos-supplier-suggestions">
-              {supplierSuggestions.map((s) => (
-                <button
-                  key={s.supplier_code}
-                  type="button"
-                  className="w-full text-left px-3 py-2 text-xs hover:bg-[#F2F4F7] border-b border-[#EAECF0] last:border-0"
-                  onClick={() => pickSupplier(s)}
-                  data-testid={`open-pos-supplier-suggestion-${s.supplier_code}`}
-                >
-                  <span className="font-semibold text-[#101828] font-data">{s.supplier_code}</span>
-                  <span className="text-[#667085]"> - {s.name}</span>
-                </button>
-              ))}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] p-4 space-y-2 relative" ref={wrapperRef} data-testid="open-pos-supplier-card">
+            <Label className="text-xs font-medium text-[#344054]">Supplier</Label>
+            <div className="relative">
+              <MagnifyingGlass size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
+              <Input
+                value={supplierQuery}
+                onChange={(e) => onQueryChange(e.target.value)}
+                onFocus={() => setShowSuggestions(true)}
+                placeholder="Search SAP supplier by name or code..."
+                className="h-9 text-[13px] rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87] pl-9"
+                data-testid="open-pos-supplier-search-input"
+              />
             </div>
-          )}
+            {showSuggestions && supplierSuggestions.length > 0 && (
+              <div className="absolute z-20 left-4 right-4 mt-0.5 bg-white border border-[#D0D5DD] rounded-sm shadow-lg max-h-56 overflow-y-auto" data-testid="open-pos-supplier-suggestions">
+                {supplierSuggestions.map((s) => (
+                  <button
+                    key={s.supplier_code}
+                    type="button"
+                    className="w-full text-left px-3 py-2 text-xs hover:bg-[#F2F4F7] border-b border-[#EAECF0] last:border-0"
+                    onClick={() => pickSupplier(s)}
+                    data-testid={`open-pos-supplier-suggestion-${s.supplier_code}`}
+                  >
+                    <span className="font-semibold text-[#101828] font-data">{s.supplier_code}</span>
+                    <span className="text-[#667085]"> - {s.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] p-4 space-y-2" data-testid="open-pos-po-number-card">
+            <Label className="text-xs font-medium text-[#344054]">PO Number</Label>
+            <div className="relative flex gap-2">
+              <div className="relative flex-1">
+                <MagnifyingGlass size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#98A2B3]" />
+                <Input
+                  value={poNumberQuery}
+                  onChange={(e) => setPoNumberQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && searchByPoNumber()}
+                  placeholder="Search by exact PO number..."
+                  className="h-9 text-[13px] rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87] pl-9"
+                  data-testid="open-pos-po-number-search-input"
+                />
+              </div>
+              <Button
+                size="sm"
+                className="h-9 rounded-sm bg-[#004B87] hover:bg-[#003A6A]"
+                onClick={searchByPoNumber}
+                data-testid="open-pos-po-number-search-button"
+              >
+                Search
+              </Button>
+            </div>
+          </div>
         </div>
 
         {loading && (
@@ -192,7 +242,9 @@ export default function OpenPurchaseOrdersPage() {
 
         {!loading && items && items.length === 0 && (
           <div className="bg-white border border-[#D0D5DD] rounded-sm p-8 text-center text-sm text-[#667085]" data-testid="open-pos-empty">
-            No cached PO lines found for this vendor (only recently-active POs are cached here).
+            {poSearchActive
+              ? "No cached, open PO lines found for this PO number (it may be Cancelled, In Preparation, Rejected, or not in this tenant's recent SAP window)."
+              : "No cached PO lines found for this vendor (only recently-active POs are cached here)."}
           </div>
         )}
 
@@ -204,8 +256,12 @@ export default function OpenPurchaseOrdersPage() {
                   <div className="flex items-center gap-2">
                     <Package size={14} className="text-[#004B87]" />
                     <span className="font-data font-bold text-[#101828] text-sm">PO {poNumber}</span>
+                    <Badge className="bg-[#ECFDF3] text-[#027A48] border border-[#ABEFC6] rounded-sm text-[10px]" data-testid={`open-pos-status-badge-${poNumber}`}>Open in SAP</Badge>
                     {poItems[0]?.sap_po_number && (
                       <span className="font-data text-xs text-[#475467]" data-testid={`open-pos-printed-po-${poNumber}`}>Printed PO #: {poItems[0].sap_po_number}</span>
+                    )}
+                    {poSearchActive && poItems[0]?.vendor_name && (
+                      <span className="text-xs text-[#475467]" data-testid={`open-pos-vendor-name-${poNumber}`}>Vendor: {poItems[0].vendor_code} - {poItems[0].vendor_name}</span>
                     )}
                     <span className="text-xs text-[#667085]">Buyer: {poItems[0]?.buyer_entity_name || "-"} · PO Date: {poItems[0]?.po_date || "-"}</span>
                   </div>
