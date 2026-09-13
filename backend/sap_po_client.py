@@ -115,6 +115,14 @@ CANCELLED_LIFECYCLE_STATUS_CODE = "8"
 # against on the Supplier Dashboard the moment it existed in SAP, well
 # before the buyer had actually approved/released it.
 NOT_YET_RELEASED_APPROVAL_STATUS_CODE = "1"
+# Sep 14 2026 follow-up (user's explicit ask, after confirming the
+# visible PO list was otherwise all genuinely valid/Released POs):
+# SAP's own `PurchaseOrderLifeCycleStatusCode` code list also has a
+# "4" = Rejected state (buyer/approver rejected the PO outright,
+# distinct from "8"=Canceled) - not yet seen live on this tenant in
+# the window checked, but excluded proactively so a Rejected PO can
+# never surface on the Supplier Dashboard as if it were still open.
+REJECTED_LIFECYCLE_STATUS_CODE = "4"
 
 # The buying company legal entity for a PO (`PartyBuyerPartyKey/PartyID`,
 # e.g. "RI") - same 2-entity setup already used elsewhere in this app
@@ -265,6 +273,7 @@ class SAPPurchaseOrderClient:
                 not vendor_code
                 or po.findtext("DeliveryProcessingStatusCode") == FINISHED_DELIVERY_STATUS_CODE
                 or po.findtext("PurchaseOrderLifeCycleStatusCode") == CANCELLED_LIFECYCLE_STATUS_CODE
+                or po.findtext("PurchaseOrderLifeCycleStatusCode") == REJECTED_LIFECYCLE_STATUS_CODE
                 or po.findtext("ApprovalStatusCode") == NOT_YET_RELEASED_APPROVAL_STATUS_CODE
             ):
                 continue
