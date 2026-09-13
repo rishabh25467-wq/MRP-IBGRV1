@@ -665,6 +665,9 @@ export default function GrnApprovalPage() {
                   <th className="border border-[#D0D5DD] p-1.5 text-right">Actual Qty</th>
                   <th className="border border-[#D0D5DD] p-1.5 text-right">PO Price</th>
                   <th className="border border-[#D0D5DD] p-1.5 text-right">Line Value</th>
+                  {shipment.sap_gr_result?.per_po && (
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">PO Status</th>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -672,6 +675,13 @@ export default function GrnApprovalPage() {
                   const key = `${it.po_number}::${it.item_number}`;
                   const effectiveQty = Number(actualQtys[key] ?? it.actual_qty ?? it.ship_qty ?? 0);
                   const lineValue = it.unit_price != null ? effectiveQty * it.unit_price : null;
+                  // Sep 14 2026 fix (user's real report: "diagnostics not
+                  // showing full details" - the single "View Diagnostics"
+                  // button only ever surfaced whichever ONE PO had an
+                  // issue, with zero way to check any OTHER PO's own
+                  // status on the same multi-PO shipment) - resolve each
+                  // line's own PO's result directly, per-row.
+                  const poResult = shipment.sap_gr_result?.per_po?.find((p) => p.po_number === it.po_number);
                   return (
                     <tr key={i} className="bg-white odd:bg-[#F9FAFB]">
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data">
@@ -703,11 +713,27 @@ export default function GrnApprovalPage() {
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data font-semibold text-[#1D2939]" data-testid={`grn-item-line-value-${i}`}>
                         {lineValue != null ? `${it.currency || ""} ${lineValue.toFixed(2)}` : "-"}
                       </td>
+                      {shipment.sap_gr_result?.per_po && (
+                        <td className="border border-[#D0D5DD] px-2 py-1 whitespace-nowrap" data-testid={`grn-item-po-status-${i}`}>
+                          {poResult ? (
+                            <button
+                              type="button"
+                              className={`text-[11px] font-semibold hover:underline ${poResult.status === "posted" ? "text-[#027A48]" : poResult.status === "skipped" ? "text-[#B54708]" : "text-[#B42318]"}`}
+                              onClick={() => setDiagnosticsModal(poResult)}
+                              data-testid={`grn-item-diagnostics-link-${i}`}
+                            >
+                              {poResult.status === "posted" ? "Posted" : poResult.status === "skipped" ? "Skipped" : "Failed"} - Diagnostics
+                            </button>
+                          ) : (
+                            <span className="text-[11px] text-[#98A2B3]">Not attempted yet</span>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   );
                 })}
                 {isActionable && (
-                  <tr><td colSpan={8} className="border border-[#D0D5DD] px-2 py-1 text-xs text-[#475467]">Actual Qty defaults to Ship Qty - adjust only if the physical count differs. PO Price/Line Value are for reference only, from SAP's last cached rate.</td></tr>
+                  <tr><td colSpan={shipment.sap_gr_result?.per_po ? 9 : 8} className="border border-[#D0D5DD] px-2 py-1 text-xs text-[#475467]">Actual Qty defaults to Ship Qty - adjust only if the physical count differs. PO Price/Line Value are for reference only, from SAP's last cached rate.</td></tr>
                 )}
               </tbody>
             </table>
@@ -1188,12 +1214,16 @@ export default function GrnApprovalPage() {
                     <th className="border border-[#D0D5DD] p-1.5 text-left">Warehouse</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-right">PO Price</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-right">Line Value</th>
+                    {confirmedDetail.sap_gr_result?.per_po && (
+                      <th className="border border-[#D0D5DD] p-1.5 text-left">PO Status</th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
                   {confirmedDetail.items.map((it, i) => {
                     const qty = it.actual_qty ?? it.ship_qty;
                     const lineValue = it.unit_price != null ? qty * it.unit_price : null;
+                    const poResult = confirmedDetail.sap_gr_result?.per_po?.find((p) => p.po_number === it.po_number);
                     return (
                       <tr key={i} className="bg-white odd:bg-[#F9FAFB]" data-testid={`grn-confirmed-detail-item-${i}`}>
                         <td className="border border-[#D0D5DD] px-2 py-1 font-data" data-testid={`grn-confirmed-detail-po-number-${i}`}>{it.po_number}</td>
@@ -1208,6 +1238,22 @@ export default function GrnApprovalPage() {
                         <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data font-semibold text-[#1D2939]" data-testid={`grn-confirmed-detail-line-value-${i}`}>
                           {lineValue != null ? `${it.currency || ""} ${lineValue.toFixed(2)}` : "\u2014"}
                         </td>
+                        {confirmedDetail.sap_gr_result?.per_po && (
+                          <td className="border border-[#D0D5DD] px-2 py-1 whitespace-nowrap" data-testid={`grn-confirmed-detail-po-status-${i}`}>
+                            {poResult ? (
+                              <button
+                                type="button"
+                                className={`text-[11px] font-semibold hover:underline ${poResult.status === "posted" ? "text-[#027A48]" : poResult.status === "skipped" ? "text-[#B54708]" : "text-[#B42318]"}`}
+                                onClick={() => setDiagnosticsModal(poResult)}
+                                data-testid={`grn-confirmed-detail-diagnostics-link-${i}`}
+                              >
+                                {poResult.status === "posted" ? "Posted" : poResult.status === "skipped" ? "Skipped" : "Failed"} - Diagnostics
+                              </button>
+                            ) : (
+                              <span className="text-[11px] text-[#98A2B3]">Not attempted yet</span>
+                            )}
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
