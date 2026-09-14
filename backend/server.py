@@ -4416,6 +4416,34 @@ async def _run_store_issue_job(job_id: str, request_id: str):
         job_store.update_job(db, job_id, {"status": "failed", "error": str(e)})
 
 
+@api_router.post("/store-requests/{request_id}/resume-issue")
+async def resume_store_issue(request_id: str, request: Request):
+    """Sep 14 2026 fix - real production incident, request 685734147/
+    P9-000121: a request stuck in "issuing" (background job died mid-run
+    with one component already genuinely moved in SAP) had no way
+    forward - see store_approval_service.run_issue_movements/
+    revert_to_prior_status_if_safe. Safely re-runs the exact same job
+    (now idempotent - already-moved components are skipped, never
+    re-sent to SAP) to finish whatever's left. Guards against a genuine
+    concurrent run (a second browser tab's job actually still active)
+    by refusing if any job for this request is already `status=running`."""
+    doc = await asyncio.to_thread(store_approval_service.get_request, db, request_id)
+    if doc and not _has_site_access(request.state.user, doc.get("site_id")):
+        raise HTTPException(status_code=403, detail="You are not bound to this site")
+    check = await asyncio.to_thread(store_approval_service.can_resume_stuck_issue, db, request_id)
+    if not check["can_resume"]:
+        raise HTTPException(status_code=400, detail=check["reason"])
+    if await asyncio.to_thread(lambda: db[job_store.COLLECTION_NAME].find_one({"store_request_id": request_id, "status": "running"}) is not None):
+        raise HTTPException(status_code=409, detail="A stock issue job is already actively running for this request - wait for it to finish.")
+    job_id = str(uuid.uuid4())
+    job_store.create_job(db, job_id, {
+        "status": "running", "store_request_id": request_id,
+        "progress_current": 0, "progress_total": len(doc["components"]),
+    })
+    asyncio.create_task(_run_store_issue_job(job_id, request_id))
+    return {"job_id": job_id}
+
+
 @api_router.get("/production-confirmation/store-requests/by-job/{job_id}")
 async def get_store_request_by_job(job_id: str):
     doc = await asyncio.to_thread(store_approval_service.get_request_by_job, db, job_id)

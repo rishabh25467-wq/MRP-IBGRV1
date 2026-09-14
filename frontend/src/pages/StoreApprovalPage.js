@@ -280,6 +280,8 @@ export default function StoreApprovalPage() {
   const [refreshingStock, setRefreshingStock] = useState(false);
   const [refreshElapsed, setRefreshElapsed] = useState(0);
   const [refreshStatus, setRefreshStatus] = useState(null);
+  const [showResumeOption, setShowResumeOption] = useState(false);
+  const [resuming, setResuming] = useState(false);
   const [resultMessage, setResultMessage] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [userSearch, setUserSearch] = useState("");
@@ -454,6 +456,20 @@ export default function StoreApprovalPage() {
     }, 3000);
     return () => clearInterval(interval);
   }, [selected, submitting]);
+
+  // Sep 14 2026 fix (real production incident, request 685734147/
+  // P9-000121 - a component genuinely moved in SAP, then the background
+  // job died and the request sat "Issuing Stock..." forever) - a
+  // GENUINE in-progress job (another tab) almost always finishes within
+  // a few components' worth of SAP calls, so only offer "Resume" after
+  // a grace period, not immediately (avoids two tabs racing to resume
+  // the same still-healthy job).
+  useEffect(() => {
+    setShowResumeOption(false);
+    if (!selected || selected.status !== "issuing" || submitting) return;
+    const timer = setTimeout(() => setShowResumeOption(true), 20000);
+    return () => clearTimeout(timer);
+  }, [selected?._id, selected?.status, submitting]);
 
   const handleSort = (field) => {
     if (sortField === field) {
@@ -1016,6 +1032,20 @@ export default function StoreApprovalPage() {
     }
   };
 
+  const resumeIssue = async () => {
+    setResuming(true);
+    try {
+      const { data } = await axios.post(`${API}/store-requests/${selected._id}/resume-issue`);
+      setSubmitting(true);
+      setShowResumeOption(false);
+      await pollIssueJob(data.job_id, selected._id);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to resume the stuck stock issue");
+    } finally {
+      setResuming(false);
+    }
+  };
+
   // "Refresh Live Stock Now" v2 (Aug 2026) - a fast, retried, quantities-
   // only SAP pull, then re-fetches THIS request so its component
   // locations pick up whatever was just found. Never blocks/breaks the
@@ -1310,6 +1340,17 @@ export default function StoreApprovalPage() {
                 {submitting ? submitProgressMessage : "A stock issue is already being processed for this request (started from another session) - this page will update automatically."}
                 {submitting && <span className="text-[#98A2B3] tabular-nums ml-1" data-testid="store-issue-progress-elapsed">({submitElapsed}s)</span>}
               </p>
+              {showResumeOption && !submitting && (
+                <div className="bg-[#FFFAEB] border border-[#FEDF89] rounded-sm px-3 py-2 space-y-1.5" data-testid="store-issue-resume-notice">
+                  <p className="text-xs text-[#93370D]">
+                    Still stuck? Some components may have already moved in SAP while others haven't been attempted yet. Resuming
+                    is safe - any component already moved will NOT be moved again.
+                  </p>
+                  <Button size="sm" disabled={resuming} onClick={resumeIssue} data-testid="store-resume-issue-button">
+                    {resuming ? "Resuming..." : "Resume Stock Issue"}
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </div>

@@ -553,6 +553,21 @@ def run_issue_movements(db, request_id: str, sap_client, progress_cb=None) -> di
 
     for idx, c in enumerate(components):
         issued_this_round = c.get("issued_this_round") or 0
+        if (c.get("goods_movement") or {}).get("ok") is True:
+            # Sep 14 2026 fix (real production incident, request 685734147/
+            # P9-000121: L792 moved successfully - SAP Goods Movement
+            # 276768 - then the background job died before reaching
+            # PALL3286, leaving the request stuck in "issuing" forever
+            # since revert_to_prior_status_if_safe correctly refuses to
+            # touch a request with a real movement already on it - see
+            # that function's docstring). This job must be safely
+            # RESUMABLE (see the /resume-issue endpoint in server.py) -
+            # a component that already succeeded THIS round must never
+            # be re-sent to SAP, or the resume would physically double-
+            # move real stock.
+            if progress_cb:
+                progress_cb(idx + 1, total, c["product_id"])
+            continue
         if issued_this_round > 0 and sap_client is not None:
             rm_locations_all = [loc for loc in (c.get("locations") or []) if loc.get("warehouse_id") == source_warehouse]
             rm_location = next((loc for loc in rm_locations_all if is_usable_stock_status(loc.get("stock_status"), loc.get("restricted"))), None)
@@ -645,7 +660,14 @@ def revert_to_prior_status_if_safe(db, request_id: str) -> bool:
     if this was a reopen round (doc already has a `resolution` from an
     earlier round), otherwise plain "pending" - reverting a reopen to
     "pending" would silently reset the cumulative-issued bookkeeping on
-    the next resubmit."""
+    the next resubmit.
+
+    Sep 14 2026: if a request already has a real SAP movement this round,
+    it is NOT reverted (unchanged) - but it's no longer a dead end either.
+    See `can_resume_stuck_issue` + the `/store-requests/{id}/resume-issue`
+    endpoint in server.py, which safely re-runs run_issue_movements
+    (idempotent now - see its own comment) to finish the REMAINING
+    components instead of leaving the request stuck in "issuing" forever."""
     doc = db[COLLECTION].find_one({"_id": request_id})
     if not doc or doc["status"] != "issuing":
         return False
@@ -670,6 +692,20 @@ def recover_orphaned_issues(db, message: str) -> int:
             db[COLLECTION].update_one({"_id": doc["_id"]}, {"$set": {"recovery_note": message}})
             recovered += 1
     return recovered
+
+
+def can_resume_stuck_issue(db, request_id: str) -> dict:
+    """Sep 14 2026 fix - real production incident, request 685734147/
+    P9-000121 (see run_issue_movements' comment above). A request that's
+    genuinely stuck in "issuing" (its background job died - crashed,
+    process restarted/redeployed - with at least one real SAP movement
+    already on it, so revert_to_prior_status_if_safe correctly left it
+    alone) used to have NO way forward at all short of a direct DB edit.
+    Returns {"can_resume": bool, "reason": str}."""
+    doc = db[COLLECTION].find_one({"_id": request_id})
+    if not doc or doc["status"] != "issuing":
+        return {"can_resume": False, "reason": "This request is not currently stuck issuing stock."}
+    return {"can_resume": True, "reason": None}
 
 
 def list_balance_pending(db) -> list:
