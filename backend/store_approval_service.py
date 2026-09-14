@@ -682,18 +682,6 @@ def revert_to_prior_status_if_safe(db, request_id: str) -> bool:
     return True
 
 
-def recover_orphaned_issues(db, message: str) -> int:
-    """Call once at process startup. A request stuck in "issuing" means
-    the background job that would move it forward died with the previous
-    process."""
-    recovered = 0
-    for doc in db[COLLECTION].find({"status": {"$in": list(ORPHANABLE_REQUEST_STATUSES)}}):
-        if revert_to_prior_status_if_safe(db, doc["_id"]):
-            db[COLLECTION].update_one({"_id": doc["_id"]}, {"$set": {"recovery_note": message}})
-            recovered += 1
-    return recovered
-
-
 def can_resume_stuck_issue(db, request_id: str) -> dict:
     """Sep 14 2026 fix - real production incident, request 685734147/
     P9-000121 (see run_issue_movements' comment above). A request that's
@@ -706,6 +694,57 @@ def can_resume_stuck_issue(db, request_id: str) -> dict:
     if not doc or doc["status"] != "issuing":
         return {"can_resume": False, "reason": "This request is not currently stuck issuing stock."}
     return {"can_resume": True, "reason": None}
+
+
+def reconcile_untracked_movement(db, request_id: str, product_id: str, external_id: str, actor: str) -> dict:
+    """Sep 14 2026 fix - covers the WORSE version of the 685734147/
+    P9-000121 incident: SAP genuinely confirmed the movement (by our own
+    `_EMERGENTBOM` technical user - the SAP call itself DID succeed) but
+    the process died in the gap between that call returning and this
+    component's own `db.update_one` a few lines later in
+    run_issue_movements, so our own record never learned about it.
+    Simply calling `/resume-issue` on a request like this would call SAP
+    AGAIN for the same component - a real, physical DUPLICATE stock
+    move. This lets an admin record an externally-confirmed SAP
+    Goods Movement ID onto the exact component/round WITHOUT ever
+    calling SAP, so a subsequent resume-issue correctly skips it (see
+    run_issue_movements' idempotency check) instead of re-sending it."""
+    doc = db[COLLECTION].find_one({"_id": request_id})
+    if not doc:
+        raise ValueError("Store request not found")
+    if doc["status"] != "issuing":
+        raise ValueError(f"This request is not stuck issuing stock (current status: {doc['status']})")
+    components = doc["components"]
+    idx = next((i for i, c in enumerate(components) if c["product_id"] == product_id), None)
+    if idx is None:
+        raise ValueError(f"No component {product_id} on this request")
+    existing = components[idx].get("goods_movement") or {}
+    if existing.get("ok") is True:
+        raise ValueError(f"{product_id} already has a recorded successful movement ({existing.get('external_id')}) - refusing to overwrite it")
+    if not (components[idx].get("issued_this_round") or 0) > 0:
+        raise ValueError(f"{product_id} has no issued quantity this round to reconcile")
+    now = datetime.now(timezone.utc)
+    movement = {
+        "attempted": True, "ok": True, "external_id": external_id,
+        "reconciled_manually": True, "reconciled_by": actor, "reconciled_at": now.isoformat(),
+        "reconciled_note": "SAP confirmed this movement already posted (by our own SAP technical user) - our own record of it was lost when the background job died mid-run. Recorded without a new SAP call to avoid a duplicate physical stock move.",
+    }
+    components[idx]["goods_movement"] = movement
+    components[idx]["issued_from_warehouse"] = _rm_warehouse(doc["site_id"])
+    db[COLLECTION].update_one({"_id": request_id}, {"$set": {f"components.{idx}": components[idx], "updated_at": now}})
+    return db[COLLECTION].find_one({"_id": request_id})
+
+
+def recover_orphaned_issues(db, message: str) -> int:
+    """Call once at process startup. A request stuck in "issuing" means
+    the background job that would move it forward died with the previous
+    process."""
+    recovered = 0
+    for doc in db[COLLECTION].find({"status": {"$in": list(ORPHANABLE_REQUEST_STATUSES)}}):
+        if revert_to_prior_status_if_safe(db, doc["_id"]):
+            db[COLLECTION].update_one({"_id": doc["_id"]}, {"$set": {"recovery_note": message}})
+            recovered += 1
+    return recovered
 
 
 def list_balance_pending(db) -> list:

@@ -4220,6 +4220,16 @@ class PlannerStoreDecisionRequest(BaseModel):
     actor: str
 
 
+class ReconcileMovementRequest(BaseModel):
+    """Sep 14 2026 fix - see reconcile_untracked_movement's docstring:
+    records a SAP Goods Movement that genuinely happened (confirmed by
+    the caller directly in SAP) but was lost from our own record when
+    the background job died mid-run - without ever calling SAP again."""
+    product_id: str
+    external_id: str
+    actor: str
+
+
 # Store Binding (Aug 2026, user's explicit ask): a "store user" (plain
 # "user" role) can be bound to 1+ sites on the Access Management ->
 # Store Assignment tab, restricting them to only those sites here.
@@ -4442,6 +4452,32 @@ async def resume_store_issue(request_id: str, request: Request):
     })
     asyncio.create_task(_run_store_issue_job(job_id, request_id))
     return {"job_id": job_id}
+
+
+@api_router.post("/store-requests/{request_id}/reconcile-movement")
+async def reconcile_store_request_movement(request_id: str, payload: ReconcileMovementRequest, request: Request):
+    """Sep 14 2026 fix - real production incident, request 685734147/
+    P9-000121: SAP Transfer Confirmation 276783 (PALL3286, P9-RM->P9-SFG,
+    83 EA) genuinely posted, created by our own `_EMERGENTBOM` SAP user -
+    confirmed live by the user directly in SAP - but the background job
+    died in the gap between that SAP call succeeding and this component's
+    own DB write, so our record never learned about it. Calling
+    `/resume-issue` on a request like this would call SAP AGAIN for the
+    same component - a real, physical duplicate stock move. This records
+    the externally-confirmed movement WITHOUT any new SAP call, so a
+    following `/resume-issue` correctly skips it."""
+    if not payload.actor.strip():
+        raise HTTPException(status_code=400, detail="actor (your name) is required")
+    doc = await asyncio.to_thread(store_approval_service.get_request, db, request_id)
+    if doc and not _has_site_access(request.state.user, doc.get("site_id")):
+        raise HTTPException(status_code=403, detail="You are not bound to this site")
+    try:
+        updated = await asyncio.to_thread(
+            store_approval_service.reconcile_untracked_movement, db, request_id, payload.product_id, payload.external_id, payload.actor.strip(),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return updated
 
 
 @api_router.get("/production-confirmation/store-requests/by-job/{job_id}")
