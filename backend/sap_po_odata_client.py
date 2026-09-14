@@ -23,6 +23,14 @@ Basic Auth credentials are used).
 import requests
 from requests.auth import HTTPBasicAuth
 
+# Sep 14 2026, Job Work PO ask - (item_type_code, product_category) per
+# po_type. "capital" deliberately excluded - needs IMAT/Fixed Asset
+# account assignment, not built yet.
+PO_TYPE_ITEM_CONFIG = {
+    "service": ("19", "CONSUMABLES"),
+    "jobwork": ("18", "JOBWORK"),
+}
+
 
 class SAPPurchaseOrderODataError(Exception):
     pass
@@ -171,7 +179,7 @@ class SAPPurchaseOrderODataClient:
         self._patch_party(session, token, result["po_uuid"], "BuyerParty", company_code)
         return result
 
-    def _create_service_item(self, session, token: str, po_object_id: str, it: dict, gl_account_code: str):
+    def _create_service_item(self, session, token: str, po_object_id: str, it: dict, gl_account_code: str, item_type_code: str, product_category: str):
         """Sep 14 2026 fix (real live SAP rejection hit on PR 125257):
         creating Service items INSIDE the same deep-insert as the header
         (like create_purchase_order does) fails with a real SAP error -
@@ -185,13 +193,19 @@ class SAPPurchaseOrderODataClient:
         live $metadata: ItemCollection is independently creatable with a
         settable ParentObjectID (the PO's own ObjectID) - so Service
         items are now created as a SEPARATE POST, after BuyerParty has
-        already been patched to the correct company."""
+        already been patched to the correct company.
+
+        item_type_code/product_category are parametrized (Sep 14 2026,
+        Job Work PO ask) - "19"/CONSUMABLES for Service, "18"/JOBWORK for
+        Job Work (same CC account assignment mechanism as Service, per
+        user's explicit ask - "manual ledger selection... same as service
+        PO"). Live-verified for JOBWORK the same way Service was."""
         description = str(it.get("description") or "Service")[:40]
         item_data = {
             "ParentObjectID": po_object_id,
-            "ProductCategoryInternalID": "CONSUMABLES",
+            "ProductCategoryInternalID": product_category,
             "Description": description,
-            "ItemTypeCode": "19",
+            "ItemTypeCode": item_type_code,
             "DirectMaterialIndicator": False,
             "ThirdPartyDealIndicator": False,
             "Quantity": str(it["quantity"]),
@@ -228,7 +242,7 @@ class SAPPurchaseOrderODataClient:
     def create_service_purchase_order(
         self, company_code: str, purchase_unit_site: str, supplier_code: str,
         bill_to_company_code: str, po_date: str, currency: str, items: list,
-        pr_number: str = None, cash_discount_terms_code: str = None,
+        pr_number: str = None, cash_discount_terms_code: str = None, po_type: str = "service",
     ) -> dict:
         """Sep 14 2026, user's explicit ask - a Service PO line has NO
         Product Master entry at all (just a free-text description, e.g.
@@ -267,6 +281,14 @@ class SAPPurchaseOrderODataClient:
         the caller (server.py) can decide how to proceed - the PO
         header exists in SAP at that point, just missing that line.
 
+        Sep 14 2026, Job Work PO ask - `po_type` ("service"|"jobwork")
+        picks ItemTypeCode + ProductCategoryInternalID per
+        PO_TYPE_ITEM_CONFIG below; Job Work reuses the exact same CC
+        (Cost Center) account assignment as Service, per user's explicit
+        ask. "capital" is intentionally NOT included yet - the Fixed
+        Asset (IMAT) account assignment it needs is a different SAP
+        mechanism not yet built.
+
         items: [{"description", "quantity", "unit_of_measure",
         "unit_price", "delivery_date" (YYYY-MM-DD), "site_id",
         "gl_account_code"}, ...]. Returns the same shape as
@@ -275,6 +297,7 @@ class SAPPurchaseOrderODataClient:
             raise SAPPurchaseOrderODataNotConfiguredError(
                 "SAP Purchase Order creation isn't wired up yet - SAP_ODATA_PO_BASE_URL is not set."
             )
+        item_type_code, product_category = PO_TYPE_ITEM_CONFIG.get(po_type, PO_TYPE_ITEM_CONFIG["service"])
         session = requests.Session()
         session.auth = self.auth
         token = self._csrf_token(session)
@@ -295,7 +318,7 @@ class SAPPurchaseOrderODataClient:
         for it in items:
             it_with_cc = {**it, "cost_centre_id": bill_to_company_code}
             try:
-                self._create_service_item(session, token, result["po_uuid"], it_with_cc, it["gl_account_code"])
+                self._create_service_item(session, token, result["po_uuid"], it_with_cc, it["gl_account_code"], item_type_code, product_category)
             except SAPPurchaseOrderODataError as e:
                 raise SAPPurchaseOrderODataError(
                     f"Service Purchase Order {result['po_number']} was created in SAP but adding line "

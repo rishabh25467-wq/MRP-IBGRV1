@@ -6213,6 +6213,18 @@ class ServicePurchaseOrderLineItemIn(BaseModel):
     unit_of_measure: str
     unit_price: float = Field(ge=0)
     delivery_date: str
+    # Sep 14 2026, Job Work PO's explicit ask - the vendor returns a
+    # finished good (e.g. "Link Front-42") after doing job work on the
+    # input material. CONFIRMED this tenant's custom OData PO service has
+    # NO field for this at all (checked full $metadata) and it's NOT
+    # exposed on the standard SOAP read query either - so it's almost
+    # certainly a Key User custom extension field added only to the SAP
+    # Fiori PO screen, whose technical field ID we don't have yet.
+    # Captured here and saved to our own history for audit, but NOT sent
+    # to SAP - see create_service_purchase_order's docstring below.
+    output_product_id: Optional[str] = None
+    output_product_description: Optional[str] = None
+    output_quantity: Optional[float] = None
 
     @field_validator("delivery_date")
     @classmethod
@@ -6225,6 +6237,7 @@ class ServicePurchaseOrderLineItemIn(BaseModel):
 
 
 class ServicePurchaseOrderCreateRequest(BaseModel):
+    po_type: str = "service"  # "service" | "jobwork" | "capital" (capital not wired to SAP yet)
     supplier_code: str
     purchase_unit_site: str
     bill_to_company: str
@@ -6232,6 +6245,13 @@ class ServicePurchaseOrderCreateRequest(BaseModel):
     currency: str = "INR"
     pr_number: str = Field(min_length=1)
     items: List[ServicePurchaseOrderLineItemIn] = Field(min_length=1)
+
+    @field_validator("po_type")
+    @classmethod
+    def _valid_po_type(cls, v):
+        if v not in ("service", "jobwork", "capital"):
+            raise ValueError("po_type must be one of service, jobwork, capital")
+        return v
 
     @field_validator("po_date")
     @classmethod
@@ -6434,7 +6454,7 @@ async def create_service_purchase_order(payload: ServicePurchaseOrderCreateReque
             sap_po_odata_client.create_service_purchase_order,
             company_code, payload.purchase_unit_site, payload.supplier_code,
             payload.bill_to_company, payload.po_date, payload.currency, items,
-            payload.pr_number, cash_discount_terms_code,
+            payload.pr_number, cash_discount_terms_code, payload.po_type,
         )
     except SAPPurchaseOrderODataNotConfiguredError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -6464,10 +6484,16 @@ async def create_service_purchase_order(payload: ServicePurchaseOrderCreateReque
 
     user = request.state.user
     now = datetime.now(timezone.utc)
+    output_products = [
+        {"line_description": it.description, "output_product_id": it.output_product_id,
+         "output_product_description": it.output_product_description, "output_quantity": it.output_quantity}
+        for it in payload.items if it.output_product_id or it.output_product_description
+    ]
     await asyncio.to_thread(db[SERVICE_PO_HISTORY_COLLECTION].insert_one, {
         "_id": str(uuid.uuid4()),
         "po_number": result["po_number"],
         "po_uuid": result["po_uuid"],
+        "po_type": payload.po_type,
         "supplier_code": payload.supplier_code,
         "purchase_unit_site": payload.purchase_unit_site,
         "company_code": company_code,
@@ -6477,6 +6503,7 @@ async def create_service_purchase_order(payload: ServicePurchaseOrderCreateReque
         "pr_number": payload.pr_number,
         "cash_discount_terms_code": cash_discount_terms_code,
         "items": items,
+        "output_products": output_products,
         "created_by": user.get("name"),
         "created_by_user_id": f"{user.get('tid')}:{user.get('oid')}",
         "created_at": now,
@@ -6495,7 +6522,10 @@ async def create_service_purchase_order(payload: ServicePurchaseOrderCreateReque
     if sap_po_number:
         await asyncio.to_thread(supplier_shipment_service.store_sap_po_number, db, result["po_number"], sap_po_number)
 
-    return {"po_number": result["po_number"], "po_uuid": result["po_uuid"], "sap_po_number": sap_po_number}
+    return {
+        "po_number": result["po_number"], "po_uuid": result["po_uuid"], "sap_po_number": sap_po_number,
+        "output_products_saved_locally_only": bool(output_products),
+    }
 
 
 @api_router.post("/part-suppliers", response_model=PartSupplierAssignment)

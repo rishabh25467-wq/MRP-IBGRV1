@@ -57,10 +57,26 @@ const emptyLine = () => ({
   unit_price: "",
   delivery_date: todayISO(),
   showGlSuggestions: false,
+  // Sep 14 2026, Job Work PO ask - the finished good the vendor returns
+  // after doing job work. NOT sent to SAP yet (see submit()'s note) -
+  // captured for our own records only until we get the real custom
+  // field ID from the user's SAP team.
+  output_product_id: "",
+  outputProductQuery: "",
+  output_product_description: "",
+  output_quantity: "",
+  showOutputSuggestions: false,
 });
+
+const PO_TYPE_OPTIONS = [
+  { value: "service", label: "Service", productCategory: "CONSUMABLES" },
+  { value: "jobwork", label: "Job Work", productCategory: "JOBWORK" },
+  { value: "capital", label: "Capital", productCategory: "FIXED_ASSETS" },
+];
 
 export default function ServicePurchaseOrderPage() {
   const navigate = useNavigate();
+  const [poType, setPoType] = useState("service");
   const [sites, setSites] = useState([]);
   const [purchaseUnitSite, setPurchaseUnitSite] = useState("");
   const [billToCompany, setBillToCompany] = useState("");
@@ -85,6 +101,8 @@ export default function ServicePurchaseOrderPage() {
 
   const [lines, setLines] = useState([emptyLine()]);
   const [glAccounts, setGlAccounts] = useState([]);
+  const outputProductDebounceRef = useRef({});
+  const outputWrapperRefs = useRef({});
 
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -103,10 +121,44 @@ export default function ServicePurchaseOrderPage() {
       Object.entries(glWrapperRefs.current).forEach(([key, el]) => {
         if (el && !el.contains(e.target)) setLines((prev) => prev.map((l) => (l.key === key ? { ...l, showGlSuggestions: false } : l)));
       });
+      Object.entries(outputWrapperRefs.current).forEach(([key, el]) => {
+        if (el && !el.contains(e.target)) setLines((prev) => prev.map((l) => (l.key === key ? { ...l, showOutputSuggestions: false } : l)));
+      });
     };
     document.addEventListener("mousedown", onClickOutside);
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, []);
+
+  // Sep 14 2026, Job Work PO ask - "then all page load" per type. A
+  // switch reshapes which fields matter (Product Category, Account
+  // Assignment, Output Product), so the safest thing is a clean reset
+  // rather than carrying over lines shaped for a different type.
+  const changePoType = (v) => {
+    setPoType(v);
+    setPrVocNo(""); setPrFetched(null);
+    setSelectedSupplier(null); setSupplierQuery("");
+    setPurchaseUnitSite(""); setBillToCompany("");
+    setLines([emptyLine()]);
+    setResult(null);
+  };
+
+  const onOutputProductQueryChange = (lineKey, v) => {
+    setLines((prev) => prev.map((l) => (l.key === lineKey ? { ...l, outputProductQuery: v, output_product_id: "", showOutputSuggestions: true } : l)));
+    clearTimeout(outputProductDebounceRef.current[lineKey]);
+    if (!v.trim()) return;
+    outputProductDebounceRef.current[lineKey] = setTimeout(async () => {
+      try {
+        const { data } = await axios.get(`${API}/purchase-orders/products/search`, { params: { q: v, limit: 15 } });
+        setLines((prev) => prev.map((l) => (l.key === lineKey ? { ...l, outputProductSuggestions: data } : l)));
+      } catch { /* silent - user can keep typing */ }
+    }, 300);
+  };
+
+  const pickOutputProduct = (lineKey, p) => {
+    setLines((prev) => prev.map((l) => (l.key === lineKey
+      ? { ...l, output_product_id: p.product_id, outputProductQuery: `${p.product_id} - ${p.description || ""}`, output_product_description: l.output_product_description || p.description || "", showOutputSuggestions: false }
+      : l)));
+  };
 
   const onPrQueryChange = (v) => {
     setPrVocNo(v);
@@ -168,6 +220,7 @@ export default function ServicePurchaseOrderPage() {
         unit_price: it.rate,
         delivery_date: todayISO(),
         showGlSuggestions: false,
+        output_product_id: "", outputProductQuery: "", output_product_description: "", output_quantity: "", showOutputSuggestions: false,
       })));
       toast.success(`PR ${data.voc_no} fetched - ${(data.items || []).length} line item(s) autofilled`);
     } catch (e) {
@@ -271,6 +324,7 @@ export default function ServicePurchaseOrderPage() {
     setSubmitting(true);
     try {
       const payload = {
+        po_type: poType,
         supplier_code: selectedSupplier.supplier_code,
         purchase_unit_site: purchaseUnitSite,
         bill_to_company: billToCompany,
@@ -282,10 +336,13 @@ export default function ServicePurchaseOrderPage() {
           hsn_code: l.hsn_code ? l.hsn_code.trim() : null,
           quantity: Number(l.quantity), unit_of_measure: l.unit_of_measure || "EA",
           unit_price: Number(l.unit_price), delivery_date: l.delivery_date,
+          output_product_id: l.output_product_id || null,
+          output_product_description: l.output_product_description ? l.output_product_description.trim() : null,
+          output_quantity: l.output_quantity !== "" && l.output_quantity != null ? Number(l.output_quantity) : null,
         })),
       };
       const { data } = await axios.post(`${API}/service-purchase-orders/create`, payload);
-      setResult({ po_number: data.po_number, sap_po_number: data.sap_po_number });
+      setResult({ po_number: data.po_number, sap_po_number: data.sap_po_number, outputSavedLocallyOnly: data.output_products_saved_locally_only });
       setConfirmOpen(false);
       toast.success(`Service Purchase Order ${data.po_number} created in SAP`, { duration: 10000 });
     } catch (e) {
@@ -347,10 +404,57 @@ export default function ServicePurchaseOrderPage() {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
           {/* MAIN FORM */}
           <div className="lg:col-span-8 xl:col-span-9 space-y-4">
-            {/* 1. PR Lookup - mandatory entry point */}
+            {/* 1. PO Type - determines Product Category, Account Assignment & Output fields */}
+            <div className={cardCls} data-testid="service-po-type-card">
+              <h2 className={sectionHeadingCls}>
+                <ListChecks size={14} /> 1. Purchase Order Type
+              </h2>
+              <div className="flex flex-wrap gap-2" data-testid="service-po-type-select">
+                {PO_TYPE_OPTIONS.map((opt) => {
+                  const disabled = opt.value === "capital" || opt.value === "jobwork";
+                  return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => changePoType(opt.value)}
+                    title={
+                      opt.value === "capital" ? "Fixed Asset selection for Capital POs is coming soon"
+                        : opt.value === "jobwork" ? "Paused - waiting on SAP technical field IDs for Purchase Order Type & Output Product (see your SAP admin)"
+                        : undefined
+                    }
+                    className={`h-9 px-4 rounded-sm text-sm font-semibold border transition-colors ${
+                      poType === opt.value
+                        ? "bg-[#004B87] text-white border-[#004B87]"
+                        : disabled
+                          ? "bg-[#F9FAFB] text-[#98A2B3] border-[#EAECF0] cursor-not-allowed"
+                          : "bg-white text-[#344054] border-[#D0D5DD] hover:bg-[#F2F4F7]"
+                    }`}
+                    data-testid={`service-po-type-option-${opt.value}`}
+                  >
+                    {opt.label}{opt.value === "capital" ? " (Coming Soon)" : opt.value === "jobwork" ? " (Paused)" : ""}
+                  </button>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-[#98A2B3]">
+                {poType === "jobwork"
+                  ? "Job Work: Product Category JOBWORK · GL Account + Cost Center entered manually below, same as Service."
+                  : poType === "capital"
+                    ? "Capital: Product Category FIXED_ASSETS with a Fixed Asset (Individual Material) picker - not available yet."
+                    : "Service: Product Category CONSUMABLES · GL Account + Cost Center entered manually below."}
+              </p>
+              {(poType === "jobwork") && (
+                <p className="text-[11px] text-[#B54708] bg-[#FFFAEB] border border-[#FEDF89] rounded-sm p-2">
+                  Job Work is paused - "Purchase Order Type" and "Output Product" need technical field IDs from your SAP admin (via Adapt UI &rarr; "Show Technical Help") before this can push fully to SAP without manual work.
+                </p>
+              )}
+            </div>
+
+            {/* 2. PR Lookup - mandatory entry point */}
             <div className={cardCls} data-testid="service-po-pr-lookup-card">
               <h2 className={sectionHeadingCls}>
-                <FileMagnifyingGlass size={14} /> 1. Purchase Requisition Lookup (Mandatory)
+                <FileMagnifyingGlass size={14} /> 2. Purchase Requisition Lookup (Mandatory)
               </h2>
               {!prFetched ? (
                 <div className="flex flex-col sm:flex-row gap-3 items-end">
@@ -409,10 +513,10 @@ export default function ServicePurchaseOrderPage() {
               <p className="text-[11px] text-[#98A2B3]">Vendor, Purchase Unit, Bill-To and Line Items are autofilled from the PR. Delivery Date isn't part of a PR - enter it per line below.</p>
             </div>
 
-            {/* 2. Org context */}
+            {/* 3. Org context */}
             <div className={cardCls} data-testid="service-po-org-context-card">
               <h2 className={sectionHeadingCls}>
-                <Buildings size={14} /> 2. Organization &amp; Routing Context
+                <Buildings size={14} /> 3. Organization &amp; Routing Context
               </h2>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div className="space-y-1.5">
@@ -462,10 +566,10 @@ export default function ServicePurchaseOrderPage() {
               </div>
             </div>
 
-            {/* 3. Supplier & commercial terms */}
+            {/* 4. Supplier & commercial terms */}
             <div className={cardCls} data-testid="service-po-supplier-terms-card">
               <h2 className={sectionHeadingCls}>
-                <CreditCard size={14} /> 3. Supplier Master &amp; Commercial Terms
+                <CreditCard size={14} /> 4. Supplier Master &amp; Commercial Terms
               </h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="space-y-1.5 relative md:col-span-2" ref={supplierWrapperRef}>
@@ -528,16 +632,16 @@ export default function ServicePurchaseOrderPage() {
               </div>
             </div>
 
-            {/* 4. Line items */}
+            {/* 5. Line items */}
             <div className="bg-white border border-[#D0D5DD] rounded-sm shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] overflow-hidden" data-testid="service-po-line-items-card">
               <div className="px-4 py-2.5 border-b border-[#D0D5DD] bg-[#F9FAFB] flex items-center justify-between">
                 <h2 className="text-[11px] font-bold uppercase tracking-wide text-[#344054] font-heading flex items-center gap-2">
-                  <Truck size={14} /> 4. Line Items Engine
+                  <Truck size={14} /> 5. Line Items Engine
                 </h2>
               </div>
               <div className="px-4 py-2 border-b border-[#D0D5DD] bg-[#F9FAFB] flex items-center gap-4 flex-wrap" data-testid="service-po-account-assignment-banner">
                 <span className="text-[11px] text-[#667085]">
-                  <span className="font-semibold text-[#344054]">Product Category:</span> <span className="font-data">CONSUMABLES</span> (fixed for Service lines)
+                  <span className="font-semibold text-[#344054]">Product Category:</span> <span className="font-data">{PO_TYPE_OPTIONS.find((o) => o.value === poType)?.productCategory}</span> (fixed for {PO_TYPE_OPTIONS.find((o) => o.value === poType)?.label} lines)
                 </span>
                 <span className="text-[11px] text-[#667085]">
                   <span className="font-semibold text-[#344054]">Account Assignment:</span> Cost Center <span className="font-data">{billToCompany || "(select Bill-To)"}</span> - same as Bill-To
@@ -547,7 +651,11 @@ export default function ServicePurchaseOrderPage() {
                 <table className="w-full text-xs border-collapse min-w-[980px]" data-testid="service-po-line-items-table">
                   <thead>
                     <tr>
-                      {["Description", "HSN/SAC", "GL Account", "Qty", "UoM", "Unit Price", "Delivery Date", "Line Total", ""].map((h) => (
+                      {[
+                        "Description", "HSN/SAC", "GL Account", "Qty", "UoM", "Unit Price", "Delivery Date",
+                        ...(poType === "jobwork" ? ["O/P Qty", "O/P Product", "O/P Description"] : []),
+                        "Line Total", "",
+                      ].map((h) => (
                         <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] py-1.5 px-2.5 text-left text-xs font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
@@ -624,6 +732,48 @@ export default function ServicePurchaseOrderPage() {
                         <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[140px]">
                           <Input type="date" value={l.delivery_date} onChange={(e) => updateLine(l.key, "delivery_date", e.target.value)} className="h-8 text-xs font-data rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]" data-testid={`service-po-line-delivery-date-input-${idx}`} />
                         </td>
+                        {poType === "jobwork" && (
+                          <>
+                            <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[100px]">
+                              <Input type="number" min="0" step="any" value={l.output_quantity} onChange={(e) => updateLine(l.key, "output_quantity", e.target.value)} placeholder="Optional" className="h-8 text-xs font-data rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]" data-testid={`service-po-line-output-qty-input-${idx}`} />
+                            </td>
+                            <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[200px] relative" ref={(el) => { outputWrapperRefs.current[l.key] = el; }}>
+                              <Input
+                                value={l.outputProductQuery}
+                                onChange={(e) => onOutputProductQueryChange(l.key, e.target.value)}
+                                onFocus={() => setLines((prev) => prev.map((x) => (x.key === l.key ? { ...x, showOutputSuggestions: true } : x)))}
+                                placeholder="Search product (optional)..."
+                                className="h-8 text-xs rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]"
+                                data-testid={`service-po-line-output-product-input-${idx}`}
+                              />
+                              {l.showOutputSuggestions && (l.outputProductSuggestions || []).length > 0 && (
+                                <div className="absolute z-20 mt-1 w-full bg-white border border-[#D0D5DD] rounded-sm shadow-lg max-h-56 overflow-y-auto" data-testid={`service-po-line-output-suggestions-${idx}`}>
+                                  {(l.outputProductSuggestions || []).map((p) => (
+                                    <button
+                                      key={p.product_id}
+                                      type="button"
+                                      className="w-full text-left px-3 py-2 text-xs hover:bg-[#F2F4F7] border-b border-[#EAECF0] last:border-0"
+                                      onClick={() => pickOutputProduct(l.key, p)}
+                                      data-testid={`service-po-line-output-suggestion-${idx}-${p.product_id}`}
+                                    >
+                                      <span className="font-semibold text-[#101828] font-data">{p.product_id}</span>
+                                      <span className="text-[#667085]"> - {p.description}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </td>
+                            <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[180px]">
+                              <Input
+                                value={l.output_product_description}
+                                onChange={(e) => updateLine(l.key, "output_product_description", e.target.value)}
+                                placeholder="e.g. Link Front-42"
+                                className="h-8 text-xs rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]"
+                                data-testid={`service-po-line-output-description-input-${idx}`}
+                              />
+                            </td>
+                          </>
+                        )}
                         <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[110px] font-data text-xs font-semibold text-[#101828] whitespace-nowrap" data-testid={`service-po-line-total-${idx}`}>
                           {fmtMoney(lineTotal(l), currency)}
                         </td>
@@ -646,7 +796,7 @@ export default function ServicePurchaseOrderPage() {
             <div className="sticky top-4 space-y-4">
               <div className={cardCls} data-testid="service-po-summary-card">
                 <h2 className={sectionHeadingCls}>
-                  <ListChecks size={14} /> 5. Order Summary
+                  <ListChecks size={14} /> 6. Order Summary
                 </h2>
                 <div className="space-y-1.5 text-sm">
                   <div className="flex items-center justify-between">
@@ -700,6 +850,7 @@ export default function ServicePurchaseOrderPage() {
           </DialogHeader>
           <div className="text-sm space-y-3 text-[#344054]">
             <div className="grid grid-cols-2 gap-2 bg-[#F9FAFB] rounded-sm p-3 font-data text-xs">
+              <div><span className="text-[#667085]">PO Type:</span> <b>{PO_TYPE_OPTIONS.find((o) => o.value === poType)?.label}</b></div>
               <div><span className="text-[#667085]">PR Number:</span> <b>{prFetched?.voc_no}</b></div>
               <div><span className="text-[#667085]">Company:</span> <b>{company}</b></div>
               <div><span className="text-[#667085]">Purchase Unit:</span> <b>{purchaseUnitSite}</b></div>
@@ -715,6 +866,7 @@ export default function ServicePurchaseOrderPage() {
                     <th className="text-left p-2 font-heading uppercase text-[#344054]">GL Account</th>
                     <th className="text-right p-2 font-heading uppercase text-[#344054]">Qty</th>
                     <th className="text-left p-2 font-heading uppercase text-[#344054]">Delivery</th>
+                    {poType === "jobwork" && <th className="text-left p-2 font-heading uppercase text-[#344054]">Output Product</th>}
                     <th className="text-right p-2 font-heading uppercase text-[#344054]">Total</th>
                   </tr>
                 </thead>
@@ -725,6 +877,13 @@ export default function ServicePurchaseOrderPage() {
                       <td className="p-2 font-data">{l.gl_account_code}</td>
                       <td className="p-2 text-right font-data">{l.quantity} {l.unit_of_measure}</td>
                       <td className="p-2 font-data">{l.delivery_date}</td>
+                      {poType === "jobwork" && (
+                        <td className="p-2 font-data text-[11px]">
+                          {l.output_product_id || l.output_product_description
+                            ? `${l.output_product_id || "-"} ${l.output_product_description ? `(${l.output_product_description})` : ""}${l.output_quantity ? ` x${l.output_quantity}` : ""}`
+                            : "-"}
+                        </td>
+                      )}
                       <td className="p-2 text-right font-data font-semibold">{fmtMoney(lineTotal(l), currency)}</td>
                     </tr>
                   ))}
@@ -732,8 +891,13 @@ export default function ServicePurchaseOrderPage() {
               </table>
             </div>
             <div className="flex justify-between items-center text-[11px] text-[#667085] font-data">
-              <span>Product Category: CONSUMABLES &middot; Account Assignment: Cost Center {billToCompany} (100%)</span>
+              <span>Product Category: {PO_TYPE_OPTIONS.find((o) => o.value === poType)?.productCategory} &middot; Account Assignment: Cost Center {billToCompany} (100%)</span>
             </div>
+            {poType === "jobwork" && lines.some((l) => l.output_product_id || l.output_product_description) && (
+              <p className="text-[11px] text-[#B54708] bg-[#FFFAEB] border border-[#FEDF89] rounded-sm p-2" data-testid="service-po-output-product-disclaimer">
+                Note: SAP doesn't currently expose a field for Output Product on this integration - these details will be saved in your records here, but not pushed to SAP. Please add them manually on the SAP PO screen for now.
+              </p>
+            )}
             <div className="flex justify-end font-data text-sm font-bold text-[#004B87]">Grand Total: {fmtMoney(grandTotal, currency)}</div>
           </div>
           <DialogFooter>
@@ -760,6 +924,11 @@ export default function ServicePurchaseOrderPage() {
               {result.sap_po_number && (
                 <span className="block mt-1 text-xs text-[#475467]" data-testid="service-po-result-printed-number">
                   Printed PO #: <span className="font-data font-semibold">{result.sap_po_number}</span>
+                </span>
+              )}
+              {result.outputSavedLocallyOnly && (
+                <span className="block mt-2 text-xs text-[#B54708]" data-testid="service-po-result-output-disclaimer">
+                  Output Product details were saved to your records only - please add them manually on the SAP PO screen too.
                 </span>
               )}
             </p>
