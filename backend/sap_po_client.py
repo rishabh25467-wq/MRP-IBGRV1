@@ -60,17 +60,15 @@ Two more things confirmed live:
      `PartySellerPartyKey/PartyID` - confirmed against the real supplier
      master (H1330 = Hamidi Exports, G1287 = Ganesh Steel Industries).
 
-KNOWN LIMITATION (not fully solved, flagged for the user): since SAP
-won't filter server-side by vendor, we still pull a bounded BATCH of the
-whole tenant's POs (now a RECENT batch, not an arbitrary one) and filter
-client-side. `LOOKBACK_IDS` (below) is deliberately kept a bit under
-`FETCH_LIMIT` so a single batch reliably reaches the tenant's current
-max PO ID, but a vendor's own open PO that is unusually old (e.g. opened
-2+ years ago and never marked Finished in SAP) will fall outside this
-recent window and won't show up. If that turns out to matter for a real
-vendor, the fix is a proper Analytics OData report (same pattern already
-used for HSN Code / On-Hand Inventory - see PRD) - it's server-filterable
-by seller party and wouldn't need this recency window at all.
+RESOLVED Sep 14 2026 (was "KNOWN LIMITATION" - a vendor's own open PO
+that was unusually old could fall outside the live recency window and
+never show up; real incident, vendor P3267): fetch_backfill_chunk (see
+BACKFILL_WATERMARK_COLLECTION below) walks the older ID range in the
+background, independent of the live window, so an old-but-still-open PO
+now gets (re)cached rather than aging out permanently. A SEPARATE,
+deeper bug was found and fixed the same day - see WINDOW_WIDTH_IDS /
+_ID_BETWEEN_TEMPLATE below for the full root cause (the open-ended `>`
+query itself was silently dropping real records once truncated).
 
 SAP does not expose a per-item "already delivered" quantity on this
 query (only header-level status codes) - `already_shipped_qty` /
@@ -82,7 +80,7 @@ same as before this endpoint existed. "Open" here means
 fix), AND `ApprovalStatusCode` is not `1` (still In Preparation/not yet
 released, Sep 13 2026 follow-up fix - see NOT_YET_RELEASED_APPROVAL_STATUS_CODE)."""
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import requests
 from requests.auth import HTTPBasicAuth
@@ -148,11 +146,60 @@ def buyer_entity_name(buyer_code: str) -> str:
     return BUYER_ENTITY_NAMES.get(buyer_code, "RADISH TECHNOLOGIES")
 
 WATERMARK_COLLECTION = "sap_po_watermark"
-WATERMARK_STALE_AFTER = timedelta(days=3)
-# Kept a bit under FETCH_LIMIT so one batch starting at the watermark
-# reliably reaches the tenant's current max PO ID (PurchaseOrderID is
-# densely sequential on this tenant - confirmed live, ~1 PO per ID).
+# Kept a bit under this client's WINDOW_WIDTH_IDS so the very
+# first-ever discovery has a sane initial lower bound before any
+# watermark exists yet.
 LOOKBACK_IDS = 450
+
+# Sep 14 2026 CRITICAL bug fix (real incident, user report: vendor P3267
+# had 5 genuinely "In Process" POs in SAP - 27601/28255/28467/29027/
+# 29073 - silently vanished from the Supplier Dashboard even with "All
+# (incl. Fully Shipped)" selected). TWO root causes found, confirmed
+# live against this tenant's real SOAP responses:
+#
+# 1) The open-ended `>` query (`IntervalBoundaryTypeCode=8`, previously
+#    the ONLY query shape this client used) does NOT reliably return
+#    "the next N records in ID order" once the true match count beyond
+#    the threshold exceeds its own `QueryHitsMaximumNumberValue` - which
+#    is ALWAYS true in production, since there are thousands of POs
+#    above any given watermark. Confirmed live: querying
+#    `PurchaseOrderID > 27000` with limit=500 returned a batch spanning
+#    ID 27016 all the way to 29570 (a 2554-wide span) while silently
+#    OMITTING 27601/28255/29027/29073 from right in the middle of that
+#    same span - not a simple "lowest N" cutoff, an effectively
+#    arbitrary subset once truncated.
+# 2) A bounded `Between` query (`IntervalBoundaryTypeCode=3`, both a
+#    Lower AND Upper boundary) IS reliable - confirmed live with a
+#    narrow enough window (a 200-ID-wide Between returned exactly 199
+#    real POs, including the previously-missing 29027) that its true
+#    hit count stays comfortably under the limit. `WINDOW_WIDTH_IDS`
+#    below is deliberately kept well under `BETWEEN_QUERY_LIMIT` given
+#    this tenant's real, live-confirmed worst-case density of ~1 real
+#    PO per sequential ID.
+#
+# FIX: every fetch (both the live recent-window scan and the older-PO
+# backfill below) now ALWAYS walks the ID range in fixed
+# `WINDOW_WIDTH_IDS`-wide `Between` chunks - never a single open-ended
+# `>` call - so nothing in the scanned range can ever be silently
+# dropped again.
+WINDOW_WIDTH_IDS = 400
+BETWEEN_QUERY_LIMIT = 999
+
+# This collection is a SEPARATE, independent watermark that slowly walks
+# FORWARD from a starting floor (never backwards, never overlapping the
+# live "recent window" watermark above) to backfill/re-verify every
+# older PO at least once, so a still-open old PO that has aged out of
+# the live recent-window scan gets (re)cached instead of aging out
+# permanently and being wrongly marked `expired`.
+BACKFILL_WATERMARK_COLLECTION = "sap_po_backfill_watermark"
+# On the very first run (no backfill watermark yet), start this far
+# behind the live window's own floor rather than all the way back at PO
+# ID 0 - walking the tenant's ENTIRE history (years of long-Finished
+# POs) is wasted SAP load for no benefit. 5000 is >10x LOOKBACK_IDS, so
+# it comfortably covers this real incident (P3267's oldest affected PO,
+# 27601, was ~1521 IDs behind the live window at the time) with a lot
+# of headroom.
+BACKFILL_INITIAL_DEPTH_IDS = 5000
 
 _ID_GREATER_THAN_TEMPLATE = """<?xml version="1.0" encoding="utf-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
@@ -163,6 +210,32 @@ _ID_GREATER_THAN_TEMPLATE = """<?xml version="1.0" encoding="utf-8"?>
    <InclusionExclusionCode>I</InclusionExclusionCode>
    <IntervalBoundaryTypeCode>8</IntervalBoundaryTypeCode>
    <LowerBoundaryID>{lower_bound}</LowerBoundaryID>
+  </SelectionByID>
+ </PurchaseOrderSimpleSelectionByElements>
+ <ProcessingConditions>
+  <QueryHitsMaximumNumberValue>{limit}</QueryHitsMaximumNumberValue>
+  <QueryHitsUnlimitedIndicator>false</QueryHitsUnlimitedIndicator>
+ </ProcessingConditions>
+</n1:PurchaseOrderSimpleByElementsQuery_sync>
+</soapenv:Body>
+</soapenv:Envelope>"""
+
+# Sep 14 2026 addition - see the fix note above. Only ever used with a
+# `LowerBoundaryID`/`UpperBoundaryID` pair narrow enough
+# (`WINDOW_WIDTH_IDS`) that its true hit count can never approach
+# `limit`, unlike the open-ended template above which this replaces for
+# all real data-fetching (the `>` template is still used, alone, only
+# for the cheap limit=1 existence probes in `_has_po_id_greater_than`).
+_ID_BETWEEN_TEMPLATE = """<?xml version="1.0" encoding="utf-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+<soapenv:Body>
+<n1:PurchaseOrderSimpleByElementsQuery_sync xmlns:n1="http://sap.com/xi/SAPGlobal20/Global">
+ <PurchaseOrderSimpleSelectionByElements>
+  <SelectionByID>
+   <InclusionExclusionCode>I</InclusionExclusionCode>
+   <IntervalBoundaryTypeCode>3</IntervalBoundaryTypeCode>
+   <LowerBoundaryID>{lower_bound}</LowerBoundaryID>
+   <UpperBoundaryID>{upper_bound}</UpperBoundaryID>
   </SelectionByID>
  </PurchaseOrderSimpleSelectionByElements>
  <ProcessingConditions>
@@ -186,7 +259,6 @@ class SAPPurchaseOrderNotConfiguredError(SAPPurchaseOrderError):
 
 
 class SAPPurchaseOrderClient:
-    FETCH_LIMIT = 500
     REQUEST_TIMEOUT_SECONDS = 120
 
     def __init__(self, endpoint: str, username: str, password: str):
@@ -212,14 +284,16 @@ class SAPPurchaseOrderClient:
         root = ET.fromstring(self._post(body).text)
         return root.find(".//PurchaseOrder") is not None
 
-    def _discover_current_max_po_id(self) -> int:
+    def _discover_current_max_po_id(self, start_lo: int = 0) -> int:
         """Cheap probes only (limit=1 each) - exponential search to find
         an upper bound with no POs, then binary search down to the exact
-        current max PurchaseOrderID. Only runs when the watermark is
-        missing or stale (see _get_lower_bound)."""
-        lo, hi = 0, 1000
+        current max PurchaseOrderID. `start_lo` lets `fetch_recent_window`
+        below resume the search from its last known watermark instead of
+        0 every cycle - typically only a few new POs exist since the last
+        cycle, so this stays cheap (a handful of probes, not ~15)."""
+        lo, hi = start_lo, start_lo + 1000
         while self._has_po_id_greater_than(hi):
-            lo, hi = hi, hi * 2
+            lo, hi = hi, hi * 2 if hi > 0 else 1000
         while hi - lo > 1:
             mid = (lo + hi) // 2
             if self._has_po_id_greater_than(mid):
@@ -228,53 +302,37 @@ class SAPPurchaseOrderClient:
                 hi = mid
         return lo
 
-    def _get_lower_bound(self, db) -> int:
-        state = db[WATERMARK_COLLECTION].find_one({"_id": "latest"})
-        now = datetime.now(timezone.utc)
-        if state and (now - state["updated_at"]) < WATERMARK_STALE_AFTER:
-            return state["max_po_id"]
-        current_max = self._discover_current_max_po_id()
-        return max(0, current_max - LOOKBACK_IDS)
-
-    def _advance_watermark(self, db, max_id_seen: int) -> None:
-        """Monotonic: an empty/no-progress SAP batch must NEVER move
-        max_po_id backwards (found by testing_agent, iteration 122 - the
-        old unconditional write walked the window back 450 IDs on every
-        empty cycle, eventually reproducing the original oldest-PO bug).
-        `updated_at` still always refreshes so callers can tell the
-        background loop is alive even on an empty cycle."""
-        state = db[WATERMARK_COLLECTION].find_one({"_id": "latest"})
-        new_lower_bound = max(0, max_id_seen - LOOKBACK_IDS)
-        if state and new_lower_bound <= state.get("max_po_id", 0):
-            db[WATERMARK_COLLECTION].update_one(
-                {"_id": "latest"}, {"$set": {"updated_at": datetime.now(timezone.utc)}}, upsert=True,
-            )
-            return
-        db[WATERMARK_COLLECTION].update_one(
-            {"_id": "latest"},
-            {"$set": {"max_po_id": new_lower_bound, "updated_at": datetime.now(timezone.utc)}},
-            upsert=True,
-        )
-
-    def fetch_recent_window(self, db) -> list:
-        """Called ONLY from server.py's background refresh loop, never
-        from a live request (see module docstring, "THIRD FIX"). Fetches
-        the tenant's current PurchaseOrderID window ONCE for every
-        vendor at once (SAP won't filter by seller party server-side
-        anyway) and returns each open line item tagged with its real
-        `vendor_code` (PartySellerPartyKey/PartyID) so the caller can
-        fan results out per vendor."""
-        if not self.endpoint:
-            raise SAPPurchaseOrderNotConfiguredError(
-                "SAP Purchase Order lookup isn't wired up yet - waiting on the SAP SOAP/OData "
-                "endpoint (SAP_SOAP_PO_ENDPOINT) to be activated and shared for this tenant."
-            )
-        lower_bound = self._get_lower_bound(db)
-        body = _ID_GREATER_THAN_TEMPLATE.format(lower_bound=lower_bound, limit=self.FETCH_LIMIT)
+    def _fetch_between(self, lower_bound: int, upper_bound: int) -> tuple:
+        """Single reliable, bounded fetch - see the Sep 14 2026 fix note
+        above. Caller MUST keep (upper_bound - lower_bound) <=
+        WINDOW_WIDTH_IDS."""
+        body = _ID_BETWEEN_TEMPLATE.format(lower_bound=lower_bound, upper_bound=upper_bound, limit=BETWEEN_QUERY_LIMIT)
         root = ET.fromstring(self._post(body).text)
+        return self._parse_pos(root)
 
+    def _scan_between(self, lower_bound: int, ceiling: int) -> list:
+        """Walks (lower_bound, ceiling] in WINDOW_WIDTH_IDS-wide reliable
+        Between chunks and returns every row found across all of them."""
         rows = []
-        max_id_seen = lower_bound
+        cursor = lower_bound
+        while cursor < ceiling:
+            upper = min(cursor + WINDOW_WIDTH_IDS, ceiling)
+            chunk_rows, _ = self._fetch_between(cursor + 1, upper)
+            rows.extend(chunk_rows)
+            cursor = upper
+        return rows
+
+    @staticmethod
+    def _parse_pos(root, keep_filtered_out: bool = False) -> tuple:
+        """Shared row-parsing/filtering logic used by both the live
+        "recent window" fetch and the older-PO backfill chunk below -
+        extracted Sep 14 2026 so the two never drift apart. Returns
+        (rows, max_id_seen_across_ALL_pos_in_this_batch) - max_id_seen
+        deliberately includes Finished/Cancelled/filtered-out POs too,
+        since the caller needs it purely to advance an ID pointer, not
+        to judge openness."""
+        rows = []
+        max_id_seen = 0
         for po in root.findall(".//PurchaseOrder"):
             po_number = po.findtext("PurchaseOrderID")
             try:
@@ -329,5 +387,79 @@ class SAPPurchaseOrderClient:
                     # this tenant's real PurchaseOrderItem schema.
                     "ship_to_site_id": item.findtext("ShipToLocation/LocationID"),
                 })
-        self._advance_watermark(db, max_id_seen)
-        return rows
+        return rows, max_id_seen
+
+    def fetch_recent_window(self, db) -> dict:
+        """Called ONLY from server.py's background refresh loop, never
+        from a live request (see module docstring, "THIRD FIX"). Fetches
+        every PO created since the last cycle (SAP won't filter by
+        vendor server-side anyway - see fix #1) and returns each open
+        line item tagged with its real `vendor_code`
+        (PartySellerPartyKey/PartyID) so the caller can fan results out
+        per vendor.
+
+        Sep 14 2026 rewrite: now scans in reliable, bounded `Between`
+        chunks (see WINDOW_WIDTH_IDS / the fix note above) instead of a
+        single open-ended `>` call - that call could (and did, in
+        production) silently skip real open POs once the true remaining
+        count exceeded its own limit. `current_max` is (re)discovered
+        every cycle, but starting the binary search from the LAST known
+        watermark (not 0) keeps it cheap - usually only a couple of
+        probes since only a handful of new POs exist since the last
+        10-minute cycle.
+
+        Also returns the `lower_bound` used for this fetch - callers
+        need this to avoid wrongly expiring a cached PO that's merely
+        OLDER than this window rather than genuinely gone from SAP (see
+        BACKFILL_WATERMARK_COLLECTION above)."""
+        if not self.endpoint:
+            raise SAPPurchaseOrderNotConfiguredError(
+                "SAP Purchase Order lookup isn't wired up yet - waiting on the SAP SOAP/OData "
+                "endpoint (SAP_SOAP_PO_ENDPOINT) to be activated and shared for this tenant."
+            )
+        state = db[WATERMARK_COLLECTION].find_one({"_id": "latest"})
+        if state:
+            lower_bound = state["max_po_id"]
+            current_max = self._discover_current_max_po_id(start_lo=lower_bound)
+        else:
+            current_max = self._discover_current_max_po_id()
+            lower_bound = max(0, current_max - LOOKBACK_IDS)
+        rows = self._scan_between(lower_bound, current_max)
+        db[WATERMARK_COLLECTION].update_one(
+            {"_id": "latest"},
+            {"$set": {"max_po_id": current_max, "updated_at": datetime.now(timezone.utc)}},
+            upsert=True,
+        )
+        return {"rows": rows, "lower_bound": lower_bound}
+
+    def fetch_backfill_chunk(self, db) -> dict:
+        """Sep 14 2026 fix - walks FORWARD from a persisted floor in
+        WINDOW_WIDTH_IDS-wide reliable `Between` chunks, independent of
+        and never overlapping `fetch_recent_window`'s own forward-moving
+        watermark above, to (re)confirm every PO older than the live
+        window at least once. Any still-open PO found this way is
+        upserted into the cache (see supplier_shipment_service.
+        merge_backfill_rows) WITHOUT expiring anything else for that
+        vendor - a partial ID-range chunk can never be treated as "the
+        vendor's whole PO list" the way a full fetch_recent_window batch
+        can. Once the floor catches up to the live window's own lower
+        bound, `done=True` and there's nothing older left to check until
+        the live window itself advances further."""
+        ceiling_doc = db[WATERMARK_COLLECTION].find_one({"_id": "latest"})
+        ceiling = (ceiling_doc or {}).get("max_po_id", 0)
+        if not self.endpoint or ceiling <= 0:
+            return {"rows": [], "done": True}
+        floor_doc = db[BACKFILL_WATERMARK_COLLECTION].find_one({"_id": "latest"})
+        floor = (floor_doc or {}).get("floor_id") if floor_doc else max(0, ceiling - BACKFILL_INITIAL_DEPTH_IDS)
+        if floor is None:
+            floor = max(0, ceiling - BACKFILL_INITIAL_DEPTH_IDS)
+        if floor >= ceiling:
+            return {"rows": [], "done": True}
+        upper = min(floor + WINDOW_WIDTH_IDS, ceiling)
+        rows, _ = self._fetch_between(floor + 1, upper)
+        db[BACKFILL_WATERMARK_COLLECTION].update_one(
+            {"_id": "latest"},
+            {"$set": {"floor_id": upper, "updated_at": datetime.now(timezone.utc)}},
+            upsert=True,
+        )
+        return {"rows": rows, "done": upper >= ceiling, "floor": upper, "ceiling": ceiling}

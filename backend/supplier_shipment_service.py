@@ -106,27 +106,35 @@ def expire_po_cache(db, po_number: str, item_number: str = None) -> int:
     return db[PO_CACHE_COLLECTION].update_many(query, {"$set": {"expired": True}}).modified_count
 
 
-def refresh_po_cache(db, vendor_code: str, items: list) -> None:
+def refresh_po_cache(db, vendor_code: str, items: list, lower_bound: int = 0) -> None:
     """Called every time a LIVE SAP PO fetch succeeds - keeps a durable
     local copy so the vendor's open-PO list (and shipment creation) still
     works between SAP calls, and so a vendor always sees "last known"
     data instead of a hard error the moment SAP itself is briefly down.
 
     Also EXPIRES any of this vendor's previously-cached rows that are no
-    longer in the fresh live fetch (PO now Finished, or fell out of
-    sap_po_client's current-window fetch) - a live fetch is the source
-    of truth, so a stale/no-longer-open row must not linger forever
-    (found by user report Aug 28 2026: the cache kept showing PO rows
-    from before the sap_po_client recency-window fix even after that
-    fix landed, since nothing had ever deleted them).
+    longer in the fresh live fetch (PO now Finished, or genuinely gone) -
+    a live fetch is the source of truth, so a stale/no-longer-open row
+    must not linger forever (found by user report Aug 28 2026).
 
-    A missing row is only MARKED (`missing_since`) on its first miss,
-    and only actually deleted once it's been missing for
+    Sep 14 2026 CRITICAL FIX (real incident - vendor P3267's genuinely
+    "In Process" POs 27601/28255/28467/29027/29073 vanished from their
+    dashboard): a cached row whose `po_number` is <= `lower_bound` (i.e.
+    OLDER than what this fetch's recency window even looked at - see
+    sap_po_client.py's fetch_recent_window docstring) must NEVER be
+    treated as "missing" - we simply have no fresh information about it
+    this cycle, which is not the same as SAP saying it's gone. Only rows
+    that WERE inside the window this fetch actually covered and still
+    didn't show up are genuinely "missing" candidates. The independent
+    backfill pointer (sap_po_client.fetch_backfill_chunk +
+    merge_backfill_rows below) is what eventually re-confirms these
+    older rows one way or the other.
+
+    A row that IS inside the window is only MARKED (`missing_since`) on
+    its first miss, and only actually deleted once it's been missing for
     STALE_CYCLES_BEFORE_DELETE consecutive refreshes - protects against
     a single fetch cycle's own window/timing hiccup being mistaken for
-    "PO closed" and permanently wiping a still-open PO (real data-loss
-    risk flagged by a deployment scan, fixed 2026-08-28: this used to
-    hard-delete on the very first miss). A row that reappears in a later
+    "PO closed" (fixed 2026-08-28). A row that reappears in a later
     fetch has `missing_since` cleared automatically via the `$set` below.
 
     Only rows tagged `source="sap_live"` are eligible for this at all -
@@ -146,7 +154,20 @@ def refresh_po_cache(db, vendor_code: str, items: list) -> None:
             upsert=True,
         )
     missing_query = {"vendor_code": vendor_code, "source": "sap_live", "_id": {"$nin": fresh_keys}}
-    db[PO_CACHE_COLLECTION].update_many({**missing_query, "missing_since": None}, {"$set": {"missing_since": now}})
+    candidates = list(db[PO_CACHE_COLLECTION].find(missing_query, {"_id": 1, "po_number": 1}))
+    in_window_missing_ids = []
+    for c in candidates:
+        try:
+            still_in_window = int(c.get("po_number")) > lower_bound
+        except (TypeError, ValueError):
+            still_in_window = True  # defensive - unexpected non-numeric ID, don't silently skip it
+        if still_in_window:
+            in_window_missing_ids.append(c["_id"])
+    if not in_window_missing_ids:
+        return
+    db[PO_CACHE_COLLECTION].update_many(
+        {"_id": {"$in": in_window_missing_ids}, "missing_since": None}, {"$set": {"missing_since": now}},
+    )
     stale_cutoff = now - timedelta(minutes=STALE_CYCLES_BEFORE_DELETE * REFRESH_INTERVAL_MINUTES)
     # Soft-delete only (deployment-scan-flagged, fixed 2026-08-29): an unattended background
     # loop must never hard-delete rows outright, even ones scoped this narrowly - mark them
@@ -154,7 +175,7 @@ def refresh_po_cache(db, vendor_code: str, items: list) -> None:
     # `expired` filters in get_cached_pos_with_remaining/_resolve_items below) without losing
     # the underlying record for audit/debugging.
     db[PO_CACHE_COLLECTION].update_many(
-        {**missing_query, "missing_since": {"$lte": stale_cutoff}},
+        {"_id": {"$in": in_window_missing_ids}, "missing_since": {"$lte": stale_cutoff}},
         {"$set": {"expired": True, "expired_at": now}},
     )
 
@@ -183,21 +204,38 @@ def seed_po_cache_items(db, vendor_code: str, items: list) -> None:
         )
 
 
-def refresh_all_vendor_caches(db, rows: list) -> dict:
+def refresh_all_vendor_caches(db, rows: list, lower_bound: int = 0) -> dict:
     """Fans sap_po_client.fetch_recent_window's single global batch out
     per vendor (called from server.py's background refresh loop) - every
     vendor_code seen in this batch gets its cache updated, AND every
     vendor_code already in the cache gets re-checked even with an empty
     list, so a vendor whose open POs all disappeared this cycle (now
-    Finished, or aged out of the tracked window) ends up with an empty
-    cache instead of a stale one."""
+    genuinely Finished/Cancelled) ends up with an empty cache instead of
+    a stale one. `lower_bound` (Sep 14 2026 fix) is passed straight
+    through to refresh_po_cache so a cached row OLDER than this fetch's
+    own window is never wrongly treated as "missing" - see that
+    function's docstring."""
     grouped = {}
     for r in rows:
         grouped.setdefault(r["vendor_code"], []).append(r)
     already_cached_vendors = db[PO_CACHE_COLLECTION].distinct("vendor_code")
     for vendor_code in set(grouped) | set(already_cached_vendors):
-        refresh_po_cache(db, vendor_code, grouped.get(vendor_code, []))
+        refresh_po_cache(db, vendor_code, grouped.get(vendor_code, []), lower_bound)
     return {"vendors_updated": len(grouped), "total_line_items": len(rows)}
+
+
+def merge_backfill_rows(db, rows: list) -> dict:
+    """Sep 14 2026 fix - merges sap_po_client.fetch_backfill_chunk's
+    older-PO results into the cache. Deliberately reuses seed_po_cache_items
+    (upsert-only, never expires anything) since a backfill chunk only
+    ever covers a narrow ID slice, never a vendor's full PO list - unlike
+    refresh_all_vendor_caches above, absence here means nothing at all."""
+    grouped = {}
+    for r in rows:
+        grouped.setdefault(r["vendor_code"], []).append(r)
+    for vendor_code, items in grouped.items():
+        seed_po_cache_items(db, vendor_code, items)
+    return {"vendors_touched": len(grouped), "total_line_items": len(rows)}
 
 
 def vendor_directory(db, search: str = "", limit: int = 20) -> list:

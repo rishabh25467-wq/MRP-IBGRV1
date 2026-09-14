@@ -8154,8 +8154,10 @@ async def refresh_po_cache_now():
 
     async def run():
         try:
-            rows = await asyncio.to_thread(sap_po_client.fetch_recent_window, db)
-            stats = await asyncio.to_thread(supplier_shipment_service.refresh_all_vendor_caches, db, rows)
+            fetch_result = await asyncio.to_thread(sap_po_client.fetch_recent_window, db)
+            stats = await asyncio.to_thread(
+                supplier_shipment_service.refresh_all_vendor_caches, db, fetch_result["rows"], fetch_result["lower_bound"],
+            )
             # Sep 10 2026, user's explicit ask: "Printed PO # not
             # visible" right after using this button - the PO cache and
             # the Printed PO # cache are two SEPARATE background loops
@@ -8179,6 +8181,49 @@ async def refresh_po_cache_now():
 
 @api_router.get("/admin/purchase-orders/refresh-cache/poll/{job_id}")
 async def refresh_po_cache_poll(job_id: str):
+    job = job_store.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return {"status": job["status"], "result": job["result"], "error": job["error"]}
+
+
+@api_router.post("/admin/purchase-orders/backfill-older")
+async def backfill_older_pos_now():
+    """Sep 14 2026 fix - real incident: vendor P3267 had 5 genuinely
+    open POs (In Process in SAP) missing from their dashboard because
+    they'd aged out of the live "recent window" fetch (see
+    sap_po_client.py's fetch_backfill_chunk docstring). The background
+    loop already runs one backfill chunk per cycle automatically, but
+    that can take a while to catch up an entire tenant's backlog on
+    first run - this lets an admin force through every remaining chunk
+    right now as a single background job (each chunk is its own
+    60-100s SAP call, so this can legitimately run for several
+    minutes - poll for progress)."""
+    job_id = str(uuid.uuid4())
+    job_store.create_job(db, job_id, {"status": "running", "result": None, "error": None})
+
+    async def run():
+        total_rows, chunks_run = 0, 0
+        try:
+            while True:
+                chunk = await asyncio.to_thread(sap_po_client.fetch_backfill_chunk, db)
+                if chunk["rows"]:
+                    await asyncio.to_thread(supplier_shipment_service.merge_backfill_rows, db, chunk["rows"])
+                total_rows += len(chunk["rows"])
+                chunks_run += 1
+                if chunk["done"] or chunks_run >= 100:
+                    break
+            job_store.update_job(db, job_id, {"status": "done", "result": {"chunks_run": chunks_run, "total_line_items": total_rows}, "error": None})
+        except Exception as e:
+            logger.error(f"Manual older-PO backfill failed: {e}")
+            job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
+
+
+@api_router.get("/admin/purchase-orders/backfill-older/poll/{job_id}")
+async def backfill_older_pos_poll(job_id: str):
     job = job_store.get_job(db, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id")
@@ -8312,9 +8357,20 @@ async def start_supplier_po_cache_refresh_loop():
         await asyncio.sleep(20)
         while True:
             try:
-                rows = await asyncio.to_thread(sap_po_client.fetch_recent_window, db)
-                stats = await asyncio.to_thread(supplier_shipment_service.refresh_all_vendor_caches, db, rows)
+                fetch_result = await asyncio.to_thread(sap_po_client.fetch_recent_window, db)
+                stats = await asyncio.to_thread(
+                    supplier_shipment_service.refresh_all_vendor_caches, db, fetch_result["rows"], fetch_result["lower_bound"],
+                )
                 logger.info(f"Supplier Portal PO cache background refresh complete: {stats}")
+                # Sep 14 2026 fix - one older-PO backfill chunk per cycle
+                # (see sap_po_client.fetch_backfill_chunk), independent of
+                # and never overlapping the live window fetch above, so a
+                # PO that's aged out of the recency window still gets
+                # re-confirmed instead of silently expiring forever.
+                backfill_chunk = await asyncio.to_thread(sap_po_client.fetch_backfill_chunk, db)
+                if backfill_chunk["rows"]:
+                    backfill_stats = await asyncio.to_thread(supplier_shipment_service.merge_backfill_rows, db, backfill_chunk["rows"])
+                    logger.info(f"Supplier Portal older-PO backfill chunk complete: {backfill_stats}")
             except SAPPurchaseOrderNotConfiguredError:
                 pass
             except Exception as e:
