@@ -6193,15 +6193,15 @@ class ServicePurchaseOrderSupplierSuggestion(BaseModel):
     cash_discount_terms_text: Optional[str] = None
 
 
-class ServicePurchaseOrderProductSuggestion(BaseModel):
-    product_id: str
-    description: Optional[str] = None
-    unit_of_measure: Optional[str] = None
+class ServiceGLAccount(BaseModel):
+    code: str
+    description: str
 
 
 class ServicePurchaseOrderLineItemIn(BaseModel):
-    product_id: str
-    description: Optional[str] = None
+    description: str = Field(min_length=1)
+    gl_account_code: str = Field(min_length=1)
+    hsn_code: Optional[str] = None
     quantity: float = Field(gt=0)
     unit_of_measure: str
     unit_price: float = Field(ge=0)
@@ -6239,7 +6239,7 @@ class ServicePurchaseOrderCreateRequest(BaseModel):
     def _delivery_not_before_po_date(self):
         for it in self.items:
             if it.delivery_date < self.po_date:
-                raise ValueError(f"Delivery Date for {it.product_id} cannot be before PO Date")
+                raise ValueError(f"Delivery Date for \"{it.description}\" cannot be before PO Date")
         return self
 
 
@@ -6250,10 +6250,6 @@ class ServicePRLookupLineItem(BaseModel):
     unit: Optional[str] = None
     qty: float
     rate: float
-    matched_product_id: Optional[str] = None
-    matched_description: Optional[str] = None
-    matched_unit_of_measure: Optional[str] = None
-    matched_via: Optional[str] = None
     sap_unit_of_measure: Optional[str] = None
     unit_mapping_confident: bool = True
 
@@ -6324,48 +6320,12 @@ async def service_po_pr_lookup(voc_no: str):
         )
 
     raw_items = data.get("items", [])
-    icodes = [it.get("icode") for it in raw_items if it.get("icode")]
-    matched_map = {}
-    if icodes:
-        def _match():
-            pipeline = [
-                {"$match": {"_id": "latest"}},
-                {"$project": {"items": {"$filter": {"input": "$items", "as": "i", "cond": {"$in": ["$$i.product_id", icodes]}}}}},
-            ]
-            result = list(db["inventory_cache"].aggregate(pipeline))
-            return result[0]["items"] if result else []
-        matched_map = {m["product_id"]: m for m in await asyncio.to_thread(_match)}
-
-    unmatched_icodes = [c for c in set(icodes) if c not in matched_map]
-    if unmatched_icodes:
-        def _live_lookup(code):
-            try:
-                info = sap_material_client.resolve_material_info(code)
-            except SAPMaterialError:
-                return code, None
-            if info.get("uuid") and info.get("life_cycle_status_code") == "2":
-                return code, info
-            return code, None
-        live_results = await asyncio.gather(*[asyncio.to_thread(_live_lookup, c) for c in unmatched_icodes])
-        for code, info in live_results:
-            if info:
-                matched_map[code] = {
-                    "product_id": code, "description": info.get("description"),
-                    "uom": info.get("base_unit") or "EA", "_matched_via": "sap_live",
-                }
-
     items = []
     for it in raw_items:
-        icode = it.get("icode") or None
-        match = matched_map.get(icode) if icode else None
         sap_uom, uom_confident = _map_pr_unit_to_sap(it.get("unit"))
         items.append(ServicePRLookupLineItem(
-            line_no=it.get("line_no"), icode=icode, iname=it.get("iname"),
+            line_no=it.get("line_no"), icode=it.get("icode") or None, iname=it.get("iname"),
             unit=it.get("unit"), qty=it.get("qty") or 0, rate=it.get("rate") or 0,
-            matched_product_id=match.get("product_id") if match else None,
-            matched_description=match.get("description") if match else None,
-            matched_unit_of_measure=match.get("uom") if match else None,
-            matched_via=match.get("_matched_via", "cache") if match else None,
             sap_unit_of_measure=sap_uom, unit_mapping_confident=uom_confident,
         ))
 
@@ -6408,31 +6368,31 @@ async def service_po_search_suppliers(q: str = Query(..., min_length=1), limit: 
     ]
 
 
-@api_router.get("/service-purchase-orders/products/search", response_model=List[ServicePurchaseOrderProductSuggestion])
-async def service_po_search_products(q: str = Query(..., min_length=1), limit: int = 15):
-    q_escaped = re.escape(q.strip())
-
-    def _search():
-        pipeline = [
-            {"$match": {"_id": "latest"}},
-            {"$project": {"items": {"$filter": {
-                "input": "$items", "as": "i",
-                "cond": {"$or": [
-                    {"$regexMatch": {"input": "$$i.product_id", "regex": f"^{q_escaped}", "options": "i"}},
-                    {"$regexMatch": {"input": "$$i.description", "regex": q_escaped, "options": "i"}},
-                ]},
-            }}}},
-        ]
-        result = list(db["inventory_cache"].aggregate(pipeline))
-        items = result[0]["items"] if result else []
-        items.sort(key=lambda i: i.get("product_id") or "")
-        return items[:limit]
-
-    items = await asyncio.to_thread(_search)
-    return [
-        ServicePurchaseOrderProductSuggestion(product_id=i["product_id"], description=i.get("description"), unit_of_measure=i.get("uom"))
-        for i in items
-    ]
+@api_router.get("/service-purchase-orders/gl-accounts", response_model=List[ServiceGLAccount])
+async def service_po_list_gl_accounts():
+    """Sep 14 2026, user's explicit ask - "we then need a GL list" for
+    manually selecting a Service PO line's GL Account. This tenant's
+    real list is small (284 accounts, confirmed live) and rarely
+    changes, so it's cached in Mongo (refreshed once a day) rather than
+    hitting SAP on every page load."""
+    cached = await asyncio.to_thread(db["sap_gl_account_cache"].find_one, {"_id": "latest"})
+    if not cached or (datetime.now(timezone.utc) - cached["updated_at"]) > timedelta(days=1):
+        try:
+            accounts = await asyncio.to_thread(sap_po_odata_client.list_gl_accounts)
+        except (SAPPurchaseOrderODataNotConfiguredError, SAPPurchaseOrderODataError) as e:
+            if cached:
+                logger.warning(f"GL Account list refresh failed, serving stale cache: {e}")
+                accounts = cached["accounts"]
+            else:
+                raise HTTPException(status_code=503, detail=str(e))
+        else:
+            await asyncio.to_thread(
+                db["sap_gl_account_cache"].update_one, {"_id": "latest"},
+                {"$set": {"accounts": accounts, "updated_at": datetime.now(timezone.utc)}}, upsert=True,
+            )
+    else:
+        accounts = cached["accounts"]
+    return [ServiceGLAccount(**a) for a in accounts]
 
 
 @api_router.post("/service-purchase-orders/create")
@@ -6451,9 +6411,10 @@ async def create_service_purchase_order(payload: ServicePurchaseOrderCreateReque
 
     items = [
         {
-            "product_id": it.product_id, "description": it.description, "quantity": it.quantity,
+            "description": it.description, "quantity": it.quantity,
             "unit_of_measure": it.unit_of_measure, "unit_price": it.unit_price,
             "delivery_date": it.delivery_date, "site_id": payload.purchase_unit_site,
+            "gl_account_code": it.gl_account_code,
         }
         for it in payload.items
     ]
@@ -6463,7 +6424,7 @@ async def create_service_purchase_order(payload: ServicePurchaseOrderCreateReque
     cash_discount_terms_code = supplier_doc.get("cash_discount_terms_code") if supplier_doc else None
     try:
         result = await asyncio.to_thread(
-            sap_po_odata_client.create_purchase_order,
+            sap_po_odata_client.create_service_purchase_order,
             company_code, payload.purchase_unit_site, payload.supplier_code,
             payload.bill_to_company, payload.po_date, payload.currency, items,
             payload.pr_number, cash_discount_terms_code,
@@ -6474,9 +6435,21 @@ async def create_service_purchase_order(payload: ServicePurchaseOrderCreateReque
         logger.error(f"Service Purchase Order creation rejected by SAP for supplier {payload.supplier_code}: {e}")
         raise HTTPException(status_code=422, detail=str(e))
 
+    # Sep 14 2026 - HSN/SAC has no field on this tenant's OData PO
+    # service at all (see create_service_purchase_order's docstring) -
+    # best-effort, non-blocking SOAP follow-up per item that has one.
+    # UNVERIFIED for write - a failure here never fails the PO itself,
+    # only leaves that line's HSN unset (same as today's manual entry).
+    for idx, it in enumerate(payload.items):
+        if not it.hsn_code:
+            continue
+        try:
+            await asyncio.to_thread(sap_po_write_client.set_item_hsn_code, result["po_number"], str(idx + 1), it.hsn_code)
+        except Exception as e:
+            logger.warning(f"Service PO {result['po_number']} item {idx + 1}: best-effort HSN update failed (PO itself is fine): {e}")
+
     user = request.state.user
     now = datetime.now(timezone.utc)
-    items_with_desc = [dict(it, description=li.description) for it, li in zip(items, payload.items)]
     await asyncio.to_thread(db[SERVICE_PO_HISTORY_COLLECTION].insert_one, {
         "_id": str(uuid.uuid4()),
         "po_number": result["po_number"],
@@ -6489,7 +6462,7 @@ async def create_service_purchase_order(payload: ServicePurchaseOrderCreateReque
         "currency": payload.currency,
         "pr_number": payload.pr_number,
         "cash_discount_terms_code": cash_discount_terms_code,
-        "items": items_with_desc,
+        "items": items,
         "created_by": user.get("name"),
         "created_by_user_id": f"{user.get('tid')}:{user.get('oid')}",
         "created_at": now,

@@ -151,3 +151,129 @@ class SAPPurchaseOrderODataClient:
         self._patch_party(session, token, po_object_id, "BuyerParty", company_code)
 
         return {"po_number": po_number, "po_uuid": po_object_id, "raw_xml": resp.text}
+
+    def create_service_purchase_order(
+        self, company_code: str, purchase_unit_site: str, supplier_code: str,
+        bill_to_company_code: str, po_date: str, currency: str, items: list,
+        pr_number: str = None, cash_discount_terms_code: str = None,
+    ) -> dict:
+        """Sep 14 2026, user's explicit ask - a Service PO line has NO
+        Product Master entry at all (just a free-text description, e.g.
+        "SECURITY CHARGES"), needs Item Type=Service, and needs a manual
+        GL Account + Cost Center (Account Assignment) instead of a
+        product's own default account determination. Everything else
+        (header building, BillToParty/BuyerParty patch) is identical to
+        create_purchase_order above - confirmed live against this
+        tenant's real $metadata (Sep 14 2026):
+          - ItemTypeCode "19" = Service (queried
+            ItemItemTypeCodeCollection live: 18=Material, 19=Service,
+            20=Limit, 84=Expense).
+          - ItemAccountAssignment/ItemAccountAssignmentDetails IS
+            creatable via this same deep-insert (Item 1:1
+            ItemAccountAssignment 1:* ItemAccountAssignmentDetails).
+            AccountAssignmentTypeCode "CC" = Cost Center (queried
+            ItemAccountAssignmentDetailsAccountAssignmentTypeCodeCollection
+            live).
+          - GeneralLedgerAccountAliasCode is the GL Account field -
+            user's explicit choice: Cost Center always equals the PO's
+            own Bill-To code.
+        HSN/SAC has NO field anywhere on this custom OData service (
+        checked the full $metadata - not on Item, not as an extension
+        field) - see server.py's best-effort SOAP follow-up call
+        (sap_po_write_client.set_item_hsn_code) for how that's handled
+        instead, completely separately from this OData create.
+
+        items: [{"description", "quantity", "unit_of_measure",
+        "unit_price", "delivery_date" (YYYY-MM-DD), "site_id",
+        "gl_account_code"}, ...]. Returns the same shape as
+        create_purchase_order."""
+        if not self.base_url:
+            raise SAPPurchaseOrderODataNotConfiguredError(
+                "SAP Purchase Order creation isn't wired up yet - SAP_ODATA_PO_BASE_URL is not set."
+            )
+        session = requests.Session()
+        session.auth = self.auth
+        token = self._csrf_token(session)
+
+        item_payload = []
+        for it in items:
+            description = str(it.get("description") or "Service")[:40]
+            item_payload.append({
+                "ProductCategoryInternalID": "CONSUMABLES",
+                "Description": description,
+                "ItemTypeCode": "19",
+                "DirectMaterialIndicator": False,
+                "ThirdPartyDealIndicator": False,
+                "Quantity": str(it["quantity"]),
+                "QuantityUnitCode": it["unit_of_measure"] or "EA",
+                "ListUnitPriceAmount": f"{float(it['unit_price']):.2f}",
+                "DeliveryStartDateTime": f"{it['delivery_date']}T00:00:00",
+                "DeliveryEndDateTime": f"{it['delivery_date']}T00:00:00",
+                "GoodsAndServiceReceiptRequirementCode": "01",
+                "EvaluatedReceiptSettlementIndicator": False,
+                "InvoiceRequirementCode": "01",
+                "ItemShipToLocation": {"LocationID": str(it["site_id"])},
+                "ItemAccountAssignment": {
+                    "ItemAccountAssignmentDetails": [{
+                        "AccountAssignmentTypeCode": "CC",
+                        "CostCentreID": bill_to_company_code,
+                        "GeneralLedgerAccountAliasCode": str(it["gl_account_code"]),
+                        "Percent": "100",
+                        "Quantity": str(it["quantity"]),
+                        "QuantityUnitCode": it["unit_of_measure"] or "EA",
+                    }],
+                },
+            })
+
+        order_data = {"CurrencyCode": currency, "PODate_KUT": f"{po_date}T00:00:00"}
+        if pr_number:
+            order_data["PortalPRNumber_KUT"] = pr_number
+        order_data["BusinesResidence_SDK"] = purchase_unit_site
+        if cash_discount_terms_code:
+            order_data["PaymentTerms"] = {"PaymentTermsCode": cash_discount_terms_code}
+        order_data["PurchasingUnit"] = {"PartyID": f"{purchase_unit_site}-PUR"}
+        order_data["Supplier"] = {"PartyID": supplier_code}
+        order_data["Item"] = item_payload
+
+        headers = {"x-csrf-token": token, "Content-Type": "application/json", "Accept": "application/json"}
+        resp = session.post(
+            f"{self.base_url}/PurchaseOrderCollection", json=order_data, headers=headers, timeout=self.timeout,
+        )
+        if not resp.ok:
+            raise SAPPurchaseOrderODataError(_error_message_for(resp))
+        try:
+            body = resp.json()["d"]
+            results = body["results"] if "results" in body else body
+            po_object_id = results["ObjectID"]
+            po_number = results["ID"]
+        except (ValueError, KeyError) as e:
+            raise SAPPurchaseOrderODataError(
+                f"SAP returned an unexpected response creating the Service Purchase Order: {resp.text[:500]}"
+            ) from e
+
+        self._patch_party(session, token, po_object_id, "BillToParty", bill_to_company_code)
+        self._patch_party(session, token, po_object_id, "BuyerParty", company_code)
+
+        return {"po_number": po_number, "po_uuid": po_object_id, "raw_xml": resp.text}
+
+    def list_gl_accounts(self) -> list:
+        """Sep 14 2026, user's explicit ask ("GL... manually selected...
+        we then need... a GL list"). Queried live against this tenant -
+        284 real GL accounts (confirmed via
+        ItemAccountAssignmentDetailsGeneralLedgerAccountAliasCodeCollection).
+        Small, rarely-changing reference list - server.py caches this in
+        Mongo rather than calling SAP on every request."""
+        if not self.base_url:
+            raise SAPPurchaseOrderODataNotConfiguredError(
+                "SAP Purchase Order creation isn't wired up yet - SAP_ODATA_PO_BASE_URL is not set."
+            )
+        session = requests.Session()
+        session.auth = self.auth
+        resp = session.get(
+            f"{self.base_url}/ItemAccountAssignmentDetailsGeneralLedgerAccountAliasCodeCollection",
+            params={"$format": "json", "$top": "5000"}, timeout=self.timeout,
+        )
+        if not resp.ok:
+            raise SAPPurchaseOrderODataError(_error_message_for(resp))
+        results = resp.json()["d"]["results"]
+        return [{"code": r["Code"], "description": r.get("Description") or r["Code"]} for r in results]

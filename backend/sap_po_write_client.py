@@ -300,6 +300,36 @@ _CANCEL_ITEM_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 </soapenv:Body>
 </soapenv:Envelope>"""
 
+# Sep 14 2026, user's explicit ask ("Service Purchase Order... need a
+# HSN field") - HSNCodeIndiaCode has NO field anywhere on the tenant's
+# custom OData service used for creation (checked the full $metadata),
+# but IS a real, direct child of PurchaseOrderItem on THIS SOAP schema
+# (confirmed live via PurchaseOrderSimpleByElementsQuery_sync - an
+# existing real PO's item had HSNCodeIndiaCode="48237010" as a sibling
+# of ItemID). UNVERIFIED FOR WRITE - never live-tested end-to-end (only
+# confirmed the field exists on READ) - server.py calls this as a
+# best-effort, non-blocking step AFTER the PO itself is already created
+# via OData, so a schema mismatch here can never break PO creation
+# itself, only leave HSN unset (same as today's manual-entry status
+# quo).
+_SET_ITEM_HSN_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+<soapenv:Body>
+<n0:PurchaseOrderBundleMaintainRequest_sync xmlns:n0="{namespace}">
+ <BasicMessageHeader/>
+ <PurchaseOrderMaintainBundle actionCode="02">
+  <ObjectNodeSenderTechnicalID>1</ObjectNodeSenderTechnicalID>
+  <BusinessTransactionDocumentTypeCode>001</BusinessTransactionDocumentTypeCode>
+  <PurchaseOrderID>{po_number}</PurchaseOrderID>
+  <Item actionCode="02">
+   <ItemID>{item_id}</ItemID>
+   <HSNCodeIndiaCode>{hsn_code}</HSNCodeIndiaCode>
+  </Item>
+ </PurchaseOrderMaintainBundle>
+</n0:PurchaseOrderBundleMaintainRequest_sync>
+</soapenv:Body>
+</soapenv:Envelope>"""
+
 
 class SAPPurchaseOrderWriteClient:
     def __init__(self, endpoint: str, username: str, password: str, timeout: int = 60):
@@ -475,6 +505,16 @@ class SAPPurchaseOrderWriteClient:
         )
         self._post_maintain(envelope)
         return {"po_number": po_number, "item_id": item_id, "cancelled": True}
+
+    def set_item_hsn_code(self, po_number: str, item_id: str, hsn_code: str) -> dict:
+        """Sep 14 2026 - see _SET_ITEM_HSN_TEMPLATE's docstring above:
+        UNVERIFIED for write, called best-effort/non-blocking only from
+        server.py right after a Service PO's OData creation succeeds."""
+        envelope = _SET_ITEM_HSN_TEMPLATE.format(
+            namespace=NAMESPACE, po_number=escape(str(po_number)), item_id=escape(str(item_id)), hsn_code=escape(str(hsn_code)),
+        )
+        self._post_maintain(envelope)
+        return {"po_number": po_number, "item_id": item_id, "hsn_code": hsn_code}
 
     def get_purchase_order_status(self, po_number: str) -> dict:
         """Read-back verification (same PurchaseOrderByIDQuery_sync

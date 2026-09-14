@@ -43,8 +43,10 @@ const fmtMoney = (amount, ccy) =>
 
 const emptyLine = () => ({
   key: `line-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-  product_id: "",
   description: "",
+  gl_account_code: "",
+  glAccountQuery: "",
+  hsn_code: "",
   unit_of_measure: "EA",
   uomFromPr: null,
   uomMappingConfident: true,
@@ -54,9 +56,7 @@ const emptyLine = () => ({
   quantity: "",
   unit_price: "",
   delivery_date: todayISO(),
-  productQuery: "",
-  productSuggestions: [],
-  showSuggestions: false,
+  showGlSuggestions: false,
 });
 
 export default function ServicePurchaseOrderPage() {
@@ -81,9 +81,10 @@ export default function ServicePurchaseOrderPage() {
   const [selectedSupplier, setSelectedSupplier] = useState(null);
   const supplierWrapperRef = useRef(null);
   const supplierDebounceRef = useRef(null);
-  const productDebounceRefs = useRef({});
+  const glWrapperRefs = useRef({});
 
   const [lines, setLines] = useState([emptyLine()]);
+  const [glAccounts, setGlAccounts] = useState([]);
 
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -91,12 +92,17 @@ export default function ServicePurchaseOrderPage() {
 
   useEffect(() => {
     axios.get(`${API}/service-purchase-orders/sites`).then((r) => setSites(r.data.sites || [])).catch(() => toast.error("Could not load sites"));
+    // GL Account list is small (~284, rarely changes) - fetch once, filter client-side per line.
+    axios.get(`${API}/service-purchase-orders/gl-accounts`).then((r) => setGlAccounts(r.data || [])).catch(() => toast.error("Could not load GL Account list"));
   }, []);
 
   useEffect(() => {
     const onClickOutside = (e) => {
       if (supplierWrapperRef.current && !supplierWrapperRef.current.contains(e.target)) setShowSupplierSuggestions(false);
       if (prWrapperRef.current && !prWrapperRef.current.contains(e.target)) setShowPrSuggestions(false);
+      Object.entries(glWrapperRefs.current).forEach(([key, el]) => {
+        if (el && !el.contains(e.target)) setLines((prev) => prev.map((l) => (l.key === key ? { ...l, showGlSuggestions: false } : l)));
+      });
     };
     document.addEventListener("mousedown", onClickOutside);
     return () => document.removeEventListener("mousedown", onClickOutside);
@@ -148,21 +154,20 @@ export default function ServicePurchaseOrderPage() {
       }
       setLines((data.items || []).map((it) => ({
         key: `line-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        product_id: it.matched_product_id || "",
-        description: it.matched_description || it.iname || "",
-        unit_of_measure: it.matched_unit_of_measure || it.sap_unit_of_measure || "EA",
+        description: it.iname || "",
+        gl_account_code: "",
+        glAccountQuery: "",
+        hsn_code: "",
+        unit_of_measure: it.sap_unit_of_measure || "EA",
         uomFromPr: it.unit,
-        uomMappingConfident: it.matched_unit_of_measure ? true : it.unit_mapping_confident,
+        uomMappingConfident: it.unit_mapping_confident,
         fromPr: true,
-        matchedVia: it.matched_via || null,
         prLineNo: it.line_no,
         prOriginalQty: it.qty,
         quantity: it.qty,
         unit_price: it.rate,
         delivery_date: todayISO(),
-        productQuery: it.matched_product_id ? `${it.matched_product_id} - ${it.matched_description || ""}` : (it.iname || ""),
-        productSuggestions: [],
-        showSuggestions: false,
+        showGlSuggestions: false,
       })));
       toast.success(`PR ${data.voc_no} fetched - ${(data.items || []).length} line item(s) autofilled`);
     } catch (e) {
@@ -199,25 +204,20 @@ export default function ServicePurchaseOrderPage() {
     setShowSupplierSuggestions(false);
   };
 
-  const onProductQueryChange = (lineKey, v) => {
-    setLines((prev) => prev.map((l) => (l.key === lineKey ? { ...l, productQuery: v, product_id: "", showSuggestions: true } : l)));
-    clearTimeout(productDebounceRefs.current[lineKey]);
-    if (!v.trim()) {
-      setLines((prev) => prev.map((l) => (l.key === lineKey ? { ...l, productSuggestions: [] } : l)));
-      return;
-    }
-    productDebounceRefs.current[lineKey] = setTimeout(async () => {
-      try {
-        const { data } = await axios.get(`${API}/service-purchase-orders/products/search`, { params: { q: v, limit: 15 } });
-        setLines((prev) => prev.map((l) => (l.key === lineKey ? { ...l, productSuggestions: data } : l)));
-      } catch { /* silent */ }
-    }, 300);
+  const onGlAccountQueryChange = (lineKey, v) => {
+    setLines((prev) => prev.map((l) => (l.key === lineKey ? { ...l, glAccountQuery: v, gl_account_code: "", showGlSuggestions: true } : l)));
   };
 
-  const pickProduct = (lineKey, p) => {
+  const pickGlAccount = (lineKey, a) => {
     setLines((prev) => prev.map((l) => (l.key === lineKey
-      ? { ...l, product_id: p.product_id, description: p.description, unit_of_measure: p.unit_of_measure || "EA", uomMappingConfident: true, productQuery: `${p.product_id} - ${p.description || ""}`, showSuggestions: false }
+      ? { ...l, gl_account_code: a.code, glAccountQuery: `${a.code} - ${a.description}`, showGlSuggestions: false }
       : l)));
+  };
+
+  const glAccountMatches = (query) => {
+    const q = (query || "").trim().toLowerCase();
+    if (!q) return glAccounts.slice(0, 20);
+    return glAccounts.filter((a) => a.code.toLowerCase().includes(q) || a.description.toLowerCase().includes(q)).slice(0, 20);
   };
 
   const updateLine = (lineKey, field, value) => {
@@ -271,7 +271,8 @@ export default function ServicePurchaseOrderPage() {
     if (!poDate) errors.push("PO Date is required");
     if (lines.length === 0) errors.push("At least one line item is required");
     lines.forEach((l, idx) => {
-      if (!l.product_id) errors.push(l.fromPr ? `Line ${idx + 1}: PR item "${l.description || l.iname || ""}" did not match a SAP product - remove this line or fix the catalog and re-fetch` : `Line ${idx + 1}: Product must be selected from the list`);
+      if (!l.description.trim()) errors.push(`Line ${idx + 1}: Description is required`);
+      if (!l.gl_account_code) errors.push(`Line ${idx + 1}: GL Account must be selected from the list`);
       if (!l.quantity || Number(l.quantity) <= 0) errors.push(`Line ${idx + 1}: Quantity must be greater than 0`);
       if (l.unit_price === "" || Number(l.unit_price) < 0) errors.push(`Line ${idx + 1}: Unit Price must be 0 or more`);
       if (!l.delivery_date) errors.push(`Line ${idx + 1}: Delivery Date is required`);
@@ -294,7 +295,7 @@ export default function ServicePurchaseOrderPage() {
     { label: "PR fetched & line items autofilled", ok: !!prFetched },
     { label: "Purchase Unit & Bill-To selected", ok: !!purchaseUnitSite && !!billToCompany },
     { label: "Supplier selected from SAP Master", ok: !!selectedSupplier },
-    { label: "Every line matched to a real SAP product, with Qty & Price", ok: lines.every((l) => l.product_id && Number(l.quantity) > 0 && l.unit_price !== "") },
+    { label: "Every line has a Description, GL Account, Qty & Price", ok: lines.every((l) => l.description.trim() && l.gl_account_code && Number(l.quantity) > 0 && l.unit_price !== "") },
     { label: "Delivery dates on/after PO Date", ok: lines.every((l) => !l.delivery_date || !poDate || l.delivery_date >= poDate) },
     { label: "No split line exceeds its PR's ordered quantity", ok: lines.every((l) => !l.fromPr || l.prLineNo == null || prLineAllocated(l.prLineNo) <= l.prOriginalQty + 1e-6) },
   ];
@@ -320,7 +321,8 @@ export default function ServicePurchaseOrderPage() {
         currency,
         pr_number: prFetched.voc_no,
         items: lines.map((l) => ({
-          product_id: l.product_id, description: l.description || null,
+          description: l.description.trim(), gl_account_code: l.gl_account_code,
+          hsn_code: l.hsn_code ? l.hsn_code.trim() : null,
           quantity: Number(l.quantity), unit_of_measure: l.unit_of_measure || "EA",
           unit_price: Number(l.unit_price), delivery_date: l.delivery_date,
         })),
@@ -582,11 +584,19 @@ export default function ServicePurchaseOrderPage() {
                   <span className="font-semibold">Delivery Split Tip:</span> to schedule staggered shipments for one PR line item, click "Split" on that row - adjust the quantity and delivery date on each resulting row until the total matches the PR's approved quantity.
                 </p>
               </div>
+              <div className="px-4 py-2 border-b border-[#D0D5DD] bg-[#F9FAFB] flex items-center gap-4 flex-wrap" data-testid="service-po-account-assignment-banner">
+                <span className="text-[11px] text-[#667085]">
+                  <span className="font-semibold text-[#344054]">Product Category:</span> <span className="font-data">CONSUMABLES</span> (fixed for Service lines)
+                </span>
+                <span className="text-[11px] text-[#667085]">
+                  <span className="font-semibold text-[#344054]">Account Assignment:</span> Cost Center <span className="font-data">{billToCompany || "(select Bill-To)"}</span> - same as Bill-To
+                </span>
+              </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs border-collapse min-w-[980px]" data-testid="service-po-line-items-table">
                   <thead>
                     <tr>
-                      {["Product", "Qty", "UoM", "Unit Price", "Delivery Date", "Line Total", ""].map((h) => (
+                      {["Description", "HSN/SAC", "GL Account", "Qty", "UoM", "Unit Price", "Delivery Date", "Line Total", ""].map((h) => (
                         <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] py-1.5 px-2.5 text-left text-xs font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
@@ -601,7 +611,7 @@ export default function ServicePurchaseOrderPage() {
                       <Fragment key={l.key}>
                       {groupStart && (
                         <tr key={`${l.key}-group-header`} className="bg-[#F0F7FF]" data-testid={`service-po-split-group-header-${l.prLineNo}`}>
-                          <td colSpan={7} className="border border-[#D0D5DD] border-l-[3px] border-l-[#004B87] py-1.5 px-2.5">
+                          <td colSpan={9} className="border border-[#D0D5DD] border-l-[3px] border-l-[#004B87] py-1.5 px-2.5">
                             <div className="flex items-center gap-2 flex-wrap">
                               <CalendarPlus size={13} className="text-[#004B87]" />
                               <span className="text-[11px] font-bold text-[#004B87] font-heading uppercase tracking-wide">
@@ -626,54 +636,56 @@ export default function ServicePurchaseOrderPage() {
                         className={`${inSplitGroup ? "bg-[#F9FCFF] border-l-[3px] border-l-[#004B87]" : idx % 2 === 1 ? "bg-[#F9FAFB]" : "bg-white"}`}
                         data-testid={`service-po-line-row-${idx}`}
                       >
-                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[280px] relative">
+                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[220px] relative">
                           {inSplitGroup && (
                             <span className="inline-block mb-1 text-[10px] font-data text-[#004B87]" data-testid={`service-po-line-delivery-no-${idx}`}>
                               &#x2514;&#x2500; Delivery #{deliveryNo}
                             </span>
                           )}
-                          {l.fromPr ? (
-                            l.product_id ? (
-                              <div className="h-8 flex items-center px-2 text-xs bg-[#F9FAFB] border border-[#D0D5DD] rounded-sm font-data text-[#101828] truncate" data-testid={`service-po-line-product-locked-${idx}`} title={`${l.product_id} - ${l.description}`}>
-                                {l.product_id} - {l.description}
-                                {l.matchedVia === "sap_live" && (
-                                  <span className="ml-1.5 shrink-0 text-[9px] font-sans font-bold uppercase tracking-wide text-[#027A48] bg-[#ECFDF3] border border-[#ABEFC6] rounded-sm px-1 py-0.5" title="Not in the local catalog cache (likely zero stock so far) - matched live against SAP's Material Master instead" data-testid={`service-po-line-matched-live-badge-${idx}`}>
-                                    Live SAP match
-                                  </span>
-                                )}
-                              </div>
-                            ) : (
-                              <div className="h-8 flex items-center px-2 text-xs bg-[#FEF3F2] border border-[#FECDCA] rounded-sm text-[#B42318] truncate" data-testid={`service-po-line-product-unresolved-${idx}`} title={l.description}>
-                                <WarningCircle size={12} className="mr-1.5 shrink-0" weight="fill" /> Not matched in SAP ({l.description}) - remove this line to proceed
-                              </div>
-                            )
-                          ) : (
-                            <>
-                              <Input
-                                value={l.productQuery}
-                                onChange={(e) => onProductQueryChange(l.key, e.target.value)}
-                                onFocus={() => setLines((prev) => prev.map((x) => (x.key === l.key ? { ...x, showSuggestions: true } : x)))}
-                                placeholder="Search Product ID or description..."
-                                className={`h-8 text-xs rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]`}
-                                data-testid={`service-po-line-product-input-${idx}`}
-                              />
-                              {l.showSuggestions && l.productSuggestions.length > 0 && (
-                                <div className="absolute z-20 mt-1 w-full bg-white border border-[#D0D5DD] rounded-sm shadow-lg max-h-56 overflow-y-auto" data-testid={`service-po-line-product-suggestions-${idx}`}>
-                                  {l.productSuggestions.map((p) => (
-                                    <button
-                                      key={p.product_id}
-                                      type="button"
-                                      className="w-full text-left px-3 py-2 text-xs hover:bg-[#F2F4F7] border-b border-[#EAECF0] last:border-0"
-                                      onClick={() => pickProduct(l.key, p)}
-                                      data-testid={`service-po-line-product-suggestion-${idx}-${p.product_id}`}
-                                    >
-                                      <span className="font-semibold text-[#101828] font-data">{p.product_id}</span>
-                                      {p.description && <span className="text-[#667085]"> - {p.description}</span>}
-                                    </button>
-                                  ))}
-                                </div>
+                          <Input
+                            value={l.description}
+                            onChange={(e) => updateLine(l.key, "description", e.target.value)}
+                            placeholder="e.g. SECURITY CHARGES"
+                            className="h-8 text-xs rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]"
+                            data-testid={`service-po-line-description-input-${idx}`}
+                          />
+                        </td>
+                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[100px]">
+                          <Input
+                            value={l.hsn_code}
+                            onChange={(e) => updateLine(l.key, "hsn_code", e.target.value)}
+                            placeholder="Optional"
+                            className="h-8 text-xs font-data rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]"
+                            data-testid={`service-po-line-hsn-input-${idx}`}
+                          />
+                        </td>
+                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[220px] relative" ref={(el) => { glWrapperRefs.current[l.key] = el; }}>
+                          <Input
+                            value={l.glAccountQuery}
+                            onChange={(e) => onGlAccountQueryChange(l.key, e.target.value)}
+                            onFocus={() => setLines((prev) => prev.map((x) => (x.key === l.key ? { ...x, showGlSuggestions: true } : x)))}
+                            placeholder="Search GL Account..."
+                            className="h-8 text-xs rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]"
+                            data-testid={`service-po-line-gl-input-${idx}`}
+                          />
+                          {l.showGlSuggestions && (
+                            <div className="absolute z-20 mt-1 w-full bg-white border border-[#D0D5DD] rounded-sm shadow-lg max-h-56 overflow-y-auto" data-testid={`service-po-line-gl-suggestions-${idx}`}>
+                              {glAccountMatches(l.glAccountQuery).map((a) => (
+                                <button
+                                  key={a.code}
+                                  type="button"
+                                  className="w-full text-left px-3 py-2 text-xs hover:bg-[#F2F4F7] border-b border-[#EAECF0] last:border-0"
+                                  onClick={() => pickGlAccount(l.key, a)}
+                                  data-testid={`service-po-line-gl-suggestion-${idx}-${a.code}`}
+                                >
+                                  <span className="font-semibold text-[#101828] font-data">{a.code}</span>
+                                  <span className="text-[#667085]"> - {a.description}</span>
+                                </button>
+                              ))}
+                              {glAccountMatches(l.glAccountQuery).length === 0 && (
+                                <div className="px-3 py-2 text-xs text-[#98A2B3]">No matching GL Account</div>
                               )}
-                            </>
+                            </div>
                           )}
                         </td>
                         <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[110px]">
@@ -807,7 +819,8 @@ export default function ServicePurchaseOrderPage() {
               <table className="w-full text-xs">
                 <thead>
                   <tr className="bg-[#EAECF0]">
-                    <th className="text-left p-2 font-heading uppercase text-[#344054]">Product</th>
+                    <th className="text-left p-2 font-heading uppercase text-[#344054]">Description</th>
+                    <th className="text-left p-2 font-heading uppercase text-[#344054]">GL Account</th>
                     <th className="text-right p-2 font-heading uppercase text-[#344054]">Qty</th>
                     <th className="text-left p-2 font-heading uppercase text-[#344054]">Delivery</th>
                     <th className="text-right p-2 font-heading uppercase text-[#344054]">Total</th>
@@ -816,7 +829,8 @@ export default function ServicePurchaseOrderPage() {
                 <tbody>
                   {lines.map((l, i) => (
                     <tr key={l.key} className="border-t border-[#D0D5DD]">
-                      <td className="p-2 font-data">{l.product_id}</td>
+                      <td className="p-2 font-data">{l.description}</td>
+                      <td className="p-2 font-data">{l.gl_account_code}</td>
                       <td className="p-2 text-right font-data">{l.quantity} {l.unit_of_measure}</td>
                       <td className="p-2 font-data">{l.delivery_date}</td>
                       <td className="p-2 text-right font-data font-semibold">{fmtMoney(lineTotal(l), currency)}</td>
@@ -824,6 +838,9 @@ export default function ServicePurchaseOrderPage() {
                   ))}
                 </tbody>
               </table>
+            </div>
+            <div className="flex justify-between items-center text-[11px] text-[#667085] font-data">
+              <span>Product Category: CONSUMABLES &middot; Account Assignment: Cost Center {billToCompany} (100%)</span>
             </div>
             <div className="flex justify-end font-data text-sm font-bold text-[#004B87]">Grand Total: {fmtMoney(grandTotal, currency)}</div>
           </div>

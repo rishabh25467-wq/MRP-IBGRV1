@@ -1,0 +1,23 @@
+{
+  "summary": "Frontend-only test of rewritten Service Purchase Order Create page (/purchasing-strategy/service-purchase-order-create). Verified removal of product matching and addition of Description/HSN/GL Account per-line inputs, fixed CONSUMABLES category + Cost Center=Bill-To banner, live GL Account search dropdown (284 items from real SAP), updated checklist copy, and mobile viewport (390x844) has no outer horizontal scroll. Backend GET /api/service-purchase-orders/gl-accounts returned 200 with 284 items (shape {code, description}); GET /api/service-purchase-orders/sites returned 200 with 8 sites - no regression. Confirmation dialog was NOT triggered live (requires a real live-SAP PR fetch to auto-derive Purchase Unit/Bill-To, and per instructions we must not perform a real SAP write) - however its markup was verified via source code inspection: it renders only Description/GL Account/Qty/Delivery/Total columns (NO Product column) and the footer strip 'Product Category: CONSUMABLES · Account Assignment: Cost Center {billTo} (100%)'. No 'Add Line' button exists on this page - per user note this is 'if present', so not flagged as a bug (lines are populated only via PR fetch; the initial blank line was used directly to test the new inputs).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/test_reports/iteration_166.json"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "No 'Add Line' button on Service PO Create page - lines can only be added via PR fetch. If a use-case exists for creating a Service PO from scratch (no PR), user cannot add additional blank lines. Consider adding an 'Add Line' button so lines are independent of PR fetch. Not blocking for current requirement but worth confirming with product.",
+    "Purchase Unit and Bill-To are auto-derived from PR fetch only (no manual selector). This means the confirmation dialog / submit flow cannot be exercised without a real live-SAP PR. For QA/testability, consider a hidden dev-mode override to manually set these when needed for UI-only testing."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Cookie vms_session=svcpotest675ab85f79d44632b79c5c84820b98cf (super_admin, valid ~1 day)",
+  "seed_data_creation": "None. Used existing live SAP GL account cache (284 items).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All requested UI changes verified: (1) LIVE SAP OData Write Mode badge present, (2) info banner shows 'Product Category: CONSUMABLES (fixed for Service lines)' + 'Account Assignment: Cost Center (select Bill-To) - same as Bill-To' (updates to real code once Bill-To auto-derives from PR), (3) line table headers = Description | HSN/SAC | GL Account | Qty | UoM | Unit Price | Delivery Date | Line Total (NO Product column), (4) description free-text accepts 'SECURITY CHARGES' with no matching error, (5) HSN free-text accepts '998718', (6) GL Account dropdown - typing 'Security' shows 'Z-0087 - Security Exp.' as top match; typing 'Travel' shows 'A-7100 - Travel expenses (general)', 'Z-0053 - Foreign Traveling Exp.', 'Z-0057 - Foreign Travelling Exp', 'Z-0096 - Travelling Exp'; clicking a suggestion fills field and closes dropdown, (7) checklist reads 'Every line has a Description, GL Account, Qty & Price' (no 'matched to real SAP product' text anywhere), (8) mobile 390x844 - body scrollWidth == clientWidth == 390, no outer horizontal scroll (inner table wraps in its own scroll container as intended), (9) confirmation dialog structure verified in source: shows Description/GL Account columns only, no Product column. Did NOT click final 'Create Service Purchase Order in SAP' button - no live write performed. Backend curl checks: /gl-accounts -> 200 (284 items {code,description}), /sites -> 200 (8 sites).",
+  "rca of the issue": "N/A - no issues found."
+}
