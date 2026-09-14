@@ -4,6 +4,7 @@
 - New `ListPriceInstructionsPage.jsx` at route `/list-price-instructions` - added as a top-level bypass in `App.js`'s `AppShell` (checked BEFORE the `AuthGate`-wrapped `InternalApp`/supplier-portal routing), so it needs no Microsoft/JWT login, matches the JDE theme (`font-heading` Chivo, `#004B87`/`#0E7C86`/`#EAECF0`).
 - **Gotcha hit + fixed**: first attempt put the images under `public/list-price-instructions/` - same string as the route path, so CRA's static file server intercepted the route with a 301 directory-redirect before React Router ever saw it (confirmed via curl, `x-powered-by: Express`). Fixed by moving images to a differently-named `public/list-price-assets/` folder - static asset paths must never collide with an app route path.
 - Screenshot-verified live at `/list-price-instructions` on both desktop (1920x800) and mobile (390x844) - no login prompt, no horizontal overflow, all 3 steps + screenshots render correctly.
+- **Follow-up same session**: added a 2nd section "How to Create a New List Price for a Supplier" (SOP-LP-02) with 2 more user-provided screenshots (Define Settings -> Enter Price/Release/Finish wizard steps), same page/styling. Images at `public/list-price-assets/new-item-step1-2.png`.
 
 # PRD - SAP BOM Viewer / Materials Hub
 
