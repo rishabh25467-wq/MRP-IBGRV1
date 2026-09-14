@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef, Fragment } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import {
   Trash, WarningCircle, CheckCircle, CircleNotch, MagnifyingGlass,
   Buildings, CreditCard, Calendar, Truck, ArrowRight, ShieldCheck, ListChecks,
-  FileMagnifyingGlass, XCircle, CalendarPlus, Lightbulb,
+  FileMagnifyingGlass, XCircle,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -225,38 +225,6 @@ export default function ServicePurchaseOrderPage() {
   };
 
   const removeLine = (lineKey) => setLines((prev) => (prev.length > 1 ? prev.filter((l) => l.key !== lineKey) : prev));
-  const duplicateLine = (lineKey) => setLines((prev) => {
-    const idx = prev.findIndex((l) => l.key === lineKey);
-    if (idx < 0) return prev;
-    const copy = { ...prev[idx], key: `line-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, quantity: "" };
-    const next = [...prev];
-    next.splice(idx + 1, 0, copy);
-    return next;
-  });
-
-  const prLineAllocated = (prLineNo) => lines.reduce((s, l) => (l.prLineNo === prLineNo ? s + (Number(l.quantity) || 0) : s), 0);
-  const prLineGroupSize = (prLineNo) => lines.filter((l) => l.prLineNo === prLineNo).length;
-  const prLineHasBlankRow = (prLineNo) => lines.some((l) => l.prLineNo === prLineNo && (l.quantity === "" || l.quantity == null));
-  const splitAllocationStatus = (prLineNo, prOriginalQty, unit) => {
-    const allocated = prLineAllocated(prLineNo);
-    const remaining = prOriginalQty - allocated;
-    const uom = unit || "EA";
-    if (allocated > prOriginalQty + 1e-6) {
-      return { tone: "over", label: `${allocated}/${prOriginalQty} ${uom} - exceeds by ${(allocated - prOriginalQty).toFixed(2).replace(/\.00$/, "")}` };
-    }
-    if (prLineHasBlankRow(prLineNo)) {
-      return { tone: "under", label: `${allocated}/${prOriginalQty} ${uom} allocated - enter a quantity for every scheduled delivery` };
-    }
-    if (allocated < prOriginalQty - 1e-6) {
-      return { tone: "under", label: `${allocated}/${prOriginalQty} ${uom} allocated (${remaining.toFixed(2).replace(/\.00$/, "")} remaining)` };
-    }
-    return { tone: "full", label: `${allocated}/${prOriginalQty} ${uom} fully scheduled` };
-  };
-  const isSplitGroupStart = (idx) => {
-    const l = lines[idx];
-    if (!l.fromPr || l.prLineNo == null || prLineGroupSize(l.prLineNo) <= 1) return false;
-    return idx === 0 || lines[idx - 1].prLineNo !== l.prLineNo;
-  };
 
   const lineTotal = (l) => (Number(l.quantity) || 0) * (Number(l.unit_price) || 0);
   const totalUnits = lines.reduce((s, l) => s + (Number(l.quantity) || 0), 0);
@@ -278,16 +246,6 @@ export default function ServicePurchaseOrderPage() {
       if (!l.delivery_date) errors.push(`Line ${idx + 1}: Delivery Date is required`);
       if (l.delivery_date && poDate && l.delivery_date < poDate) errors.push(`Line ${idx + 1}: Delivery Date cannot be before PO Date`);
     });
-    const seenPrLines = new Set();
-    lines.forEach((l) => {
-      if (l.fromPr && l.prLineNo != null && !seenPrLines.has(l.prLineNo)) {
-        seenPrLines.add(l.prLineNo);
-        const allocated = prLineAllocated(l.prLineNo);
-        if (allocated > l.prOriginalQty + 1e-6) {
-          errors.push(`PR line ${l.prLineNo}: split total ${allocated} exceeds the PR's ordered qty of ${l.prOriginalQty}`);
-        }
-      }
-    });
     return errors;
   };
 
@@ -297,7 +255,6 @@ export default function ServicePurchaseOrderPage() {
     { label: "Supplier selected from SAP Master", ok: !!selectedSupplier },
     { label: "Every line has a Description, GL Account, Qty & Price", ok: lines.every((l) => l.description.trim() && l.gl_account_code && Number(l.quantity) > 0 && l.unit_price !== "") },
     { label: "Delivery dates on/after PO Date", ok: lines.every((l) => !l.delivery_date || !poDate || l.delivery_date >= poDate) },
-    { label: "No split line exceeds its PR's ordered quantity", ok: lines.every((l) => !l.fromPr || l.prLineNo == null || prLineAllocated(l.prLineNo) <= l.prOriginalQty + 1e-6) },
   ];
   const canSubmit = checklist.every((c) => c.ok);
 
@@ -578,12 +535,6 @@ export default function ServicePurchaseOrderPage() {
                   <Truck size={14} /> 4. Line Items Engine
                 </h2>
               </div>
-              <div className="px-4 py-2 border-b border-[#D0D5DD] bg-[#EFF8FF] flex items-start gap-2" data-testid="service-po-split-schedule-guidance-banner">
-                <Lightbulb size={14} className="text-[#175CD3] mt-0.5 shrink-0" weight="fill" />
-                <p className="text-[11px] text-[#175CD3] leading-snug">
-                  <span className="font-semibold">Delivery Split Tip:</span> to schedule staggered shipments for one PR line item, click "Split" on that row - adjust the quantity and delivery date on each resulting row until the total matches the PR's approved quantity.
-                </p>
-              </div>
               <div className="px-4 py-2 border-b border-[#D0D5DD] bg-[#F9FAFB] flex items-center gap-4 flex-wrap" data-testid="service-po-account-assignment-banner">
                 <span className="text-[11px] text-[#667085]">
                   <span className="font-semibold text-[#344054]">Product Category:</span> <span className="font-data">CONSUMABLES</span> (fixed for Service lines)
@@ -603,45 +554,13 @@ export default function ServicePurchaseOrderPage() {
                   </thead>
                   <tbody>
                     {lines.map((l, idx) => {
-                      const inSplitGroup = l.fromPr && l.prLineNo != null && prLineGroupSize(l.prLineNo) > 1;
-                      const groupStart = isSplitGroupStart(idx);
-                      const status = inSplitGroup ? splitAllocationStatus(l.prLineNo, l.prOriginalQty, l.unit_of_measure) : null;
-                      const deliveryNo = inSplitGroup ? lines.slice(0, idx + 1).filter((x) => x.prLineNo === l.prLineNo).length : null;
                       return (
-                      <Fragment key={l.key}>
-                      {groupStart && (
-                        <tr key={`${l.key}-group-header`} className="bg-[#F0F7FF]" data-testid={`service-po-split-group-header-${l.prLineNo}`}>
-                          <td colSpan={9} className="border border-[#D0D5DD] border-l-[3px] border-l-[#004B87] py-1.5 px-2.5">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <CalendarPlus size={13} className="text-[#004B87]" />
-                              <span className="text-[11px] font-bold text-[#004B87] font-heading uppercase tracking-wide">
-                                PR Line #{l.prLineNo} - {prLineGroupSize(l.prLineNo)} Scheduled Deliveries
-                              </span>
-                              <span
-                                className={`text-[10px] font-data px-1.5 py-0.5 rounded-sm border ${
-                                  status.tone === "over" ? "bg-[#FEF3F2] border-[#FECDCA] text-[#B42318]"
-                                  : status.tone === "full" ? "bg-[#ECFDF3] border-[#ABEFC6] text-[#027A48]"
-                                  : "bg-[#FFFAEB] border-[#FEDF89] text-[#B54708]"
-                                }`}
-                                data-testid={`service-po-split-group-status-${l.prLineNo}`}
-                              >
-                                {status.label}
-                              </span>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
                       <tr
                         key={l.key}
-                        className={`${inSplitGroup ? "bg-[#F9FCFF] border-l-[3px] border-l-[#004B87]" : idx % 2 === 1 ? "bg-[#F9FAFB]" : "bg-white"}`}
+                        className={idx % 2 === 1 ? "bg-[#F9FAFB]" : "bg-white"}
                         data-testid={`service-po-line-row-${idx}`}
                       >
                         <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[220px] relative">
-                          {inSplitGroup && (
-                            <span className="inline-block mb-1 text-[10px] font-data text-[#004B87]" data-testid={`service-po-line-delivery-no-${idx}`}>
-                              &#x2514;&#x2500; Delivery #{deliveryNo}
-                            </span>
-                          )}
                           <Input
                             value={l.description}
                             onChange={(e) => updateLine(l.key, "description", e.target.value)}
@@ -690,19 +609,6 @@ export default function ServicePurchaseOrderPage() {
                         </td>
                         <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[110px]">
                           <Input type="number" min="0" step="any" value={l.quantity} onChange={(e) => updateLine(l.key, "quantity", e.target.value)} className="h-8 text-xs font-data rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]" data-testid={`service-po-line-qty-input-${idx}`} />
-                          {inSplitGroup && (
-                            <div className="mt-1" data-testid={`service-po-line-split-allocated-${idx}`}>
-                              <div className="h-1 w-full rounded-sm bg-[#EAECF0] overflow-hidden">
-                                <div
-                                  className={`h-full ${status.tone === "over" ? "bg-[#B42318]" : status.tone === "full" ? "bg-[#027A48]" : "bg-[#B54708]"}`}
-                                  style={{ width: `${Math.min(100, (prLineAllocated(l.prLineNo) / (l.prOriginalQty || 1)) * 100)}%` }}
-                                />
-                              </div>
-                              <span className={`text-[9px] font-data leading-tight block mt-0.5 ${status.tone === "over" ? "text-[#B42318]" : status.tone === "full" ? "text-[#027A48]" : "text-[#B54708]"}`}>
-                                {status.label}
-                              </span>
-                            </div>
-                          )}
                         </td>
                         <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[130px]">
                           <div className="relative flex items-center gap-1">
@@ -722,25 +628,11 @@ export default function ServicePurchaseOrderPage() {
                           {fmtMoney(lineTotal(l), currency)}
                         </td>
                         <td className="border border-[#D0D5DD] py-1.5 px-2.5 text-center whitespace-nowrap min-w-[90px]">
-                          {l.fromPr && (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              className="h-7 px-2 text-[10px] rounded-sm border-[#B2DDFF] bg-[#EFF8FF] text-[#175CD3] hover:bg-[#D1E9FF] mr-1"
-                              onClick={() => duplicateLine(l.key)}
-                              data-testid={`service-po-line-split-schedule-button-${idx}`}
-                              title="Split this PR item into multiple delivery dates & partial quantities"
-                            >
-                              <CalendarPlus size={12} className="mr-1" /> Split
-                            </Button>
-                          )}
                           <Button type="button" variant="ghost" size="icon" className="h-7 w-7 rounded-sm hover:bg-[#FEF3F2]" onClick={() => removeLine(l.key)} disabled={lines.length === 1} data-testid={`service-po-line-remove-button-${idx}`} title="Remove row">
                             <Trash size={13} className="text-[#B42318]" />
                           </Button>
                         </td>
                       </tr>
-                      </Fragment>
                       );
                     })}
                   </tbody>

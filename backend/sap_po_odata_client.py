@@ -76,6 +76,41 @@ class SAPPurchaseOrderODataClient:
         except Exception:
             return False
 
+    def _create_order(self, session, token: str, order_data: dict, kind: str) -> dict:
+        """Shared by create_purchase_order/create_service_purchase_order
+        below. Sep 14 2026 fix (real incident: a Service PO creation
+        crashed with an UNCAUGHT `requests.exceptions.ReadTimeout` after
+        SAP took >60s to respond - Cloudflare then returned a raw
+        "invalid/incomplete response" to the browser instead of a clean
+        error, since the exception never reached FastAPI's own error
+        handling). A write POST gets a longer timeout than reads (SAP's
+        own processing of a deep-insert with nested Item/
+        ItemAccountAssignment can genuinely take over 60s), and ANY
+        network failure is now caught and converted into a normal
+        SAPPurchaseOrderODataError - callers already handle that
+        cleanly (HTTP 422 with a real message) instead of the whole
+        request just dying."""
+        headers = {"x-csrf-token": token, "Content-Type": "application/json", "Accept": "application/json"}
+        try:
+            resp = session.post(
+                f"{self.base_url}/PurchaseOrderCollection", json=order_data, headers=headers, timeout=max(self.timeout, 120),
+            )
+        except requests.exceptions.RequestException as e:
+            raise SAPPurchaseOrderODataError(
+                f"SAP did not respond in time while creating the {kind} - it may or may not have actually been "
+                f"created on SAP's side. Please check directly in SAP before retrying, to avoid creating a duplicate."
+            ) from e
+        if not resp.ok:
+            raise SAPPurchaseOrderODataError(_error_message_for(resp))
+        try:
+            body = resp.json()["d"]
+            results = body["results"] if "results" in body else body
+            return {"po_number": results["ID"], "po_uuid": results["ObjectID"], "raw_xml": resp.text}
+        except (ValueError, KeyError) as e:
+            raise SAPPurchaseOrderODataError(
+                f"SAP returned an unexpected response creating the {kind}: {resp.text[:500]}"
+            ) from e
+
     def create_purchase_order(
         self, company_code: str, purchase_unit_site: str, supplier_code: str,
         bill_to_company_code: str, po_date: str, currency: str, items: list,
@@ -131,26 +166,10 @@ class SAPPurchaseOrderODataClient:
         order_data["Supplier"] = {"PartyID": supplier_code}
         order_data["Item"] = item_payload
 
-        headers = {"x-csrf-token": token, "Content-Type": "application/json", "Accept": "application/json"}
-        resp = session.post(
-            f"{self.base_url}/PurchaseOrderCollection", json=order_data, headers=headers, timeout=self.timeout,
-        )
-        if not resp.ok:
-            raise SAPPurchaseOrderODataError(_error_message_for(resp))
-        try:
-            body = resp.json()["d"]
-            results = body["results"] if "results" in body else body
-            po_object_id = results["ObjectID"]
-            po_number = results["ID"]
-        except (ValueError, KeyError) as e:
-            raise SAPPurchaseOrderODataError(
-                f"SAP returned an unexpected response creating the Purchase Order: {resp.text[:500]}"
-            ) from e
-
-        self._patch_party(session, token, po_object_id, "BillToParty", bill_to_company_code)
-        self._patch_party(session, token, po_object_id, "BuyerParty", company_code)
-
-        return {"po_number": po_number, "po_uuid": po_object_id, "raw_xml": resp.text}
+        result = self._create_order(session, token, order_data, "Purchase Order")
+        self._patch_party(session, token, result["po_uuid"], "BillToParty", bill_to_company_code)
+        self._patch_party(session, token, result["po_uuid"], "BuyerParty", company_code)
+        return result
 
     def create_service_purchase_order(
         self, company_code: str, purchase_unit_site: str, supplier_code: str,
@@ -235,27 +254,10 @@ class SAPPurchaseOrderODataClient:
         order_data["Supplier"] = {"PartyID": supplier_code}
         order_data["Item"] = item_payload
 
-        headers = {"x-csrf-token": token, "Content-Type": "application/json", "Accept": "application/json"}
-        resp = session.post(
-            f"{self.base_url}/PurchaseOrderCollection", json=order_data, headers=headers, timeout=self.timeout,
-        )
-        if not resp.ok:
-            raise SAPPurchaseOrderODataError(_error_message_for(resp))
-        try:
-            body = resp.json()["d"]
-            results = body["results"] if "results" in body else body
-            po_object_id = results["ObjectID"]
-            po_number = results["ID"]
-        except (ValueError, KeyError) as e:
-            raise SAPPurchaseOrderODataError(
-                f"SAP returned an unexpected response creating the Service Purchase Order: {resp.text[:500]}"
-            ) from e
-
-        self._patch_party(session, token, po_object_id, "BillToParty", bill_to_company_code)
-        self._patch_party(session, token, po_object_id, "BuyerParty", company_code)
-
-        return {"po_number": po_number, "po_uuid": po_object_id, "raw_xml": resp.text}
-
+        result = self._create_order(session, token, order_data, "Service Purchase Order")
+        self._patch_party(session, token, result["po_uuid"], "BillToParty", bill_to_company_code)
+        self._patch_party(session, token, result["po_uuid"], "BuyerParty", company_code)
+        return result
     def list_gl_accounts(self) -> list:
         """Sep 14 2026, user's explicit ask ("GL... manually selected...
         we then need... a GL list"). Queried live against this tenant -
