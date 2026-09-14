@@ -1,3 +1,10 @@
+## FEATURE: Public "List Price" Work Instruction page (Sep 14, 2026 session)
+- **User's ask**: from an uploaded `List_Price.pptx`, build a public (no login), HTML work instruction page for updating an item's List Price in SAP, using the pptx's screenshots.
+- Extracted the pptx's 3 slides (titles: Select List Price under Product Portfolio menu -> Search by Item Code + Edit -> Edit Price field/Valid From + Save) and its 3 embedded screenshots (`ppt/media/image1-3.png`), copied into `/app/frontend/public/list-price-assets/`.
+- New `ListPriceInstructionsPage.jsx` at route `/list-price-instructions` - added as a top-level bypass in `App.js`'s `AppShell` (checked BEFORE the `AuthGate`-wrapped `InternalApp`/supplier-portal routing), so it needs no Microsoft/JWT login, matches the JDE theme (`font-heading` Chivo, `#004B87`/`#0E7C86`/`#EAECF0`).
+- **Gotcha hit + fixed**: first attempt put the images under `public/list-price-instructions/` - same string as the route path, so CRA's static file server intercepted the route with a 301 directory-redirect before React Router ever saw it (confirmed via curl, `x-powered-by: Express`). Fixed by moving images to a differently-named `public/list-price-assets/` folder - static asset paths must never collide with an app route path.
+- Screenshot-verified live at `/list-price-instructions` on both desktop (1920x800) and mobile (390x844) - no login prompt, no horizontal overflow, all 3 steps + screenshots render correctly.
+
 # PRD - SAP BOM Viewer / Materials Hub
 
 ## Original problem statement

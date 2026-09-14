@@ -29,6 +29,7 @@ import SupplierPortalApprovalsPage from "@/pages/SupplierPortalApprovalsPage";
 import SupplierPortalInvitePage from "@/pages/SupplierPortalInvitePage";
 import PlaywrightReliabilityReportPage from "@/pages/PlaywrightReliabilityReportPage";
 import GrnApprovalPage from "@/pages/GrnApprovalPage";
+import ListPriceInstructionsPage from "@/pages/ListPriceInstructionsPage";
 import SupplierSignupPage from "@/pages/supplier-portal/SupplierSignupPage";
 import SupplierLoginPage from "@/pages/supplier-portal/SupplierLoginPage";
 import SupplierPendingPage from "@/pages/supplier-portal/SupplierPendingPage";
@@ -176,6 +177,11 @@ function InternalApp() {
 
 function AppShell() {
   const { pathname } = useLocation();
+  // Public, no-login work instruction page - shareable URL for any staff
+  // member, must never be wrapped by AuthGate's Microsoft sign-in.
+  if (pathname === "/list-price-instructions") {
+    return <ListPriceInstructionsPage />;
+  }
   if (pathname.startsWith("/supplier-portal")) {
     return (
       <div className="min-h-screen flex flex-col">
