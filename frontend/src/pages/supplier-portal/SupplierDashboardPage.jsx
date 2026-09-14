@@ -546,7 +546,9 @@ export default function SupplierDashboardPage() {
                           </button>
                         )}
                       </td>
-                      <td className="border border-[#E2E8F0] px-2 py-1 font-data text-xs" data-testid={`supplier-po-item-code-${po.po_number}-${po.item_number}`}>{po.product_id || "-"}</td>
+                      <td className="border border-[#E2E8F0] px-2 py-1 font-data text-xs" data-testid={`supplier-po-item-code-${po.po_number}-${po.item_number}`}>
+                        {po.product_id || <span className="text-[#94A3B8] italic font-sans" title="This line is a Job Work item, not linked to a Product Master in SAP - no Item Code exists to show.">Job Work (no SAP code)</span>}
+                      </td>
                       <td className="border border-[#E2E8F0] px-2 py-1">{po.description || "-"}</td>
                       <td className="border border-[#E2E8F0] px-2 py-1 text-xs">{po.buyer_entity_name}</td>
                       <td className="border border-[#E2E8F0] px-2 py-1 font-data text-xs whitespace-nowrap">{fmtDate(po.po_date)}</td>
@@ -722,7 +724,9 @@ export default function SupplierDashboardPage() {
                 {detailItems.map((it, i) => (
                   <tr key={i} className="bg-white odd:bg-[#F9FAFB]">
                     <td className="border border-[#E2E8F0] px-2 py-1.5 font-data">{it.item_number}</td>
-                    <td className="border border-[#E2E8F0] px-2 py-1.5 font-data" data-testid={`supplier-po-detail-item-code-${it.item_number}`}>{it.product_id || "-"}</td>
+                    <td className="border border-[#E2E8F0] px-2 py-1.5 font-data" data-testid={`supplier-po-detail-item-code-${it.item_number}`}>
+                      {it.product_id || <span className="text-[#94A3B8] italic font-sans text-xs" title="This line is a Job Work item, not linked to a Product Master in SAP - no Item Code exists to show.">Job Work (no SAP code)</span>}
+                    </td>
                     <td className="border border-[#E2E8F0] px-2 py-1.5">{it.description}</td>
                     <td className="border border-[#E2E8F0] px-2 py-1.5 text-right font-data whitespace-nowrap">{it.po_qty} {it.unit_of_measure}</td>
                     <td className="border border-[#E2E8F0] px-2 py-1.5 text-right font-data whitespace-nowrap">{fmtMoney(it.unit_price, it.currency)}</td>
