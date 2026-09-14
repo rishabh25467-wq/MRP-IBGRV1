@@ -171,6 +171,60 @@ class SAPPurchaseOrderODataClient:
         self._patch_party(session, token, result["po_uuid"], "BuyerParty", company_code)
         return result
 
+    def _create_service_item(self, session, token: str, po_object_id: str, it: dict, gl_account_code: str):
+        """Sep 14 2026 fix (real live SAP rejection hit on PR 125257):
+        creating Service items INSIDE the same deep-insert as the header
+        (like create_purchase_order does) fails with a real SAP error -
+        "Intercompany posting not allowed; Cost Center belongs to
+        different company" - because the Cost Center account assignment
+        is validated the instant the deep-insert is processed, but
+        BuyerParty (which carries the PO's real Company) is only
+        PATCHable AFTER the PO already exists, so at that exact
+        validation moment the PO is still sitting on SAP's own default
+        company for this technical user, not the real one. Confirmed via
+        live $metadata: ItemCollection is independently creatable with a
+        settable ParentObjectID (the PO's own ObjectID) - so Service
+        items are now created as a SEPARATE POST, after BuyerParty has
+        already been patched to the correct company."""
+        description = str(it.get("description") or "Service")[:40]
+        item_data = {
+            "ParentObjectID": po_object_id,
+            "ProductCategoryInternalID": "CONSUMABLES",
+            "Description": description,
+            "ItemTypeCode": "19",
+            "DirectMaterialIndicator": False,
+            "ThirdPartyDealIndicator": False,
+            "Quantity": str(it["quantity"]),
+            "QuantityUnitCode": it["unit_of_measure"] or "EA",
+            "ListUnitPriceAmount": f"{float(it['unit_price']):.2f}",
+            "DeliveryStartDateTime": f"{it['delivery_date']}T00:00:00",
+            "DeliveryEndDateTime": f"{it['delivery_date']}T00:00:00",
+            "GoodsAndServiceReceiptRequirementCode": "01",
+            "EvaluatedReceiptSettlementIndicator": False,
+            "InvoiceRequirementCode": "01",
+            "ItemShipToLocation": {"LocationID": str(it["site_id"])},
+            "ItemAccountAssignment": {
+                "ItemAccountAssignmentDetails": [{
+                    "AccountAssignmentTypeCode": "CC",
+                    "CostCentreID": it.get("cost_centre_id"),
+                    "GeneralLedgerAccountAliasCode": str(gl_account_code),
+                    "Percent": "100",
+                    "Quantity": str(it["quantity"]),
+                    "QuantityUnitCode": it["unit_of_measure"] or "EA",
+                }],
+            },
+        }
+        headers = {"x-csrf-token": token, "Content-Type": "application/json", "Accept": "application/json"}
+        try:
+            resp = session.post(f"{self.base_url}/ItemCollection", json=item_data, headers=headers, timeout=max(self.timeout, 120))
+        except requests.exceptions.RequestException as e:
+            raise SAPPurchaseOrderODataError(
+                f"SAP did not respond in time while adding line item '{description}' - the PO header may "
+                f"already exist without this line. Please check directly in SAP before retrying."
+            ) from e
+        if not resp.ok:
+            raise SAPPurchaseOrderODataError(_error_message_for(resp))
+
     def create_service_purchase_order(
         self, company_code: str, purchase_unit_site: str, supplier_code: str,
         bill_to_company_code: str, po_date: str, currency: str, items: list,
@@ -180,17 +234,15 @@ class SAPPurchaseOrderODataClient:
         Product Master entry at all (just a free-text description, e.g.
         "SECURITY CHARGES"), needs Item Type=Service, and needs a manual
         GL Account + Cost Center (Account Assignment) instead of a
-        product's own default account determination. Everything else
-        (header building, BillToParty/BuyerParty patch) is identical to
-        create_purchase_order above - confirmed live against this
-        tenant's real $metadata (Sep 14 2026):
+        product's own default account determination. Confirmed live
+        against this tenant's real $metadata (Sep 14 2026):
           - ItemTypeCode "19" = Service (queried
             ItemItemTypeCodeCollection live: 18=Material, 19=Service,
             20=Limit, 84=Expense).
           - ItemAccountAssignment/ItemAccountAssignmentDetails IS
-            creatable via this same deep-insert (Item 1:1
-            ItemAccountAssignment 1:* ItemAccountAssignmentDetails).
-            AccountAssignmentTypeCode "CC" = Cost Center (queried
+            creatable (Item 1:1 ItemAccountAssignment 1:*
+            ItemAccountAssignmentDetails). AccountAssignmentTypeCode
+            "CC" = Cost Center (queried
             ItemAccountAssignmentDetailsAccountAssignmentTypeCodeCollection
             live).
           - GeneralLedgerAccountAliasCode is the GL Account field -
@@ -201,6 +253,19 @@ class SAPPurchaseOrderODataClient:
         field) - see server.py's best-effort SOAP follow-up call
         (sap_po_write_client.set_item_hsn_code) for how that's handled
         instead, completely separately from this OData create.
+
+        Sep 14 2026, SAME-DAY FIX (real live rejection on PR 125257,
+        "Intercompany posting not allowed; Cost Center belongs to
+        different company"): unlike create_purchase_order, header +
+        items are now created in 3 SEPARATE steps (header -> patch
+        BillToParty/BuyerParty -> then items), so the Cost Center's
+        company check happens AFTER the real company is already set.
+        See _create_service_item's own docstring for the full root
+        cause. Header creation failing still raises normally (nothing
+        written); an item failing after the header succeeded raises
+        with the real po_number already visible in the error/logs so
+        the caller (server.py) can decide how to proceed - the PO
+        header exists in SAP at that point, just missing that line.
 
         items: [{"description", "quantity", "unit_of_measure",
         "unit_price", "delivery_date" (YYYY-MM-DD), "site_id",
@@ -214,36 +279,6 @@ class SAPPurchaseOrderODataClient:
         session.auth = self.auth
         token = self._csrf_token(session)
 
-        item_payload = []
-        for it in items:
-            description = str(it.get("description") or "Service")[:40]
-            item_payload.append({
-                "ProductCategoryInternalID": "CONSUMABLES",
-                "Description": description,
-                "ItemTypeCode": "19",
-                "DirectMaterialIndicator": False,
-                "ThirdPartyDealIndicator": False,
-                "Quantity": str(it["quantity"]),
-                "QuantityUnitCode": it["unit_of_measure"] or "EA",
-                "ListUnitPriceAmount": f"{float(it['unit_price']):.2f}",
-                "DeliveryStartDateTime": f"{it['delivery_date']}T00:00:00",
-                "DeliveryEndDateTime": f"{it['delivery_date']}T00:00:00",
-                "GoodsAndServiceReceiptRequirementCode": "01",
-                "EvaluatedReceiptSettlementIndicator": False,
-                "InvoiceRequirementCode": "01",
-                "ItemShipToLocation": {"LocationID": str(it["site_id"])},
-                "ItemAccountAssignment": {
-                    "ItemAccountAssignmentDetails": [{
-                        "AccountAssignmentTypeCode": "CC",
-                        "CostCentreID": bill_to_company_code,
-                        "GeneralLedgerAccountAliasCode": str(it["gl_account_code"]),
-                        "Percent": "100",
-                        "Quantity": str(it["quantity"]),
-                        "QuantityUnitCode": it["unit_of_measure"] or "EA",
-                    }],
-                },
-            })
-
         order_data = {"CurrencyCode": currency, "PODate_KUT": f"{po_date}T00:00:00"}
         if pr_number:
             order_data["PortalPRNumber_KUT"] = pr_number
@@ -252,11 +287,21 @@ class SAPPurchaseOrderODataClient:
             order_data["PaymentTerms"] = {"PaymentTermsCode": cash_discount_terms_code}
         order_data["PurchasingUnit"] = {"PartyID": f"{purchase_unit_site}-PUR"}
         order_data["Supplier"] = {"PartyID": supplier_code}
-        order_data["Item"] = item_payload
 
         result = self._create_order(session, token, order_data, "Service Purchase Order")
         self._patch_party(session, token, result["po_uuid"], "BillToParty", bill_to_company_code)
         self._patch_party(session, token, result["po_uuid"], "BuyerParty", company_code)
+
+        for it in items:
+            it_with_cc = {**it, "cost_centre_id": bill_to_company_code}
+            try:
+                self._create_service_item(session, token, result["po_uuid"], it_with_cc, it["gl_account_code"])
+            except SAPPurchaseOrderODataError as e:
+                raise SAPPurchaseOrderODataError(
+                    f"Service Purchase Order {result['po_number']} was created in SAP but adding line "
+                    f"'{it.get('description')}' failed: {e}. The PO header exists in SAP - please check it directly "
+                    f"(and add/fix this line manually) rather than retrying, to avoid a duplicate PO."
+                ) from e
         return result
     def list_gl_accounts(self) -> list:
         """Sep 14 2026, user's explicit ask ("GL... manually selected...
