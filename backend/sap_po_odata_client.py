@@ -32,6 +32,15 @@ class SAPPurchaseOrderODataNotConfiguredError(SAPPurchaseOrderODataError):
     pass
 
 
+def _error_message_for(resp) -> str:
+    """Sep 14 2026, same fix/reason as sap_outbound_delivery_client.py's
+    helper - a 401 here means the itadmin SAP password was rotated,
+    not a real business rejection of this Purchase Order."""
+    if resp.status_code == 401:
+        return "SAP login failed (401) - the SAP password for this account may have been changed in SAP. Please verify the SAP_USERNAME/SAP_PASSWORD credentials with your SAP admin."
+    return f"SAP rejected the Purchase Order (HTTP {resp.status_code}): {resp.text[:500]}"
+
+
 class SAPPurchaseOrderODataClient:
     def __init__(self, base_url: str, username: str, password: str, timeout: int = 60):
         self.base_url = (base_url or "").rstrip("/") or None
@@ -127,9 +136,7 @@ class SAPPurchaseOrderODataClient:
             f"{self.base_url}/PurchaseOrderCollection", json=order_data, headers=headers, timeout=self.timeout,
         )
         if not resp.ok:
-            raise SAPPurchaseOrderODataError(
-                f"SAP rejected the Purchase Order (HTTP {resp.status_code}): {resp.text[:500]}"
-            )
+            raise SAPPurchaseOrderODataError(_error_message_for(resp))
         try:
             body = resp.json()["d"]
             results = body["results"] if "results" in body else body

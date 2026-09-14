@@ -151,6 +151,18 @@ class SAPOutboundDeliveryError(Exception):
     pass
 
 
+def _error_message_for(resp) -> str:
+    """Sep 14 2026, user's explicit ask, real incident (STO-000351 -
+    Goods Issue "failed" with SAP's raw HTML login page dumped straight
+    to the user as the error). A 401 here almost always means the SAP
+    password for this Basic Auth account (itadmin) was rotated in SAP
+    itself, not a real business rejection - surface that plainly
+    instead of a wall of unreadable HTML."""
+    if resp.status_code == 401:
+        return "SAP login failed (401) - the SAP password for this account may have been changed in SAP. Please verify the SAP_USERNAME/SAP_PASSWORD credentials with your SAP admin."
+    return f"HTTP {resp.status_code}: {resp.text[:500]}"
+
+
 class SAPOutboundDeliveryClient:
     def __init__(self, endpoint: str, username: str, password: str, vhost: str):
         self.endpoint = endpoint.rstrip("/")
@@ -192,7 +204,7 @@ class SAPOutboundDeliveryClient:
         except requests.exceptions.RequestException as e:
             raise SAPOutboundDeliveryError(f"Could not reach SAP: {e}")
         if resp.status_code != 200:
-            raise SAPOutboundDeliveryError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+            raise SAPOutboundDeliveryError(_error_message_for(resp))
         results = []
         for row in resp.json().get("d", {}).get("results", []):
             item = row.get("OutboundDeliveryRequestItem")
@@ -235,7 +247,7 @@ class SAPOutboundDeliveryClient:
         except requests.exceptions.RequestException as e:
             raise SAPOutboundDeliveryError(f"Could not reach SAP: {e}")
         if resp.status_code != 200:
-            raise SAPOutboundDeliveryError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+            raise SAPOutboundDeliveryError(_error_message_for(resp))
         results = resp.json().get("d", {}).get("results", [])
         return results[0].get("BaseBusinessTransactionDocumentID") if results else None
 
@@ -264,7 +276,7 @@ class SAPOutboundDeliveryClient:
         except requests.exceptions.RequestException as e:
             raise SAPOutboundDeliveryError(f"Could not reach SAP: {e}")
         if resp.status_code != 200:
-            raise SAPOutboundDeliveryError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+            raise SAPOutboundDeliveryError(_error_message_for(resp))
         ids = []
         for row in resp.json().get("d", {}).get("results", []):
             delivery = row.get("OutboundDelivery")
@@ -293,7 +305,7 @@ class SAPOutboundDeliveryClient:
         except requests.exceptions.RequestException as e:
             raise SAPOutboundDeliveryError(f"Could not reach SAP: {e}")
         if resp.status_code != 200:
-            raise SAPOutboundDeliveryError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+            raise SAPOutboundDeliveryError(_error_message_for(resp))
         results = []
         for row in resp.json().get("d", {}).get("results", []):
             delivery = row.get("OutboundDelivery")
@@ -319,7 +331,7 @@ class SAPOutboundDeliveryClient:
         except requests.exceptions.RequestException as e:
             raise SAPOutboundDeliveryError(f"Could not reach SAP: {e}")
         if resp.status_code != 200:
-            raise SAPOutboundDeliveryError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+            raise SAPOutboundDeliveryError(_error_message_for(resp))
         results = resp.json().get("d", {}).get("results", [])
         if not results or not results[0].get("ObjectID"):
             raise SAPOutboundDeliveryError(f"Delivery {delivery_id} not found via SAP OData")
@@ -348,7 +360,7 @@ class SAPOutboundDeliveryClient:
         except requests.exceptions.RequestException as e:
             raise SAPOutboundDeliveryError(f"Could not reach SAP: {e}")
         if resp.status_code >= 400:
-            raise SAPOutboundDeliveryError(f"HTTP {resp.status_code}: {resp.text[:500]}")
+            raise SAPOutboundDeliveryError(_error_message_for(resp))
         try:
             body = resp.json()
         except ValueError:
@@ -363,6 +375,8 @@ class SAPOutboundDeliveryClient:
             headers={"X-CSRF-Token": "Fetch", "Accept": "application/json"},
             timeout=30,
         )
+        if resp.status_code == 401:
+            raise SAPOutboundDeliveryError(_error_message_for(resp))
         token = resp.headers.get("x-csrf-token")
         if not token:
             raise SAPOutboundDeliveryError("SAP did not return a CSRF token - cannot post Goods Issue.")
@@ -408,7 +422,7 @@ class SAPOutboundDeliveryClient:
         except requests.exceptions.RequestException as e:
             raise SAPOutboundDeliveryError(f"Could not reach SAP: {e}")
         if resp.status_code >= 400:
-            raise SAPOutboundDeliveryError(f"HTTP {resp.status_code}: {resp.text[:500]}")
+            raise SAPOutboundDeliveryError(_error_message_for(resp))
         try:
             body = resp.json()
         except ValueError:
@@ -439,7 +453,7 @@ class SAPOutboundDeliveryClient:
         except requests.exceptions.RequestException as e:
             raise SAPOutboundDeliveryError(f"Could not reach SAP: {e}")
         if resp.status_code >= 400:
-            raise SAPOutboundDeliveryError(f"HTTP {resp.status_code}: {resp.text[:500]}")
+            raise SAPOutboundDeliveryError(_error_message_for(resp))
         try:
             body = resp.json()
         except ValueError:
@@ -483,7 +497,7 @@ class SAPOutboundDeliveryClient:
         except requests.exceptions.RequestException as e:
             raise SAPOutboundDeliveryError(f"Could not reach SAP: {e}")
         if resp.status_code >= 400:
-            raise SAPOutboundDeliveryError(f"HTTP {resp.status_code}: {resp.text[:500]}")
+            raise SAPOutboundDeliveryError(_error_message_for(resp))
         try:
             body = resp.json()
         except ValueError:

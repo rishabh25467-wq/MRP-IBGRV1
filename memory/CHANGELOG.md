@@ -1,4 +1,31 @@
-## New feature: standalone "Service Purchase Order" page (2026-09-14)
+## Bug Fix: stale SAP password (itadmin) breaking PO creation + Goods Issue in production (2026-09-14)
+
+- Real incident, user-reported: STO-000351 (live production) failed Goods Issue with a raw HTML SAP
+  login page dumped as the error ("HTTP 401: <html data-sap-ls-system-userAgent=...").
+- Root cause: SAP's password for the `itadmin` account (used by `SAP_USERNAME`/`SAP_PASSWORD` - shared
+  by BOTH `sap_po_odata_client.py` (Purchase Order + Service Purchase Order creation) and
+  `sap_outbound_delivery_client.py` (Stock Transfer Goods Issue)) was rotated in SAP itself; `.env`
+  still had the old value. Reproduced live (401 with old password, 200 with the new one user provided),
+  confirmed the SAME account is used by both flows, so PO creation was ALSO silently at risk, not just
+  Goods Issue.
+- Fix: updated `SAP_PASSWORD` in `.env` (old: Admin@1136 -> new: Admin@1137, confirmed live). Note: this
+  incident happened on the DEPLOYED production app, which has its OWN database/env separate from this
+  dev preview (DB_NAME=test_database here only goes up to STO-000075) - user needs to redeploy (Save to
+  GitHub + Deploy) for production to pick up the corrected password.
+- Also fixed (user's explicit ask): both `sap_outbound_delivery_client.py` and `sap_po_odata_client.py`
+  now detect a 401 specifically and raise a clean message ("SAP login failed (401) - the SAP password
+  for this account may have been changed in SAP. Please verify the SAP_USERNAME/SAP_PASSWORD
+  credentials with your SAP admin.") instead of dumping SAP's raw HTML login page to the user. Added
+  `_error_message_for(resp)` helper in each file, used at every raise site (9 in
+  sap_outbound_delivery_client.py, including `_fetch_csrf_token`; 1 in sap_po_odata_client.py).
+- User explicitly asked to SKIP auto-retry-with-a-different-pooled-login for now (considered, but
+  declined) - only the clean-error-message part was built.
+- Tested: unit-verified `_error_message_for` for both 401 and non-401 cases in both files; live-verified
+  the corrected password against real SAP (CSRF token fetch succeeds). Backend restarted clean.
+- **PENDING USER ACTION**: user must redeploy (Save to GitHub + Deploy) for the corrected password to
+  reach the live production app that reported this error.
+
+
 
 - User's explicit ask: "create a copy form of create purchase order then create a separate Name of:
   Service Purchase Order. Add this form in SAP menu Procurement then we will apply some changes" -
