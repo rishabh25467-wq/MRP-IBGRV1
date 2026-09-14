@@ -1,4 +1,31 @@
-## Bug Fix: stale SAP password (itadmin) breaking PO creation + Goods Issue in production (2026-09-14)
+## Bug Fix: Store Request over-requested (didn't net off existing SFG stock) (2026-09-14)
+
+- Real incident, user-reported: Store Request P9-000110 asked the store to issue the FULL BOM
+  requirement for every short component (e.g. PDQ80110-2 "Top Filler": 320 EA) even though the
+  component already had stock sitting in the site's SFG warehouse (80 EA, already computed as
+  `available_qty` by `production_confirmation_service._check_availability_against_stock` - that's
+  literally WHY it was flagged short: `available_qty(80) < required_qty(320)`). Expected per user:
+  320 - 80 = 240 EA requested, not 320.
+- Root cause: `store_approval_service.create_request()` stored the raw `c["required_qty"]` (full BOM
+  requirement) as the doc's `required_qty` field, completely ignoring the `available_qty` it had
+  already computed and was also storing right next to it.
+- Fix: `required_qty` in the stored doc is now `max(0, round(required_qty - (available_qty or 0), 4))`
+  - the net shortfall. Every downstream reader already treats this field as "what the store must
+    issue" (later shortfall math, `/storeapproval` screen, `MyStockRequestsTab.jsx`,
+    `RequestPrintSlip.jsx`), so this one fix point corrects all of them with no other change needed.
+  `available_qty is None` (stock genuinely unknown, not just zero) still falls back to no netting -
+  unchanged/safe behavior.
+- Tests: new `tests/test_store_request_net_shortfall_iter169.py` (3/3 pass - nets correctly, floors at
+  0 when available exceeds required, unchanged when available is unknown/None). Confirmed the single
+  `create_request()` call site in server.py (new-order creation flow, `short_rm`) is the only place
+  this bug could originate from - no other creation path exists.
+- Also this session: diagnosed and fixed a live production SAP 401 (`itadmin` account temporarily
+  locked out in SAP after repeated failed logins from the stale-password incident - see prior entry;
+  password itself was confirmed correct, lockout is now the blocker, needs the user's SAP admin to
+  unlock via Business Users admin screen). Clarified with support_agent that deployed-app secrets must
+  be set via Deployment > Environment Variables, not via committing `.env` - guided user there.
+
+
 
 - Real incident, user-reported: STO-000351 (live production) failed Goods Issue with a raw HTML SAP
   login page dumped as the error ("HTTP 401: <html data-sap-ls-system-userAgent=...").

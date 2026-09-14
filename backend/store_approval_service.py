@@ -284,12 +284,26 @@ def create_request(db, job_id: str, payload_dict: dict, proposal_id: str, short_
         "quantity": payload_dict["quantity"],
         "unit_code": payload_dict["unit_code"],
         "requester": actor,
+        # Sep 14 2026 bug fix (real user report, P9-000110): this used to
+        # store the FULL BOM requirement (c["required_qty"]) here even
+        # though `available_qty` (SFG stock already staged/ready for THIS
+        # production - see production_confirmation_service.
+        # _check_availability_against_stock) had already been computed
+        # and was itself proof some of the requirement is already covered.
+        # E.g. PDQ80110-2 needed 320, had 80 already in P9-SFG -> the
+        # Store should only ever be asked to issue the net 240 shortfall,
+        # not the full 320 (a real over-issue risk otherwise). Every
+        # downstream reader of this field (shortfall math below, the
+        # /storeapproval screen, MyStockRequestsTab.jsx, RequestPrintSlip.
+        # jsx) already treats `required_qty` as "what the store must
+        # issue", so netting it here - once, at creation - keeps all of
+        # them correct with no other change needed.
         "components": [
             {
                 "product_id": c["product_id"],
                 "description": c.get("description"),
                 "unit_of_measure": c.get("unit_of_measure"),
-                "required_qty": c["required_qty"],
+                "required_qty": max(0.0, round(c["required_qty"] - (c.get("available_qty") or 0), 4)),
                 "available_qty": c.get("available_qty"),
                 "locations": c.get("locations") or [],
                 "issued_qty": None,
