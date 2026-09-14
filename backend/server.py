@@ -7656,7 +7656,7 @@ def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> st
         try:
             gr_result = await _run_playwright_job_with_retries(
                 job_id, lambda: sap_playwright_supplier_pgr_service.post_goods_receipt_via_ui(
-                    po_items, sap_inbound_delivery_notification_client, progress_cb=on_progress,
+                    po_items, sap_inbound_delivery_notification_client, sap_inbound_delivery_report_client, progress_cb=on_progress,
                 ),
             )
             on_progress("moving_stock", gr_result["total_steps"] - 1, gr_result["total_steps"])

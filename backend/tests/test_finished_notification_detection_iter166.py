@@ -88,11 +88,14 @@ class TestPostOnePoDisabledButtonHandling:
         pgr._click_button = AsyncMock(return_value="disabled")
         notif_client = MagicMock()
         notif_client.maintain_bundle = MagicMock()
+        report_client = MagicMock()
+        report_client.find_confirmation_rows = MagicMock(return_value=[])
         try:
             result = _run(pgr._post_one_po(
                 page=page, po_number="POTEST", doc_code="DOC001", supplier_doc_num="SD1",
                 bill_date="2026-09-14", item_qtys={"10": 5}, item_products={"10": "PGOOD1"},
-                item_uoms={"10": "EA"}, vendor_code="V1", notification_client=notif_client, events=[],
+                item_uoms={"10": "EA"}, vendor_code="V1", notification_client=notif_client,
+                confirmation_report_client=report_client, events=[],
             ))
         finally:
             for k, v in orig.items():

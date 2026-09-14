@@ -409,7 +409,7 @@ def _build_notification_id(supplier_doc_num: str, doc_code: str, po_number: str)
 
 
 async def _post_one_po(page, po_number: str, doc_code: str, supplier_doc_num: str, bill_date: str, item_qtys: dict, item_products: dict,
-                        item_uoms: dict, vendor_code: str, notification_client, on_step=None, events: list = None) -> dict:
+                        item_uoms: dict, vendor_code: str, notification_client, confirmation_report_client, on_step=None, events: list = None) -> dict:
     # Sep 12 2026, user's explicit ask - a plain-English trail of every
     # milestone actually reached in SAP before a failure (or success),
     # surfaced verbatim in the GRN Approval screen's new "Diagnostics"
@@ -433,14 +433,29 @@ async def _post_one_po(page, po_number: str, doc_code: str, supplier_doc_num: st
     # shipments, 5XL5EE (supplier_doc_num "test_grn") and FYXUKN
     # (supplier_doc_num "test_GRN"), both for PO 29482 - SAP normalizes/
     # uppercases Delivery Notification IDs, so the OLD scheme
-    # (`{supplier_doc_num}-{po_number}`) silently collided: FYXUKN's
-    # SOAP create hit "already exists" (correctly handled below) and
-    # then went on to open/select/report success on 5XL5EE's ALREADY-
-    # FINISHED document instead of its own - FYXUKN's actual goods were
-    # never received in SAP at all. `notification_id` now always keys
-    # off `doc_code` (this app's own unique 6-char shipment code, never
-    # user-typed, never case-collidable in practice) instead of the
-    # free-text supplier_doc_num - guaranteed unique per shipment+PO.
+    # (`{supplier_doc_num}-{po_number}`) silently collided: the SECOND
+    # create went on to open/select/report success on the FIRST
+    # shipment's ALREADY-FINISHED document instead of its own - the
+    # second shipment's actual goods were never received in SAP at all.
+    # `notification_id` now always keys off `doc_code` (this app's own
+    # unique 6-char shipment code, never user-typed, never
+    # case-collidable in practice) instead of the free-text
+    # supplier_doc_num - guaranteed unique per shipment+PO.
+    #
+    # Aug 2026 correction (confirmed live, user's own SAP screenshot):
+    # SAP does NOT reject a duplicate DeliveryNotificationID at create
+    # time - it happily creates a brand new, separate document with the
+    # identical ID (Delivery ID is SAP's own real unique key; Delivery
+    # Notification ID is a plain user-entered reference field with no
+    # uniqueness constraint at all). Confirmed via a real incident this
+    # same session: a single shipment (DSWRPG, PO 29482) accumulated 24
+    # separate duplicate Inbound Delivery Notification documents, and
+    # SAP's own analytics report confirmed AT LEAST 2 of them (53015,
+    # 53018) each independently reached "Finished" - i.e. genuinely
+    # double-posted Goods Receipt, not just harmless duplicate headers.
+    # See the new confirmation-check right below - it is the ONLY thing
+    # standing between a Retry and a real duplicate Goods Receipt, since
+    # SAP itself provides no protection here.
     #
     # Sep 13 2026 update (user's explicit ask, "can we go for a number
     # like inv number / doc code") - the supplier's invoice number is
@@ -451,6 +466,24 @@ async def _post_one_po(page, po_number: str, doc_code: str, supplier_doc_num: st
     # one.
     delivery_date = (bill_date or datetime.now(timezone.utc).strftime("%Y-%m-%d"))[:10]
     notification_id = _build_notification_id(supplier_doc_num, doc_code, po_number)
+    # Aug 2026, real incident found this session (see above) - a Retry
+    # re-derives this SAME notification_id and, since SAP never rejects
+    # a duplicate create, would otherwise create yet another separate
+    # document and risk posting Goods Receipt on it too (real double
+    # receipt, confirmed live). Check SAP's own "Inbound Delivery
+    # Detailed Details" analytics report FIRST - if it already shows a
+    # real confirmed Goods Receipt for this exact notification_id+PO,
+    # this PO is already done; skip the create AND every Playwright
+    # step entirely rather than risk a second posting.
+    try:
+        already_confirmed = await asyncio.to_thread(confirmation_report_client.find_confirmation_rows, po_number, notification_id)
+    except Exception as e:
+        already_confirmed = []
+        events.append(f"Could not pre-check SAP for an existing confirmation on PO {po_number} (continuing): {e}")
+    if already_confirmed:
+        existing_delivery_id = next((r.get("CDELIVERY_UUID") for r in already_confirmed if r.get("CDELIVERY_UUID")), None)
+        events.append(f"PO {po_number} already has a confirmed Goods Receipt in SAP for notification {notification_id} (Inbound Delivery {existing_delivery_id}) - skipping re-creation to avoid a duplicate receipt")
+        return {"po_number": po_number, "status": "posted", "inbound_delivery_id": existing_delivery_id, "events": events}
     # Sep 12 2026 fix (real incident, PO 29456: SAP rejected the SOAP
     # create with the confusing "No inbound delivery request exists
     # for purchase order reference 29456 - 1" - traced to this PO
@@ -489,14 +522,13 @@ async def _post_one_po(page, po_number: str, doc_code: str, supplier_doc_num: st
         await asyncio.to_thread(notification_client.maintain_bundle, notification_id, po_number, vendor_code, delivery_date, soap_items, False)
         events.append(f"Created Inbound Delivery Notification {notification_id} in SAP (SOAP, references PO {po_number} directly)")
     except Exception as e:
-        # Sep 12 2026 - a Retry re-derives the SAME notification_id
-        # (it's built from supplier_doc_num+po_number, both fixed on
-        # the shipment doc) and re-calls this on a doc that already
-        # exists in SAP from the PREVIOUS attempt (e.g. the earlier
-        # attempt got this far but failed further down, in the UI
-        # steps) - SAP correctly rejects the duplicate create. Treat
-        # that specific case as already-done and continue to search
-        # for it, instead of failing the whole retry outright.
+        # Aug 2026 correction: SAP does NOT actually reject a duplicate
+        # create (confirmed live - see the confirmation-check above,
+        # which is the real safety net now). This branch is kept only
+        # in case some future SAP config change ever DOES start
+        # rejecting a genuine duplicate with an "already exist"-style
+        # message - if it ever fires, treat it the same way (already
+        # done, keep going) rather than failing the whole retry.
         if "already exist" in str(e).lower():
             events.append(f"Inbound Delivery Notification {notification_id} already exists in SAP from a previous attempt - continuing")
         else:
@@ -630,7 +662,7 @@ async def _post_one_po(page, po_number: str, doc_code: str, supplier_doc_num: st
 STEPS_PER_PO = 4
 
 
-async def post_goods_receipt_via_ui(po_items: dict, notification_client, progress_cb=None) -> dict:
+async def post_goods_receipt_via_ui(po_items: dict, notification_client, confirmation_report_client, progress_cb=None) -> dict:
     """po_items: {po_number: {"doc_code": str, "supplier_doc_num": str,
     "bill_date": str, "vendor_code": str, "item_qtys": {item_number:
     qty}, "item_products": {item_number: product_id}, "item_uoms":
@@ -639,10 +671,15 @@ async def post_goods_receipt_via_ui(po_items: dict, notification_client, progres
     the manual flow exactly. `notification_client` is a
     SAPInboundDeliveryNotificationClient (see that module) - the SOAP
     create step run inside `_post_one_po` before any browser
-    navigation. `item_products`/`item_uoms` feed both the SOAP create
-    call and the Actual Quantity grid match by Product ID (see
-    _fill_line_actual_quantities' docstring for why row-order matching
-    alone is not safe to trust).
+    navigation. `confirmation_report_client` is a
+    SAPInboundDeliveryReportClient (Aug 2026, real duplicate-Goods-
+    Receipt incident) - `_post_one_po` queries it first to check
+    whether this exact notification_id+PO already has a real confirmed
+    Goods Receipt in SAP before creating anything, since SAP itself
+    never rejects a duplicate notification create. `item_products`/
+    `item_uoms` feed both the SOAP create call and the Actual Quantity
+    grid match by Product ID (see _fill_line_actual_quantities'
+    docstring for why row-order matching alone is not safe to trust).
 
     progress_cb(phase, current, total) - Sep 2 2026 (user's ask: real
     step-by-step visibility instead of a single spinner): `phase` is
@@ -700,7 +737,7 @@ async def post_goods_receipt_via_ui(po_items: dict, notification_client, progres
                         result = await _post_one_po(
                             page, po_number, spec.get("doc_code"), spec.get("supplier_doc_num"), spec.get("bill_date"),
                             spec.get("item_qtys") or {}, spec.get("item_products") or {}, spec.get("item_uoms") or {},
-                            spec.get("vendor_code"), notification_client, on_step=on_step, events=events,
+                            spec.get("vendor_code"), notification_client, confirmation_report_client, on_step=on_step, events=events,
                         )
                     except Exception as e:
                         logger.error(f"Playwright Supplier GRN failed for PO {po_number}: {e}")

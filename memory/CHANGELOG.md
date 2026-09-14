@@ -1,3 +1,52 @@
+## Fix: slash character in Delivery Notification ID + real duplicate-Goods-Receipt incident (2026-09-14)
+
+- User's explicit ask: `_build_notification_id` (sap_playwright_supplier_pgr_service.py) used to strip
+  `/` (and every other non-alnum/`_`/`.` char) from the supplier's invoice number before building the
+  SAP Delivery Notification ID - user confirmed "SAP accepts /". Removed all character sanitization
+  (any character now passes through - it's XML-escaped downstream in
+  sap_inbound_delivery_notification_client.py's `_build_envelope`, so this is safe). Capped the
+  invoice-number PREFIX at a fixed `MAX_INVOICE_PREFIX_LENGTH = 20` chars (was: whatever space happened
+  to be left after the `{doc_code}-{po_number}` suffix) while the whole ID still respects SAP's
+  35-char limit.
+- Real, confirmed-live user screenshot of SAP's "Inbound Deliveries" screen showed: (a) real production
+  Delivery Notification IDs already use `/` freely (e.g. "KNSPPL/24-25/012"), confirming the fix is
+  correct; (b) two DIFFERENT Delivery IDs (SAP's real unique key) sharing the IDENTICAL Delivery
+  Notification ID - hard proof SAP enforces NO uniqueness on this field at all (Delivery ID is
+  auto-generated/unique; Delivery Notification ID is a plain user-entered reference field).
+- Investigating this live in SAP surfaced a SERIOUS real incident: shipment DSWRPG (PO 29482, invoice
+  "TEST_07/27/PM") had accumulated **24 separate duplicate Inbound Delivery Notification documents**
+  in SAP (53015, 53018, 53024...53146), all sharing the identical notification_id, from repeated
+  Retries during earlier dev/testing - because SAP never rejects a duplicate create, so a Retry that
+  re-derives the same notification_id silently creates ANOTHER document instead of reusing the
+  existing one. User directly confirmed in SAP that AT LEAST 2 of them (53015, 53018) are independently
+  "Finished" - i.e. a real double Goods Receipt happened, not just harmless orphaned headers.
+- Fix: `_post_one_po` now queries `sap_inbound_delivery_report_client.find_confirmation_rows(po_number,
+  notification_id)` (SAP's own "Inbound Delivery Detailed Details" analytics report) FIRST, before
+  calling `maintain_bundle`. If it already shows a real confirmed Goods Receipt for this exact
+  notification_id+PO, the PO is treated as already "posted" (using the found `CDELIVERY_UUID` as
+  `inbound_delivery_id`) and NEITHER the SOAP create NOR any Playwright step runs again - closing the
+  loophole at the lowest layer, independent of whether the higher-level `already_posted` DB-status skip
+  in server.py's `retry_goods_receipt` correctly fired on a given retry.
+  `post_goods_receipt_via_ui`/`_post_one_po` both take a new `confirmation_report_client` param (wired
+  from server.py's existing `sap_inbound_delivery_report_client` instance - no new SAP credentials
+  needed).
+- Corrected a misleading code comment that claimed "SAP correctly rejects the duplicate create" - SAP
+  does not; that behavior was never actually verified and is now known to be false.
+- Tests: `/app/backend/tests/test_duplicate_grn_precheck_iter168.py` (new - pre-check skips
+  create+Playwright when already confirmed; a pre-check error doesn't block normal flow). Updated
+  `test_finished_notification_detection_iter166.py` for the new required param. All 15 tests across the
+  3 test files pass.
+- **UNRESOLVED, needs user/SAP-admin follow-up**: the 24 duplicate junk Notification documents for
+  DSWRPG/PO 29482 are still sitting in SAP (only 2 of 24 checked so far, both "Finished"). Real
+  inventory impact beyond those 2 is unconfirmed - recommend the user's SAP admin check the remaining
+  22 IDs' Delivery/Release Status and reconcile/cancel as needed. This is a live production tenant.
+- Also removed the "Fetch secondary/alternate units from SAP" button from the PR-driven Create
+  Purchase Order page (`PurchaseOrderPage.jsx`) per user's explicit ask - removed `fetchUomOptions`,
+  the `uomOptions`/`uomOptionsLoading` line-state fields, and the alternate-unit `<Select>` branch
+  (UOM cell is now always a plain text input). Backend `/purchase-orders/products/{id}/uom-options`
+  endpoint left untouched (not deleted, in case needed elsewhere).
+
+
 ## Eleventh feature: show which pooled SAP login handled each order (2026-08-31)
 
 - User's explicit ask, following the credential pool feature - now that 3 different SAP logins can
