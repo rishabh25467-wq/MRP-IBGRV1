@@ -6105,6 +6105,348 @@ async def create_purchase_order(payload: PurchaseOrderCreateRequest, request: Re
     return {"po_number": result["po_number"], "po_uuid": result["po_uuid"], "sap_po_number": sap_po_number}
 
 
+# ---------------------------------------------------------------------
+# Service Purchase Order (Sep 14 2026, user's explicit ask: "create a
+# copy form of create purchase order then create a separate Name of:
+# Service Purchase Order... we will apply some changes" later). A FULLY
+# INDEPENDENT copy of the Create Purchase Order flow above (own request/
+# response models, own endpoints, own history collection) so future
+# changes to this form never touch the real Purchase Order Creation
+# flow - per user's explicit choice. Reuses the same lower-level SAP
+# clients/constants (sap_po_odata_client, pr_integration_client,
+# BILL_TO_OPTIONS_BY_COMPANY, etc.) since those are shared tenant
+# infrastructure, not "the form" itself. Same "purchase_order"
+# permission as the original, per user's explicit choice (see
+# auth_service.py).
+# ---------------------------------------------------------------------
+SERVICE_PO_HISTORY_COLLECTION = "service_purchase_order_creation_history"
+
+
+class ServicePurchaseOrderSupplierSuggestion(BaseModel):
+    supplier_code: str
+    name: str
+    cash_discount_terms_code: Optional[str] = None
+    cash_discount_terms_text: Optional[str] = None
+
+
+class ServicePurchaseOrderProductSuggestion(BaseModel):
+    product_id: str
+    description: Optional[str] = None
+    unit_of_measure: Optional[str] = None
+
+
+class ServicePurchaseOrderLineItemIn(BaseModel):
+    product_id: str
+    description: Optional[str] = None
+    quantity: float = Field(gt=0)
+    unit_of_measure: str
+    unit_price: float = Field(ge=0)
+    delivery_date: str
+
+    @field_validator("delivery_date")
+    @classmethod
+    def _valid_delivery_date(cls, v):
+        try:
+            datetime.strptime(v, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError("delivery_date must be in YYYY-MM-DD format")
+        return v
+
+
+class ServicePurchaseOrderCreateRequest(BaseModel):
+    supplier_code: str
+    purchase_unit_site: str
+    bill_to_company: str
+    po_date: str
+    currency: str = "INR"
+    pr_number: str = Field(min_length=1)
+    items: List[ServicePurchaseOrderLineItemIn] = Field(min_length=1)
+
+    @field_validator("po_date")
+    @classmethod
+    def _valid_po_date(cls, v):
+        try:
+            datetime.strptime(v, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError("po_date must be in YYYY-MM-DD format")
+        return v
+
+    @model_validator(mode="after")
+    def _delivery_not_before_po_date(self):
+        for it in self.items:
+            if it.delivery_date < self.po_date:
+                raise ValueError(f"Delivery Date for {it.product_id} cannot be before PO Date")
+        return self
+
+
+class ServicePRLookupLineItem(BaseModel):
+    line_no: Optional[int] = None
+    icode: Optional[str] = None
+    iname: Optional[str] = None
+    unit: Optional[str] = None
+    qty: float
+    rate: float
+    matched_product_id: Optional[str] = None
+    matched_description: Optional[str] = None
+    matched_unit_of_measure: Optional[str] = None
+    matched_via: Optional[str] = None
+    sap_unit_of_measure: Optional[str] = None
+    unit_mapping_confident: bool = True
+
+
+class ServicePRLookupResponse(BaseModel):
+    voc_no: str
+    vdate: Optional[str] = None
+    compcode: Optional[str] = None
+    supplier_code: Optional[str] = None
+    supplier_name: Optional[str] = None
+    supplier_known: bool = False
+    supplier_cash_discount_terms_code: Optional[str] = None
+    supplier_cash_discount_terms_text: Optional[str] = None
+    currency: str = "INR"
+    amount: Optional[float] = None
+    po_status: Optional[str] = None
+    items: List[ServicePRLookupLineItem] = []
+
+
+@api_router.get("/service-purchase-orders/sites")
+async def service_po_list_sites():
+    sites = await asyncio.to_thread(list_known_sites, db)
+    return {"sites": sites}
+
+
+@api_router.get("/service-purchase-orders/pr-available")
+async def service_po_pr_available(search: str = Query("", description="Filter by PR number, supplier name or code"), limit: int = Query(30, le=100)):
+    try:
+        data = await asyncio.to_thread(pr_integration_client.list_approved, 200, 0, "pending", None)
+    except PRIntegrationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    items = data.get("items", [])
+    q = search.strip().lower()
+    if q:
+        items = [
+            it for it in items
+            if q in str(it.get("voc_no", "")).lower()
+            or q in ((it.get("supplier") or {}).get("pcode") or "").lower()
+            or q in ((it.get("supplier") or {}).get("name") or "").lower()
+        ]
+    items.sort(key=lambda it: it.get("vdate") or "", reverse=True)
+    return [
+        {
+            "voc_no": str(it["voc_no"]), "vdate": it.get("vdate"), "compcode": it.get("compcode"),
+            "supplier_code": (it.get("supplier") or {}).get("pcode"),
+            "supplier_name": (it.get("supplier") or {}).get("name"),
+            "amount": it.get("amount"), "currency": it.get("currency") or "INR",
+        }
+        for it in items[:limit]
+    ]
+
+
+@api_router.get("/service-purchase-orders/pr-lookup/{voc_no}", response_model=ServicePRLookupResponse)
+async def service_po_pr_lookup(voc_no: str):
+    try:
+        data = await asyncio.to_thread(pr_integration_client.get_pr_detail, voc_no)
+    except PRIntegrationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if data.get("po_status") == "created":
+        raise HTTPException(status_code=409, detail=f"PR {voc_no} already has PO {data.get('po_number')} created against it - use a different PR")
+
+    supplier = data.get("supplier") or {}
+    supplier_code = supplier.get("pcode") or None
+    supplier_doc = None
+    if supplier_code:
+        supplier_doc = await asyncio.to_thread(
+            db["suppliers"].find_one, {"sap_internal_id": supplier_code}, {"name": 1, "cash_discount_terms_code": 1},
+        )
+
+    raw_items = data.get("items", [])
+    icodes = [it.get("icode") for it in raw_items if it.get("icode")]
+    matched_map = {}
+    if icodes:
+        def _match():
+            pipeline = [
+                {"$match": {"_id": "latest"}},
+                {"$project": {"items": {"$filter": {"input": "$items", "as": "i", "cond": {"$in": ["$$i.product_id", icodes]}}}}},
+            ]
+            result = list(db["inventory_cache"].aggregate(pipeline))
+            return result[0]["items"] if result else []
+        matched_map = {m["product_id"]: m for m in await asyncio.to_thread(_match)}
+
+    unmatched_icodes = [c for c in set(icodes) if c not in matched_map]
+    if unmatched_icodes:
+        def _live_lookup(code):
+            try:
+                info = sap_material_client.resolve_material_info(code)
+            except SAPMaterialError:
+                return code, None
+            if info.get("uuid") and info.get("life_cycle_status_code") == "2":
+                return code, info
+            return code, None
+        live_results = await asyncio.gather(*[asyncio.to_thread(_live_lookup, c) for c in unmatched_icodes])
+        for code, info in live_results:
+            if info:
+                matched_map[code] = {
+                    "product_id": code, "description": info.get("description"),
+                    "uom": info.get("base_unit") or "EA", "_matched_via": "sap_live",
+                }
+
+    items = []
+    for it in raw_items:
+        icode = it.get("icode") or None
+        match = matched_map.get(icode) if icode else None
+        sap_uom, uom_confident = _map_pr_unit_to_sap(it.get("unit"))
+        items.append(ServicePRLookupLineItem(
+            line_no=it.get("line_no"), icode=icode, iname=it.get("iname"),
+            unit=it.get("unit"), qty=it.get("qty") or 0, rate=it.get("rate") or 0,
+            matched_product_id=match.get("product_id") if match else None,
+            matched_description=match.get("description") if match else None,
+            matched_unit_of_measure=match.get("uom") if match else None,
+            matched_via=match.get("_matched_via", "cache") if match else None,
+            sap_unit_of_measure=sap_uom, unit_mapping_confident=uom_confident,
+        ))
+
+    return ServicePRLookupResponse(
+        voc_no=str(data["voc_no"]), vdate=data.get("vdate"), compcode=data.get("compcode"),
+        supplier_code=supplier_code, supplier_name=supplier.get("name"),
+        supplier_known=bool(supplier_doc),
+        supplier_cash_discount_terms_code=supplier_doc.get("cash_discount_terms_code") if supplier_doc else None,
+        supplier_cash_discount_terms_text=PAYMENT_TERMS_CODE_TEXT.get(supplier_doc.get("cash_discount_terms_code")) if supplier_doc else None,
+        currency=data.get("currency") or "INR",
+        amount=data.get("amount"), po_status=data.get("po_status"), items=items,
+    )
+
+
+@api_router.get("/service-purchase-orders/suppliers/search", response_model=List[ServicePurchaseOrderSupplierSuggestion])
+async def service_po_search_suppliers(q: str = Query(..., min_length=1), limit: int = 15):
+    q_escaped = re.escape(q.strip())
+
+    def _search():
+        cursor = db["suppliers"].find(
+            {
+                "sap_internal_id": {"$exists": True, "$ne": None},
+                "$or": [
+                    {"name": {"$regex": q_escaped, "$options": "i"}},
+                    {"sap_internal_id": {"$regex": f"^{q_escaped}", "$options": "i"}},
+                ],
+            },
+            {"sap_internal_id": 1, "name": 1, "cash_discount_terms_code": 1},
+        ).limit(limit)
+        return list(cursor)
+
+    docs = await asyncio.to_thread(_search)
+    return [
+        ServicePurchaseOrderSupplierSuggestion(
+            supplier_code=d["sap_internal_id"], name=d["name"],
+            cash_discount_terms_code=d.get("cash_discount_terms_code"),
+            cash_discount_terms_text=PAYMENT_TERMS_CODE_TEXT.get(d.get("cash_discount_terms_code")),
+        )
+        for d in docs
+    ]
+
+
+@api_router.get("/service-purchase-orders/products/search", response_model=List[ServicePurchaseOrderProductSuggestion])
+async def service_po_search_products(q: str = Query(..., min_length=1), limit: int = 15):
+    q_escaped = re.escape(q.strip())
+
+    def _search():
+        pipeline = [
+            {"$match": {"_id": "latest"}},
+            {"$project": {"items": {"$filter": {
+                "input": "$items", "as": "i",
+                "cond": {"$or": [
+                    {"$regexMatch": {"input": "$$i.product_id", "regex": f"^{q_escaped}", "options": "i"}},
+                    {"$regexMatch": {"input": "$$i.description", "regex": q_escaped, "options": "i"}},
+                ]},
+            }}}},
+        ]
+        result = list(db["inventory_cache"].aggregate(pipeline))
+        items = result[0]["items"] if result else []
+        items.sort(key=lambda i: i.get("product_id") or "")
+        return items[:limit]
+
+    items = await asyncio.to_thread(_search)
+    return [
+        ServicePurchaseOrderProductSuggestion(product_id=i["product_id"], description=i.get("description"), unit_of_measure=i.get("uom"))
+        for i in items
+    ]
+
+
+@api_router.post("/service-purchase-orders/create")
+async def create_service_purchase_order(payload: ServicePurchaseOrderCreateRequest, request: Request):
+    company_code, _ = company_and_set_of_books_for_site(payload.purchase_unit_site)
+    allowed_bill_to = BILL_TO_OPTIONS_BY_COMPANY.get(company_code, [])
+    if payload.bill_to_company not in allowed_bill_to:
+        raise HTTPException(status_code=400, detail=f"Bill-To must be one of {allowed_bill_to} for company {company_code}")
+
+    try:
+        pr_data = await asyncio.to_thread(pr_integration_client.get_pr_detail, payload.pr_number)
+    except PRIntegrationError as e:
+        raise HTTPException(status_code=422, detail=f"PR re-validation failed: {e}")
+    if pr_data.get("po_status") == "created":
+        raise HTTPException(status_code=409, detail=f"PR {payload.pr_number} already has PO {pr_data.get('po_number')} created against it")
+
+    items = [
+        {
+            "product_id": it.product_id, "description": it.description, "quantity": it.quantity,
+            "unit_of_measure": it.unit_of_measure, "unit_price": it.unit_price,
+            "delivery_date": it.delivery_date, "site_id": payload.purchase_unit_site,
+        }
+        for it in payload.items
+    ]
+    supplier_doc = await asyncio.to_thread(
+        db["suppliers"].find_one, {"sap_internal_id": payload.supplier_code}, {"cash_discount_terms_code": 1, "name": 1},
+    )
+    cash_discount_terms_code = supplier_doc.get("cash_discount_terms_code") if supplier_doc else None
+    try:
+        result = await asyncio.to_thread(
+            sap_po_odata_client.create_purchase_order,
+            company_code, payload.purchase_unit_site, payload.supplier_code,
+            payload.bill_to_company, payload.po_date, payload.currency, items,
+            payload.pr_number, cash_discount_terms_code,
+        )
+    except SAPPurchaseOrderODataNotConfiguredError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except SAPPurchaseOrderODataError as e:
+        logger.error(f"Service Purchase Order creation rejected by SAP for supplier {payload.supplier_code}: {e}")
+        raise HTTPException(status_code=422, detail=str(e))
+
+    user = request.state.user
+    now = datetime.now(timezone.utc)
+    items_with_desc = [dict(it, description=li.description) for it, li in zip(items, payload.items)]
+    await asyncio.to_thread(db[SERVICE_PO_HISTORY_COLLECTION].insert_one, {
+        "_id": str(uuid.uuid4()),
+        "po_number": result["po_number"],
+        "po_uuid": result["po_uuid"],
+        "supplier_code": payload.supplier_code,
+        "purchase_unit_site": payload.purchase_unit_site,
+        "company_code": company_code,
+        "bill_to_company": payload.bill_to_company,
+        "po_date": payload.po_date,
+        "currency": payload.currency,
+        "pr_number": payload.pr_number,
+        "cash_discount_terms_code": cash_discount_terms_code,
+        "items": items_with_desc,
+        "created_by": user.get("name"),
+        "created_by_user_id": f"{user.get('tid')}:{user.get('oid')}",
+        "created_at": now,
+    })
+
+    try:
+        await asyncio.to_thread(
+            pr_integration_client.stamp_po_created,
+            payload.pr_number, result["po_number"], payload.po_date,
+            sum(it.quantity * it.unit_price for it in payload.items), "Auto-created via Materials Hub (Service PO)",
+        )
+    except PRIntegrationError as e:
+        logger.warning(f"Service PO {result['po_number']} created in SAP but PR {payload.pr_number} stamp-back failed: {e}")
+
+    sap_po_number = await asyncio.to_thread(sap_po_write_client.get_purchase_order_number, result["po_number"])
+    if sap_po_number:
+        await asyncio.to_thread(supplier_shipment_service.store_sap_po_number, db, result["po_number"], sap_po_number)
+
+    return {"po_number": result["po_number"], "po_uuid": result["po_uuid"], "sap_po_number": sap_po_number}
+
+
 @api_router.post("/part-suppliers", response_model=PartSupplierAssignment)
 async def add_part_supplier(payload: PartSupplierCreate):
     supplier = supplier_service.get_supplier(db, payload.supplier_id)

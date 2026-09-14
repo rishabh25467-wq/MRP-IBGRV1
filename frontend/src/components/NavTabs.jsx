@@ -41,6 +41,9 @@ const PROCUREMENT_SUBTABS = [
   { to: "/purchasing-plan", label: "Procurement Planning", testId: "nav-procurement-planning", page: "purchasing_plan" },
   // Aug 2026: Purchase Order Creation automation - writes real POs into SAP ByDesign.
   { to: "/purchasing-strategy/purchase-order-create", label: "Create Purchase Order", testId: "nav-procurement-purchase-order-create", page: "purchase_order" },
+  // Sep 14 2026, user's explicit ask: standalone Service Purchase Order
+  // form - full copy of the Create Purchase Order flow, same permission.
+  { to: "/purchasing-strategy/service-purchase-order-create", label: "Service Purchase Order", testId: "nav-procurement-service-purchase-order-create", page: "purchase_order" },
   // Sep 4 2026, user's explicit ask: visibility into POs already created via this app.
   { to: "/purchasing-strategy/created-purchase-orders", label: "Created POs", testId: "nav-procurement-created-purchase-orders", page: "created_purchase_orders" },
   // Sep 4 2026, user's explicit ask: pick any vendor, see their open PO lines.

@@ -1,4 +1,31 @@
-## Fix: slash character in Delivery Notification ID + real duplicate-Goods-Receipt incident (2026-09-14)
+## New feature: standalone "Service Purchase Order" page (2026-09-14)
+
+- User's explicit ask: "create a copy form of create purchase order then create a separate Name of:
+  Service Purchase Order. Add this form in SAP menu Procurement then we will apply some changes" -
+  a FULLY INDEPENDENT copy per user's choice, so future edits to Service PO never touch the real
+  Create Purchase Order flow.
+- Backend: duplicated all 6 endpoints the Create PO form uses under a new `/service-purchase-orders/*`
+  prefix (own Pydantic models with `Service` prefix, own Mongo history collection
+  `service_purchase_order_creation_history`) - `sites`, `pr-available`, `pr-lookup/{voc_no}`,
+  `suppliers/search`, `products/search`, `create`. Reuses shared lower-level infra (sap_po_odata_client,
+  pr_integration_client, BILL_TO_OPTIONS_BY_COMPANY, etc.) since that's tenant infrastructure, not "the
+  form" itself.
+- `auth_service.py`: added `("/api/service-purchase-orders", {"purchase_order"})` path-permission rule -
+  reuses the SAME "purchase_order" permission as the original per user's explicit choice (no new
+  grantable right).
+- Frontend: new `ServicePurchaseOrderPage.jsx` (full duplicate of `PurchaseOrderPage.jsx`, all
+  data-testid's prefixed `service-po-*` to stay unique), route
+  `/purchasing-strategy/service-purchase-order-create`, nav entry "Service Purchase Order" added right
+  next to "Create Purchase Order" in the Procurement dropdown (`NavTabs.jsx`).
+- Simplification (since no "Created Service POs" list page exists yet): removed the "View Created POs"
+  cross-navigation from the success toast/dialog - it would point to a page that reads a different
+  Mongo collection and would show nothing.
+- Tested: backend endpoints verified via curl (sites/pr-available/suppliers all return real data),
+  frontend screenshot-verified (page renders, nav dropdown shows the new item next to the original).
+  Full create-and-submit-to-SAP flow not yet tested (user said "we will apply some changes" next -
+  further changes expected before this is used for a real submission).
+
+
 
 - User's explicit ask: `_build_notification_id` (sap_playwright_supplier_pgr_service.py) used to strip
   `/` (and every other non-alnum/`_`/`.` char) from the supplier's invoice number before building the

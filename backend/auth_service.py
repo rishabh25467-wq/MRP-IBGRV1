@@ -211,6 +211,12 @@ PAGE_ROUTE_RULES = [
     ("/api/purchase-orders/open", {"open_purchase_orders"}),
     ("/api/purchase-orders/suppliers/search", {"purchase_order", "open_purchase_orders"}),
     ("/api/purchase-orders", {"purchase_order"}),
+    # Sep 14 2026, user's explicit ask: standalone "Service Purchase
+    # Order" form - a full copy of the Create Purchase Order flow
+    # (separate backend endpoints/collection, see server.py), but
+    # deliberately reuses the SAME "purchase_order" permission per
+    # user's choice rather than a new grantable right.
+    ("/api/service-purchase-orders", {"purchase_order"}),
 ]
 
 # Paths the auth middleware never gates - login must stay reachable while

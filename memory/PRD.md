@@ -762,3 +762,11 @@ Extend the existing SAP BOM viewer application: Production Plan page (OMS Open-P
 - **UNRESOLVED - needs follow-up**: only 2 of the 24 duplicate documents for DSWRPG/PO 29482 have been checked so far (both "Finished"). Real inventory impact of the other 22 is unconfirmed - user's SAP admin should check the remaining IDs (53024, 53035, 53041, 53054, 53059, 53064, 53066, 53068, 53069, 53074, 53076, 53080, 53116, 53117, 53124, 53127, 53133, 53138, 53140, 53141, 53144, 53146) and reconcile/cancel as needed. Live production tenant - not something this app can safely auto-correct.
 - **Separate small fix, user's explicit ask**: removed the "Fetch secondary/alternate units from SAP" button from the PR-driven Create Purchase Order page (`PurchaseOrderPage.jsx`) - removed `fetchUomOptions`, `uomOptions`/`uomOptionsLoading` line state, and the alternate-unit `<Select>` branch; UOM cell is now always a plain text input. Backend `/purchase-orders/products/{id}/uom-options` endpoint left in place (unused by this page now, not deleted).
 
+## Session (Sep 14 2026, cont'd) - New "Service Purchase Order" page (full independent copy)
+- User's explicit ask: copy the Create Purchase Order form into a separate "Service Purchase Order" page under the Procurement menu, as a fully independent copy (own backend endpoints + own frontend page) since more changes are coming later.
+- Backend: new `/service-purchase-orders/*` endpoints (sites, pr-available, pr-lookup, suppliers/search, products/search, create) with own `Service*` Pydantic models and own history collection `service_purchase_order_creation_history`. `auth_service.py` gates the new prefix under the SAME `purchase_order` permission (user's explicit choice).
+- Frontend: new `ServicePurchaseOrderPage.jsx` (full duplicate, `service-po-*` test ids), route `/purchasing-strategy/service-purchase-order-create`, nav entry "Service Purchase Order" next to "Create Purchase Order" in the Procurement dropdown.
+- Tested: backend endpoints via curl (real data returned), frontend via screenshot (page + nav dropdown both verified). Full submit-to-SAP flow intentionally not tested yet - user said more changes are coming to this form next.
+- **PENDING**: user said "then we will apply some changes" - awaiting next instructions on what should differ from the original Create PO form.
+
+

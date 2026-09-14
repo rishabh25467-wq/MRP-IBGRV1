@@ -13,6 +13,7 @@ import GatePassPage from "@/pages/GatePassPage";
 import SupplierMasterPage from "@/pages/SupplierMasterPage";
 import QuotaAllocationPage from "@/pages/QuotaAllocationPage";
 import PurchaseOrderPage from "@/pages/PurchaseOrderPage";
+import ServicePurchaseOrderPage from "@/pages/ServicePurchaseOrderPage";
 import CreatedPurchaseOrdersPage from "@/pages/CreatedPurchaseOrdersPage";
 import OpenPurchaseOrdersPage from "@/pages/OpenPurchaseOrdersPage";
 import SapWritePage from "@/pages/SapWritePage";
@@ -143,6 +144,7 @@ function InternalApp() {
             <Route path="/purchasing-strategy/supplier-master" element={<ProtectedRoute page="supplier_master"><SupplierMasterPage /></ProtectedRoute>} />
             <Route path="/purchasing-strategy/quota-allocation" element={<ProtectedRoute page="quota_allocation"><QuotaAllocationPage /></ProtectedRoute>} />
             <Route path="/purchasing-strategy/purchase-order-create" element={<ProtectedRoute page="purchase_order"><PurchaseOrderPage /></ProtectedRoute>} />
+            <Route path="/purchasing-strategy/service-purchase-order-create" element={<ProtectedRoute page="purchase_order"><ServicePurchaseOrderPage /></ProtectedRoute>} />
             <Route path="/purchasing-strategy/created-purchase-orders" element={<ProtectedRoute page="created_purchase_orders"><CreatedPurchaseOrdersPage /></ProtectedRoute>} />
             <Route path="/purchasing-strategy/open-purchase-orders" element={<ProtectedRoute page="open_purchase_orders"><OpenPurchaseOrdersPage /></ProtectedRoute>} />
             <Route path="/admin" element={<ProtectedRoute page="admin"><AdminPage /></ProtectedRoute>} />
