@@ -199,7 +199,7 @@ export default function SupplierDashboardPage() {
     const scoped = showAllPos ? entityPos : entityPos.filter((po) => po.remaining_qty > 0);
     const q = search.trim().toLowerCase();
     if (!q) return scoped;
-    return scoped.filter((po) => [po.po_number, po.item_number, po.description, po.product_id].some((v) => (v || "").toString().toLowerCase().includes(q)));
+    return scoped.filter((po) => [po.po_number, po.item_number, po.product_id, po.description].some((v) => (v || "").toString().toLowerCase().includes(q)));
   }, [entityPos, search, showAllPos]);
 
   const sortedPos = useMemo(() => {
@@ -475,7 +475,8 @@ export default function SupplierDashboardPage() {
                 <tr>
                   <th className="border border-[#E2E8F0] p-1.5 text-left w-8"></th>
                   <th className="border border-[#E2E8F0] p-1.5 text-left">PO Number</th>
-                  <th className="border border-[#E2E8F0] p-1.5 text-left">Item</th>
+                  <th className="border border-[#E2E8F0] p-1.5 text-left">Item Code</th>
+                  <th className="border border-[#E2E8F0] p-1.5 text-left">Description</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-left">PO From</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-left">
                     <button
@@ -545,7 +546,8 @@ export default function SupplierDashboardPage() {
                           </button>
                         )}
                       </td>
-                      <td className="border border-[#E2E8F0] px-2 py-1">{po.description || po.product_id}</td>
+                      <td className="border border-[#E2E8F0] px-2 py-1 font-data text-xs" data-testid={`supplier-po-item-code-${po.po_number}-${po.item_number}`}>{po.product_id || "-"}</td>
+                      <td className="border border-[#E2E8F0] px-2 py-1">{po.description || "-"}</td>
                       <td className="border border-[#E2E8F0] px-2 py-1 text-xs">{po.buyer_entity_name}</td>
                       <td className="border border-[#E2E8F0] px-2 py-1 font-data text-xs whitespace-nowrap">{fmtDate(po.po_date)}</td>
                       <td className="border border-[#E2E8F0] px-2 py-1 text-right font-data text-xs" data-testid={`supplier-po-qty-${po.po_number}-${po.item_number}`}>
@@ -708,6 +710,7 @@ export default function SupplierDashboardPage() {
               <thead className="bg-[#F1F5F9] text-[#344054] text-xs font-bold font-heading uppercase tracking-wide">
                 <tr>
                   <th className="border border-[#E2E8F0] p-1.5 text-left whitespace-nowrap">Item</th>
+                  <th className="border border-[#E2E8F0] p-1.5 text-left whitespace-nowrap">Item Code</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-left">Description</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-right whitespace-nowrap">PO Qty</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-right whitespace-nowrap">Unit Price</th>
@@ -719,6 +722,7 @@ export default function SupplierDashboardPage() {
                 {detailItems.map((it, i) => (
                   <tr key={i} className="bg-white odd:bg-[#F9FAFB]">
                     <td className="border border-[#E2E8F0] px-2 py-1.5 font-data">{it.item_number}</td>
+                    <td className="border border-[#E2E8F0] px-2 py-1.5 font-data" data-testid={`supplier-po-detail-item-code-${it.item_number}`}>{it.product_id || "-"}</td>
                     <td className="border border-[#E2E8F0] px-2 py-1.5">{it.description}</td>
                     <td className="border border-[#E2E8F0] px-2 py-1.5 text-right font-data whitespace-nowrap">{it.po_qty} {it.unit_of_measure}</td>
                     <td className="border border-[#E2E8F0] px-2 py-1.5 text-right font-data whitespace-nowrap">{fmtMoney(it.unit_price, it.currency)}</td>
@@ -729,7 +733,7 @@ export default function SupplierDashboardPage() {
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={4} className="border border-[#E2E8F0] px-2 py-2 text-right font-semibold text-xs text-[#475569]">PO Total</td>
+                  <td colSpan={5} className="border border-[#E2E8F0] px-2 py-2 text-right font-semibold text-xs text-[#475569]">PO Total</td>
                   <td className="border border-[#E2E8F0] px-2 py-2 text-right font-data font-bold whitespace-nowrap">{fmtMoney(detailItems.reduce((s, it) => s + (it.subtotal || 0), 0), detailItems[0]?.currency)}</td>
                   <td className="border border-[#E2E8F0]"></td>
                 </tr>
