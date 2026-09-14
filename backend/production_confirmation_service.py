@@ -844,10 +844,40 @@ def check_component_availability_from_material_inputs(
         stock_by_product = load_stock_by_product(db)
     if product_ids and any(pid not in desc_by_product for pid in product_ids):
         desc_by_product.update({k: v for k, v in _desc_by_product_from_cache(db, frozenset(product_ids)).items() if k not in desc_by_product})
-    sub_assembly_ids = frozenset(
-        d["_id"] for d in db["bom_node_cache"].find({"_id": {"$in": product_ids}, "groups": {"$ne": []}}, {"_id": 1})
-    ) if product_ids else frozenset()
+    sub_assembly_ids = _sub_assembly_ids(db, product_ids)
     return _check_availability_against_material_inputs(material_inputs, stock_by_product, desc_by_product, confirmed_quantity, site_id, sub_assembly_ids)
+
+
+def _sub_assembly_ids(db, product_ids) -> frozenset:
+    """Sep 14 2026 bug fix (real user report, 6800-003989-270 "KNOB, 1/4-20
+    STUD"): a component with its own cached BOM in SAP used to ALWAYS be
+    treated as a Sub-Assembly (blocked from ever getting an automatic
+    Store Request - see the callers of this below), even when the item
+    actually sits in the RM warehouse in bulk (6,612 EA here) and is
+    clearly being bought/stocked/issued as a complete unit in practice,
+    not assembled in-house from its 2 BOM parts. The user's own manual
+    category correction (component_master, category_source="manual") is
+    now the authority here: a manual override away from "Sub-Assembly"
+    (e.g. to "Hardware") makes this function stop treating it as one,
+    regardless of the cached BOM still existing - `category` alone
+    wasn't wired to this check before, so a manual re-categorization
+    silently had no effect on Store Request creation. Anything still
+    "rule"/"ai"-categorized (or never categorized) keeps the original
+    has-a-BOM heuristic unchanged, per user's explicit choice to fix
+    only this one item's behavior, not the general rule."""
+    if not product_ids:
+        return frozenset()
+    bom_ids = frozenset(
+        d["_id"] for d in db["bom_node_cache"].find({"_id": {"$in": list(product_ids)}, "groups": {"$ne": []}}, {"_id": 1})
+    )
+    if not bom_ids:
+        return bom_ids
+    manual_overrides = {
+        d["_id"] for d in db["component_master"].find(
+            {"_id": {"$in": list(bom_ids)}, "category_source": "manual", "category": {"$ne": "Sub-Assembly"}}, {"_id": 1},
+        )
+    }
+    return bom_ids - manual_overrides
 
 
 def _resolve_bom_doc(db, main_output_product: str, override_bom_id: str = None, sap_soap_client=None) -> dict:
@@ -958,9 +988,7 @@ def check_component_availability(
     # manufactured Sub-Assemblies (have their own cached BOM) rather than
     # a pure RM/bought-out leaf part - see is_sub_assembly above.
     component_ids = [item["product_id"] for group in (bom_doc or {}).get("groups", []) for item in group["items"]]
-    sub_assembly_ids = frozenset(
-        d["_id"] for d in db["bom_node_cache"].find({"_id": {"$in": component_ids}, "groups": {"$ne": []}}, {"_id": 1})
-    ) if component_ids else frozenset()
+    sub_assembly_ids = _sub_assembly_ids(db, component_ids)
     return _check_availability_against_stock(bom_doc, stock_by_product, confirmed_quantity, site_id, sub_assembly_ids)
 
 
@@ -1067,9 +1095,7 @@ def check_component_availability_batch(db, rows: list) -> list:
 
     mi_product_ids = frozenset(mi["product_id"] for r in rows for mi in (r.get("material_inputs") or []) if mi.get("product_id"))
     desc_by_product = _desc_by_product_from_cache(db, mi_product_ids) if mi_product_ids else {}
-    sub_assembly_ids = frozenset(
-        d["_id"] for d in db["bom_node_cache"].find({"_id": {"$in": list(mi_product_ids)}, "groups": {"$ne": []}}, {"_id": 1})
-    ) if mi_product_ids else frozenset()
+    sub_assembly_ids = _sub_assembly_ids(db, mi_product_ids)
 
     results = []
     for r in rows:

@@ -1,4 +1,37 @@
-## Bug Fix: Store Request over-requested (didn't net off existing SFG stock) (2026-09-14)
+## Bug Fix: manual category override didn't unblock auto Store Requests for BOM-having items (2026-09-14)
+
+- Real incident, user-reported: unable to get an automatic Store Request created for `6800-003989-270`
+  ("KNOB, 1/4-20 STUD"). Investigation: it has a cached BOM in SAP (Knob + Steel Insert), so
+  `is_sub_assembly` was always True for it - and by design, Sub-Assembly components NEVER get an
+  automatic Store Request (only a `sfg_shortage` informational flag), since the system assumes only an
+  internal production order can create that stock. But this item actually has 6,612 EA sitting in the
+  RM warehouse at P9 - clearly bought/stocked/issued as a complete unit in real operations, not
+  assembled in-house.
+- User had already manually re-categorized it (`component_master.category`: "Sub-Assembly" ->
+  "Hardware", `category_source: "manual"`) via the existing category-correction feature, expecting that
+  to fix it - but it didn't, because `is_sub_assembly` in `production_confirmation_service.py` only ever
+  checked `bom_node_cache` for a non-empty BOM; `category`/`category_source` were never wired into that
+  check at all, so the manual override had zero effect on Store Request creation.
+- Fix: new shared `_sub_assembly_ids(db, product_ids)` helper (replaces 3 duplicated inline
+  `bom_node_cache` queries in `check_component_availability_from_material_inputs`,
+  `check_component_availability`, and `check_component_availability_batch`) - still starts from the
+  same has-a-BOM heuristic, but now excludes any product with `category_source == "manual"` AND
+  `category != "Sub-Assembly"`. A manual override away from "Sub-Assembly" now actually takes effect;
+  "rule"/"ai"-sourced categorization (or none) keeps the original behavior unchanged, per user's
+  explicit choice to fix only this one item's behavior, not the general classification rule.
+- Applied the same manual override to `6800-003989-270` in this dev preview's DB (category="Hardware",
+  category_source="manual") and confirmed live: `_sub_assembly_ids` no longer includes it.
+- Tests: new `tests/test_manual_category_override_iter170.py` (4/4 pass - default-blocked, manual
+  override unblocks, rule/ai categorization does NOT unblock, manual-but-still-"Sub-Assembly" stays
+  blocked). Confirmed unrelated pre-existing test files still pass in isolation (an xdist
+  parallel-worker artifact caused 2 unrelated failures only when run combined with other suites -
+  verified as pre-existing/environmental, not a regression from this change).
+- **Note**: this fix is in the dev preview only. User's earlier manual category change ("we changed its
+  category Sub-Assembly to Hardware") was almost certainly done on the LIVE production app (separate
+  DB from this preview, per the earlier STO-000351 investigation) - once this code fix is deployed,
+  their existing production category change should immediately start working with no further action.
+
+
 
 - Real incident, user-reported: Store Request P9-000110 asked the store to issue the FULL BOM
   requirement for every short component (e.g. PDQ80110-2 "Top Filler": 320 EA) even though the
