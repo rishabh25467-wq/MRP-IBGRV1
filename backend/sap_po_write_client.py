@@ -283,6 +283,32 @@ _CANCEL_PO_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 </soapenv:Body>
 </soapenv:Envelope>"""
 
+# Sep 14 2026 - real live rejection reported by the user: POs created via
+# the OData service (both material and Service POs) stay stuck on
+# PurchaseOrderLifeCycleStatusCode=1 ("In Preparation") forever, since
+# nothing ever triggers SAP's own "Order" action to move them to
+# "Sent"(6). SAP's official ManagePurchaseOrderIn docs (help.sap.com,
+# PSM_ISI_R_II_SRM_PO_MBO) confirm this is a dedicated header indicator,
+# symmetric to CancelPurchaseOrderActionIndicator above. Confirmed LIVE
+# on real PO 29582 (Sep 14 2026): PurchaseOrderLifeCycleStatusCode read
+# back as 6 (Sent) right after this call - the exact field name is
+# OrderPurchaseOrderActionIndicator (NOT OrderPurchaseOrderIndicator,
+# which is silently ignored with no error at all).
+_ORDER_PO_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+<soapenv:Body>
+<n0:PurchaseOrderBundleMaintainRequest_sync xmlns:n0="{namespace}">
+ <BasicMessageHeader/>
+ <PurchaseOrderMaintainBundle actionCode="02">
+  <ObjectNodeSenderTechnicalID>1</ObjectNodeSenderTechnicalID>
+  <BusinessTransactionDocumentTypeCode>001</BusinessTransactionDocumentTypeCode>
+  <PurchaseOrderID>{po_number}</PurchaseOrderID>
+  <OrderPurchaseOrderActionIndicator>true</OrderPurchaseOrderActionIndicator>
+ </PurchaseOrderMaintainBundle>
+</n0:PurchaseOrderBundleMaintainRequest_sync>
+</soapenv:Body>
+</soapenv:Envelope>"""
+
 _CANCEL_ITEM_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
 <soapenv:Body>
@@ -304,14 +330,24 @@ _CANCEL_ITEM_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 # HSN field") - HSNCodeIndiaCode has NO field anywhere on the tenant's
 # custom OData service used for creation (checked the full $metadata),
 # but IS a real, direct child of PurchaseOrderItem on THIS SOAP schema
-# (confirmed live via PurchaseOrderSimpleByElementsQuery_sync - an
-# existing real PO's item had HSNCodeIndiaCode="48237010" as a sibling
-# of ItemID). UNVERIFIED FOR WRITE - never live-tested end-to-end (only
-# confirmed the field exists on READ) - server.py calls this as a
-# best-effort, non-blocking step AFTER the PO itself is already created
-# via OData, so a schema mismatch here can never break PO creation
-# itself, only leave HSN unset (same as today's manual-entry status
-# quo).
+# (confirmed live via PurchaseOrderSimpleByElementsQuery_sync - real POs
+# 29455/28792 both have real HSNCodeIndiaCode values, e.g. "7318",
+# "73181500", each with a listID="3" attribute on read).
+# CONFIRMED BROKEN FOR WRITE (Sep 14 2026, live test on real PO 29582):
+# posting this exact template (with AND without the listID="3" attribute
+# added to match the read shape) returns HTTP 200 with an EMPTY <Log/>
+# (no error at all) but the value never actually persists - read-back
+# immediately after still shows no HSNCodeIndiaCode at all. This is the
+# same "silent no-op" class of bug this file already hit once before
+# with PODate/PortalPRNumber (see _CUSTOM_FIELDS_TEMPLATE above) - most
+# likely HSNCodeIndiaCode can only be set as part of the item's ORIGINAL
+# creation (actionCode="01"), not via a later actionCode="02" update,
+# which would require Service items to be created via this SOAP service
+# instead of the OData ItemCollection (a bigger rework - not attempted
+# yet). Left in place as a harmless best-effort call (still non-blocking
+# - server.py never fails PO creation over this), but it currently does
+# NOT set HSN. Needs either SAP functional-consultant input on the
+# correct write mechanism, or a rework to create Service items via SOAP.
 _SET_ITEM_HSN_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
 <soapenv:Body>
@@ -323,7 +359,7 @@ _SET_ITEM_HSN_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
   <PurchaseOrderID>{po_number}</PurchaseOrderID>
   <Item actionCode="02">
    <ItemID>{item_id}</ItemID>
-   <HSNCodeIndiaCode>{hsn_code}</HSNCodeIndiaCode>
+   <HSNCodeIndiaCode listID="3">{hsn_code}</HSNCodeIndiaCode>
   </Item>
  </PurchaseOrderMaintainBundle>
 </n0:PurchaseOrderBundleMaintainRequest_sync>
@@ -505,6 +541,18 @@ class SAPPurchaseOrderWriteClient:
         )
         self._post_maintain(envelope)
         return {"po_number": po_number, "item_id": item_id, "cancelled": True}
+
+    def release_purchase_order(self, po_number: str) -> dict:
+        """Sep 14 2026 fix - see _ORDER_PO_TEMPLATE's docstring above.
+        Moves a freshly-created PO from "In Preparation" to "Sent" so it
+        actually goes out, instead of sitting unreleased forever. Called
+        best-effort right after PO creation for both material and
+        Service POs - a failure here never fails the PO itself (it
+        already exists, just stays "In Preparation" for someone to
+        release manually in the SAP UI)."""
+        envelope = _ORDER_PO_TEMPLATE.format(namespace=NAMESPACE, po_number=escape(str(po_number)))
+        self._post_maintain(envelope)
+        return {"po_number": po_number, "released": True}
 
     def set_item_hsn_code(self, po_number: str, item_id: str, hsn_code: str) -> dict:
         """Sep 14 2026 - see _SET_ITEM_HSN_TEMPLATE's docstring above:

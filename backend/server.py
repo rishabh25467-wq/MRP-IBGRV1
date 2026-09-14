@@ -6102,6 +6102,13 @@ async def create_purchase_order(payload: PurchaseOrderCreateRequest, request: Re
         # failure, so the edge passes the JSON body through untouched.
         raise HTTPException(status_code=422, detail=str(e))
 
+    # Sep 14 2026 - best-effort release so the PO doesn't stay stuck on
+    # "In Preparation" (see release_purchase_order's docstring).
+    try:
+        await asyncio.to_thread(sap_po_write_client.release_purchase_order, result["po_number"])
+    except Exception as e:
+        logger.warning(f"Purchase Order {result['po_number']}: best-effort release to 'Sent' failed (PO itself is fine): {e}")
+
     user = request.state.user
     now = datetime.now(timezone.utc)
     # zip (not a product_id re-lookup) so two lines sharing the same
@@ -6447,6 +6454,13 @@ async def create_service_purchase_order(payload: ServicePurchaseOrderCreateReque
             await asyncio.to_thread(sap_po_write_client.set_item_hsn_code, result["po_number"], str(idx + 1), it.hsn_code)
         except Exception as e:
             logger.warning(f"Service PO {result['po_number']} item {idx + 1}: best-effort HSN update failed (PO itself is fine): {e}")
+
+    # Sep 14 2026 - best-effort release so the PO doesn't stay stuck on
+    # "In Preparation" (see release_purchase_order's docstring).
+    try:
+        await asyncio.to_thread(sap_po_write_client.release_purchase_order, result["po_number"])
+    except Exception as e:
+        logger.warning(f"Service PO {result['po_number']}: best-effort release to 'Sent' failed (PO itself is fine): {e}")
 
     user = request.state.user
     now = datetime.now(timezone.utc)
