@@ -81,4 +81,29 @@ class SAPBooClient:
             description = _first_tag(el_block, "ElementDescription")
             if element_id and description:
                 descriptions[element_id] = description
+
+        # Fallback for Marker/Reporting Point elements with NO description
+        # of their own in SAP (real incident, Sep 2026: RP_10/END both had
+        # a blank <ElementDescription/> even though the Operation right
+        # before each one - "BLANK"/"BENDING" - DID have a real process
+        # name). Every Reporting Point is the EndElementID of exactly one
+        # <PlanningOperations> phase, whose nested <ExecutionOperation>
+        # carries that preceding Operation's ID + description - use that
+        # instead so staff see e.g. "OP_10 - BLANK" rather than "RP_10".
+        for po_block in _all_blocks(xml, "PlanningOperations"):
+            end_element_id = _first_tag(po_block, "EndElementID")
+            if not end_element_id or descriptions.get(end_element_id):
+                continue
+            exec_match = re.search(
+                r"<(?:\w+:)?ExecutionOperation(?:\s[^>]*)?>(.*?)</(?:\w+:)?ExecutionOperation>", po_block, re.S,
+            )
+            if not exec_match:
+                continue
+            exec_block = exec_match.group(1)
+            op_id = _first_tag(exec_block, "OperationID")
+            op_desc = _first_tag(exec_block, "OperationDescription")
+            if op_id and op_desc:
+                descriptions[end_element_id] = f"{op_id} - {op_desc}"
+            elif op_desc:
+                descriptions[end_element_id] = op_desc
         return descriptions
