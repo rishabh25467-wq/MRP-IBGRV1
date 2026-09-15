@@ -1,3 +1,8 @@
+## CLARIFICATION (no code change): End Date blank for open lots is EXPECTED SAP behavior, not a bug (Sep 15, 2026 session, same-day follow-up)
+- User reported End Date showing "—" for all lots. Root cause confirmed live: SAP's `ProductionEndDate` is the ACTUAL completion timestamp - only set once a lot is truly Finished; absent entirely for "Started"/open lots (confirmed via raw SOAP dump, no `ProductionEndDate` tag present at all for an in-progress lot).
+- Investigated a planned/target end date alternative for open lots - confirmed via web search that data lives on the Production Order's scheduling object (`ProductionOrderRequestEnd`), NOT exposed by the `ProductionLotByElementsQuery_sync` service already in use - would need a brand new SAP integration/service.
+- **User's decision**: keep current behavior as-is (actual completion date, blank until Finished). Do NOT build a new SAP integration for planned end date unless asked again.
+
 ## FEATURE (self-tested via curl, verified live): Added "End Date" column next to Site on Production Confirmation (Sep 15, 2026 session)
 - **User's ask**: show the production lot's ending date next to Site in the Production Confirmation table.
 - **Fix**: SAP already returns `ProductionEndDate` in the ProductionLot query response (confirmed live) but it wasn't parsed. Added `production_end_date` parsing in `sap_production_lot_client.py`'s `_parse_lot_block` + row dict (flows through the existing `/api/production-confirmation/open-lots` endpoint with no schema changes needed, since rows are plain dicts). Added "End Date" column (formatted `DD Mon YYYY`) right after "Site" in both `ProductionConfirmationPage.js` and `ProductionConfirmationTestPage.js` tables, and to the Excel export header/rows in the main page.
