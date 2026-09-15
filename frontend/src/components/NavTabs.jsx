@@ -133,14 +133,14 @@ export const NavTabs = () => {
           horizontally instead of overflowing into the SAP/ERP status
           badges that sit just outside this component. */}
       <div className="hidden lg:flex items-center gap-1 w-full min-w-0">
-      <div className="flex items-center gap-1 min-w-0 flex-1 overflow-x-auto nav-scroll-x">
+      <div className="flex items-center gap-0.5 min-w-0 flex-1 overflow-x-auto nav-scroll-x">
       {visibleTabs.map((tab) => {
         const active = pathname === tab.to;
         return (
           <Link
             key={tab.to}
             to={tab.to}
-            className={`px-3.5 py-1.5 rounded-full text-[13px] font-bold font-heading transition-colors duration-150 ${
+            className={`shrink-0 px-3 py-1.5 rounded-full text-[13px] font-bold font-heading transition-colors duration-150 ${
               active ? "bg-white text-[#0B6B74]" : "text-white/85 hover:bg-white/15 hover:text-white"
             }`}
             data-testid={tab.testId}
@@ -152,7 +152,7 @@ export const NavTabs = () => {
       {dropdownGroups.map((group) => group.tabs.length > 0 && (
         <DropdownMenu key={group.key}>
           <DropdownMenuTrigger
-            className={`flex items-center gap-1 px-3.5 py-1.5 rounded-full text-[13px] font-bold font-heading transition-colors duration-150 outline-none ${
+            className={`shrink-0 flex items-center gap-1 px-3 py-1.5 rounded-full text-[13px] font-bold font-heading transition-colors duration-150 outline-none ${
               group.active ? "bg-white text-[#0B6B74]" : "text-white/85 hover:bg-white/15 hover:text-white"
             }`}
             data-testid={group.testId}
