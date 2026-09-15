@@ -3,6 +3,7 @@ import BomExplorerPage from "@/pages/BomExplorerPage";
 import PurchasingPlanPage from "@/pages/PurchasingPlanPage";
 import ProductionPlanPage from "@/pages/ProductionPlanPage";
 import ProductionConfirmationPage from "@/pages/ProductionConfirmationPage";
+import ConfirmedProductionPage from "@/pages/ConfirmedProductionPage";
 import ProductionConfirmationTestPage from "@/pages/ProductionConfirmationTestPage";
 import AdminPage from "@/pages/AdminPage";
 import InventoryPage from "@/pages/InventoryPage";
@@ -137,6 +138,7 @@ function InternalApp() {
             <Route path="/purchasing-plan" element={<ProtectedRoute page="purchasing_plan"><PurchasingPlanPage /></ProtectedRoute>} />
             <Route path="/production-plan" element={<ProtectedRoute page="production_plan"><ProductionPlanPage /></ProtectedRoute>} />
             <Route path="/production-confirmation" element={<ProtectedRoute page="production_confirmation"><ProductionConfirmationPage /></ProtectedRoute>} />
+            <Route path="/production-confirmation/confirmed-report" element={<ProtectedRoute page="production_confirmation"><ConfirmedProductionPage /></ProtectedRoute>} />
             {/* Sep 2026, user's explicit ask: test page for multi-Reporting-Point
                 models (RP10/RP20/END style) is now its own grantable right
                 (see PAGE_CATALOG's "production_confirmation_test") instead of

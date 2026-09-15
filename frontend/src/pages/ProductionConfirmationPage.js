@@ -9,7 +9,6 @@ import {
   CheckCircle,
   WarningCircle,
   ClockCounterClockwise,
-  ListChecks,
   Gear,
   Trash,
   Plus,
@@ -18,7 +17,6 @@ import {
   X,
   CaretRight,
   CaretDown,
-  DownloadSimple,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -43,16 +41,6 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
 const rowKey = (r) => `${r.production_lot_id}::${r.confirmation_group_uuid}::${r.reporting_point_uuid}`;
-
-const StatCard = ({ icon: Icon, label, value, testId }) => (
-  <div className="bg-white border border-[#D0D5DD] rounded-sm p-3 shadow-[0_1px_2px_0_rgba(16,24,40,0.05)] flex flex-col gap-1.5" data-testid={testId}>
-    <div className="flex items-center gap-1.5 text-[#475467]">
-      <Icon size={14} weight="bold" />
-      <span className="font-heading text-xs font-bold uppercase tracking-wider">{label}</span>
-    </div>
-    <span className="font-sans text-2xl font-bold tabular-nums text-[#1D2939]">{value}</span>
-  </div>
-);
 
 const formatQty = (v) => (v == null ? "—" : v.toLocaleString("en-IN", { maximumFractionDigits: 2 }));
 
@@ -753,65 +741,6 @@ const ManageReasonsDialog = ({ open, onClose, reasons, onChanged }) => {
           <Input placeholder="Label" value={label} onChange={(e) => setLabel(e.target.value)} data-testid="reason-label-input" />
           <Button onClick={add} data-testid="reason-add-button"><Plus size={14} /></Button>
         </div>
-      </DialogContent>
-    </Dialog>
-  );
-};
-
-// -------------------- History dialog --------------------
-const HistoryDialog = ({ open, onClose }) => {
-  const [entries, setEntries] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    if (!open) return;
-    setLoading(true);
-    axios.get(`${API}/production-confirmation/history`).then(({ data }) => setEntries(data.entries)).finally(() => setLoading(false));
-  }, [open]);
-
-  return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-2xl max-h-[80vh] overflow-auto" data-testid="confirmation-history-dialog">
-        <DialogHeader>
-          <DialogTitle>Confirmation History</DialogTitle>
-          <DialogDescription>Every confirmation submitted from this page, most recent first.</DialogDescription>
-        </DialogHeader>
-        {loading ? <Skeleton className="h-40 w-full" /> : (
-          <div className="border border-[#D0D5DD] rounded-sm overflow-auto">
-            <table className="w-full text-[12px] border-collapse" data-testid="confirmation-history-table">
-              <thead>
-                <tr>
-                  {["When", "By", "Lot", "Product", "Qty", "Scrap", "Finished", "Result", "WIP Clearing", "FG Movement"].map((h) => (
-                    <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {entries.map((e, i) => (
-                  <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-[#F9FAFB]"} data-testid={`history-row-${i}`}>
-                    <td className="border border-[#D0D5DD] px-2 py-1">{new Date(e.at).toLocaleString("en-IN")}</td>
-                    <td className="border border-[#D0D5DD] px-2 py-1">{e.actor}</td>
-                    <td className="border border-[#D0D5DD] px-2 py-1">{e.production_lot_id}</td>
-                    <td className="border border-[#D0D5DD] px-2 py-1">{e.main_output_product || "—"}</td>
-                    <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums">{formatQty(e.confirmed_quantity)}</td>
-                    <td className="border border-[#D0D5DD] px-2 py-1 text-right tabular-nums">{formatQty(e.confirmed_scrap)}</td>
-                    <td className="border border-[#D0D5DD] px-2 py-1">{e.confirmation_finished ? "Yes" : "No"}</td>
-                    <td className="border border-[#D0D5DD] px-2 py-1">
-                      {e.success ? <Badge variant="outline" className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Success</Badge> : <Badge variant="outline" className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>}
-                    </td>
-                    <td className="border border-[#D0D5DD] px-2 py-1">
-                      {!e.wip_clearing ? "—" : e.wip_clearing.skipped ? <Badge variant="outline" className="bg-[#F9FAFB] text-[#667085] border-[#EAECF0]" title={e.wip_clearing.log}>Pending</Badge> : e.wip_clearing.success ? <Badge variant="outline" className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Cleared</Badge> : <Badge variant="outline" className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>}
-                    </td>
-                    <td className="border border-[#D0D5DD] px-2 py-1">
-                      {!e.fg_movement ? "—" : e.fg_movement.ok ? <Badge variant="outline" className="bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]">Moved</Badge> : <Badge variant="outline" className="bg-[#FEF3F2] text-[#B42318] border-[#FECDCA]">Failed</Badge>}
-                    </td>
-                  </tr>
-                ))}
-                {entries.length === 0 && <tr><td colSpan={10} className="text-center py-6 text-[#98A2B3] border border-[#D0D5DD]">No confirmations submitted yet.</td></tr>}
-              </tbody>
-            </table>
-          </div>
-        )}
       </DialogContent>
     </Dialog>
   );
@@ -2166,25 +2095,9 @@ export default function ProductionConfirmationPage() {
   const [confirmRow, setConfirmRow] = useState(null);
   const [reasons, setReasons] = useState([]);
   const [showReasons, setShowReasons] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
   const [stockByRow, setStockByRow] = useState({});
   const [lastConfirmationByLot, setLastConfirmationByLot] = useState({});
   const [outputProductFilter, setOutputProductFilter] = useState("");
-  // Sep 12 2026, user's explicit ask: "between" date range on this
-  // table's own Last Confirmation date (client-side, from data already
-  // fetched into lastConfirmationByLot - no extra SAP/backend call), plus
-  // WIP Clearing and By-product posting status filters.
-  const [lastConfDateFrom, setLastConfDateFrom] = useState("");
-  const [lastConfDateTo, setLastConfDateTo] = useState("");
-  const [wipFilter, setWipFilter] = useState("all");
-  const [byproductFilter, setByproductFilter] = useState("all");
-  const [todayStats, setTodayStats] = useState({
-    today_confirmed_output_qty: 0, today_scrap_posted_qty: 0, today_released_output_qty: 0, today_output_open_qty: 0,
-  });
-
-  useEffect(() => {
-    axios.get(`${API}/production-confirmation/today-stats`).then(({ data }) => setTodayStats(data)).catch(() => {});
-  }, []);
 
   const loadReasons = useCallback(() => {
     axios.get(`${API}/production-confirmation/deviation-reasons`).then(({ data }) => setReasons(data.reasons)).catch(() => {});
@@ -2269,39 +2182,6 @@ export default function ProductionConfirmationPage() {
       const q = outputProductFilter.trim().toLowerCase();
       out = out.filter((r) => (r.main_output_product || "").toLowerCase().includes(q));
     }
-    if (lastConfDateFrom || lastConfDateTo) {
-      const fromTs = lastConfDateFrom ? new Date(lastConfDateFrom + "T00:00:00").getTime() : -Infinity;
-      const toTs = lastConfDateTo ? new Date(lastConfDateTo + "T23:59:59.999").getTime() : Infinity;
-      out = out.filter((r) => {
-        const conf = lastConfirmationByLot[`${r.production_lot_id}::${r.reporting_point_id}`];
-        if (!conf?.at) return false;
-        const t = new Date(conf.at).getTime();
-        return t >= fromTs && t <= toTs;
-      });
-    }
-    if (wipFilter !== "all") {
-      out = out.filter((r) => {
-        const conf = lastConfirmationByLot[`${r.production_lot_id}::${r.reporting_point_id}`];
-        const wip = conf?.wip_clearing;
-        if (wipFilter === "posted") return !!wip && !wip.skipped && !!wip.success;
-        // Sep 12 2026, user's explicit ask (real incident, Lot 72722): a
-        // lot whose MAIN confirmation itself keeps failing never even
-        // reaches the WIP Clearing step (wip_clearing stays null/blank
-        // forever) - it used to be invisible under "WIP: Error" even
-        // though it's clearly stuck. "Error" now also catches a failed
-        // main confirmation, not just a failed WIP Clearing Run.
-        const wipRunFailed = !!wip && !wip.skipped && !wip.success;
-        const mainConfirmFailed = conf?.success === false;
-        return wipRunFailed || mainConfirmFailed;
-      });
-    }
-    if (byproductFilter !== "all") {
-      out = out.filter((r) => {
-        const bp = lastConfirmationByLot[`${r.production_lot_id}::${r.reporting_point_id}`]?.byproduct_confirmation;
-        if (!bp) return false;
-        return byproductFilter === "posted" ? !!bp.success : !bp.success;
-      });
-    }
     if (sortLatestFirst) {
       out = [...out].sort((a, b) => {
         const at = a.order_created_at ? new Date(a.order_created_at).getTime() : -Infinity;
@@ -2310,7 +2190,7 @@ export default function ProductionConfirmationPage() {
       });
     }
     return out;
-  }, [rows, creatorFilter, sortLatestFirst, actorName, outputProductFilter, lastConfirmationByLot, lastConfDateFrom, lastConfDateTo, wipFilter, byproductFilter]);
+  }, [rows, creatorFilter, sortLatestFirst, actorName, outputProductFilter]);
 
   // "How many pcs are sitting at OP10" (user's explicit ask, Aug 2026):
   // for a multi-step routing lot, the pieces that cleared THIS operation
@@ -2335,33 +2215,6 @@ export default function ProductionConfirmationPage() {
     });
     return map;
   }, [rows]);
-
-  // Sep 12 2026, user's explicit ask: "Download report in Excel same as
-  // table" - exports exactly the currently visible (filtered) rows, with
-  // the same columns shown on screen, including the WIP Clearing/By-
-  // product status this same ask added filters for.
-  const exportToExcel = () => {
-    const header = ["Lot ID", "Output Product", "Site", "End Date", "Status", "Reporting Point", "Planned", "Confirmed So Far", "Open", "Waiting Next Stage", "UOM", "Finished", "Created By", "Production Model", "Stock", "WIP Clearing", "By-product", "Last Confirmed At"];
-    const dataRows = visibleRows.map((r) => {
-      const conf = lastConfirmationByLot[`${r.production_lot_id}::${r.reporting_point_id}`];
-      const stock = stockByRow[rowKey(r)];
-      const wipLabel = !conf?.wip_clearing ? "—" : conf.wip_clearing.skipped ? "Pending" : conf.wip_clearing.success ? "Posted" : "Error";
-      const byproductLabel = !conf?.byproduct_confirmation ? "—" : conf.byproduct_confirmation.success ? "Posted" : "Error";
-      return [
-        r.production_lot_id, r.main_output_product || "—", r.site_id || "—", formatEndDate(r.production_end_date), r.life_cycle_status_label,
-        r.reporting_point_description || r.operation_description || r.reporting_point_id || "—",
-        r.planned_quantity, r.total_confirmed_quantity, r.open_quantity, stageWaitingByRowKey[rowKey(r)] || 0,
-        formatUnit(r.unit_code) || "—", r.task_finished ? "Yes" : "No", r.created_by || "—", r.production_model_id || "—",
-        !stock ? "—" : !stock.checked ? "No BOM cached" : stock.sufficient_all ? "OK" : `Short (${stock.short_components.length})`,
-        wipLabel, byproductLabel, conf?.at ? new Date(conf.at).toLocaleString("en-IN") : "—",
-      ];
-    });
-    const sheet = XLSX.utils.aoa_to_sheet([header, ...dataRows]);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, sheet, "Production Confirmation");
-    XLSX.writeFile(workbook, `production_confirmation_${new Date().toISOString().slice(0, 10)}.xlsx`);
-  };
-
 
   return (
     <div className="print:hidden h-screen flex flex-col overflow-hidden bg-[#F2F4F7] text-[#1D2939]">
@@ -2475,55 +2328,9 @@ export default function ProductionConfirmationPage() {
             <MagnifyingGlass size={14} className="mr-1.5" /> Look Up
           </Button>
           <div className="flex-1" />
-          <Button variant="outline" onClick={() => setShowHistory(true)} data-testid="open-history-button">
-            <ClockCounterClockwise size={14} className="mr-1.5" /> History
-          </Button>
           <Button variant="outline" onClick={() => setShowReasons(true)} data-testid="open-manage-reasons-button">
             <Gear size={14} className="mr-1.5" /> Manage Reasons
           </Button>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs font-heading font-bold uppercase tracking-wide text-[#667085]">Last Confirmed:</span>
-          <Input type="date" value={lastConfDateFrom} onChange={(e) => setLastConfDateFrom(e.target.value)} className="w-36 bg-white h-8 text-xs" data-testid="last-conf-date-from-input" />
-          <span className="text-[#98A2B3] text-xs">to</span>
-          <Input type="date" value={lastConfDateTo} onChange={(e) => setLastConfDateTo(e.target.value)} className="w-36 bg-white h-8 text-xs" data-testid="last-conf-date-to-input" />
-          <Select value={wipFilter} onValueChange={setWipFilter}>
-            <SelectTrigger className="w-36 bg-white h-8 text-xs" data-testid="wip-filter-select"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">WIP: All</SelectItem>
-              <SelectItem value="posted">WIP: Posted</SelectItem>
-              <SelectItem value="error">WIP: Error</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select value={byproductFilter} onValueChange={setByproductFilter}>
-            <SelectTrigger className="w-44 bg-white h-8 text-xs" data-testid="byproduct-filter-select"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">By-product: All</SelectItem>
-              <SelectItem value="posted">By-product: Posted</SelectItem>
-              <SelectItem value="error">By-product: Error</SelectItem>
-            </SelectContent>
-          </Select>
-          {(lastConfDateFrom || lastConfDateTo || wipFilter !== "all" || byproductFilter !== "all") && (
-            <Button
-              variant="outline" size="sm" className="h-8 text-xs"
-              onClick={() => { setLastConfDateFrom(""); setLastConfDateTo(""); setWipFilter("all"); setByproductFilter("all"); }}
-              data-testid="lots-clear-filters-button"
-            >
-              Clear Filters
-            </Button>
-          )}
-          <div className="flex-1" />
-          <Button variant="outline" size="sm" className="h-8 text-xs" onClick={exportToExcel} data-testid="export-excel-button">
-            <DownloadSimple size={14} className="mr-1.5" /> Export Excel
-          </Button>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <StatCard icon={CheckCircle} label="Today Confirmed Output Qty" value={formatQty(todayStats.today_confirmed_output_qty)} testId="stat-today-confirmed-output" />
-          <StatCard icon={ListChecks} label="Today Released Output Qty" value={formatQty(todayStats.today_released_output_qty)} testId="stat-today-released-output" />
-          <StatCard icon={ClockCounterClockwise} label="Today Output Open Qty" value={formatQty(todayStats.today_output_open_qty)} testId="stat-today-output-open" />
-          <StatCard icon={WarningCircle} label="Today Scrap Posted Qty" value={formatQty(todayStats.today_scrap_posted_qty)} testId="stat-today-scrap-posted" />
         </div>
 
         {loading ? (
@@ -2651,7 +2458,6 @@ export default function ProductionConfirmationPage() {
         reasons={reasons}
       />
       <ManageReasonsDialog open={showReasons} onClose={() => setShowReasons(false)} reasons={reasons} onChanged={setReasons} />
-      <HistoryDialog open={showHistory} onClose={() => setShowHistory(false)} />
     </div>
   );
 }

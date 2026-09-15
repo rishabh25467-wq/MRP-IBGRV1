@@ -272,6 +272,57 @@ def get_scrap_reason_breakdown(db, start_utc, site_ids) -> list:
 
 
 
+def get_confirmed_production_report(db, date_from=None, date_to=None, output_products=None,
+                                     site_ids=None, byproduct: str = "all", wip: str = "all",
+                                     limit: int = 2000) -> list:
+    """Sep 15 2026, user's explicit ask - dedicated "Confirmed Production"
+    reporting page, separated from the operational Production Confirmation
+    screen (whose old in-page "History" dialog this fully replaces/
+    supersedes). Same HISTORY_COLLECTION as get_confirmation_history,
+    success=True only - a failed SAP attempt never actually posted
+    anything, so it has no place in a "confirmed production" report.
+    site_ids=None means no site restriction (admin/super_admin); an empty
+    set correctly returns nothing for a "user" bound to no sites yet."""
+    query = {"success": True}
+    if date_from or date_to:
+        at_q = {}
+        if date_from:
+            at_q["$gte"] = date_from
+        if date_to:
+            at_q["$lte"] = date_to
+        query["at"] = at_q
+    if output_products:
+        query["main_output_product"] = {"$in": output_products}
+    if site_ids is not None:
+        query["site_id"] = {"$in": list(site_ids)}
+    if byproduct == "yes":
+        query["byproduct_confirmed_quantity"] = {"$gt": 0}
+    elif byproduct == "no":
+        query["byproduct_confirmed_quantity"] = {"$not": {"$gt": 0}}
+    docs = list(db[HISTORY_COLLECTION].find(query).sort("at", -1).limit(limit))
+    rows = [
+        {
+            "at": d["at"].isoformat(),
+            "production_lot_id": d.get("production_lot_id"),
+            "reporting_point_id": d.get("reporting_point_id"),
+            "main_output_product": d.get("main_output_product"),
+            "site_id": d.get("site_id"),
+            "confirmed_quantity": d.get("confirmed_quantity"),
+            "confirmed_scrap": d.get("confirmed_scrap"),
+            "byproduct_confirmed_quantity": d.get("byproduct_confirmed_quantity"),
+            "byproduct_unit_code": d.get("byproduct_unit_code"),
+            "wip_clearing": d.get("wip_clearing"),
+            "actor": d.get("actor"),
+        }
+        for d in docs
+    ]
+    if wip == "wip":
+        rows = [r for r in rows if r.get("wip_clearing") and not r["wip_clearing"].get("skipped")]
+    elif wip == "non_wip":
+        rows = [r for r in rows if not r.get("wip_clearing") or r["wip_clearing"].get("skipped")]
+    return rows
+
+
 def get_confirmation_history(db, production_lot_id: str = None, limit: int = 200) -> list:
     query = {}
     if production_lot_id:

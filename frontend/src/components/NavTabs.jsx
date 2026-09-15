@@ -42,6 +42,10 @@ const TABS = [
 // at common desktop widths).
 const PRODUCTION_SUBTABS = [
   { to: "/production-confirmation", label: "Production Confirmation", testId: "nav-production-production-confirmation", page: "production_confirmation" },
+  // Sep 15 2026, user's explicit ask: reporting counterpart of Production
+  // Confirmation (transaction-level history) split into its own page -
+  // reuses the same "production_confirmation" access right.
+  { to: "/production-confirmation/confirmed-report", label: "Confirmed Production", testId: "nav-production-confirmed-production", page: "production_confirmation" },
   { to: "/admin/production-confirmation-test", label: "Production Confirmation (Test)", testId: "nav-production-production-confirmation-test", page: "production_confirmation_test" },
 ];
 

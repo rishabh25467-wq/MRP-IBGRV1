@@ -2663,7 +2663,7 @@ def _attach_order_creators(rows: list, db) -> list:
 # Aug 25 2026 fix: SAP's SelectionByProductionLotStatusCode query has no
 # recency ordering - a 100-row cap was silently excluding brand-new lots
 # (e.g. lot 70539 never appeared) once the tenant had >100 open lots.
-async def get_open_production_lots(request: Request, status: str = Query("open", description="'open' (Released+Started), 'all', or comma-separated status codes"), site_id: Optional[str] = None, limit: int = 500):
+async def get_open_production_lots(request: Request, status: str = Query("open", description="'open' (Released+Started), 'all', or comma-separated status codes"), site_id: Optional[str] = None, limit: int = 500, scope: str = Query("all", description="'all' (site-permitted) or 'mine' (created by the logged-in user)")):
     if status == "open":
         status_codes = None
     elif status == "all":
@@ -2712,8 +2712,31 @@ async def get_open_production_lots(request: Request, status: str = Query("open",
     # be gated by which sites they're bound to for VIEWING - dropped the
     # site filter entirely; ownership alone decides what a "user" role
     # sees here now (admin/super_admin unaffected, already saw everything).
+    # Sep 15 2026, user's explicit ask: "Show All / Mine" is now a REAL
+    # server-side scope toggle instead of always forcing ownership-only
+    # for a "user" role (that used to make the client's own "Show All"
+    # option a no-op for them, since these rows were already pre-filtered
+    # to their own orders before the client ever saw them). "mine" keeps
+    # the exact ownership-matching logic below unchanged; "all" (the new
+    # default for every role, including "user") instead restricts to the
+    # user's bound sites - same Site Binding mechanism as Store Approval -
+    # so a "user" account can now see every order at a site they're
+    # actually bound to, not just ones they personally created.
+    # admin/super_admin are unaffected either way - they already see
+    # everything and "mine" for them means "created by me" too.
     user = request.state.user
     if user.get("role") not in ("super_admin", "admin"):
+        if scope == "mine":
+            my_id = user.get("_id")
+            my_name = (user.get("name") or "").strip().lower()
+            rows = [r for r in rows if (
+                (r.get("created_by_user_id") and r["created_by_user_id"] == my_id)
+                or (r.get("created_by") or "").strip().lower() == my_name
+            )]
+        else:
+            bound = set(user.get("bound_sites", []))
+            rows = [r for r in rows if r.get("site_id") in bound]
+    elif scope == "mine":
         my_id = user.get("_id")
         my_name = (user.get("name") or "").strip().lower()
         rows = [r for r in rows if (
@@ -3124,6 +3147,45 @@ async def retry_fg_movement(payload: RetryFgMovementRequest):
 async def get_production_confirmation_history(production_lot_id: Optional[str] = None):
     entries = await asyncio.to_thread(production_confirmation_service.get_confirmation_history, db, production_lot_id)
     return {"entries": entries}
+
+
+@api_router.get("/production-confirmation/confirmed-report")
+async def get_confirmed_production_report_endpoint(
+    request: Request,
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
+    output_products: Optional[str] = None, site_ids: Optional[str] = None,
+    byproduct: str = Query("all", description="'all', 'yes', or 'no'"),
+    wip: str = Query("all", description="'all', 'wip', or 'non_wip'"),
+    limit: int = 2000,
+):
+    """Sep 15 2026, user's explicit ask - the "Confirmed Production"
+    reporting page, kept entirely separate from the operational Production
+    Confirmation screen's open-lots endpoint above. Reuses the existing
+    "production_confirmation" access right (same PAGE_ROUTE_RULES prefix,
+    no new permission needed per user's explicit choice)."""
+    user = request.state.user
+    scope = _site_scope_for(user)
+    requested_sites = {s.strip() for s in site_ids.split(",") if s.strip()} if site_ids else None
+    if scope is not None:
+        effective_sites = (requested_sites & scope) if requested_sites else scope
+    else:
+        effective_sites = requested_sites
+    products = [p.strip() for p in output_products.split(",") if p.strip()] if output_products else None
+    date_from_dt = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc) if date_from else None
+    date_to_dt = (datetime.fromisoformat(date_to) + timedelta(days=1)).replace(tzinfo=timezone.utc) if date_to else None
+    rows = await asyncio.to_thread(
+        production_confirmation_service.get_confirmed_production_report, db,
+        date_from_dt, date_to_dt, products, effective_sites, byproduct, wip, limit,
+    )
+    codes = list({r["main_output_product"] for r in rows if r.get("main_output_product")})
+    cache = {}
+    if codes:
+        cache = {c["_id"]: c for c in db["component_master"].find({"_id": {"$in": codes}}, {"description": 1, "base_uom": 1})}
+    for r in rows:
+        info = cache.get(r.get("main_output_product")) or {}
+        r["main_output_product_description"] = info.get("description")
+        r["uom"] = info.get("base_uom")
+    return {"rows": rows}
 
 
 class RestartTaskRequest(BaseModel):
