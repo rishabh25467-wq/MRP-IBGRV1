@@ -29,14 +29,17 @@ from requests.auth import HTTPBasicAuth
 # account assignment confirmed live against this tenant's real $metadata
 # (AccountAssignmentTypeCode "IMAT" is in
 # ItemAccountAssignmentDetailsAccountAssignmentTypeCodeCollection, and
-# IndividualMaterialID is a creatable field on ItemAccountAssignmentDetails).
-# Product Category "CONSUMABLES" reused here TEMPORARILY (user's explicit
-# fallback choice, Sep 15 2026) - pending the tenant's real Fixed-Asset-
-# mapped category code.
+# IndividualMaterialID is a creatable field on ItemAccountAssignmentDetails
+# - live-verified end to end on real PO 29596: sending the Fixed Asset's
+# Master Fixed Asset ID directly as IndividualMaterialID correctly landed
+# on that exact same asset in SAP, confirmed by the user). Product
+# Category "FIXED_ASSETS" confirmed by user Sep 15 2026 (the tenant also
+# has a similarly-named "ASSET" category - FIXED_ASSETS is the one
+# actually linked to a Fixed Asset Class).
 PO_TYPE_ITEM_CONFIG = {
     "service": ("19", "CONSUMABLES"),
     "jobwork": ("18", "JOBWORK"),
-    "capital": ("18", "CONSUMABLES"),
+    "capital": ("18", "FIXED_ASSETS"),
 }
 
 
@@ -215,8 +218,9 @@ class SAPPurchaseOrderODataClient:
         live list, via QueryObjectDescriptionIn - see sap_fixed_asset_client.py)
         instead of Cost Center + GL Account - per user's explicit ask,
         this posts cost against an EXISTING SAP-maintained asset, never
-        creates a new one from here. UNVERIFIED for a real live write -
-        first real Capital PO submission will confirm end to end."""
+        creates a new one from here. LIVE-VERIFIED end to end on real PO
+        29596 - user confirmed the Master Fixed Asset ID sent as
+        IndividualMaterialID correctly landed on the exact asset picked."""
         description = str(it.get("description") or "Service")[:40]
         if po_type == "capital":
             account_assignment_details = {

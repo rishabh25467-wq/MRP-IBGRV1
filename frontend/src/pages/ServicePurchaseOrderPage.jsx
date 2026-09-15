@@ -74,9 +74,7 @@ const emptyLine = () => ({
 const PO_TYPE_OPTIONS = [
   { value: "service", label: "Service & Consume", productCategory: "CONSUMABLES" },
   { value: "jobwork", label: "Job Work", productCategory: "JOBWORK" },
-  // Sep 15 2026: reusing CONSUMABLES temporarily (user's explicit fallback
-  // choice) until the tenant's real Fixed-Asset-mapped Product Category is known.
-  { value: "capital", label: "Capital", productCategory: "CONSUMABLES" },
+  { value: "capital", label: "Capital", productCategory: "FIXED_ASSETS" },
 ];
 
 export default function ServicePurchaseOrderPage() {
