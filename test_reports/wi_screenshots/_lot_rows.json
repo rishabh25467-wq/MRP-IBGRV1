@@ -1,0 +1,10 @@
+[
+  {
+    "testid": "lot-row-0",
+    "text": "73309\t100162723-5\tP2\tReleased\tOP_10 - BLANK+PUNCHING(RP_10)\t5\t0\t5\t\u2014\tEA\tNo\tIter169 WI SuperAdmin\t100162723-5_2\tOK\t\u2014\t\nConfirm"
+  },
+  {
+    "testid": "lot-row-1",
+    "text": "73309\t100162723-5\tP2\tReleased\tOP_20 - BENDING(END)\t5\t0\t5\t0 (after RP_10)\tEA\tNo\tIter169 WI SuperAdmin\t100162723-5_2\tOK\t\u2014\t\nConfirm"
+  }
+]
