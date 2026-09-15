@@ -22,7 +22,7 @@ const PAGE_KEYS = Object.keys(PAGE_LABELS);
 // one long flat list, so a specific right is easy to find. Any key not
 // listed below (e.g. a page not linked into the nav yet) falls into "Other".
 const WORK_CENTER_GROUPS = [
-  { label: "BOM & Production", keys: ["bom_explorer", "production_plan", "production_confirmation"] },
+  { label: "BOM & Production", keys: ["bom_explorer", "production_plan", "production_confirmation", "production_confirmation_test"] },
   { label: "Procurement", keys: ["purchasing_plan", "purchase_order", "created_purchase_orders", "open_purchase_orders", "quota_allocation", "vendor_goods_receipt"] },
   { label: "Supplier Management", keys: ["supplier_master", "supplier_portal_invite", "supplier_portal_admin", "supplier_portal_documents", "supplier_dashboard"] },
   { label: "Inventory Management", keys: ["inventory", "stock_transfer", "inbound_stock_transfer", "store_approval"] },

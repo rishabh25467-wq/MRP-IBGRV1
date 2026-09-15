@@ -30,6 +30,9 @@ export const PAGE_LABELS = {
   purchasing_plan: "Procurement Planning",
   production_plan: "Production Planning",
   production_confirmation: "Production Confirmation",
+  // Sep 2026, user's explicit ask: the admin-only "test" variant is now
+  // its own grantable right.
+  production_confirmation_test: "Production Confirmation (Test)",
   inventory: "Stock Overview",
   // Aug 27 2026, user's explicit ask: split out of "inventory" into its
   // own grantable right.

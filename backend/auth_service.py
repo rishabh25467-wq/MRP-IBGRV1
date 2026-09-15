@@ -66,6 +66,16 @@ PAGE_CATALOG = [
     {"key": "purchasing_plan", "label": "Purchasing Plan"},
     {"key": "production_plan", "label": "Production Plan"},
     {"key": "production_confirmation", "label": "Production Confirmation"},
+    # Sep 2026, user's explicit ask: the admin-only "test" variant of
+    # Production Confirmation (multi-Reporting-Point production models)
+    # is now its own independently-grantable right instead of being
+    # hardcoded to super_admin/admin only (see App.js's ProtectedRoute
+    # and NavTabs.jsx's "Operation" dropdown). Reuses the SAME underlying
+    # /api/production-confirmation/ endpoints as the main page - see
+    # PAGE_ROUTE_RULES below, this key is added alongside
+    # "production_confirmation" wherever that page's API calls are
+    # gated, so a user with ONLY this test right isn't 403'd.
+    {"key": "production_confirmation_test", "label": "Production Confirmation (Test)"},
     {"key": "inventory", "label": "Stock Overview"},
     {"key": "supplier_master", "label": "Supplier Master"},
     {"key": "quota_allocation", "label": "Quota Allocation"},
@@ -141,7 +151,7 @@ PAGE_ROUTE_RULES = [
     ("/api/sales-plan", {"purchasing_plan"}),
     ("/api/part-suppliers/", {"purchasing_plan"}),
     ("/api/production-plan/", {"production_plan"}),
-    ("/api/production-confirmation/", {"production_confirmation"}),
+    ("/api/production-confirmation/", {"production_confirmation", "production_confirmation_test"}),
     ("/api/inventory", {"inventory"}),
     # Aug 27 2026, user's explicit ask: Inter Plant Stock Transfer is now
     # its own grantable right, separate from Stock Overview above.
@@ -156,7 +166,7 @@ PAGE_ROUTE_RULES = [
     ("/api/suppliers/sap-receipt-dates/", {"quota_allocation"}),
     ("/api/suppliers/sync-from-sap", {"supplier_master"}),
     ("/api/suppliers", {"supplier_master", "quota_allocation", "supplier_portal_admin", "supplier_portal_invite"}),
-    ("/api/products/search", {"quota_allocation", "production_confirmation", "inventory", "stock_transfer"}),
+    ("/api/products/search", {"quota_allocation", "production_confirmation", "production_confirmation_test", "inventory", "stock_transfer"}),
     ("/api/quota-arrangements/", {"quota_allocation"}),
     ("/api/admin/components", {"admin"}),
     ("/api/admin/categories", {"admin"}),
@@ -170,7 +180,7 @@ PAGE_ROUTE_RULES = [
     # store_approval access) isn't 403'd out of their own requests. Every
     # other /api/store-requests/* endpoint (queue, decision, issue, etc.)
     # still requires store_approval specifically.
-    ("/api/store-requests/journal", {"store_approval", "production_confirmation"}),
+    ("/api/store-requests/journal", {"store_approval", "production_confirmation", "production_confirmation_test"}),
     # Aug 27 2026: Inter Plant Stock Transfer's "Refresh Site Stock"
     # dropdown reuses this same site list - harmless read-only endpoint,
     # same pattern as the /journal override right above.
@@ -183,7 +193,7 @@ PAGE_ROUTE_RULES = [
     # below) and is correctly Site-Bound, but got a silent 403 on this
     # one site-list call specifically, since it didn't recognize
     # production_confirmation as a valid page for it yet.
-    ("/api/store-requests/known-sites", {"store_approval", "stock_transfer", "production_confirmation"}),
+    ("/api/store-requests/known-sites", {"store_approval", "stock_transfer", "production_confirmation", "production_confirmation_test"}),
     ("/api/store-requests", {"store_approval"}),
     # Sep 9 2026, user's explicit ask: Return to Store workflow - reuses
     # the SAME two existing page permissions rather than new grantable

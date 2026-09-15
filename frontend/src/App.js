@@ -133,10 +133,11 @@ function InternalApp() {
             <Route path="/purchasing-plan" element={<ProtectedRoute page="purchasing_plan"><PurchasingPlanPage /></ProtectedRoute>} />
             <Route path="/production-plan" element={<ProtectedRoute page="production_plan"><ProductionPlanPage /></ProtectedRoute>} />
             <Route path="/production-confirmation" element={<ProtectedRoute page="production_confirmation"><ProductionConfirmationPage /></ProtectedRoute>} />
-            {/* Aug 2026 - admin-only test page for multi-Reporting-Point
-                models (RP10/RP20/END style) - superAdminOnly, not part of
-                PAGE_CATALOG, so it can never be granted to a regular user. */}
-            <Route path="/admin/production-confirmation-test" element={<ProtectedRoute superAdminOnly><ProductionConfirmationTestPage /></ProtectedRoute>} />
+            {/* Sep 2026, user's explicit ask: test page for multi-Reporting-Point
+                models (RP10/RP20/END style) is now its own grantable right
+                (see PAGE_CATALOG's "production_confirmation_test") instead of
+                superAdminOnly, so it can be assigned to a regular user. */}
+            <Route path="/admin/production-confirmation-test" element={<ProtectedRoute page="production_confirmation_test"><ProductionConfirmationTestPage /></ProtectedRoute>} />
             <Route path="/inventory" element={<ProtectedRoute page="inventory"><InventoryPage /></ProtectedRoute>} />
             <Route path="/inventory/inter-plant-transfer" element={<ProtectedRoute page="stock_transfer"><StockTransferPage /></ProtectedRoute>} />
             <Route path="/inventory/inter-plant-transfer/:stoId/delivery-note" element={<ProtectedRoute page="stock_transfer"><DeliveryNotePage /></ProtectedRoute>} />

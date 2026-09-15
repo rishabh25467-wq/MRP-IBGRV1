@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { CaretDown, UserCircle, SignOut, ShieldCheck, List, Flask } from "@phosphor-icons/react";
+import { CaretDown, UserCircle, SignOut, ShieldCheck, List } from "@phosphor-icons/react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -35,6 +35,16 @@ import { useAuth } from "@/contexts/AuthContext";
 const TABS = [
   { to: "/", label: "BOM Management", testId: "nav-bom-explorer", page: "bom_explorer" },
   { to: "/production-confirmation", label: "Production Confirmation", testId: "nav-production-confirmation", page: "production_confirmation" },
+];
+
+// Sep 2026, user's explicit ask: "Operation" dropdown grouping both
+// Production Confirmation pages together, alongside (not replacing) the
+// existing standalone "Production Confirmation" pill above - the test
+// variant now has its own grantable right (production_confirmation_test,
+// see PAGE_CATALOG) instead of being hardcoded to super_admin/admin only.
+const OPERATION_SUBTABS = [
+  { to: "/production-confirmation", label: "Production Confirmation", testId: "nav-operation-production-confirmation", page: "production_confirmation" },
+  { to: "/admin/production-confirmation-test", label: "Production Confirmation (Test)", testId: "nav-operation-production-confirmation-test", page: "production_confirmation_test" },
 ];
 
 const PROCUREMENT_SUBTABS = [
@@ -101,11 +111,13 @@ export const NavTabs = () => {
   const { pathname } = useLocation();
   const { user, hasPageAccess, logout } = useAuth();
   const visibleTabs = TABS.filter((t) => hasPageAccess(t.page));
+  const visibleOperationSubtabs = OPERATION_SUBTABS.filter((t) => hasPageAccess(t.page));
   const visibleProcurementSubtabs = PROCUREMENT_SUBTABS.filter((t) => hasPageAccess(t.page));
   const visibleSupplierManagementSubtabs = SUPPLIER_MANAGEMENT_SUBTABS.filter((t) => hasPageAccess(t.page));
   const visibleInventorySubtabs = INVENTORY_SUBTABS.filter((t) => !t.page || hasPageAccess(t.page));
   const visibleMasterDataSubtabs = MASTER_DATA_SUBTABS.filter((t) => hasPageAccess(t.page));
   const visibleAdministrationSubtabs = ADMINISTRATION_SUBTABS.filter((t) => hasPageAccess(t.page));
+  const operationActive = OPERATION_SUBTABS.some((t) => t.to === pathname);
   const procurementActive = PROCUREMENT_SUBTABS.some((t) => t.to === pathname);
   const supplierManagementActive = SUPPLIER_MANAGEMENT_SUBTABS.some((t) => t.to === pathname);
   const inventoryActive = pathname === "/inventory" || pathname === "/inventory/inter-plant-transfer" || pathname === "/inventory/inbound-receipts" || pathname.startsWith("/storeapproval");
@@ -113,6 +125,7 @@ export const NavTabs = () => {
   const administrationActive = ADMINISTRATION_SUBTABS.some((t) => t.to === pathname);
 
   const dropdownGroups = [
+    { key: "operation", label: "Operation", testId: "nav-operation", active: operationActive, tabs: visibleOperationSubtabs },
     { key: "procurement", label: "Procurement", testId: "nav-procurement", active: procurementActive, tabs: visibleProcurementSubtabs },
     { key: "supplier-management", label: "Supplier Management", testId: "nav-supplier-management", active: supplierManagementActive, tabs: visibleSupplierManagementSubtabs },
     { key: "inventory", label: "Inventory Management", testId: "nav-inventory", active: inventoryActive, tabs: visibleInventorySubtabs },
@@ -180,18 +193,6 @@ export const NavTabs = () => {
                 <Link to="/admin/access-management" className="w-full cursor-pointer flex items-center gap-2" data-testid="nav-access-management">
                   <ShieldCheck size={14} weight="bold" />
                   Access Management
-                </Link>
-              </DropdownMenuItem>
-            )}
-            {/* Aug 2026 - admin-only test page for multi-Reporting-Point
-                production models (e.g. PL-0037A_2's Blanking/Bending/Forming
-                split) - deliberately NOT in PAGE_CATALOG/allowed_pages, so it
-                can never be granted to a regular "user" account. */}
-            {(user.role === "super_admin" || user.role === "admin") && (
-              <DropdownMenuItem asChild>
-                <Link to="/admin/production-confirmation-test" className="w-full cursor-pointer flex items-center gap-2" data-testid="nav-production-confirmation-test">
-                  <Flask size={14} weight="bold" />
-                  Production Confirmation (Test)
                 </Link>
               </DropdownMenuItem>
             )}
@@ -293,18 +294,6 @@ export const NavTabs = () => {
                     >
                       <ShieldCheck size={16} weight="bold" />
                       Access Management
-                    </Link>
-                  </SheetClose>
-                )}
-                {(user.role === "super_admin" || user.role === "admin") && (
-                  <SheetClose asChild>
-                    <Link
-                      to="/admin/production-confirmation-test"
-                      className="flex items-center gap-2 min-h-11 px-3 rounded-lg text-[14px] font-bold text-[#344054] hover:bg-slate-100"
-                      data-testid="mobile-nav-production-confirmation-test"
-                    >
-                      <Flask size={16} weight="bold" />
-                      Production Confirmation (Test)
                     </Link>
                   </SheetClose>
                 )}
