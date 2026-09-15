@@ -35,16 +35,11 @@ import { useAuth } from "@/contexts/AuthContext";
 const TABS = [
   { to: "/", label: "BOM Management", testId: "nav-bom-explorer", page: "bom_explorer" },
   { to: "/production-confirmation", label: "Production Confirmation", testId: "nav-production-confirmation", page: "production_confirmation" },
-];
-
-// Sep 2026, user's explicit ask: "Operation" dropdown grouping both
-// Production Confirmation pages together, alongside (not replacing) the
-// existing standalone "Production Confirmation" pill above - the test
-// variant now has its own grantable right (production_confirmation_test,
-// see PAGE_CATALOG) instead of being hardcoded to super_admin/admin only.
-const OPERATION_SUBTABS = [
-  { to: "/production-confirmation", label: "Production Confirmation", testId: "nav-operation-production-confirmation", page: "production_confirmation" },
-  { to: "/admin/production-confirmation-test", label: "Production Confirmation (Test)", testId: "nav-operation-production-confirmation-test", page: "production_confirmation_test" },
+  // Sep 15 2026, user's explicit ask: direct top-level tab (like
+  // Production Confirmation above) instead of a click-through "Operation"
+  // dropdown - one click opens the page, no extra menu step. Gated by
+  // its own grantable right (production_confirmation_test).
+  { to: "/admin/production-confirmation-test", label: "Production Confirmation (Test)", testId: "nav-production-confirmation-test", page: "production_confirmation_test" },
 ];
 
 const PROCUREMENT_SUBTABS = [
@@ -111,13 +106,11 @@ export const NavTabs = () => {
   const { pathname } = useLocation();
   const { user, hasPageAccess, logout } = useAuth();
   const visibleTabs = TABS.filter((t) => hasPageAccess(t.page));
-  const visibleOperationSubtabs = OPERATION_SUBTABS.filter((t) => hasPageAccess(t.page));
   const visibleProcurementSubtabs = PROCUREMENT_SUBTABS.filter((t) => hasPageAccess(t.page));
   const visibleSupplierManagementSubtabs = SUPPLIER_MANAGEMENT_SUBTABS.filter((t) => hasPageAccess(t.page));
   const visibleInventorySubtabs = INVENTORY_SUBTABS.filter((t) => !t.page || hasPageAccess(t.page));
   const visibleMasterDataSubtabs = MASTER_DATA_SUBTABS.filter((t) => hasPageAccess(t.page));
   const visibleAdministrationSubtabs = ADMINISTRATION_SUBTABS.filter((t) => hasPageAccess(t.page));
-  const operationActive = OPERATION_SUBTABS.some((t) => t.to === pathname);
   const procurementActive = PROCUREMENT_SUBTABS.some((t) => t.to === pathname);
   const supplierManagementActive = SUPPLIER_MANAGEMENT_SUBTABS.some((t) => t.to === pathname);
   const inventoryActive = pathname === "/inventory" || pathname === "/inventory/inter-plant-transfer" || pathname === "/inventory/inbound-receipts" || pathname.startsWith("/storeapproval");
@@ -125,7 +118,6 @@ export const NavTabs = () => {
   const administrationActive = ADMINISTRATION_SUBTABS.some((t) => t.to === pathname);
 
   const dropdownGroups = [
-    { key: "operation", label: "Operation", testId: "nav-operation", active: operationActive, tabs: visibleOperationSubtabs },
     { key: "procurement", label: "Procurement", testId: "nav-procurement", active: procurementActive, tabs: visibleProcurementSubtabs },
     { key: "supplier-management", label: "Supplier Management", testId: "nav-supplier-management", active: supplierManagementActive, tabs: visibleSupplierManagementSubtabs },
     { key: "inventory", label: "Inventory Management", testId: "nav-inventory", active: inventoryActive, tabs: visibleInventorySubtabs },
