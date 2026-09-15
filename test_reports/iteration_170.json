@@ -1,0 +1,52 @@
+{
+  "summary": "Visual-only verification of NavTabs header overlap fix. Seeded synthetic super_admin session (worst-case: all tabs visible incl. 'Production Confirmation (Test)' + all 5 dropdown groups). Loaded BOM Management (/), Inventory (/inventory), and Admin/Component Master (/admin) at 1920x800 and 1366x800. Also validated user-menu dropdown open behavior and mobile drawer at 390x844. Confirmed the previously-reported overlap between user-menu ('Ankit Sharma'), 'SAP PRD Connected' status badge, and 'ERP Synced' badge is GONE across all tested pages and viewports.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    ".screenshots/iter170_desktop_1920_bom.png",
+    ".screenshots/iter170_desktop_1366_bom.png",
+    ".screenshots/iter170_desktop_1920_inventory.png",
+    ".screenshots/iter170_desktop_1920_admin.png",
+    ".screenshots/iter170_user_menu_open.png",
+    ".screenshots/iter170_mobile_drawer.png"
+  ],
+  "verification_details": {
+    "desktop_1920_bom": {
+      "user_menu_rect": "x=1512, right=1661",
+      "layout": "Logo | BOM Management | Production Confirmation | Production Confirmation (Test) | Procurement v | Supplier Management v | Inventory Management v | Ankit Sharma v | Checking SAP... badge | ERP Synced badge — all cleanly separated, no visual overlap",
+      "overflow_offenders": "none (getBoundingClientRect().right > innerWidth+1 => empty)",
+      "all_3_top_tabs_visible": true,
+      "master_data_dropdown_visible": "collapsed into scroll area but reachable; on /admin page it renders in view",
+      "administration_dropdown_visible": true
+    },
+    "desktop_1366_bom": {
+      "user_menu_rect": "x=958, right=1107",
+      "note": "At 1366 the tabs+dropdowns row scrolls horizontally inside its own container via .nav-scroll-x (scrollbar hidden); Ankit Sharma + SAP + ERP badges remain fully visible on the right with NO overlap. Fix working as intended.",
+      "overflow_offenders": "none"
+    },
+    "desktop_1920_inventory": "No overlap, header identical layout, active tab = Inventory Management dropdown highlighted.",
+    "desktop_1920_admin": "No overlap. Master Data dropdown pill highlighted (active). SAP + ERP badges fully visible top-right.",
+    "user_menu_dropdown_open": {
+      "position": "x=1441, right=1661, innerWidth=1920 — NOT clipped off-screen",
+      "items_visible": ["email row (iter170-header@example.com)", "Access Management", "Sign Out"]
+    },
+    "mobile_390_844": "Hamburger trigger present, drawer opens showing Materials Hub title, all 3 top tabs (BOM Management, Production Confirmation, Production Confirmation (Test)) + 5 accordion groups (Procurement, Supplier Management, Inventory Management, Master Data, Administration) + user info footer (Ankit Sharma) + Access Management + Sign Out. No console errors."
+  },
+  "action_items": [],
+  "critical_code_review_comments": [
+    "NavTabs.jsx line 136 indentation is one level shallower than the surrounding div — cosmetic only, works fine but slightly inconsistent with the rest of the JSX block; consider re-indenting inside the outer lg:flex container for readability.",
+    "Confirmed: user-menu DropdownMenu correctly moved OUTSIDE the scrollable inner div and marked shrink-0 (line 179) so it can never be compressed or scroll-hidden. Good fix."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (frontend-only)", "frontend": "100%"},
+  "test_credentials": "Synthetic vms_session cookie for super_admin user 'iter170-tid:iter170-super-admin' / Ankit Sharma / iter170-header@example.com — CLEANED UP post-test (0 auth_users, 0 auth_sessions remain).",
+  "seed_data_creation": "/app/test_reports/_seed_iter170.py (session doc + super_admin user, both deleted after test).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "NavTabs.jsx header overlap fix (Sep 15 2026) confirmed working. The tabs+dropdowns now scroll horizontally inside their own flex-1 min-w-0 overflow-x-auto container (.nav-scroll-x hides scrollbar); user-menu is a shrink-0 sibling outside that scroll area so it stays fully visible. SapConnectionStatus + ErpConnectionStatus badges (rendered by each page outside NavTabs) no longer get overlapped. Verified on BOM, Inventory, Admin pages at 1920 and 1366 widths, plus mobile 390.",
+  "rca_of_the_issue": "Not applicable — this iteration was verification, not RCA. Original RCA (per problem statement): the always-visible tab bar had no shrink/scroll handling and after a 3rd top-level tab with a long label ('Production Confirmation (Test)') was added, total unwrapped width exceeded available space at normal desktop widths, causing NavTabs' flex content to push into sibling SapConnectionStatus/ErpConnectionStatus badges. Fix: wrap tabs+dropdowns in flex-1 min-w-0 overflow-x-auto container so they scroll horizontally internally; move user-menu OUT of that scroll container as a shrink-0 sibling."
+}
