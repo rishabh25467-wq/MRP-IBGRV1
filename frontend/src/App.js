@@ -69,6 +69,10 @@ const FIRST_ACCESSIBLE_PAGE_ROUTES = [
   ["purchasing_plan", "/purchasing-plan"],
   ["production_plan", "/production-plan"],
   ["production_confirmation", "/production-confirmation"],
+  // Sep 15 2026, same bug-fix pattern: a user granted ONLY the Test right
+  // (e.g. Sudheer Singh) landed on "No Pages Granted Yet" instead of the
+  // one page they actually have.
+  ["production_confirmation_test", "/admin/production-confirmation-test"],
   ["inventory", "/inventory"],
   ["supplier_master", "/purchasing-strategy/supplier-master"],
   ["quota_allocation", "/purchasing-strategy/quota-allocation"],

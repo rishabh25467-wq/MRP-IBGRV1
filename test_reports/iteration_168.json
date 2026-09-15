@@ -1,0 +1,58 @@
+{
+  "summary": "Frontend-only verification of the nav simplification: 'Operation' dropdown fully removed; 'Production Confirmation (Test)' is now a direct top-level pill tab alongside 'Production Confirmation'. All 7 requested scenarios PASSED via synthetic vms_session cookies (auth_users + auth_sessions).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "scenarios_tested": {
+    "1_operation_dropdown_removed_from_code": {
+      "grep_result": "no matches for 'operation', 'OPERATION_SUBTABS', 'nav-operation' in NavTabs.jsx",
+      "status": "PASS"
+    },
+    "2_test_only_user_direct_pill_and_page_opens": {
+      "allowed_pages": ["production_confirmation_test"],
+      "nav_shows_only_pc_test_pill_no_dropdown": true,
+      "clicking_lands_on_pctest_no_access_denied": true,
+      "manual_nav_to_/production-confirmation_denied": true,
+      "status": "PASS"
+    },
+    "3_pc_only_user": {
+      "allowed_pages": ["production_confirmation"],
+      "nav_shows_only_standalone_pc_pill": true,
+      "no_pc_test_pill_visible": true,
+      "manual_nav_to_/admin/production-confirmation-test_denied": true,
+      "status": "PASS"
+    },
+    "4_both_permissions_user_desktop": {
+      "allowed_pages": ["production_confirmation", "production_confirmation_test"],
+      "both_pills_visible_side_by_side_no_dropdown": true,
+      "nav_operation_count": 0,
+      "clicking_pc_test_pill_opens_page_no_access_denied": true,
+      "status": "PASS"
+    },
+    "5_mobile_drawer_390px": {
+      "mobile_nav_operation_count": 0,
+      "mobile_nav_production_confirmation_count": 1,
+      "mobile_nav_production_confirmation_test_count": 1,
+      "both_render_as_direct_top_level_links_no_accordion": true,
+      "status": "PASS"
+    },
+    "6_other_dropdowns_intact_in_code": {
+      "note": "NavTabs.jsx dropdownGroups still declares procurement, supplier-management, inventory, master-data, administration. Only the 'operation' group + OPERATION_SUBTABS array were removed. Synthetic test users had no rights for those groups so those dropdowns did not render at runtime - verified by static inspection of NavTabs.jsx.",
+      "status": "PASS"
+    }
+  },
+  "test_report_links": ["/app/test_reports/_seed_iter168.py"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "NavTabs.jsx cleanly removed OPERATION_SUBTABS and its dropdownGroups entry - no dead references. Direct pill for production_confirmation_test correctly gated via hasPageAccess.",
+    "Minor pre-existing note (unchanged from iter167): NavTabs.jsx now ~310 lines; future refactor could extract mobile/desktop render blocks into subcomponents.",
+    "Minor UX gap (pre-existing, NOT introduced by this change): App.js FIRST_ACCESSIBLE_PAGE_ROUTES does NOT include 'production_confirmation_test'. A user granted ONLY that permission who lands on '/' sees the 'No Pages Granted Yet' full-screen block instead of being auto-redirected to /admin/production-confirmation-test. They can still reach the page by bookmark/URL, but there is no home-page nav to click since NavTabs is rendered per-page (not on the empty-state screen). Consider adding ['production_confirmation_test', '/admin/production-confirmation-test'] to that array."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (not tested per request)", "frontend": "100%"},
+  "test_credentials": "Synthetic Entra ID sessions (iter168-tid:iter168-test-only / -pc-only / -both) seeded via /app/test_reports/_seed_iter168.py; all 3 users + sessions cleaned up post-run.",
+  "seed_data_creation": "3 synthetic auth_users + auth_sessions inserted then deleted.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Nav 'Operation' dropdown removal + promotion of Production Confirmation (Test) to a direct top-level pill fully verified on both desktop (1920x1080) and mobile (390x844). No leftover nav-operation testids anywhere. One pre-existing minor gap surfaced: FIRST_ACCESSIBLE_PAGE_ROUTES in App.js is missing an entry for 'production_confirmation_test'; test-only users hitting '/' land on 'No Pages Granted Yet' instead of the pctest page.",
+  "rca of the issue": "n/a - no bugs found for the requested feature."
+}
