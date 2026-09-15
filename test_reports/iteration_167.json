@@ -1,0 +1,59 @@
+{
+  "summary": "Frontend-only verification of new 'production_confirmation_test' grantable page permission + 'Operation' nav dropdown restructure. All 5 requested scenarios PASSED using synthetic Entra ID sessions injected via Mongo (auth_users + auth_sessions). No regressions observed.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "scenarios_tested": {
+    "1_test_only_user": {
+      "allowed_pages": ["production_confirmation_test"],
+      "standalone_pc_pill_hidden": true,
+      "operation_dropdown_visible_with_only_test_link": true,
+      "test_page_loads_without_access_denied": true,
+      "status": "PASS"
+    },
+    "2_pc_only_user": {
+      "allowed_pages": ["production_confirmation"],
+      "standalone_pc_pill_visible": true,
+      "operation_dropdown_has_only_pc_link": true,
+      "manual_nav_to_test_page_shows_access_denied": true,
+      "status": "PASS"
+    },
+    "3_both_permissions_user": {
+      "allowed_pages": ["production_confirmation", "production_confirmation_test"],
+      "pill_and_operation_visible": true,
+      "operation_has_both_links": true,
+      "both_pages_render": true,
+      "api_403_count_on_test_page": 0,
+      "api_403_count_on_main_page": 0,
+      "status": "PASS"
+    },
+    "4_access_management_checkbox": {
+      "pc_test_checkbox_present_in_BOM_and_Production_group": true,
+      "toggling_and_saving_persists_via_backend": true,
+      "status": "PASS"
+    },
+    "5_old_user_profile_shortcut_removed": {
+      "desktop_user_menu_no_pc_test_link": true,
+      "mobile_drawer_user_block_no_pc_test_link": true,
+      "status": "PASS"
+    }
+  },
+  "test_report_links": [
+    "/app/test_reports/_seed_iter167.py"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "NavTabs.jsx / AuthContext PAGE_LABELS / AccessManagementPage WORK_CENTER_GROUPS / App.js ProtectedRoute are all consistently in sync with backend auth_service.py PAGE_CATALOG + PAGE_ROUTE_RULES additions. No dead code left behind (old admin-only Flask-icon shortcut Links successfully removed from both desktop and mobile user-profile dropdowns).",
+    "Minor: NavTabs.jsx is now ~318 lines and continues to grow with each grouping change; still under the 700-line threshold but worth extracting the dropdownGroups array + Mobile/Desktop render blocks into two small subcomponents in a future refactor."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (not tested per request)", "frontend": "100%"},
+  "test_credentials": "Synthetic Entra ID sessions seeded via /app/test_reports/_seed_iter167.py; all four synthetic users + sessions were cleaned up after the test run.",
+  "seed_data_creation": "Created 4 synthetic auth_users (iter167-tid:iter167-test-only, -pc-only, -both, -superadmin) and matching auth_sessions rows for cookie-based testing. All cleaned up post-run.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Nav restructure + production_confirmation_test permission is fully verified end-to-end. Backend PAGE_ROUTE_RULES already grant /api/production-confirmation/*, /api/products/search, /api/store-requests/journal, /api/store-requests/known-sites to users with only 'production_confirmation_test' (0 403s observed on the test page when it was opened by such a user via scenario 3's 'both' account). No further work on this feature is needed."
+}
