@@ -72,7 +72,7 @@ const emptyLine = () => ({
 });
 
 const PO_TYPE_OPTIONS = [
-  { value: "service", label: "Service", productCategory: "CONSUMABLES" },
+  { value: "service", label: "Service & Consume", productCategory: "CONSUMABLES" },
   { value: "jobwork", label: "Job Work", productCategory: "JOBWORK" },
   // Sep 15 2026: reusing CONSUMABLES temporarily (user's explicit fallback
   // choice) until the tenant's real Fixed-Asset-mapped Product Category is known.
@@ -484,7 +484,7 @@ export default function ServicePurchaseOrderPage() {
                   ? "Job Work: Product Category JOBWORK · GL Account + Cost Center entered manually below, same as Service."
                   : poType === "capital"
                     ? "Capital: pick an EXISTING SAP Fixed Asset below - posts cost straight to that asset, never creates a new one."
-                    : "Service: Product Category CONSUMABLES · GL Account + Cost Center entered manually below."}
+                    : "Service & Consume: Product Category CONSUMABLES · GL Account + Cost Center entered manually below."}
               </p>
               {(poType === "jobwork") && (
                 <p className="text-[11px] text-[#B54708] bg-[#FFFAEB] border border-[#FEDF89] rounded-sm p-2">
