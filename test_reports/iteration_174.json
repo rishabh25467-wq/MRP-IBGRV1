@@ -1,0 +1,24 @@
+{
+  "summary": "E2E frontend testing of the Production Confirmation split (operational page cleanup + new Confirmed Production reporting page). All acceptance criteria PASS. Operational tab correctly stripped of KPIs/History/Export/last-confirmed filters; all 8 operational controls present and interactive (Refresh and Manage Reasons verified). New /production-confirmation/confirmed-report page renders correctly with title, all 6 filters + Refresh + Export Excel + Clear-Filters buttons, table with 44 rows of real confirmation history returned by backend (site enrichment + uom enrichment present). Site dropdown populates from /api/store-requests/known-sites (9 sites: All + P1, P2, P2W, P3, P4, P7, P8, P9). Clear Filters button correctly hidden when no filters active and shown after typing. Export Excel button correctly disabled when visibleRows==0. By-product and WIP filter changes re-fetch without error. Production nav dropdown shows all 3 required items in correct order and mobile Production accordion also lists Confirmed Production. No horizontal overflow at 390px mobile viewport. No page errors on any of the 4 /production-confirmation tabs. Backend endpoint GET /api/production-confirmation/confirmed-report smoke-tested via curl: returns {rows:[...]} with main_output_product_description + uom enrichment fields, only success=True history.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Confirmed Production", "issues": ["main_output_product_description is null for every row returned by the backend right now, so the Description column is universally '—'. Not a fork-session regression (endpoint is unchanged this session), but flag to E1: enrichment lookup may not be finding descriptions - worth verifying against SAP Product master. All 44 rows have description=null."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ConfirmedProductionPage.js is clean and self-contained (~230 lines). No _id leakage, uses REACT_APP_BACKEND_URL, error state handled, loading Skeleton shown, all interactive elements have data-testids.",
+    "Minor: exportToExcel passes formatUnit(r.uom || undefined) - the `|| undefined` is redundant, formatUnit already handles falsy. Cosmetic, not a bug.",
+    "Minor: Description column showing '—' for every row (backend enrichment returns null main_output_product_description for all history rows) - not this session's scope but worth investigating."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (smoke)", "frontend": "100%"},
+  "seed_data_creation": "None. Reused the provided synthetic session cookie vms_session=8RxdZv3yCcAjffMKxTyZdGLZwOEowMvF_vkAlkiIryA (prodconf.fork.test@rampgroup.co.in, super_admin).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Production Confirmation split verified end-to-end. Operational page = /production-confirmation (tabbed, PC tab keeps status/refresh/creator/output-product/sort/manual-lookup/manage-reasons only). Reporting page = /production-confirmation/confirmed-report (new, title 'Confirmed Production'). Nav dropdown data-testid=nav-production has 3 children; new one is nav-production-confirmed-production. Backend endpoint returns success=True-only history with uom + main_output_product_description enrichment (description currently always null - flagged for future investigation, not fork-session scope)."
+}
