@@ -44,7 +44,7 @@ const NEW_ITEM_STEPS = [
 export default function ListPriceInstructionsPage() {
   return (
     <div className="min-h-screen bg-[#F9FAFB]" data-testid="list-price-instructions-page">
-      <header className="h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center px-4 sm:px-6 shrink-0 z-10">
+      <header className="min-h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center px-4 sm:px-6 shrink-0 z-10">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-md bg-white/15 flex items-center justify-center">
             <FloppyDisk size={18} className="text-white" weight="fill" />

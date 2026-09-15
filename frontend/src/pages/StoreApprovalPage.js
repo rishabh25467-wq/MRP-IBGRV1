@@ -653,7 +653,7 @@ export default function StoreApprovalPage() {
     return (
       <div className="min-h-screen bg-[#F2F4F7] text-[#1D2939]">
         <Toaster position="top-right" />
-        <header className="print:hidden h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4" data-testid="store-approval-header">
+        <header className="print:hidden min-h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4" data-testid="store-approval-header">
           <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
             <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
               <Shield size={18} weight="fill" className="text-white" />
@@ -692,7 +692,7 @@ export default function StoreApprovalPage() {
     return (
       <div className="min-h-screen bg-[#F2F4F7] text-[#1D2939]">
         <Toaster position="top-right" />
-        <header className="print:hidden h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4" data-testid="store-approval-header">
+        <header className="print:hidden min-h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4" data-testid="store-approval-header">
           <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
             <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
               <Shield size={18} weight="fill" className="text-white" />
@@ -1131,7 +1131,7 @@ export default function StoreApprovalPage() {
     <div className="min-h-screen bg-[#F2F4F7] text-[#1D2939]">
       <Toaster position="top-right" />
       <RequestPrintSlip request={selected} />
-      <header className="print:hidden h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
+      <header className="print:hidden min-h-16 bg-[#0E7C86] shadow-[0_1px_3px_0_rgba(16,24,40,0.15)] flex items-center justify-between px-3 sm:px-5 shrink-0 z-10 gap-2 sm:gap-4">
         <div className="flex items-center gap-3 shrink-0" data-testid="app-title">
           <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
             <Shield size={18} weight="fill" className="text-white" />

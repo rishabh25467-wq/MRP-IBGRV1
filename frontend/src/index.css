@@ -14,26 +14,6 @@ code {
         source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
 }
 
-/* Sep 15 2026 - lets the main nav's tabs/dropdowns scroll horizontally
-   instead of overflowing into the SAP/ERP status badges when there isn't
-   enough width to fit them all unwrapped. Scrollbar stays visible (thin,
-   translucent) rather than hidden - a hidden scrollbar left items like
-   "Administration" scrolled out of view with zero indication they existed. */
-.nav-scroll-x {
-    scrollbar-width: thin;
-    scrollbar-color: rgba(255, 255, 255, 0.45) transparent;
-}
-.nav-scroll-x::-webkit-scrollbar {
-    height: 4px;
-}
-.nav-scroll-x::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.45);
-    border-radius: 4px;
-}
-.nav-scroll-x::-webkit-scrollbar-track {
-    background: transparent;
-}
-
 /* SAP Fiori "72" font family (Apache 2.0, served from jsDelivr CDN) - used
    app-wide across the Supplier Portal (Vendor Control Center) per explicit
    user request. Standard Fiori font stack: "72", "72full", Arial, Helvetica. */

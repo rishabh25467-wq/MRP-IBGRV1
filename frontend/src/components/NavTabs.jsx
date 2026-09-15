@@ -134,19 +134,21 @@ export const NavTabs = () => {
   return (
     <>
       {/* Desktop / large tablet nav - unchanged pill tabs.
-          Sep 15 2026 fix: tabs+dropdowns live in their own scrollable,
-          shrinkable section so a long label (or future extra tab) scrolls
-          horizontally instead of overflowing into the SAP/ERP status
-          badges that sit just outside this component. */}
+          Sep 15 2026 fix: tabs+dropdowns wrap onto a second line (instead
+          of overflowing OR requiring horizontal scroll) when they don't
+          fit in one row - user's explicit ask: never require left/right
+          scrolling to see the main menu, and never overlap the user-menu
+          or SAP/ERP status badges. Each page's <header> uses min-h-16 (was
+          a fixed h-16) so it can grow to fit a second line when needed. */}
       <div className="hidden lg:flex items-center gap-1 w-full min-w-0">
-      <div className="flex items-center gap-0 min-w-0 flex-1 overflow-x-auto nav-scroll-x">
+      <div className="flex items-center flex-wrap gap-1.5 min-w-0 flex-1 py-1.5">
       {visibleTabs.map((tab) => {
         const active = pathname === tab.to;
         return (
           <Link
             key={tab.to}
             to={tab.to}
-            className={`shrink-0 px-2.5 py-1.5 rounded-full text-[13px] font-bold font-heading transition-colors duration-150 ${
+            className={`shrink-0 px-3 py-1.5 rounded-full text-[13px] font-bold font-heading transition-colors duration-150 ${
               active ? "bg-white text-[#0B6B74]" : "text-white/85 hover:bg-white/15 hover:text-white"
             }`}
             data-testid={tab.testId}
@@ -158,7 +160,7 @@ export const NavTabs = () => {
       {dropdownGroups.map((group) => group.tabs.length > 0 && (
         <DropdownMenu key={group.key}>
           <DropdownMenuTrigger
-            className={`shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-full text-[13px] font-bold font-heading transition-colors duration-150 outline-none ${
+            className={`shrink-0 flex items-center gap-1 px-3 py-1.5 rounded-full text-[13px] font-bold font-heading transition-colors duration-150 outline-none ${
               group.active ? "bg-white text-[#0B6B74]" : "text-white/85 hover:bg-white/15 hover:text-white"
             }`}
             data-testid={group.testId}
