@@ -34,12 +34,15 @@ import { useAuth } from "@/contexts/AuthContext";
 // renders if the signed-in user has that page.
 const TABS = [
   { to: "/", label: "BOM Management", testId: "nav-bom-explorer", page: "bom_explorer" },
-  { to: "/production-confirmation", label: "Production Confirmation", testId: "nav-production-confirmation", page: "production_confirmation" },
-  // Sep 15 2026, user's explicit ask: direct top-level tab (like
-  // Production Confirmation above) instead of a click-through "Operation"
-  // dropdown - one click opens the page, no extra menu step. Gated by
-  // its own grantable right (production_confirmation_test).
-  { to: "/admin/production-confirmation-test", label: "Production Confirmation (Test)", testId: "nav-production-confirmation-test", page: "production_confirmation_test" },
+];
+
+// Sep 15 2026, user's explicit ask: both Production Confirmation pages
+// grouped under one "Production" dropdown (replaces the earlier direct
+// top-level tabs, which combined with everything else overflowed the nav
+// at common desktop widths).
+const PRODUCTION_SUBTABS = [
+  { to: "/production-confirmation", label: "Production Confirmation", testId: "nav-production-production-confirmation", page: "production_confirmation" },
+  { to: "/admin/production-confirmation-test", label: "Production Confirmation (Test)", testId: "nav-production-production-confirmation-test", page: "production_confirmation_test" },
 ];
 
 const PROCUREMENT_SUBTABS = [
@@ -106,11 +109,13 @@ export const NavTabs = () => {
   const { pathname } = useLocation();
   const { user, hasPageAccess, logout } = useAuth();
   const visibleTabs = TABS.filter((t) => hasPageAccess(t.page));
+  const visibleProductionSubtabs = PRODUCTION_SUBTABS.filter((t) => hasPageAccess(t.page));
   const visibleProcurementSubtabs = PROCUREMENT_SUBTABS.filter((t) => hasPageAccess(t.page));
   const visibleSupplierManagementSubtabs = SUPPLIER_MANAGEMENT_SUBTABS.filter((t) => hasPageAccess(t.page));
   const visibleInventorySubtabs = INVENTORY_SUBTABS.filter((t) => !t.page || hasPageAccess(t.page));
   const visibleMasterDataSubtabs = MASTER_DATA_SUBTABS.filter((t) => hasPageAccess(t.page));
   const visibleAdministrationSubtabs = ADMINISTRATION_SUBTABS.filter((t) => hasPageAccess(t.page));
+  const productionActive = PRODUCTION_SUBTABS.some((t) => t.to === pathname);
   const procurementActive = PROCUREMENT_SUBTABS.some((t) => t.to === pathname);
   const supplierManagementActive = SUPPLIER_MANAGEMENT_SUBTABS.some((t) => t.to === pathname);
   const inventoryActive = pathname === "/inventory" || pathname === "/inventory/inter-plant-transfer" || pathname === "/inventory/inbound-receipts" || pathname.startsWith("/storeapproval");
@@ -118,6 +123,7 @@ export const NavTabs = () => {
   const administrationActive = ADMINISTRATION_SUBTABS.some((t) => t.to === pathname);
 
   const dropdownGroups = [
+    { key: "production", label: "Production", testId: "nav-production", active: productionActive, tabs: visibleProductionSubtabs },
     { key: "procurement", label: "Procurement", testId: "nav-procurement", active: procurementActive, tabs: visibleProcurementSubtabs },
     { key: "supplier-management", label: "Supplier Management", testId: "nav-supplier-management", active: supplierManagementActive, tabs: visibleSupplierManagementSubtabs },
     { key: "inventory", label: "Inventory Management", testId: "nav-inventory", active: inventoryActive, tabs: visibleInventorySubtabs },
@@ -133,14 +139,14 @@ export const NavTabs = () => {
           horizontally instead of overflowing into the SAP/ERP status
           badges that sit just outside this component. */}
       <div className="hidden lg:flex items-center gap-1 w-full min-w-0">
-      <div className="flex items-center gap-0.5 min-w-0 flex-1 overflow-x-auto nav-scroll-x">
+      <div className="flex items-center gap-0 min-w-0 flex-1 overflow-x-auto nav-scroll-x">
       {visibleTabs.map((tab) => {
         const active = pathname === tab.to;
         return (
           <Link
             key={tab.to}
             to={tab.to}
-            className={`shrink-0 px-3 py-1.5 rounded-full text-[13px] font-bold font-heading transition-colors duration-150 ${
+            className={`shrink-0 px-2.5 py-1.5 rounded-full text-[13px] font-bold font-heading transition-colors duration-150 ${
               active ? "bg-white text-[#0B6B74]" : "text-white/85 hover:bg-white/15 hover:text-white"
             }`}
             data-testid={tab.testId}
@@ -152,7 +158,7 @@ export const NavTabs = () => {
       {dropdownGroups.map((group) => group.tabs.length > 0 && (
         <DropdownMenu key={group.key}>
           <DropdownMenuTrigger
-            className={`shrink-0 flex items-center gap-1 px-3 py-1.5 rounded-full text-[13px] font-bold font-heading transition-colors duration-150 outline-none ${
+            className={`shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-full text-[13px] font-bold font-heading transition-colors duration-150 outline-none ${
               group.active ? "bg-white text-[#0B6B74]" : "text-white/85 hover:bg-white/15 hover:text-white"
             }`}
             data-testid={group.testId}
