@@ -105,6 +105,7 @@ export default function ServicePurchaseOrderPage() {
   const [lines, setLines] = useState([emptyLine()]);
   const [glAccounts, setGlAccounts] = useState([]);
   const [fixedAssets, setFixedAssets] = useState([]);
+  const [refreshingAssets, setRefreshingAssets] = useState(false);
   const fixedAssetWrapperRefs = useRef({});
   const outputProductDebounceRef = useRef({});
   const outputWrapperRefs = useRef({});
@@ -121,6 +122,18 @@ export default function ServicePurchaseOrderPage() {
     // fetch-once-filter-client-side pattern as GL Accounts.
     axios.get(`${API}/service-purchase-orders/fixed-assets`).then((r) => setFixedAssets(r.data || [])).catch(() => toast.error("Could not load Fixed Asset list"));
   }, []);
+
+  // Sep 15 2026, user's ask - "if user create new fixed asset then how
+  // much time need to update in PO form": the list is cached in Mongo
+  // for up to 1 day, so a brand-new SAP asset could take that long to
+  // show up on its own. This button forces an immediate live re-fetch.
+  const refreshFixedAssets = () => {
+    setRefreshingAssets(true);
+    axios.get(`${API}/service-purchase-orders/fixed-assets?force_refresh=true`)
+      .then((r) => { setFixedAssets(r.data || []); toast.success(`Fixed Asset list refreshed (${(r.data || []).length} assets)`); })
+      .catch(() => toast.error("Could not refresh Fixed Asset list"))
+      .finally(() => setRefreshingAssets(false));
+  };
 
   useEffect(() => {
     const onClickOutside = (e) => {
@@ -296,9 +309,13 @@ export default function ServicePurchaseOrderPage() {
       : l)));
   };
 
+  // Sep 15 2026, user's ask - "if PR from P9 only P9 fixed asset list
+  // needed": filtered strictly to the PR's own Purchase Unit (Site), not
+  // just the wider Company - assets with no recognizable site prefix in
+  // their SAP description are excluded rather than shown to every site.
   const fixedAssetMatches = (query) => {
     const q = (query || "").trim().toLowerCase();
-    const pool = fixedAssets.filter((a) => a.company_code === company);
+    const pool = fixedAssets.filter((a) => a.site_id === purchaseUnitSite);
     if (!q) return pool.slice(0, 20);
     return pool.filter((a) => a.asset_id.toLowerCase().includes(q) || a.description.toLowerCase().includes(q)).slice(0, 20);
   };
@@ -684,8 +701,18 @@ export default function ServicePurchaseOrderPage() {
                   <span className="font-semibold text-[#344054]">Product Category:</span> <span className="font-data">{PO_TYPE_OPTIONS.find((o) => o.value === poType)?.productCategory}</span> (fixed for {PO_TYPE_OPTIONS.find((o) => o.value === poType)?.label} lines)
                 </span>
                 {poType === "capital" ? (
-                  <span className="text-[11px] text-[#667085]">
-                    <span className="font-semibold text-[#344054]">Account Assignment:</span> Individual Material (Fixed Asset) - selected per line, company <span className="font-data">{company}</span>
+                  <span className="text-[11px] text-[#667085] flex items-center gap-2">
+                    <span><span className="font-semibold text-[#344054]">Account Assignment:</span> Individual Material (Fixed Asset) - selected per line, site <span className="font-data">{purchaseUnitSite || "(select Purchase Unit)"}</span></span>
+                    <button
+                      type="button"
+                      onClick={refreshFixedAssets}
+                      disabled={refreshingAssets}
+                      className="text-[11px] font-semibold text-[#004B87] hover:underline disabled:opacity-50"
+                      data-testid="service-po-refresh-fixed-assets-button"
+                      title="Just created a new Fixed Asset in SAP? Refresh to fetch it immediately instead of waiting up to 24h."
+                    >
+                      {refreshingAssets ? "Refreshing..." : "Refresh list"}
+                    </button>
                   </span>
                 ) : (
                   <span className="text-[11px] text-[#667085]">
@@ -758,7 +785,7 @@ export default function ServicePurchaseOrderPage() {
                                     </button>
                                   ))}
                                   {fixedAssetMatches(l.fixedAssetQuery).length === 0 && (
-                                    <div className="px-3 py-2 text-xs text-[#98A2B3]">No matching Fixed Asset in company {company}</div>
+                                    <div className="px-3 py-2 text-xs text-[#98A2B3]">No matching Fixed Asset in site {purchaseUnitSite || "(select Purchase Unit)"}</div>
                                   )}
                                 </div>
                               )}

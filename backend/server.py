@@ -6216,6 +6216,7 @@ class ServiceFixedAsset(BaseModel):
     company_code: str
     asset_id: str
     description: str
+    site_id: Optional[str] = None
 
 
 class ServicePurchaseOrderLineItemIn(BaseModel):
@@ -6454,14 +6455,18 @@ async def service_po_list_gl_accounts():
 
 
 @api_router.get("/service-purchase-orders/fixed-assets", response_model=List[ServiceFixedAsset])
-async def service_po_list_fixed_assets():
+async def service_po_list_fixed_assets(force_refresh: bool = False):
     """Sep 15 2026, user's explicit ask - "show list of fixed asset in
     the PO form so user select fixed asset... Master of fixed asset
     maintain in the sap not by the emergent per PO". Live-verified: 125
     real Fixed Assets on this tenant via QueryObjectDescriptionIn - same
-    small/rarely-changing-list caching pattern as GL Accounts above."""
+    small/rarely-changing-list caching pattern as GL Accounts above.
+    `force_refresh` (Sep 15 2026, user asked "how much time need to
+    update in PO form" after creating a new asset in SAP) lets the
+    frontend's "Refresh list" button bypass the 1-day cache instantly
+    instead of making the user wait."""
     cached = await asyncio.to_thread(db["sap_fixed_asset_cache"].find_one, {"_id": "latest"})
-    if not cached or (datetime.now(timezone.utc) - cached["updated_at"]) > timedelta(days=1):
+    if force_refresh or not cached or (datetime.now(timezone.utc) - cached["updated_at"]) > timedelta(days=1):
         try:
             assets = await asyncio.to_thread(sap_fixed_asset_client.list_fixed_assets)
         except SAPFixedAssetError as e:
