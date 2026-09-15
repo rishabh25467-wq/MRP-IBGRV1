@@ -1,3 +1,9 @@
+## FEATURE (self-tested via screenshot): Added Reporting Point filter to Confirmed Production report (Sep 15, 2026 session, same-day follow-up)
+- **User's ask**: add a filter on Reporting Point to the report page.
+- **Fix**: `ConfirmedProductionPage.js` - new client-side text filter "Filter by Reporting Point..." (`reportingPointFilter` state), matches substring against either `reporting_point_id` or `reporting_point_description`. Wired into `visibleRows`, `clearFilters`, and `filtersActive`.
+- **Verified**: filtering by "END" correctly narrowed 44→27 rows, all matching; Clear Filters button appears/works; no layout overflow at 1920px.
+
+
 ## FEATURE (self-tested via screenshot): Reporting Point column now combines Operation description + Reporting Point ID (Sep 15, 2026 session, same-day follow-up)
 - **User's ask**: show Operation ID with its description PLUS the Reporting Point ID together on the Confirmed Production report, matching the operational page's own combined format.
 - **Fix**: `ConfirmedProductionPage.js` - new `formatReportingPoint(r)` helper renders `"{description} ({reporting_point_id})"` when a description exists (e.g. "OP_10 - BLANK (RP_10)"), falling back to just the raw ID when no description is stored. Applied to both the table cell and the Excel export.

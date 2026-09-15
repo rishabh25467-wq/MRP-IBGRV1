@@ -41,6 +41,7 @@ export default function ConfirmedProductionPage() {
   const [byproductFilter, setByproductFilter] = useState("all");
   const [wipFilter, setWipFilter] = useState("all");
   const [outputProductFilter, setOutputProductFilter] = useState("");
+  const [reportingPointFilter, setReportingPointFilter] = useState("");
   const [knownSites, setKnownSites] = useState([]);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -74,10 +75,17 @@ export default function ConfirmedProductionPage() {
   useEffect(() => { loadReport(); }, [loadReport]);
 
   const visibleRows = useMemo(() => {
-    if (!outputProductFilter.trim()) return rows;
-    const q = outputProductFilter.trim().toLowerCase();
-    return rows.filter((r) => (r.main_output_product || "").toLowerCase().includes(q));
-  }, [rows, outputProductFilter]);
+    let out = rows;
+    if (outputProductFilter.trim()) {
+      const q = outputProductFilter.trim().toLowerCase();
+      out = out.filter((r) => (r.main_output_product || "").toLowerCase().includes(q));
+    }
+    if (reportingPointFilter.trim()) {
+      const q = reportingPointFilter.trim().toLowerCase();
+      out = out.filter((r) => (r.reporting_point_id || "").toLowerCase().includes(q) || (r.reporting_point_description || "").toLowerCase().includes(q));
+    }
+    return out;
+  }, [rows, outputProductFilter, reportingPointFilter]);
 
   const clearFilters = () => {
     setDateFrom("");
@@ -86,9 +94,10 @@ export default function ConfirmedProductionPage() {
     setByproductFilter("all");
     setWipFilter("all");
     setOutputProductFilter("");
+    setReportingPointFilter("");
   };
 
-  const filtersActive = dateFrom || dateTo || siteFilter !== "all" || byproductFilter !== "all" || wipFilter !== "all" || outputProductFilter.trim();
+  const filtersActive = dateFrom || dateTo || siteFilter !== "all" || byproductFilter !== "all" || wipFilter !== "all" || outputProductFilter.trim() || reportingPointFilter.trim();
 
   const exportToExcel = () => {
     const header = ["Date/Time", "Lot ID", "Output Product", "Description", "Reporting Point", "Model ID", "Site", "Confirmed Qty", "UOM", "Scrap", "By-product Qty", "By-product Unit", "WIP Clearing", "Confirmed By"];
@@ -158,6 +167,13 @@ export default function ConfirmedProductionPage() {
             onChange={(e) => setOutputProductFilter(e.target.value)}
             className="w-52 bg-white h-9 text-xs"
             data-testid="report-output-product-filter-input"
+          />
+          <Input
+            placeholder="Filter by Reporting Point..."
+            value={reportingPointFilter}
+            onChange={(e) => setReportingPointFilter(e.target.value)}
+            className="w-52 bg-white h-9 text-xs"
+            data-testid="report-reporting-point-filter-input"
           />
           <Select value={byproductFilter} onValueChange={setByproductFilter}>
             <SelectTrigger className="w-44 bg-white h-9 text-xs" data-testid="report-byproduct-filter-select"><SelectValue /></SelectTrigger>
