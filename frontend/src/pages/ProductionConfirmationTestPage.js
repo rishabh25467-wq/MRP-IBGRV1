@@ -62,6 +62,8 @@ const formatQty = (v) => (v == null ? "—" : v.toLocaleString("en-IN", { maximu
 // the real, human-friendly unit instead. Internal values/keys (unit_code
 // sent back to the API, etc.) are untouched - this is a display-only map.
 const formatUnit = (u) => (u === "MASS" ? "KG" : u || "");
+// Sep 15 2026, user's explicit ask: show the lot's SAP end date next to Site.
+const formatEndDate = (iso) => (iso ? new Date(iso).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—");
 
 // Aug 2026, matches production_confirmation_service.is_usable_stock_status()
 // - flags Quality Inspection/Blocked stock in this planner-facing view too
@@ -2386,7 +2388,7 @@ export default function ProductionConfirmationTestPage() {
             <table className="w-full text-[13px] border-collapse" data-testid="production-lots-table">
               <thead>
                 <tr>
-                  {["Lot ID", "Output Product", "Site", "Status", "Reporting Point", "Planned", "Confirmed So Far", "Open", "Awaiting Prev Step", "UOM", "Finished", "Created By", "Production Model", "Stock", "Last Confirmation", ""].map((h) => (
+                  {["Lot ID", "Output Product", "Site", "End Date", "Status", "Reporting Point", "Planned", "Confirmed So Far", "Open", "Awaiting Prev Step", "UOM", "Finished", "Created By", "Production Model", "Stock", "Last Confirmation", ""].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">{h}</th>
                   ))}
                 </tr>
@@ -2401,6 +2403,7 @@ export default function ProductionConfirmationTestPage() {
                     <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium text-[#101828]">{r.production_lot_id}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{r.main_output_product || "—"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">{r.site_id || "—"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467] whitespace-nowrap" data-testid={`end-date-cell-${i}`}>{formatEndDate(r.production_end_date)}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">
                       <Badge variant="outline" className={`${STATUS_TONE[r.life_cycle_status_label] || "bg-slate-100 text-slate-600 border-slate-200"} border`}>{r.life_cycle_status_label}</Badge>
                     </td>

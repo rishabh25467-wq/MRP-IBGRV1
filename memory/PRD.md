@@ -1,3 +1,9 @@
+## FEATURE (self-tested via curl, verified live): Added "End Date" column next to Site on Production Confirmation (Sep 15, 2026 session)
+- **User's ask**: show the production lot's ending date next to Site in the Production Confirmation table.
+- **Fix**: SAP already returns `ProductionEndDate` in the ProductionLot query response (confirmed live) but it wasn't parsed. Added `production_end_date` parsing in `sap_production_lot_client.py`'s `_parse_lot_block` + row dict (flows through the existing `/api/production-confirmation/open-lots` endpoint with no schema changes needed, since rows are plain dicts). Added "End Date" column (formatted `DD Mon YYYY`) right after "Site" in both `ProductionConfirmationPage.js` and `ProductionConfirmationTestPage.js` tables, and to the Excel export header/rows in the main page.
+- **Tested**: self-verified via curl with a synthetic session - real live data confirms `production_end_date` now populates correctly (e.g. Lot 9531 → "2024-03-26T08:45:00Z"). Small/low-risk change, no testing_agent needed.
+
+
 ## FIX (TESTED, testing_agent - 100% PASS across 1024-1920px): Nav now wraps instead of scrolling - zero horizontal scroll, zero overlap, guaranteed (Sep 15, 2026 session, final fix in same-day nav chain)
 - **User's firm ask**: no left/right scrolling to see the main menu at any width, and no overlap - full stop.
 - **Fix**: `NavTabs.jsx`'s tabs+dropdowns container changed from `overflow-x-auto` (horizontal scroll) to `flex-wrap` - guarantees items wrap onto additional rows instead of ever needing to scroll or overlap. To support this, bulk-changed ALL ~24 page files' `<header className="h-16 ...">` to `min-h-16` (identical duplicated string across pages, safe sed replace) so the header can grow taller to fit wrapped rows instead of clipping. Removed the now-unused `.nav-scroll-x` scrollbar CSS from `index.css`.

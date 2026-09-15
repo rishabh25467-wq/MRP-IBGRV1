@@ -138,6 +138,9 @@ class SAPProductionLotClient:
         production_order_id = _first_tag(lot_block, "ProductionOrderID")
         main_output_product = _first_tag(lot_block, "MainOutputProduct")
         site_id = _first_tag(lot_block, "MainOutputProductSiteID")
+        # Sep 15 2026, user's explicit ask: show the lot's own SAP end
+        # date next to Site in the Production Confirmation table.
+        production_end_date = _first_tag(lot_block, "ProductionEndDate")
         status_block = _first_block(lot_block, "ProductionLotStatus")
         life_cycle_status_code = _first_tag(status_block, "Life_Cycle_Status_Code") if status_block else None
 
@@ -234,6 +237,7 @@ class SAPProductionLotClient:
                     "production_order_id": production_order_id,
                     "main_output_product": main_output_product,
                     "site_id": site_id,
+                    "production_end_date": production_end_date,
                     "life_cycle_status_code": life_cycle_status_code,
                     "life_cycle_status_label": LOT_STATUS_LABELS.get(life_cycle_status_code, life_cycle_status_code),
                     "confirmation_group_uuid": group_uuid,
