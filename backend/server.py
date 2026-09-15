@@ -3462,6 +3462,13 @@ CREATE_RELEASE_MAX_WAIT_SECONDS = 20 * 60  # keep polling for the resulting Orde
 CREATE_RELEASE_POLL_INTERVAL_SECONDS = 4  # tightened from 10s so a newly-created Order/Lot is detected sooner
 CREATE_RELEASE_RETRIGGER_EVERY_SECONDS = 90  # re-fire the Release action periodically in case the first call needs a nudge
 SAP_SETTLE_DELAY_SECONDS = 3  # tightened from 8s - still gives SAP a beat to commit before the next read, without wasting time
+# Sep 15 2026, user's explicit ask (Proposals 232715/232559 - "if error
+# already requested then try to fetch production order... user do not
+# need go back in SAP UI"): once SAP has confirmed it already accepted
+# the Release request, giving up after just one 20-min window and
+# forcing a manual "Retry" click defeats that ask - auto-continue polling
+# on our own, capped so a truly stuck Proposal doesn't poll forever.
+AUTO_CONTINUE_MAX_ROUNDS = 4  # up to 4 extra 20-min windows (~80 more minutes) with zero user action
 
 GOODS_ISSUE_MAX_WAIT_SECONDS = 20 * 60  # SAP's own scheduling converts Customer Requirement -> Outbound Delivery Request; timing not in our control
 GOODS_ISSUE_POLL_INTERVAL_SECONDS = 20  # a much slower batch process than Order/Lot creation - no need to hammer it every few seconds
@@ -3925,6 +3932,16 @@ async def _continue_order_creation(job_id: str, payload: "CreateProductionPropos
                 await asyncio.sleep(CREATE_RELEASE_POLL_INTERVAL_SECONDS)
 
         if not new_order_id:
+            last_error = (job_store.get_job(db, job_id) or {}).get("last_release_trigger_error") or ""
+            auto_retry_count = (job_store.get_job(db, job_id) or {}).get("auto_retry_count") or 0
+            if "already requested" in last_error.lower() and auto_retry_count < AUTO_CONTINUE_MAX_ROUNDS:
+                # SAP has confirmed it accepted the Release request - it's only
+                # a matter of time until the Order shows up, so keep going
+                # automatically instead of forcing the user to click "Retry".
+                job_store.update_job(db, job_id, {"auto_retry_count": auto_retry_count + 1})
+                logger.info(f"create-and-release job {job_id}: still 'already requested' after {CREATE_RELEASE_MAX_WAIT_SECONDS}s, auto-continuing (round {auto_retry_count + 1}/{AUTO_CONTINUE_MAX_ROUNDS})")
+                asyncio.create_task(_continue_order_creation(job_id, payload, proposal_id, is_resume=True))
+                return
             job_store.update_job(db, job_id, {"status": "done", "result": {
                 "production_proposal_id": proposal_id, "production_order_id": None, "released": False,
                 "note": "SAP hasn't converted this Proposal into an Order after 20 minutes of automatic retries. No action needed from you - check the Proposal/Release History below later to see if it completes.",
