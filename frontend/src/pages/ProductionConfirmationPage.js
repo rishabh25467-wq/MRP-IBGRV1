@@ -302,6 +302,8 @@ const ConfirmDialog = ({ row, siblingRows, actorName, onClose, onConfirmed, reas
         main_output_product: row.main_output_product,
         confirmed_quantity: row.total_confirmed_quantity,
         unit_code: row.unit_code,
+        production_model_id: row.production_model_id || null,
+        reporting_point_description: row.reporting_point_description || row.operation_description || null,
       });
       toast.success(`Task closed in SAP for Lot ${row.production_lot_id}`);
       onConfirmed(row);
@@ -423,6 +425,8 @@ const ConfirmDialog = ({ row, siblingRows, actorName, onClose, onConfirmed, reas
         new_byproduct_target_logistics_area_id: canAutoCreateByproduct && byproductQty > 0 ? mainOutputRow.target_logistics_area_id : null,
         new_byproduct_confirmed_quantity: canAutoCreateByproduct && byproductQty > 0 ? byproductQty : null,
         new_byproduct_unit_code: canAutoCreateByproduct && byproductQty > 0 ? "KGM" : null,
+        production_model_id: row.production_model_id || null,
+        reporting_point_description: row.reporting_point_description || row.operation_description || null,
         material_inputs: row.material_inputs || null,
         actor: actorName.trim(),
       });

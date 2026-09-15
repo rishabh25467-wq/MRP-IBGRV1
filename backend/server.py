@@ -2783,6 +2783,12 @@ class ConfirmProductionRequest(BaseModel):
     new_byproduct_unit_code: Optional[str] = None
     material_inputs: Optional[List[MaterialInputItem]] = None
     actor: str
+    # Sep 15 2026, user's explicit ask - the Confirmed Production report
+    # was missing Reporting Point/Model ID entirely (never persisted to
+    # history) - the open-lots row the frontend already has both of these
+    # on, just needs to pass them through at confirm time.
+    production_model_id: Optional[str] = None
+    reporting_point_description: Optional[str] = None
 
 
 def _all_lot_operations_finished(production_lot_id: str) -> bool:
@@ -3181,6 +3187,28 @@ async def get_confirmed_production_report_endpoint(
     cache = {}
     if codes:
         cache = {c["_id"]: c for c in db["component_master"].find({"_id": {"$in": codes}}, {"description": 1, "base_uom": 1})}
+    # Sep 15 2026, user's explicit ask ("output product name is missing
+    # in the report") - `component_master` never captured a `description`
+    # for a real chunk of Sub-Assembly/Finished output codes (only
+    # populated via the BOM-explode/categorization paths, not every
+    # product goes through those). Live-fetch + cache just the codes
+    # actually missing one on THIS report instead of leaving that column
+    # permanently blank for them.
+    missing_desc_codes = [c for c in codes if not (cache.get(c) or {}).get("description")]
+    if missing_desc_codes:
+        async def _fetch_description(code):
+            try:
+                info = await asyncio.to_thread(sap_material_client.resolve_material_info, code)
+                return code, info.get("description"), info.get("base_unit")
+            except SAPMaterialError:
+                return code, None, None
+        fetched = await asyncio.gather(*(_fetch_description(c) for c in missing_desc_codes))
+        for code, description, base_unit in fetched:
+            if description:
+                db["component_master"].update_one({"_id": code}, {"$set": {"description": description}}, upsert=True)
+                cache.setdefault(code, {})["description"] = description
+                if base_unit and not cache[code].get("base_uom"):
+                    cache[code]["base_uom"] = base_unit
     for r in rows:
         info = cache.get(r.get("main_output_product")) or {}
         r["main_output_product_description"] = info.get("description")
@@ -3237,6 +3265,9 @@ class FinishTaskRequest(BaseModel):
     main_output_product: Optional[str] = None
     confirmed_quantity: Optional[float] = None
     unit_code: Optional[str] = None
+    # Sep 15 2026, same fix as ConfirmProductionRequest above.
+    production_model_id: Optional[str] = None
+    reporting_point_description: Optional[str] = None
 
 
 @api_router.post("/production-confirmation/finish-task")
@@ -3298,6 +3329,8 @@ async def finish_production_task(payload: FinishTaskRequest):
                 "production_lot_id": payload.production_lot_id, "reporting_point_id": payload.reporting_point_id,
                 "main_output_product": payload.main_output_product, "site_id": payload.site_id,
                 "confirmed_quantity": payload.confirmed_quantity, "confirmation_finished": True,
+                "production_model_id": payload.production_model_id,
+                "reporting_point_description": payload.reporting_point_description,
             },
             result,
         )

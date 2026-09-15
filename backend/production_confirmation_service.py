@@ -147,10 +147,28 @@ def delete_deviation_reason(db, code: str) -> list:
 
 
 def log_confirmation(db, actor: str, request_payload: dict, result: dict) -> None:
+    # Sep 15 2026 bug fix (real incident: byproduct_confirmation.success
+    # was True in history yet byproduct_confirmed_quantity/unit_code were
+    # always null) - when the by-product line didn't exist yet, the
+    # frontend/caller posts it via the "new_byproduct_*" fields (auto-
+    # create path) instead of "byproduct_confirmed_quantity"/
+    # "byproduct_unit_code" (existing-line path). This used to only ever
+    # store the existing-line fields, silently losing the actually-posted
+    # qty/unit whenever the auto-create path was the one that ran.
+    byproduct_qty = request_payload.get("byproduct_confirmed_quantity")
+    if byproduct_qty is None:
+        byproduct_qty = request_payload.get("new_byproduct_confirmed_quantity")
+    byproduct_unit = request_payload.get("byproduct_unit_code") or request_payload.get("new_byproduct_unit_code")
     db[HISTORY_COLLECTION].insert_one({
         "actor": actor,
         "production_lot_id": request_payload.get("production_lot_id"),
         "reporting_point_id": request_payload.get("reporting_point_id"),
+        # Sep 15 2026, user's explicit ask - needed by the Confirmed
+        # Production report, which otherwise has no way to show a
+        # meaningful Reporting Point label or which Production Model a
+        # transaction belongs to.
+        "reporting_point_description": request_payload.get("reporting_point_description"),
+        "production_model_id": request_payload.get("production_model_id"),
         "main_output_product": request_payload.get("main_output_product"),
         "site_id": request_payload.get("site_id"),
         "confirmed_quantity": request_payload.get("confirmed_quantity"),
@@ -161,8 +179,8 @@ def log_confirmation(db, actor: str, request_payload: dict, result: dict) -> Non
         "logs": result.get("logs"),
         "wip_clearing": result.get("wip_clearing"),
         "byproduct_material_output_uuid": request_payload.get("byproduct_material_output_uuid"),
-        "byproduct_confirmed_quantity": request_payload.get("byproduct_confirmed_quantity"),
-        "byproduct_unit_code": request_payload.get("byproduct_unit_code"),
+        "byproduct_confirmed_quantity": byproduct_qty,
+        "byproduct_unit_code": byproduct_unit,
         # Sep 12 2026 bug fix: also stored so a later retry can tell it
         # was THIS same "create a brand-new by-product line" target that
         # already succeeded (see find_successful_byproduct_confirmation).
@@ -305,6 +323,8 @@ def get_confirmed_production_report(db, date_from=None, date_to=None, output_pro
             "at": d["at"].isoformat(),
             "production_lot_id": d.get("production_lot_id"),
             "reporting_point_id": d.get("reporting_point_id"),
+            "reporting_point_description": d.get("reporting_point_description"),
+            "production_model_id": d.get("production_model_id"),
             "main_output_product": d.get("main_output_product"),
             "site_id": d.get("site_id"),
             "confirmed_quantity": d.get("confirmed_quantity"),

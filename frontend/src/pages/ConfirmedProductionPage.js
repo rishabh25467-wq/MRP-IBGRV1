@@ -83,11 +83,12 @@ export default function ConfirmedProductionPage() {
   const filtersActive = dateFrom || dateTo || siteFilter !== "all" || byproductFilter !== "all" || wipFilter !== "all" || outputProductFilter.trim();
 
   const exportToExcel = () => {
-    const header = ["Date/Time", "Lot ID", "Output Product", "Description", "Site", "Confirmed Qty", "UOM", "Scrap", "By-product Qty", "By-product Unit", "WIP Clearing", "Confirmed By"];
+    const header = ["Date/Time", "Lot ID", "Output Product", "Description", "Reporting Point", "Model ID", "Site", "Confirmed Qty", "UOM", "Scrap", "By-product Qty", "By-product Unit", "WIP Clearing", "Confirmed By"];
     const dataRows = visibleRows.map((r) => {
       const wipLabel = !r.wip_clearing ? "—" : r.wip_clearing.skipped ? "Pending" : r.wip_clearing.success ? "Posted" : "Error";
       return [
-        formatAt(r.at), r.production_lot_id, r.main_output_product || "—", r.main_output_product_description || "—", r.site_id || "—",
+        formatAt(r.at), r.production_lot_id, r.main_output_product || "—", r.main_output_product_description || "—",
+        r.reporting_point_description || r.reporting_point_id || "—", r.production_model_id || "—", r.site_id || "—",
         r.confirmed_quantity, formatUnit(r.uom || undefined) || "—", r.confirmed_scrap ?? 0,
         r.byproduct_confirmed_quantity ?? "—", formatUnit(r.byproduct_unit_code) || "—", wipLabel, r.actor || "—",
       ];
@@ -187,7 +188,7 @@ export default function ConfirmedProductionPage() {
             <table className="w-full text-[13px] border-collapse" data-testid="confirmed-production-table">
               <thead>
                 <tr>
-                  {["Date/Time", "Lot ID", "Output Product", "Description", "Site", "Confirmed Qty", "UOM", "Scrap", "By-product Qty", "By-product Unit", "WIP Clearing", "Confirmed By"].map((h) => (
+                  {["Date/Time", "Lot ID", "Output Product", "Description", "Reporting Point", "Model ID", "Site", "Confirmed Qty", "UOM", "Scrap", "By-product Qty", "By-product Unit", "WIP Clearing", "Confirmed By"].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase tracking-wide">{h}</th>
                   ))}
                 </tr>
@@ -199,6 +200,8 @@ export default function ConfirmedProductionPage() {
                     <td className="border border-[#D0D5DD] px-2 py-1.5 font-medium text-[#101828]">{r.production_lot_id}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{r.main_output_product || "—"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">{r.main_output_product_description || "—"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">{r.reporting_point_description || r.reporting_point_id || "—"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">{r.production_model_id || "—"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">{r.site_id || "—"}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-right tabular-nums">{formatQty(r.confirmed_quantity)}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#475467]">{formatUnit(r.uom) || "—"}</td>
@@ -218,7 +221,7 @@ export default function ConfirmedProductionPage() {
                   </tr>
                 ))}
                 {visibleRows.length === 0 && (
-                  <tr><td colSpan={12} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="confirmed-report-empty-state">No confirmed production transactions match these filters.</td></tr>
+                  <tr><td colSpan={14} className="text-center py-8 text-[#98A2B3] border border-[#D0D5DD]" data-testid="confirmed-report-empty-state">No confirmed production transactions match these filters.</td></tr>
                 )}
               </tbody>
             </table>
