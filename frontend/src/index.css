@@ -14,6 +14,16 @@ code {
         source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
 }
 
+/* Sep 15 2026 - lets the main nav's tabs/dropdowns scroll horizontally
+   instead of overflowing into the SAP/ERP status badges when there isn't
+   enough width to fit them all unwrapped. */
+.nav-scroll-x {
+    scrollbar-width: none;
+}
+.nav-scroll-x::-webkit-scrollbar {
+    display: none;
+}
+
 /* SAP Fiori "72" font family (Apache 2.0, served from jsDelivr CDN) - used
    app-wide across the Supplier Portal (Vendor Control Center) per explicit
    user request. Standard Fiori font stack: "72", "72full", Arial, Helvetica. */

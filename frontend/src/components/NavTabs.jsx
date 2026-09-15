@@ -127,8 +127,13 @@ export const NavTabs = () => {
 
   return (
     <>
-      {/* Desktop / large tablet nav - unchanged pill tabs */}
-      <div className="hidden lg:flex items-center gap-1 w-full">
+      {/* Desktop / large tablet nav - unchanged pill tabs.
+          Sep 15 2026 fix: tabs+dropdowns live in their own scrollable,
+          shrinkable section so a long label (or future extra tab) scrolls
+          horizontally instead of overflowing into the SAP/ERP status
+          badges that sit just outside this component. */}
+      <div className="hidden lg:flex items-center gap-1 w-full min-w-0">
+      <div className="flex items-center gap-1 min-w-0 flex-1 overflow-x-auto nav-scroll-x">
       {visibleTabs.map((tab) => {
         const active = pathname === tab.to;
         return (
@@ -166,11 +171,12 @@ export const NavTabs = () => {
           </DropdownMenuContent>
         </DropdownMenu>
       ))}
+      </div>
 
       {user && (
         <DropdownMenu>
           <DropdownMenuTrigger
-            className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[13px] font-bold font-heading text-white/85 hover:bg-white/15 hover:text-white transition-colors duration-150 outline-none shrink-0"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[13px] font-bold font-heading text-white/85 hover:bg-white/15 hover:text-white transition-colors duration-150 outline-none shrink-0"
             data-testid="nav-user-menu"
           >
             <UserCircle size={16} weight="fill" />
