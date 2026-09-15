@@ -6003,10 +6003,15 @@ async def get_purchase_order_history(
     created_by: str = None,
     po_date_from: str = None,
     po_date_to: str = None,
+    po_type: str = None,
 ):
     # Sep 5 2026, user's explicit ask: filter the Created POs list -
     # Supplier/Plant/Item/Created By/PO Date, so admins don't have to
     # scroll a long list to find a specific creator's or vendor's POs.
+    # Sep 15 2026, user's explicit ask: also surface Service/Job Work/
+    # Capital POs (their own separate SERVICE_PO_HISTORY_COLLECTION, per
+    # the deliberate independence choice at that flow's creation) on this
+    # same shared page - merged in-memory since they're two collections.
     def _fetch():
         query = {}
         if supplier_code:
@@ -6024,7 +6029,28 @@ async def get_purchase_order_history(
             if po_date_to:
                 date_query["$lte"] = po_date_to
             query["po_date"] = date_query
-        docs = list(db["purchase_order_creation_history"].find(query, {"raw_xml": 0}).sort("created_at", -1).limit(limit))
+
+        docs = []
+        if po_type in (None, "", "material"):
+            material_docs = list(db["purchase_order_creation_history"].find(query, {"raw_xml": 0}).sort("created_at", -1).limit(limit))
+            for d in material_docs:
+                d["po_type"] = "material"
+            docs.extend(material_docs)
+        # product_id filter never matches Service/Job Work/Capital lines
+        # (they have no product_id field at all) - skip querying that
+        # collection entirely rather than waste a round trip on a filter
+        # that can only ever return zero rows.
+        if not product_id and po_type != "material":
+            service_query = dict(query)
+            if po_type:
+                service_query["po_type"] = po_type
+            service_docs = list(db[SERVICE_PO_HISTORY_COLLECTION].find(service_query, {"raw_xml": 0}).sort("created_at", -1).limit(limit))
+            for d in service_docs:
+                d.setdefault("po_type", "service")
+            docs.extend(service_docs)
+
+        docs.sort(key=lambda d: d.get("created_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        docs = docs[:limit]
         for d in docs:
             d["_id"] = str(d["_id"])
             if isinstance(d.get("created_at"), datetime):
@@ -6046,11 +6072,12 @@ async def get_purchase_order_history(
 async def get_purchase_order_history_filter_options():
     """Distinct Supplier/Created By values already used in the Created
     POs history, to populate the filter dropdowns (Plant reuses the
-    existing /purchase-orders/sites list)."""
+    existing /purchase-orders/sites list). Sep 15 2026: pooled across
+    both the Material and Service/Job Work/Capital history collections."""
     def _fetch():
-        suppliers = db["purchase_order_creation_history"].distinct("supplier_code")
-        created_by = db["purchase_order_creation_history"].distinct("created_by")
-        supplier_docs = list(db["suppliers"].find({"sap_internal_id": {"$in": suppliers}}, {"sap_internal_id": 1, "name": 1}))
+        suppliers = set(db["purchase_order_creation_history"].distinct("supplier_code")) | set(db[SERVICE_PO_HISTORY_COLLECTION].distinct("supplier_code"))
+        created_by = set(db["purchase_order_creation_history"].distinct("created_by")) | set(db[SERVICE_PO_HISTORY_COLLECTION].distinct("created_by"))
+        supplier_docs = list(db["suppliers"].find({"sap_internal_id": {"$in": list(suppliers)}}, {"sap_internal_id": 1, "name": 1}))
         name_by_code = {d["sap_internal_id"]: d.get("name") for d in supplier_docs}
         return {
             "suppliers": sorted([{"code": s, "name": name_by_code.get(s, s)} for s in suppliers if s], key=lambda x: x["code"]),

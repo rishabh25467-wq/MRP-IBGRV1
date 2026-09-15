@@ -13,7 +13,20 @@ import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
-const EMPTY_FILTERS = { supplier_code: "", site_id: "", product_id: "", created_by: "", po_date_from: "", po_date_to: "" };
+const EMPTY_FILTERS = { supplier_code: "", site_id: "", product_id: "", created_by: "", po_date_from: "", po_date_to: "", po_type: "" };
+
+const PO_TYPE_LABELS = { material: "Material", service: "Service & Consume", jobwork: "Job Work", capital: "Capital" };
+const PO_TYPE_BADGE_CLASSES = {
+  material: "bg-[#EFF8FF] text-[#175CD3] border-[#B2DDFF]",
+  service: "bg-[#ECFDF3] text-[#027A48] border-[#ABEFC6]",
+  jobwork: "bg-[#FFF6ED] text-[#B93815] border-[#FDDCAB]",
+  capital: "bg-[#F4F3FF] text-[#5925DC] border-[#D9D6FE]",
+};
+const PoTypeBadge = ({ poType }) => (
+  <span className={`inline-block px-1.5 py-0.5 rounded-sm text-[10px] font-semibold border font-heading uppercase ${PO_TYPE_BADGE_CLASSES[poType] || PO_TYPE_BADGE_CLASSES.material}`}>
+    {PO_TYPE_LABELS[poType] || poType || "Material"}
+  </span>
+);
 
 export default function CreatedPurchaseOrdersPage() {
   const [pos, setPos] = useState([]);
@@ -61,10 +74,10 @@ export default function CreatedPurchaseOrdersPage() {
   const fmtDate = (v) => (v ? new Date(v).toLocaleString() : "—");
 
   const exportCsv = () => {
-    const headers = ["SAP PO #", "Printed PO #", "Supplier", "Site", "Bill-To", "PO Date", "PR Number", "Items", "Created By", "Created At"];
+    const headers = ["SAP PO #", "Printed PO #", "Type", "Supplier", "Site", "Bill-To", "PO Date", "PR Number", "Items", "Created By", "Created At"];
     const csvEscape = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const rows = pos.map((po) => [
-      po.po_number, po.sap_po_number || "", po.supplier_code, po.purchase_unit_site, po.bill_to_company,
+      po.po_number, po.sap_po_number || "", PO_TYPE_LABELS[po.po_type] || po.po_type || "Material", po.supplier_code, po.purchase_unit_site, po.bill_to_company,
       po.po_date, po.pr_number || "", (po.items || []).length, po.created_by || "", fmtDate(po.created_at),
     ].map(csvEscape).join(","));
     const csv = [headers.map(csvEscape).join(","), ...rows].join("\n");
@@ -124,7 +137,17 @@ export default function CreatedPurchaseOrdersPage() {
               </Button>
             )}
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-2">
+            <Select value={filters.po_type || "__all__"} onValueChange={(v) => setFilter("po_type", v === "__all__" ? "" : v)}>
+              <SelectTrigger className="h-8 text-xs rounded-sm" data-testid="created-pos-filter-type"><SelectValue placeholder="Type" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">All Types</SelectItem>
+                {Object.entries(PO_TYPE_LABELS).map(([k, label]) => (
+                  <SelectItem key={k} value={k}>{label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
             <Select value={filters.supplier_code || "__all__"} onValueChange={(v) => setFilter("supplier_code", v === "__all__" ? "" : v)}>
               <SelectTrigger className="h-8 text-xs rounded-sm" data-testid="created-pos-filter-supplier"><SelectValue placeholder="Supplier" /></SelectTrigger>
               <SelectContent>
@@ -195,7 +218,7 @@ export default function CreatedPurchaseOrdersPage() {
             <table className="w-full text-xs border-collapse min-w-[900px]" data-testid="created-pos-table">
               <thead>
                 <tr>
-                  {["SAP PO #", "Printed PO #", "Supplier", "Site", "Bill-To", "PO Date", "PR Number", "Items", "Created By", "Created At", ""].map((h) => (
+                  {["SAP PO #", "Printed PO #", "Type", "Supplier", "Site", "Bill-To", "PO Date", "PR Number", "Items", "Created By", "Created At", ""].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-xs font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -205,6 +228,7 @@ export default function CreatedPurchaseOrdersPage() {
                   <tr key={po._id} className={idx % 2 === 1 ? "bg-[#F9FAFB]" : ""} data-testid={`created-pos-row-${po.po_number}`}>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 font-data font-semibold text-[#1D2939]">{po.po_number}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5 font-data" data-testid={`created-pos-printed-number-${po.po_number}`}>{po.sap_po_number || "—"}</td>
+                    <td className="border border-[#D0D5DD] px-2 py-1.5"><PoTypeBadge poType={po.po_type} /></td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{po.supplier_code}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{po.purchase_unit_site}</td>
                     <td className="border border-[#D0D5DD] px-2 py-1.5">{po.bill_to_company}</td>
@@ -236,6 +260,7 @@ export default function CreatedPurchaseOrdersPage() {
               <div className="grid grid-cols-2 gap-2">
                 <p><b>Supplier:</b> {detail.supplier_code}</p>
                 <p><b>Printed PO #:</b> <span data-testid="created-pos-detail-printed-number">{detail.sap_po_number || "—"}</span></p>
+                <p><b>Type:</b> <PoTypeBadge poType={detail.po_type} /></p>
                 <p><b>Purchase Unit:</b> {detail.purchase_unit_site}</p>
                 <p><b>Company:</b> {detail.company_code}</p>
                 <p><b>Bill-To:</b> {detail.bill_to_company}</p>
@@ -247,7 +272,7 @@ export default function CreatedPurchaseOrdersPage() {
               <table className="w-full text-xs border-collapse" data-testid="created-pos-detail-items-table">
                 <thead>
                   <tr>
-                    {["Product", "Description", "Qty", "UoM", "Unit Price", "Delivery Date"].map((h) => (
+                    {["Description", detail.po_type === "capital" ? "Fixed Asset" : detail.po_type && detail.po_type !== "material" ? "GL Account" : "Product", "Qty", "UoM", "Unit Price", "Delivery Date"].map((h) => (
                       <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left font-bold text-[#344054] font-heading uppercase">{h}</th>
                     ))}
                   </tr>
@@ -255,8 +280,10 @@ export default function CreatedPurchaseOrdersPage() {
                 <tbody>
                   {(detail.items || []).map((it, i) => (
                     <tr key={i}>
-                      <td className="border border-[#D0D5DD] px-2 py-1.5">{it.product_id}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{it.description || "—"}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5 font-data">
+                        {detail.po_type === "capital" ? it.fixed_asset_id : detail.po_type && detail.po_type !== "material" ? it.gl_account_code : it.product_id}
+                      </td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{it.quantity}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{it.unit_of_measure}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{it.unit_price}</td>
