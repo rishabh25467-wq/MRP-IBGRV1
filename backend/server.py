@@ -6297,6 +6297,12 @@ class ServicePurchaseOrderCreateRequest(BaseModel):
     def _valid_po_type(cls, v):
         if v not in ("service", "jobwork", "capital"):
             raise ValueError("po_type must be one of service, jobwork, capital")
+        if v == "capital":
+            # Sep 15 2026 - paused server-side too (defense in depth,
+            # UI already disables this): the Fixed Asset picker was
+            # posting the wrong SAP ID (Master Fixed Asset instead of
+            # the real Individual Material Product ID).
+            raise ValueError("Capital PO creation is paused - the Fixed Asset picker needs a fix before this can be used again")
         return v
 
     @field_validator("po_date")

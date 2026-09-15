@@ -469,7 +469,7 @@ export default function ServicePurchaseOrderPage() {
               </h2>
               <div className="flex flex-wrap gap-2" data-testid="service-po-type-select">
                 {PO_TYPE_OPTIONS.map((opt) => {
-                  const disabled = opt.value === "jobwork";
+                  const disabled = opt.value === "jobwork" || opt.value === "capital";
                   return (
                   <button
                     key={opt.value}
@@ -477,7 +477,8 @@ export default function ServicePurchaseOrderPage() {
                     disabled={disabled}
                     onClick={() => changePoType(opt.value)}
                     title={
-                      opt.value === "jobwork" ? "Paused - waiting on SAP technical field IDs for Purchase Order Type & Output Product (see your SAP admin)"
+                      opt.value === "capital" ? "Paused Sep 15 2026 - the Fixed Asset picker was pulling the wrong SAP ID (Master Fixed Asset instead of Individual Material). Paused until we get the correct source."
+                        : opt.value === "jobwork" ? "Paused - waiting on SAP technical field IDs for Purchase Order Type & Output Product (see your SAP admin)"
                         : undefined
                     }
                     className={`h-9 px-4 rounded-sm text-sm font-semibold border transition-colors ${
@@ -489,7 +490,7 @@ export default function ServicePurchaseOrderPage() {
                     }`}
                     data-testid={`service-po-type-option-${opt.value}`}
                   >
-                    {opt.label}{opt.value === "jobwork" ? " (Paused)" : ""}
+                    {opt.label}{disabled ? " (Paused)" : ""}
                   </button>
                   );
                 })}
@@ -497,13 +498,13 @@ export default function ServicePurchaseOrderPage() {
               <p className="text-[11px] text-[#98A2B3]">
                 {poType === "jobwork"
                   ? "Job Work: Product Category JOBWORK · GL Account + Cost Center entered manually below, same as Service."
-                  : poType === "capital"
-                    ? "Capital: pick an EXISTING SAP Fixed Asset below - posts cost straight to that asset, never creates a new one."
-                    : "Service & Consume: Product Category CONSUMABLES · GL Account + Cost Center entered manually below."}
+                  : "Service & Consume: Product Category CONSUMABLES · GL Account + Cost Center entered manually below."}
               </p>
-              {(poType === "jobwork") && (
+              {(poType === "jobwork" || poType === "capital") && (
                 <p className="text-[11px] text-[#B54708] bg-[#FFFAEB] border border-[#FEDF89] rounded-sm p-2">
-                  Job Work is paused - "Purchase Order Type" and "Output Product" need technical field IDs from your SAP admin (via Adapt UI &rarr; "Show Technical Help") before this can push fully to SAP without manual work.
+                  {poType === "capital"
+                    ? "Capital is paused (Sep 15 2026) - the Fixed Asset picker was posting the wrong SAP ID (Master Fixed Asset instead of the real Individual Material Product ID). Paused until we have a reliable way to list the correct IDs."
+                    : "Job Work is paused - \"Purchase Order Type\" and \"Output Product\" need technical field IDs from your SAP admin (via Adapt UI \u2192 \"Show Technical Help\") before this can push fully to SAP without manual work."}
                 </p>
               )}
             </div>
