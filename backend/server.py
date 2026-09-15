@@ -51,6 +51,7 @@ from sap_price_spec_client import SAPPriceSpecClient, SAPPriceSpecError, bulk_pu
 from sap_supplier_invoice_client import SAPSupplierInvoiceClient, SAPSupplierInvoiceError
 from sap_cost_estimate_client import SAPCostEstimateClient, SAPCostEstimateError
 from sap_gsa_client import SAPGSAClient, SAPGSAError
+from sap_fixed_asset_client import SAPFixedAssetClient, SAPFixedAssetError
 from price_explorer_client import PriceExplorerClient, PriceExplorerError
 import quota_arrangement_service
 from sap_valuation_client import SAPValuationClient, SAPValuationError
@@ -565,6 +566,12 @@ sap_cost_estimate_client = SAPCostEstimateClient(
 
 sap_gsa_client = SAPGSAClient(
     endpoint=os.environ['SAP_SOAP_GSA_ENDPOINT'],
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
+)
+
+sap_fixed_asset_client = SAPFixedAssetClient(
+    endpoint=os.environ['SAP_SOAP_OBJECT_DESCRIPTION_ENDPOINT'],
     username=os.environ['SAP_SOAP_USERNAME'],
     password=os.environ['SAP_SOAP_PASSWORD'],
 )
@@ -6205,9 +6212,20 @@ class ServiceGLAccount(BaseModel):
     description: str
 
 
+class ServiceFixedAsset(BaseModel):
+    company_code: str
+    asset_id: str
+    description: str
+
+
 class ServicePurchaseOrderLineItemIn(BaseModel):
     description: str = Field(min_length=1)
-    gl_account_code: str = Field(min_length=1)
+    gl_account_code: Optional[str] = None
+    # Sep 15 2026, Capital PO ask - the SAP Master Fixed Asset ID picked
+    # from the live list (see /service-purchase-orders/fixed-assets),
+    # required instead of gl_account_code for po_type="capital" only
+    # (enforced below in ServicePurchaseOrderCreateRequest).
+    fixed_asset_id: Optional[str] = None
     hsn_code: Optional[str] = None
     quantity: float = Field(gt=0)
     unit_of_measure: str
@@ -6237,7 +6255,7 @@ class ServicePurchaseOrderLineItemIn(BaseModel):
 
 
 class ServicePurchaseOrderCreateRequest(BaseModel):
-    po_type: str = "service"  # "service" | "jobwork" | "capital" (capital not wired to SAP yet)
+    po_type: str = "service"  # "service" | "jobwork" | "capital"
     supplier_code: str
     purchase_unit_site: str
     bill_to_company: str
@@ -6267,6 +6285,19 @@ class ServicePurchaseOrderCreateRequest(BaseModel):
         for it in self.items:
             if it.delivery_date < self.po_date:
                 raise ValueError(f"Delivery Date for \"{it.description}\" cannot be before PO Date")
+        return self
+
+    @model_validator(mode="after")
+    def _account_assignment_per_po_type(self):
+        # Sep 15 2026, Capital PO ask - Capital lines carry a Fixed Asset
+        # (Individual Material) instead of a GL Account; every other
+        # po_type keeps the existing GL Account requirement.
+        for it in self.items:
+            if self.po_type == "capital":
+                if not it.fixed_asset_id:
+                    raise ValueError(f"Line \"{it.description}\": a Fixed Asset must be selected from the list")
+            elif not it.gl_account_code:
+                raise ValueError(f"Line \"{it.description}\": a GL Account must be selected from the list")
         return self
 
 
@@ -6422,6 +6453,33 @@ async def service_po_list_gl_accounts():
     return [ServiceGLAccount(**a) for a in accounts]
 
 
+@api_router.get("/service-purchase-orders/fixed-assets", response_model=List[ServiceFixedAsset])
+async def service_po_list_fixed_assets():
+    """Sep 15 2026, user's explicit ask - "show list of fixed asset in
+    the PO form so user select fixed asset... Master of fixed asset
+    maintain in the sap not by the emergent per PO". Live-verified: 125
+    real Fixed Assets on this tenant via QueryObjectDescriptionIn - same
+    small/rarely-changing-list caching pattern as GL Accounts above."""
+    cached = await asyncio.to_thread(db["sap_fixed_asset_cache"].find_one, {"_id": "latest"})
+    if not cached or (datetime.now(timezone.utc) - cached["updated_at"]) > timedelta(days=1):
+        try:
+            assets = await asyncio.to_thread(sap_fixed_asset_client.list_fixed_assets)
+        except SAPFixedAssetError as e:
+            if cached:
+                logger.warning(f"Fixed Asset list refresh failed, serving stale cache: {e}")
+                assets = cached["assets"]
+            else:
+                raise HTTPException(status_code=503, detail=str(e))
+        else:
+            await asyncio.to_thread(
+                db["sap_fixed_asset_cache"].update_one, {"_id": "latest"},
+                {"$set": {"assets": assets, "updated_at": datetime.now(timezone.utc)}}, upsert=True,
+            )
+    else:
+        assets = cached["assets"]
+    return [ServiceFixedAsset(**a) for a in assets]
+
+
 @api_router.post("/service-purchase-orders/create")
 async def create_service_purchase_order(payload: ServicePurchaseOrderCreateRequest, request: Request):
     company_code, _ = company_and_set_of_books_for_site(payload.purchase_unit_site)
@@ -6441,7 +6499,7 @@ async def create_service_purchase_order(payload: ServicePurchaseOrderCreateReque
             "description": it.description, "quantity": it.quantity,
             "unit_of_measure": it.unit_of_measure, "unit_price": it.unit_price,
             "delivery_date": it.delivery_date, "site_id": payload.purchase_unit_site,
-            "gl_account_code": it.gl_account_code,
+            "gl_account_code": it.gl_account_code, "fixed_asset_id": it.fixed_asset_id,
         }
         for it in payload.items
     ]

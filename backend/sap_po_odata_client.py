@@ -24,11 +24,19 @@ import requests
 from requests.auth import HTTPBasicAuth
 
 # Sep 14 2026, Job Work PO ask - (item_type_code, product_category) per
-# po_type. "capital" deliberately excluded - needs IMAT/Fixed Asset
-# account assignment, not built yet.
+# po_type.
+# Sep 15 2026, Capital PO ask - IMAT (Individual Material/Fixed Asset)
+# account assignment confirmed live against this tenant's real $metadata
+# (AccountAssignmentTypeCode "IMAT" is in
+# ItemAccountAssignmentDetailsAccountAssignmentTypeCodeCollection, and
+# IndividualMaterialID is a creatable field on ItemAccountAssignmentDetails).
+# Product Category "CONSUMABLES" reused here TEMPORARILY (user's explicit
+# fallback choice, Sep 15 2026) - pending the tenant's real Fixed-Asset-
+# mapped category code.
 PO_TYPE_ITEM_CONFIG = {
     "service": ("19", "CONSUMABLES"),
     "jobwork": ("18", "JOBWORK"),
+    "capital": ("18", "CONSUMABLES"),
 }
 
 
@@ -179,7 +187,7 @@ class SAPPurchaseOrderODataClient:
         self._patch_party(session, token, result["po_uuid"], "BuyerParty", company_code)
         return result
 
-    def _create_service_item(self, session, token: str, po_object_id: str, it: dict, gl_account_code: str, item_type_code: str, product_category: str):
+    def _create_service_item(self, session, token: str, po_object_id: str, it: dict, item_type_code: str, product_category: str, po_type: str):
         """Sep 14 2026 fix (real live SAP rejection hit on PR 125257):
         creating Service items INSIDE the same deep-insert as the header
         (like create_purchase_order does) fails with a real SAP error -
@@ -199,8 +207,34 @@ class SAPPurchaseOrderODataClient:
         Job Work PO ask) - "19"/CONSUMABLES for Service, "18"/JOBWORK for
         Job Work (same CC account assignment mechanism as Service, per
         user's explicit ask - "manual ledger selection... same as service
-        PO"). Live-verified for JOBWORK the same way Service was."""
+        PO"). Live-verified for JOBWORK the same way Service was.
+
+        Sep 15 2026, Capital PO ask - "capital" lines use AccountAssignmentTypeCode
+        "IMAT" (Individual Material/Fixed Asset) + IndividualMaterialID
+        (the exact SAP Master Fixed Asset ID the user picked from the
+        live list, via QueryObjectDescriptionIn - see sap_fixed_asset_client.py)
+        instead of Cost Center + GL Account - per user's explicit ask,
+        this posts cost against an EXISTING SAP-maintained asset, never
+        creates a new one from here. UNVERIFIED for a real live write -
+        first real Capital PO submission will confirm end to end."""
         description = str(it.get("description") or "Service")[:40]
+        if po_type == "capital":
+            account_assignment_details = {
+                "AccountAssignmentTypeCode": "IMAT",
+                "IndividualMaterialID": str(it["fixed_asset_id"]),
+                "Percent": "100",
+                "Quantity": str(it["quantity"]),
+                "QuantityUnitCode": it["unit_of_measure"] or "EA",
+            }
+        else:
+            account_assignment_details = {
+                "AccountAssignmentTypeCode": "CC",
+                "CostCentreID": it.get("cost_centre_id"),
+                "GeneralLedgerAccountAliasCode": str(it["gl_account_code"]),
+                "Percent": "100",
+                "Quantity": str(it["quantity"]),
+                "QuantityUnitCode": it["unit_of_measure"] or "EA",
+            }
         item_data = {
             "ParentObjectID": po_object_id,
             "ProductCategoryInternalID": product_category,
@@ -218,14 +252,7 @@ class SAPPurchaseOrderODataClient:
             "InvoiceRequirementCode": "01",
             "ItemShipToLocation": {"LocationID": str(it["site_id"])},
             "ItemAccountAssignment": {
-                "ItemAccountAssignmentDetails": [{
-                    "AccountAssignmentTypeCode": "CC",
-                    "CostCentreID": it.get("cost_centre_id"),
-                    "GeneralLedgerAccountAliasCode": str(gl_account_code),
-                    "Percent": "100",
-                    "Quantity": str(it["quantity"]),
-                    "QuantityUnitCode": it["unit_of_measure"] or "EA",
-                }],
+                "ItemAccountAssignmentDetails": [account_assignment_details],
             },
         }
         headers = {"x-csrf-token": token, "Content-Type": "application/json", "Accept": "application/json"}
@@ -318,7 +345,7 @@ class SAPPurchaseOrderODataClient:
         for it in items:
             it_with_cc = {**it, "cost_centre_id": bill_to_company_code}
             try:
-                self._create_service_item(session, token, result["po_uuid"], it_with_cc, it["gl_account_code"], item_type_code, product_category)
+                self._create_service_item(session, token, result["po_uuid"], it_with_cc, item_type_code, product_category, po_type)
             except SAPPurchaseOrderODataError as e:
                 raise SAPPurchaseOrderODataError(
                     f"Service Purchase Order {result['po_number']} was created in SAP but adding line "

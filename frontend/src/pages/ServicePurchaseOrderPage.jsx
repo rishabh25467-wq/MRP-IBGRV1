@@ -46,6 +46,9 @@ const emptyLine = () => ({
   description: "",
   gl_account_code: "",
   glAccountQuery: "",
+  fixed_asset_id: "",
+  fixedAssetQuery: "",
+  showFixedAssetSuggestions: false,
   hsn_code: "",
   unit_of_measure: "EA",
   uomFromPr: null,
@@ -71,7 +74,9 @@ const emptyLine = () => ({
 const PO_TYPE_OPTIONS = [
   { value: "service", label: "Service", productCategory: "CONSUMABLES" },
   { value: "jobwork", label: "Job Work", productCategory: "JOBWORK" },
-  { value: "capital", label: "Capital", productCategory: "FIXED_ASSETS" },
+  // Sep 15 2026: reusing CONSUMABLES temporarily (user's explicit fallback
+  // choice) until the tenant's real Fixed-Asset-mapped Product Category is known.
+  { value: "capital", label: "Capital", productCategory: "CONSUMABLES" },
 ];
 
 export default function ServicePurchaseOrderPage() {
@@ -101,6 +106,8 @@ export default function ServicePurchaseOrderPage() {
 
   const [lines, setLines] = useState([emptyLine()]);
   const [glAccounts, setGlAccounts] = useState([]);
+  const [fixedAssets, setFixedAssets] = useState([]);
+  const fixedAssetWrapperRefs = useRef({});
   const outputProductDebounceRef = useRef({});
   const outputWrapperRefs = useRef({});
 
@@ -112,6 +119,9 @@ export default function ServicePurchaseOrderPage() {
     axios.get(`${API}/service-purchase-orders/sites`).then((r) => setSites(r.data.sites || [])).catch(() => toast.error("Could not load sites"));
     // GL Account list is small (~284, rarely changes) - fetch once, filter client-side per line.
     axios.get(`${API}/service-purchase-orders/gl-accounts`).then((r) => setGlAccounts(r.data || [])).catch(() => toast.error("Could not load GL Account list"));
+    // Sep 15 2026, Capital PO ask - Fixed Asset master list (125 real assets), same
+    // fetch-once-filter-client-side pattern as GL Accounts.
+    axios.get(`${API}/service-purchase-orders/fixed-assets`).then((r) => setFixedAssets(r.data || [])).catch(() => toast.error("Could not load Fixed Asset list"));
   }, []);
 
   useEffect(() => {
@@ -121,6 +131,9 @@ export default function ServicePurchaseOrderPage() {
       Object.entries(glWrapperRefs.current).forEach(([key, el]) => {
         if (el && !el.contains(e.target)) setLines((prev) => prev.map((l) => (l.key === key ? { ...l, showGlSuggestions: false } : l)));
       });
+      Object.entries(fixedAssetWrapperRefs.current).forEach(([key, el]) => {
+        if (el && !el.contains(e.target)) setLines((prev) => prev.map((l) => (l.key === key ? { ...l, showFixedAssetSuggestions: false } : l)));
+      });
       Object.entries(outputWrapperRefs.current).forEach(([key, el]) => {
         if (el && !el.contains(e.target)) setLines((prev) => prev.map((l) => (l.key === key ? { ...l, showOutputSuggestions: false } : l)));
       });
@@ -129,10 +142,9 @@ export default function ServicePurchaseOrderPage() {
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, []);
 
-  // Sep 14 2026, Job Work PO ask - "then all page load" per type. A
-  // switch reshapes which fields matter (Product Category, Account
-  // Assignment, Output Product), so the safest thing is a clean reset
-  // rather than carrying over lines shaped for a different type.
+  // Sep 15 2026, Capital PO ask - fully enabled: Fixed Asset (Individual
+  // Material) picker wired to SAP's live master list via
+  // QueryObjectDescriptionIn. Job Work stays paused (missing custom field IDs).
   const changePoType = (v) => {
     setPoType(v);
     setPrVocNo(""); setPrFetched(null);
@@ -273,6 +285,26 @@ export default function ServicePurchaseOrderPage() {
     return glAccounts.filter((a) => a.code.toLowerCase().includes(q) || a.description.toLowerCase().includes(q)).slice(0, 20);
   };
 
+  // Sep 15 2026, Capital PO ask - only show assets belonging to the PO's
+  // own company (RI/RT, same as Bill-To filtering) so users can't
+  // accidentally post cost to a sibling company's asset.
+  const onFixedAssetQueryChange = (lineKey, v) => {
+    setLines((prev) => prev.map((l) => (l.key === lineKey ? { ...l, fixedAssetQuery: v, fixed_asset_id: "", showFixedAssetSuggestions: true } : l)));
+  };
+
+  const pickFixedAsset = (lineKey, a) => {
+    setLines((prev) => prev.map((l) => (l.key === lineKey
+      ? { ...l, fixed_asset_id: a.asset_id, fixedAssetQuery: `${a.asset_id} - ${a.description}`, showFixedAssetSuggestions: false }
+      : l)));
+  };
+
+  const fixedAssetMatches = (query) => {
+    const q = (query || "").trim().toLowerCase();
+    const pool = fixedAssets.filter((a) => a.company_code === company);
+    if (!q) return pool.slice(0, 20);
+    return pool.filter((a) => a.asset_id.toLowerCase().includes(q) || a.description.toLowerCase().includes(q)).slice(0, 20);
+  };
+
   const updateLine = (lineKey, field, value) => {
     setLines((prev) => prev.map((l) => (l.key === lineKey ? { ...l, [field]: value } : l)));
   };
@@ -293,7 +325,11 @@ export default function ServicePurchaseOrderPage() {
     if (lines.length === 0) errors.push("At least one line item is required");
     lines.forEach((l, idx) => {
       if (!l.description.trim()) errors.push(`Line ${idx + 1}: Description is required`);
-      if (!l.gl_account_code) errors.push(`Line ${idx + 1}: GL Account must be selected from the list`);
+      if (poType === "capital") {
+        if (!l.fixed_asset_id) errors.push(`Line ${idx + 1}: Fixed Asset must be selected from the list`);
+      } else if (!l.gl_account_code) {
+        errors.push(`Line ${idx + 1}: GL Account must be selected from the list`);
+      }
       if (!l.quantity || Number(l.quantity) <= 0) errors.push(`Line ${idx + 1}: Quantity must be greater than 0`);
       if (l.unit_price === "" || Number(l.unit_price) < 0) errors.push(`Line ${idx + 1}: Unit Price must be 0 or more`);
       if (!l.delivery_date) errors.push(`Line ${idx + 1}: Delivery Date is required`);
@@ -306,7 +342,12 @@ export default function ServicePurchaseOrderPage() {
     { label: "PR fetched & line items autofilled", ok: !!prFetched },
     { label: "Purchase Unit & Bill-To selected", ok: !!purchaseUnitSite && !!billToCompany },
     { label: "Supplier selected from SAP Master", ok: !!selectedSupplier },
-    { label: "Every line has a Description, GL Account, Qty & Price", ok: lines.every((l) => l.description.trim() && l.gl_account_code && Number(l.quantity) > 0 && l.unit_price !== "") },
+    {
+      label: poType === "capital"
+        ? "Every line has a Description, Fixed Asset, Qty & Price"
+        : "Every line has a Description, GL Account, Qty & Price",
+      ok: lines.every((l) => l.description.trim() && (poType === "capital" ? l.fixed_asset_id : l.gl_account_code) && Number(l.quantity) > 0 && l.unit_price !== ""),
+    },
     { label: "Delivery dates on/after PO Date", ok: lines.every((l) => !l.delivery_date || !poDate || l.delivery_date >= poDate) },
   ];
   const canSubmit = checklist.every((c) => c.ok);
@@ -332,7 +373,9 @@ export default function ServicePurchaseOrderPage() {
         currency,
         pr_number: prFetched.voc_no,
         items: lines.map((l) => ({
-          description: l.description.trim(), gl_account_code: l.gl_account_code,
+          description: l.description.trim(),
+          gl_account_code: poType === "capital" ? null : l.gl_account_code,
+          fixed_asset_id: poType === "capital" ? l.fixed_asset_id : null,
           hsn_code: l.hsn_code ? l.hsn_code.trim() : null,
           quantity: Number(l.quantity), unit_of_measure: l.unit_of_measure || "EA",
           unit_price: Number(l.unit_price), delivery_date: l.delivery_date,
@@ -411,7 +454,7 @@ export default function ServicePurchaseOrderPage() {
               </h2>
               <div className="flex flex-wrap gap-2" data-testid="service-po-type-select">
                 {PO_TYPE_OPTIONS.map((opt) => {
-                  const disabled = opt.value === "capital" || opt.value === "jobwork";
+                  const disabled = opt.value === "jobwork";
                   return (
                   <button
                     key={opt.value}
@@ -419,8 +462,7 @@ export default function ServicePurchaseOrderPage() {
                     disabled={disabled}
                     onClick={() => changePoType(opt.value)}
                     title={
-                      opt.value === "capital" ? "Fixed Asset selection for Capital POs is coming soon"
-                        : opt.value === "jobwork" ? "Paused - waiting on SAP technical field IDs for Purchase Order Type & Output Product (see your SAP admin)"
+                      opt.value === "jobwork" ? "Paused - waiting on SAP technical field IDs for Purchase Order Type & Output Product (see your SAP admin)"
                         : undefined
                     }
                     className={`h-9 px-4 rounded-sm text-sm font-semibold border transition-colors ${
@@ -432,7 +474,7 @@ export default function ServicePurchaseOrderPage() {
                     }`}
                     data-testid={`service-po-type-option-${opt.value}`}
                   >
-                    {opt.label}{opt.value === "capital" ? " (Coming Soon)" : opt.value === "jobwork" ? " (Paused)" : ""}
+                    {opt.label}{opt.value === "jobwork" ? " (Paused)" : ""}
                   </button>
                   );
                 })}
@@ -441,7 +483,7 @@ export default function ServicePurchaseOrderPage() {
                 {poType === "jobwork"
                   ? "Job Work: Product Category JOBWORK · GL Account + Cost Center entered manually below, same as Service."
                   : poType === "capital"
-                    ? "Capital: Product Category FIXED_ASSETS with a Fixed Asset (Individual Material) picker - not available yet."
+                    ? "Capital: pick an EXISTING SAP Fixed Asset below - posts cost straight to that asset, never creates a new one."
                     : "Service: Product Category CONSUMABLES · GL Account + Cost Center entered manually below."}
               </p>
               {(poType === "jobwork") && (
@@ -643,16 +685,22 @@ export default function ServicePurchaseOrderPage() {
                 <span className="text-[11px] text-[#667085]">
                   <span className="font-semibold text-[#344054]">Product Category:</span> <span className="font-data">{PO_TYPE_OPTIONS.find((o) => o.value === poType)?.productCategory}</span> (fixed for {PO_TYPE_OPTIONS.find((o) => o.value === poType)?.label} lines)
                 </span>
-                <span className="text-[11px] text-[#667085]">
-                  <span className="font-semibold text-[#344054]">Account Assignment:</span> Cost Center <span className="font-data">{billToCompany || "(select Bill-To)"}</span> - same as Bill-To
-                </span>
+                {poType === "capital" ? (
+                  <span className="text-[11px] text-[#667085]">
+                    <span className="font-semibold text-[#344054]">Account Assignment:</span> Individual Material (Fixed Asset) - selected per line, company <span className="font-data">{company}</span>
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-[#667085]">
+                    <span className="font-semibold text-[#344054]">Account Assignment:</span> Cost Center <span className="font-data">{billToCompany || "(select Bill-To)"}</span> - same as Bill-To
+                  </span>
+                )}
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs border-collapse min-w-[980px]" data-testid="service-po-line-items-table">
                   <thead>
                     <tr>
                       {[
-                        "Description", "HSN/SAC", "GL Account", "Qty", "UoM", "Unit Price", "Delivery Date",
+                        "Description", "HSN/SAC", poType === "capital" ? "Fixed Asset" : "GL Account", "Qty", "UoM", "Unit Price", "Delivery Date",
                         ...(poType === "jobwork" ? ["O/P Qty", "O/P Product", "O/P Description"] : []),
                         "Line Total", "",
                       ].map((h) => (
@@ -686,33 +734,67 @@ export default function ServicePurchaseOrderPage() {
                             data-testid={`service-po-line-hsn-input-${idx}`}
                           />
                         </td>
-                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[220px] relative" ref={(el) => { glWrapperRefs.current[l.key] = el; }}>
-                          <Input
-                            value={l.glAccountQuery}
-                            onChange={(e) => onGlAccountQueryChange(l.key, e.target.value)}
-                            onFocus={() => setLines((prev) => prev.map((x) => (x.key === l.key ? { ...x, showGlSuggestions: true } : x)))}
-                            placeholder="Search GL Account..."
-                            className="h-8 text-xs rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]"
-                            data-testid={`service-po-line-gl-input-${idx}`}
-                          />
-                          {l.showGlSuggestions && (
-                            <div className="absolute z-20 mt-1 w-full bg-white border border-[#D0D5DD] rounded-sm shadow-lg max-h-56 overflow-y-auto" data-testid={`service-po-line-gl-suggestions-${idx}`}>
-                              {glAccountMatches(l.glAccountQuery).map((a) => (
-                                <button
-                                  key={a.code}
-                                  type="button"
-                                  className="w-full text-left px-3 py-2 text-xs hover:bg-[#F2F4F7] border-b border-[#EAECF0] last:border-0"
-                                  onClick={() => pickGlAccount(l.key, a)}
-                                  data-testid={`service-po-line-gl-suggestion-${idx}-${a.code}`}
-                                >
-                                  <span className="font-semibold text-[#101828] font-data">{a.code}</span>
-                                  <span className="text-[#667085]"> - {a.description}</span>
-                                </button>
-                              ))}
-                              {glAccountMatches(l.glAccountQuery).length === 0 && (
-                                <div className="px-3 py-2 text-xs text-[#98A2B3]">No matching GL Account</div>
+                        <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[220px] relative" ref={(el) => { glWrapperRefs.current[l.key] = el; fixedAssetWrapperRefs.current[l.key] = el; }}>
+                          {poType === "capital" ? (
+                            <>
+                              <Input
+                                value={l.fixedAssetQuery}
+                                onChange={(e) => onFixedAssetQueryChange(l.key, e.target.value)}
+                                onFocus={() => setLines((prev) => prev.map((x) => (x.key === l.key ? { ...x, showFixedAssetSuggestions: true } : x)))}
+                                placeholder="Search Fixed Asset..."
+                                className="h-8 text-xs rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]"
+                                data-testid={`service-po-line-fixed-asset-input-${idx}`}
+                              />
+                              {l.showFixedAssetSuggestions && (
+                                <div className="absolute z-20 mt-1 w-full bg-white border border-[#D0D5DD] rounded-sm shadow-lg max-h-56 overflow-y-auto" data-testid={`service-po-line-fixed-asset-suggestions-${idx}`}>
+                                  {fixedAssetMatches(l.fixedAssetQuery).map((a) => (
+                                    <button
+                                      key={a.asset_id}
+                                      type="button"
+                                      className="w-full text-left px-3 py-2 text-xs hover:bg-[#F2F4F7] border-b border-[#EAECF0] last:border-0"
+                                      onClick={() => pickFixedAsset(l.key, a)}
+                                      data-testid={`service-po-line-fixed-asset-suggestion-${idx}-${a.asset_id}`}
+                                    >
+                                      <span className="font-semibold text-[#101828] font-data">{a.asset_id}</span>
+                                      <span className="text-[#667085]"> - {a.description}</span>
+                                    </button>
+                                  ))}
+                                  {fixedAssetMatches(l.fixedAssetQuery).length === 0 && (
+                                    <div className="px-3 py-2 text-xs text-[#98A2B3]">No matching Fixed Asset in company {company}</div>
+                                  )}
+                                </div>
                               )}
-                            </div>
+                            </>
+                          ) : (
+                            <>
+                              <Input
+                                value={l.glAccountQuery}
+                                onChange={(e) => onGlAccountQueryChange(l.key, e.target.value)}
+                                onFocus={() => setLines((prev) => prev.map((x) => (x.key === l.key ? { ...x, showGlSuggestions: true } : x)))}
+                                placeholder="Search GL Account..."
+                                className="h-8 text-xs rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]"
+                                data-testid={`service-po-line-gl-input-${idx}`}
+                              />
+                              {l.showGlSuggestions && (
+                                <div className="absolute z-20 mt-1 w-full bg-white border border-[#D0D5DD] rounded-sm shadow-lg max-h-56 overflow-y-auto" data-testid={`service-po-line-gl-suggestions-${idx}`}>
+                                  {glAccountMatches(l.glAccountQuery).map((a) => (
+                                    <button
+                                      key={a.code}
+                                      type="button"
+                                      className="w-full text-left px-3 py-2 text-xs hover:bg-[#F2F4F7] border-b border-[#EAECF0] last:border-0"
+                                      onClick={() => pickGlAccount(l.key, a)}
+                                      data-testid={`service-po-line-gl-suggestion-${idx}-${a.code}`}
+                                    >
+                                      <span className="font-semibold text-[#101828] font-data">{a.code}</span>
+                                      <span className="text-[#667085]"> - {a.description}</span>
+                                    </button>
+                                  ))}
+                                  {glAccountMatches(l.glAccountQuery).length === 0 && (
+                                    <div className="px-3 py-2 text-xs text-[#98A2B3]">No matching GL Account</div>
+                                  )}
+                                </div>
+                              )}
+                            </>
                           )}
                         </td>
                         <td className="border border-[#D0D5DD] py-1.5 px-2.5 min-w-[110px]">
@@ -863,7 +945,7 @@ export default function ServicePurchaseOrderPage() {
                 <thead>
                   <tr className="bg-[#EAECF0]">
                     <th className="text-left p-2 font-heading uppercase text-[#344054]">Description</th>
-                    <th className="text-left p-2 font-heading uppercase text-[#344054]">GL Account</th>
+                    <th className="text-left p-2 font-heading uppercase text-[#344054]">{poType === "capital" ? "Fixed Asset" : "GL Account"}</th>
                     <th className="text-right p-2 font-heading uppercase text-[#344054]">Qty</th>
                     <th className="text-left p-2 font-heading uppercase text-[#344054]">Delivery</th>
                     {poType === "jobwork" && <th className="text-left p-2 font-heading uppercase text-[#344054]">Output Product</th>}
@@ -874,7 +956,7 @@ export default function ServicePurchaseOrderPage() {
                   {lines.map((l, i) => (
                     <tr key={l.key} className="border-t border-[#D0D5DD]">
                       <td className="p-2 font-data">{l.description}</td>
-                      <td className="p-2 font-data">{l.gl_account_code}</td>
+                      <td className="p-2 font-data">{poType === "capital" ? l.fixedAssetQuery : l.gl_account_code}</td>
                       <td className="p-2 text-right font-data">{l.quantity} {l.unit_of_measure}</td>
                       <td className="p-2 font-data">{l.delivery_date}</td>
                       {poType === "jobwork" && (
@@ -891,7 +973,11 @@ export default function ServicePurchaseOrderPage() {
               </table>
             </div>
             <div className="flex justify-between items-center text-[11px] text-[#667085] font-data">
-              <span>Product Category: {PO_TYPE_OPTIONS.find((o) => o.value === poType)?.productCategory} &middot; Account Assignment: Cost Center {billToCompany} (100%)</span>
+              <span>
+                Product Category: {PO_TYPE_OPTIONS.find((o) => o.value === poType)?.productCategory} &middot; Account Assignment: {
+                  poType === "capital" ? "Individual Material (Fixed Asset)" : `Cost Center ${billToCompany} (100%)`
+                }
+              </span>
             </div>
             {poType === "jobwork" && lines.some((l) => l.output_product_id || l.output_product_description) && (
               <p className="text-[11px] text-[#B54708] bg-[#FFFAEB] border border-[#FEDF89] rounded-sm p-2" data-testid="service-po-output-product-disclaimer">
