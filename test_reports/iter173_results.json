@@ -1,0 +1,482 @@
+{
+  "BomExplorerPage@1920": {
+    "headerHeight": 64,
+    "headerScrollWidth": 1920,
+    "headerClientWidth": 1920,
+    "innerOverflowX": "visible",
+    "innerScrollWidth": 1253,
+    "innerClientWidth": 1253,
+    "bodyOverflowsHoriz": false,
+    "overflowElems": [],
+    "navItems": {
+      "nav-bom-explorer": {
+        "visible": true,
+        "top": 16,
+        "left": 236,
+        "right": 379
+      },
+      "nav-production": {
+        "visible": true,
+        "top": 16,
+        "left": 385,
+        "right": 494
+      },
+      "nav-procurement": {
+        "visible": true,
+        "top": 16,
+        "left": 500,
+        "right": 623
+      },
+      "nav-supplier-management": {
+        "visible": true,
+        "top": 16,
+        "left": 629,
+        "right": 810
+      },
+      "nav-inventory": {
+        "visible": true,
+        "top": 16,
+        "left": 816,
+        "right": 1006
+      },
+      "nav-master-data": {
+        "visible": true,
+        "top": 16,
+        "left": 1012,
+        "right": 1131
+      },
+      "nav-administration": {
+        "visible": true,
+        "top": 16,
+        "left": 1137,
+        "right": 1271
+      }
+    },
+    "userMenu": {
+      "top": 16,
+      "left": 1493,
+      "right": 1642
+    },
+    "innerWidth": 1920
+  },
+  "BomExplorerPage@1440": {
+    "headerHeight": 81,
+    "headerScrollWidth": 1440,
+    "headerClientWidth": 1440,
+    "innerOverflowX": "visible",
+    "innerScrollWidth": 773,
+    "innerClientWidth": 773,
+    "bodyOverflowsHoriz": false,
+    "overflowElems": [],
+    "navItems": {
+      "nav-bom-explorer": {
+        "visible": true,
+        "top": 6,
+        "left": 236,
+        "right": 379
+      },
+      "nav-production": {
+        "visible": true,
+        "top": 6,
+        "left": 385,
+        "right": 494
+      },
+      "nav-procurement": {
+        "visible": true,
+        "top": 6,
+        "left": 500,
+        "right": 623
+      },
+      "nav-supplier-management": {
+        "visible": true,
+        "top": 6,
+        "left": 629,
+        "right": 810
+      },
+      "nav-inventory": {
+        "visible": true,
+        "top": 6,
+        "left": 816,
+        "right": 1006
+      },
+      "nav-master-data": {
+        "visible": true,
+        "top": 44,
+        "left": 236,
+        "right": 355
+      },
+      "nav-administration": {
+        "visible": true,
+        "top": 44,
+        "left": 361,
+        "right": 495
+      }
+    },
+    "userMenu": {
+      "top": 25,
+      "left": 1013,
+      "right": 1162
+    },
+    "innerWidth": 1440
+  },
+  "BomExplorerPage@1366": {
+    "headerHeight": 81,
+    "headerScrollWidth": 1366,
+    "headerClientWidth": 1366,
+    "innerOverflowX": "visible",
+    "innerScrollWidth": 699,
+    "innerClientWidth": 699,
+    "bodyOverflowsHoriz": false,
+    "overflowElems": [],
+    "navItems": {
+      "nav-bom-explorer": {
+        "visible": true,
+        "top": 6,
+        "left": 236,
+        "right": 379
+      },
+      "nav-production": {
+        "visible": true,
+        "top": 6,
+        "left": 385,
+        "right": 494
+      },
+      "nav-procurement": {
+        "visible": true,
+        "top": 6,
+        "left": 500,
+        "right": 623
+      },
+      "nav-supplier-management": {
+        "visible": true,
+        "top": 6,
+        "left": 629,
+        "right": 810
+      },
+      "nav-inventory": {
+        "visible": true,
+        "top": 44,
+        "left": 236,
+        "right": 426
+      },
+      "nav-master-data": {
+        "visible": true,
+        "top": 44,
+        "left": 432,
+        "right": 551
+      },
+      "nav-administration": {
+        "visible": true,
+        "top": 44,
+        "left": 557,
+        "right": 691
+      }
+    },
+    "userMenu": {
+      "top": 25,
+      "left": 939,
+      "right": 1088
+    },
+    "innerWidth": 1366
+  },
+  "BomExplorerPage@1280": {
+    "headerHeight": 81,
+    "headerScrollWidth": 1280,
+    "headerClientWidth": 1280,
+    "innerOverflowX": "visible",
+    "innerScrollWidth": 613,
+    "innerClientWidth": 613,
+    "bodyOverflowsHoriz": false,
+    "overflowElems": [],
+    "navItems": {
+      "nav-bom-explorer": {
+        "visible": true,
+        "top": 6,
+        "left": 236,
+        "right": 379
+      },
+      "nav-production": {
+        "visible": true,
+        "top": 6,
+        "left": 385,
+        "right": 494
+      },
+      "nav-procurement": {
+        "visible": true,
+        "top": 6,
+        "left": 500,
+        "right": 623
+      },
+      "nav-supplier-management": {
+        "visible": true,
+        "top": 6,
+        "left": 629,
+        "right": 810
+      },
+      "nav-inventory": {
+        "visible": true,
+        "top": 44,
+        "left": 236,
+        "right": 426
+      },
+      "nav-master-data": {
+        "visible": true,
+        "top": 44,
+        "left": 432,
+        "right": 551
+      },
+      "nav-administration": {
+        "visible": true,
+        "top": 44,
+        "left": 557,
+        "right": 691
+      }
+    },
+    "userMenu": {
+      "top": 25,
+      "left": 853,
+      "right": 1002
+    },
+    "innerWidth": 1280
+  },
+  "BomExplorerPage@1200": {
+    "headerHeight": 119,
+    "headerScrollWidth": 1200,
+    "headerClientWidth": 1200,
+    "innerOverflowX": "visible",
+    "innerScrollWidth": 533,
+    "innerClientWidth": 533,
+    "bodyOverflowsHoriz": false,
+    "overflowElems": [],
+    "navItems": {
+      "nav-bom-explorer": {
+        "visible": true,
+        "top": 6,
+        "left": 236,
+        "right": 379
+      },
+      "nav-production": {
+        "visible": true,
+        "top": 6,
+        "left": 385,
+        "right": 494
+      },
+      "nav-procurement": {
+        "visible": true,
+        "top": 6,
+        "left": 500,
+        "right": 623
+      },
+      "nav-supplier-management": {
+        "visible": true,
+        "top": 44,
+        "left": 236,
+        "right": 417
+      },
+      "nav-inventory": {
+        "visible": true,
+        "top": 44,
+        "left": 423,
+        "right": 613
+      },
+      "nav-master-data": {
+        "visible": true,
+        "top": 44,
+        "left": 619,
+        "right": 738
+      },
+      "nav-administration": {
+        "visible": true,
+        "top": 81,
+        "left": 236,
+        "right": 370
+      }
+    },
+    "userMenu": {
+      "top": 44,
+      "left": 773,
+      "right": 922
+    },
+    "innerWidth": 1200
+  },
+  "BomExplorerPage@1024": {
+    "headerHeight": 156,
+    "headerScrollWidth": 1024,
+    "headerClientWidth": 1024,
+    "innerOverflowX": "visible",
+    "innerScrollWidth": 357,
+    "innerClientWidth": 357,
+    "bodyOverflowsHoriz": false,
+    "overflowElems": [],
+    "navItems": {
+      "nav-bom-explorer": {
+        "visible": true,
+        "top": 6,
+        "left": 236,
+        "right": 379
+      },
+      "nav-production": {
+        "visible": true,
+        "top": 6,
+        "left": 385,
+        "right": 494
+      },
+      "nav-procurement": {
+        "visible": true,
+        "top": 44,
+        "left": 236,
+        "right": 359
+      },
+      "nav-supplier-management": {
+        "visible": true,
+        "top": 44,
+        "left": 365,
+        "right": 546
+      },
+      "nav-inventory": {
+        "visible": true,
+        "top": 81,
+        "left": 236,
+        "right": 426
+      },
+      "nav-master-data": {
+        "visible": true,
+        "top": 81,
+        "left": 432,
+        "right": 551
+      },
+      "nav-administration": {
+        "visible": true,
+        "top": 119,
+        "left": 236,
+        "right": 370
+      }
+    },
+    "userMenu": {
+      "top": 62,
+      "left": 597,
+      "right": 746
+    },
+    "innerWidth": 1024
+  },
+  "InventoryPage@1280": {
+    "headerHeight": 81,
+    "headerScrollWidth": 1280,
+    "headerClientWidth": 1280,
+    "innerOverflowX": "visible",
+    "innerScrollWidth": 626,
+    "innerClientWidth": 626,
+    "bodyOverflowsHoriz": false,
+    "overflowElems": [],
+    "navItems": {
+      "nav-bom-explorer": {
+        "visible": true,
+        "top": 6,
+        "left": 223,
+        "right": 366
+      },
+      "nav-production": {
+        "visible": true,
+        "top": 6,
+        "left": 372,
+        "right": 481
+      },
+      "nav-procurement": {
+        "visible": true,
+        "top": 6,
+        "left": 487,
+        "right": 610
+      },
+      "nav-supplier-management": {
+        "visible": true,
+        "top": 6,
+        "left": 616,
+        "right": 797
+      },
+      "nav-inventory": {
+        "visible": true,
+        "top": 44,
+        "left": 223,
+        "right": 413
+      },
+      "nav-master-data": {
+        "visible": true,
+        "top": 44,
+        "left": 419,
+        "right": 538
+      },
+      "nav-administration": {
+        "visible": true,
+        "top": 44,
+        "left": 544,
+        "right": 678
+      }
+    },
+    "userMenu": {
+      "top": 25,
+      "left": 853,
+      "right": 1002
+    },
+    "innerWidth": 1280
+  },
+  "AdminPage@1280": {
+    "headerHeight": 81,
+    "headerScrollWidth": 1280,
+    "headerClientWidth": 1280,
+    "innerOverflowX": "visible",
+    "innerScrollWidth": 645,
+    "innerClientWidth": 645,
+    "bodyOverflowsHoriz": false,
+    "overflowElems": [],
+    "navItems": {
+      "nav-bom-explorer": {
+        "visible": true,
+        "top": 6,
+        "left": 204,
+        "right": 347
+      },
+      "nav-production": {
+        "visible": true,
+        "top": 6,
+        "left": 353,
+        "right": 462
+      },
+      "nav-procurement": {
+        "visible": true,
+        "top": 6,
+        "left": 468,
+        "right": 591
+      },
+      "nav-supplier-management": {
+        "visible": true,
+        "top": 6,
+        "left": 597,
+        "right": 778
+      },
+      "nav-inventory": {
+        "visible": true,
+        "top": 44,
+        "left": 204,
+        "right": 394
+      },
+      "nav-master-data": {
+        "visible": true,
+        "top": 44,
+        "left": 400,
+        "right": 519
+      },
+      "nav-administration": {
+        "visible": true,
+        "top": 44,
+        "left": 525,
+        "right": 659
+      }
+    },
+    "userMenu": {
+      "top": 25,
+      "left": 853,
+      "right": 1002
+    },
+    "innerWidth": 1280
+  }
+}
