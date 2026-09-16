@@ -1,3 +1,9 @@
+## BUG FIX (verified via screenshot): GRN "Supplier Invoice Number" field capped at 14 chars, should be 20 (Sep 16, 2026 session)
+- **User's report**: field on UI not accepting more than 14 digits.
+- **Root cause**: `GrnApprovalPage.jsx`'s "Supplier Invoice Number" input (feeds `supplier_doc_num`, used as the invoice-number PREFIX of the SAP Delivery Notification ID) had `maxLength={14}`/`.slice(0, 14)`, but the backend's actual limit for this same prefix is `MAX_INVOICE_PREFIX_LENGTH = 20` (in `sap_playwright_supplier_pgr_service.py`, within the overall 35-char SAP `BusinessTransactionDocumentID` limit) - a plain UI/backend mismatch, no reason for the frontend to be stricter.
+- **Fix**: changed both to `20` to match backend. Verified live - typing a 25-char invoice number now correctly truncates at 20 chars.
+
+
 ## FOLLOW-UP: SAP account "UNEECOPSTEAM" got LOCKED again (separate from the password expiry) - recurring lockout pattern (Sep 16, 2026 session)
 - After the password fix above, live deployment still showed the same error. Root cause turned out to be a SECOND, separate issue: the account got LOCKED again (likely triggered by repeated failed logins from the live app while it still had the old/wrong password mid-redeploy) - this matches the known recurring "SAP lockout policy" pattern from earlier sessions (see original handoff P0 issue for `itadmin`, now recurring for `UNEECOPSTEAM` too).
 - Confirmed via direct live query: same password (`UAdmin@11335`) that worked minutes earlier started failing again with a plain "Logon failed" page (not "Change Password") - this distinguishes a LOCKOUT from an expired/wrong password.
