@@ -999,4 +999,17 @@ Extend the existing SAP BOM viewer application: Production Plan page (OMS Open-P
   this fix is deployed.
 - **NEXT** (per handoff, still pending): Model ID missing in Confirmed Production Report (P1); Landed
   Cost feature (P1, logic already agreed: Weight -> Invoice Value -> PO Line Value fallback).
+- **STATUS UPDATE**: STO fix awaiting user's production deploy + confirmation (not yet verified fixed on
+  production). User then also reported a separate BOM Explorer price question - investigated, NOT a bug
+  (SAP-side data + expected direct-cost-vs-rollup behavior) - see `/app/memory/LANDED_COST_DESIGN.md`
+  section "B" for full detail.
+
+## Session (Sep 16 2026, cont'd) - Landed Cost feature: full design locked, DISCUSSION ONLY, nothing built
+Full multi-turn design discussion (2-tier allocation waterfall, multi-GRN/rejected-line handling, where
+it lives in the app, real native-SAP write mechanism researched + 2 SAP services CONFIRMED LIVE ACTIVE
+via WSIL for our existing `_EMERGENTBOM` user, 2-button safe UX flow) - **see
+`/app/memory/LANDED_COST_DESIGN.md` for the complete, detailed record** (user explicitly asked this be
+documented carefully so a future context-compaction doesn't lose it). User has NOT yet said "start
+building" - last question pending is whether to (1) start building now, (2) keep discussing, or (3)
+pause. Check the latest user message for the real answer before writing any code for this feature.
 
