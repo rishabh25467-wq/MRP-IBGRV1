@@ -76,6 +76,7 @@ const GRN_PHASE_LABELS = {
   logging_in: "Connecting to SAP...",
   retrying: "A step failed - retrying automatically...",
   moving_stock: "Moving stock into the warehouse...",
+  creating_notifications: "Creating SAP Notification...",
   done: "Done",
 };
 function describeGrnPhase(phase) {
@@ -522,7 +523,7 @@ export default function GrnApprovalPage() {
       } else if (result.sap_sync_status === "posted") {
         toast.warning("Goods Receipt posted - warehouse movement still pending", { description: summarizeMovementResult(result.sap_movement_result), duration: 8000 });
       } else if (result.sap_sync_status === "awaiting_manual_gr") {
-        toast.success("SAP Notification created - go post the Goods Receipt in SAP, then click 'Re-check SAP' here", { duration: 8000 });
+        toast.success("SAP Notification created - complete the GR in SAP, then click 'Re-check SAP'", { duration: 8000 });
       } else {
         toast.error("Approved internally - SAP posting failed, use Retry Goods Receipt below", { description: summarizeGrResult(result.sap_gr_result), duration: 8000 });
         openDiagnosticsIfFailed(result.sap_gr_result);
@@ -889,18 +890,24 @@ export default function GrnApprovalPage() {
                     <span data-testid="grn-job-progress-step">{describeGrnPhase(jobProgress.phase)}</span>
                   </div>
                   <span className="text-[#667085] font-data" data-testid="grn-job-progress-timer">
-                    {(() => {
+                    {jobProgress.kind === "manual_grn_notification" ? `Elapsed: ${jobElapsed}s` : (() => {
                       const remaining = GRN_SECONDS_PER_STEP * jobProgress.progress_total - jobElapsed;
                       return remaining > 0 ? `~${remaining}s left` : "Almost there...";
                     })()}
                   </span>
                 </div>
                 <Progress
-                  value={Math.min(100, Math.round((jobProgress.progress_current / Math.max(1, jobProgress.progress_total)) * 100))}
+                  value={
+                    jobProgress.kind === "manual_grn_notification"
+                      ? Math.min(92, jobElapsed * 15)
+                      : Math.min(100, Math.round((jobProgress.progress_current / Math.max(1, jobProgress.progress_total)) * 100))
+                  }
                   className="h-1.5"
                   data-testid="grn-job-progress-bar"
                 />
-                <div className="text-[11px] text-[#98A2B3] font-data">Elapsed: {jobElapsed}s</div>
+                {jobProgress.kind !== "manual_grn_notification" && (
+                  <div className="text-[11px] text-[#98A2B3] font-data">Elapsed: {jobElapsed}s</div>
+                )}
               </div>
             )}
 
@@ -997,7 +1004,7 @@ export default function GrnApprovalPage() {
                       ? (
                         <span className="flex items-center gap-2">
                           <Badge className="bg-[#EFF4FF] text-[#3538CD] border border-[#C7D7FE]" data-testid="grn-sap-awaiting-manual-badge">Awaiting Manual GR in SAP</Badge>
-                          SAP Notification created - go post the Goods Receipt yourself in SAP, then click Re-check SAP
+                          Complete the GR in SAP, then click Re-check SAP
                         </span>
                       )
                       : shipment.sap_sync_status === "manual_mismatch"
@@ -1056,17 +1063,6 @@ export default function GrnApprovalPage() {
                     </Button>
                   )}
                 </div>
-                {shipment.sap_sync_status === "awaiting_manual_gr" && shipment.manual_gr_notification_ids && (
-                  <div className="text-xs text-[#3538CD] bg-[#EFF4FF] border border-[#C7D7FE] rounded-sm px-3 py-2.5 space-y-2" data-testid="grn-manual-notification-ids">
-                    <div className="font-bold text-[#1D2939]">Next step: complete GR in SAP</div>
-                    <div className="text-[#3538CD]">In SAP, find each Inbound Delivery Notification below, enter the quantities as physically received, and post/confirm the Goods Receipt against it. Once done in SAP, come back here and click "Re-check SAP" above.</div>
-                    <div className="space-y-1 pt-1">
-                      {Object.entries(shipment.manual_gr_notification_ids).map(([po, nid]) => (
-                        <div key={po} data-testid={`grn-manual-notification-id-${po}`}>PO <strong>{po}</strong> - Inbound Delivery Notification ID <span className="font-data font-bold">{nid}</span></div>
-                      ))}
-                    </div>
-                  </div>
-                )}
                 {shipment.sap_sync_status === "manual_mismatch" && (shipment.manual_gr_mismatch_items || []).length > 0 && (
                   <table className="border-collapse w-full text-xs border border-[#FECDCA] rounded-sm overflow-hidden" data-testid="grn-manual-mismatch-table">
                     <thead className="bg-[#FEF3F2] text-[#B42318] font-bold uppercase tracking-wide">
