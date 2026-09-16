@@ -1,0 +1,35 @@
+{
+  "summary": "Frontend-only testing for STO Manual Goods Issue feature (multi-line STO Playwright deprecation). All 4 test scenarios PASSED. Cookie-based auth worked via context.add_cookies with url field. UI renders correctly, disabled fields honored, Manual GI banner/instructions/button visible for TESTMANUALGI1, Complete STO Process button triggers HTTP 400 and surfaces clear toast error 'No Delivery found in SAP yet...' without crashing the modal. Existing posted order (STO-000075) still renders with GI Posted banner + Outbound Delivery ID - no regression.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/sto_page_load.png",
+    "/app/test_reports/sto_detail_modal.png",
+    "/app/test_reports/sto_complete_final.png",
+    "/app/test_reports/sto_regression_modal.png"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "OrderDetailBody in StockTransferPage.js reuses the same data-testid 'stock-transfer-detail-gi-status' for both awaiting_manual_gi banner and posted banner. Not a bug per se (the state is mutually exclusive), but consider distinct testids ('stock-transfer-detail-gi-posted-banner' vs '...awaiting-manual-gi-banner') so tests can differentiate without inspecting text.",
+    "Dormant sap_playwright_outbound_gi_service.py left in codebase per user request - acknowledged as intentional dead code; recommend adding a top-of-file comment marking it DEPRECATED/UNUSED to prevent accidental re-import."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (skipped per request)", "frontend": "100%"},
+  "test_credentials": "Cookie vms_session=u-8qIcJoBrX8l6ZyV2JKWMte5t5GJsd_vzm6WzC1vqc via context.add_cookies with url=https://sap-data-sync.preview.emergentagent.com (worked as expected).",
+  "seed_data_creation": "None - used existing TESTMANUALGI1 fixture.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Cookie auth works cleanly if you pass url (not domain/path). TESTMANUALGI1 fixture is safe to click including Complete STO Process (returns 400 - expected). Do NOT confirm/submit new STOs via 'Review & Create Stock Transfer Order' final step - it's a LIVE SAP write.",
+  "verified_scenarios": [
+    "6 STO form fields (Transportation Mode / Vehicle No. / Place Of Supply / G.R No. / Date Of Supply / Freight Forwarder) rendered DISABLED with placeholder 'Filled in SAP' and NO asterisk. Confirmed via DOM inspection - all 6 have disabled=True, hasAsterisk=False.",
+    "Clicking 'Review & Create Stock Transfer Order' with empty form surfaces ONLY 'Select at least one item.' - no validation error mentions any of the 6 disabled fields.",
+    "Row data-testid='stock-transfer-recent-row-TESTMANUALGI1' shows 'Delivery Req: TESTDR-999999' chip and 'Awaiting Manual GI' status badge in the Goods Issue column.",
+    "Clicking the row opens detail modal containing: blue 'Awaiting Manual Goods Issue in SAP' banner (data-testid=stock-transfer-detail-gi-status), instructional text (data-testid=stock-transfer-detail-manual-gi-instructions) mentioning 'Delivery Request TESTDR-999999' and the 6 SAP fields, and 'Complete STO Process' button (data-testid=stock-transfer-detail-complete-manual-gi-button).",
+    "Clicking Complete STO Process triggers POST /api/stock-transfer/orders/TESTMANUALGI1/complete-manual-gi -> HTTP 400 -> toast: 'No Delivery found in SAP yet for this order - create the Delivery in SAP and post Goods Issue first, then try again.' Modal stays open, no crash.",
+    "Regression: STO-000075 (posted) modal still shows 'Goods Issue posted - delivery released', Outbound Delivery: P1D1-505, no manual-GI banner, no Complete STO Process button."
+  ]
+}

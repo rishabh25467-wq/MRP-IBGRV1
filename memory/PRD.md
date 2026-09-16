@@ -1123,3 +1123,49 @@ pause. Check the latest user message for the real answer before writing any code
   Registration, expires 11/8/2028) were confirmed correct/matching. **NOT YET CONFIRMED fully resolved
   by user** - last status was the improved error banner deployed, awaiting a fresh login attempt/error.
 
+
+## Session (Sep 16 2026, cont'd) - Manual Goods Issue for multi-line STOs (Playwright deprecated here too)
+User's explicit ask: mirror the Manual GRN pattern (already built for Supplier GRN) for Stock Transfer
+Order Goods Issue - Playwright automation of SAP's outbound delivery UI is now deprecated for multi-line
+STOs (single-line STOs were already pure-API, unaffected, no change needed there).
+- `create_stock_transfer_order` (`stock_transfer_service.py`): Transportation Mode/Vehicle No./Place Of
+  Supply/G.R No./Date Of Supply/Freight Forwarder are now OPTIONAL (validation removed) - staff fill
+  these directly on SAP's own Delivery screen when completing Goods Issue manually.
+- `_try_post_goods_issue_multiline` / `_try_release_existing_multiline_delivery`: the Playwright fallback
+  (`sap_playwright_outbound_gi_service.combine_and_post_goods_issue_via_ui`/
+  `release_existing_delivery_via_ui`) is REMOVED from the call path - instead sets
+  `gi_status="awaiting_manual_gi"` and stops (server.py's `_run_goods_issue_job` now treats this as
+  terminal, same as "posted", no more 20-min auto-poll wasted on it). The Outbound Delivery Analytics
+  report (`sap_outbound_delivery_analytics_client`) pre-check (already existed, no Playwright) still runs
+  first every attempt - if the user completes the manual GI while the 20-min window is still open, it's
+  auto-detected before ever reaching the manual-pause branch.
+- New `check_manual_gi_completion()` + `POST /api/stock-transfer/orders/{sto_id}/complete-manual-gi`
+  ("Complete STO Process" button) - staff click this after manually creating the Delivery + posting
+  Goods Issue in SAP. Re-checks the same Analytics report; requires ALL delivery rows "Finished" and
+  quantities matching the STO's requested qty (tolerance 0.01) - CPRODUCT_UUID on this report is,
+  despite the name, the plain-text Product ID (same misleadingly-named pattern already confirmed on the
+  Inbound Delivery report used by Manual GRN), so matched directly, no UUID resolution. On mismatch:
+  clear error only, NO hard user-block (unlike Manual GRN) - user's explicit call, since SAP auto-copies
+  delivery quantities from the source STO, so a real mismatch here should be rare.
+- Frontend (`StockTransferPage.js`): the 6 fields render disabled/greyed with "Filled in SAP" placeholder,
+  no asterisk, no longer block submission. `OrderDetailBody` shows a blue "Awaiting Manual Goods Issue in
+  SAP" banner with bare-minimum instructions (mentions Delivery Request ID/SAP Order ID/outbound Delivery
+  ID and the 6 fields to fill) + "Complete STO Process" button. Recent Orders table shows the Delivery
+  Request ID or Outbound Delivery ID chip as soon as SAP has one (no longer gated behind "posted" only),
+  plus a new "Awaiting Manual GI" status badge.
+- Dormant Playwright STO GI code (`sap_playwright_outbound_gi_service.py`) intentionally left in the
+  codebase, unused, per user's explicit request ("keep it, just don't call it").
+- Live-verified: `check_manual_gi_completion` correctly reaches real SAP and returns a clean 400 ("No
+  Delivery found in SAP yet...") for a fixture order with a fake SAP order ID - no crash, no false
+  "posted". testing_agent (iteration_179) verified full frontend flow end-to-end, 100% pass, 0 bugs -
+  disabled fields, validation skip, manual-GI banner/instructions/button, error toast on incomplete SAP
+  delivery, and no regression on an already-"posted" order.
+- Minor cleanup fix (unrelated small bug also handled this session): a `grn_blocked_shipment` user was
+  only ever stopped at the final GRN "Approve" click - user considered restricting them from all other
+  GRN lookups too, but decided (after discussion) to keep the existing behavior as-is (approve-only
+  block) - no code change needed, reverted an in-progress broader change back to original.
+- **NEXT** (per earlier handoff, still pending, paused for this session's urgent items): Model ID missing
+  in Confirmed Production Report (P1); Landed Cost feature (P1, design locked in
+  `/app/memory/LANDED_COST_DESIGN.md`, user has not yet said "start building"); Azure AD login `aud`
+  mismatch fix awaiting user's fresh login confirmation.
+
