@@ -8378,6 +8378,22 @@ async def post_admin_grn_reset_retry(doc_code: str, request: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@api_router.post("/admin/grn/{doc_code}/verify-sap-status")
+async def post_admin_grn_verify_sap_status(doc_code: str, request: Request):
+    """Sep 16 2026, real incident (PO 29284/shipment WFJEZ2) - re-checks
+    every PO on this shipment already marked "Posted" against SAP's own
+    confirmation report and corrects any SAP can't actually confirm back
+    to a retry-able "Failed" - see supplier_shipment_service.
+    verify_and_correct_gr_status docstring. Admin-gated, same reasoning
+    as reset-retry above (overrides a stored SAP outcome)."""
+    if request.state.user.get("role") not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403, detail="Admin access required to verify SAP status")
+    try:
+        return await asyncio.to_thread(supplier_shipment_service.verify_and_correct_gr_status, db, doc_code, sap_inbound_delivery_report_client)
+    except supplier_shipment_service.ShipmentNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @api_router.get("/admin/grn/failure-screenshot")
 async def get_admin_grn_failure_screenshot(path: str, request: Request):
     """Sep 11 2026, user's explicit ask - serves a Playwright GRN

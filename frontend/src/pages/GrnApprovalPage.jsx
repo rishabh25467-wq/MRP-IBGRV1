@@ -501,6 +501,24 @@ export default function GrnApprovalPage() {
     }
   };
 
+  const verifySapStatus = async () => {
+    setBusy(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/grn/${shipment._id}/verify-sap-status`);
+      const fixed = (data.gr_verification_result || []).filter((c) => c.corrected_to);
+      setShipment(data);
+      if (fixed.length > 0) {
+        toast.success(`SAP disagreed with ${fixed.length} PO(s) shown as Posted - corrected to Failed, Retry is now available`);
+      } else {
+        toast.success("SAP confirms every PO on this shipment is genuinely posted");
+      }
+    } catch (err) {
+      toast.error("Could not verify against SAP", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const retryMovement = async () => {
     setBusy(true);
     try {
@@ -876,6 +894,11 @@ export default function GrnApprovalPage() {
                         <ArrowsClockwise size={12} className="mr-1" /> Retry
                       </Button>
                     )
+                  )}
+                  {shipment.sap_sync_status === "posted" && (
+                    <Button size="sm" variant="outline" onClick={verifySapStatus} disabled={busy} className="rounded-sm h-7 text-xs" data-testid="grn-verify-sap-status-button" title="Double-check with SAP that every PO here was genuinely posted">
+                      <ArrowsClockwise size={12} className="mr-1" /> Verify with SAP
+                    </Button>
                   )}
                 </div>
                 {(shipment.sap_sync_status === "posted" || shipment.sap_sync_status === "partial") && shipment.sap_gr_result?.per_po?.some((p) => p.inbound_delivery_id) && (

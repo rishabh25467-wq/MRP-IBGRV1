@@ -1012,4 +1012,46 @@ via WSIL for our existing `_EMERGENTBOM` user, 2-button safe UX flow) - **see
 documented carefully so a future context-compaction doesn't lose it). User has NOT yet said "start
 building" - last question pending is whether to (1) start building now, (2) keep discussing, or (3)
 pause. Check the latest user message for the real answer before writing any code for this feature.
+- **UPDATE (Sep 16 2026, later)**: paused again mid-discussion for 2 urgent bugs - production Azure AD
+  login failure (AZURE_AD_CLIENT_ID deploy secret fixed) and a false-"Posted" GRN Goods Receipt bug (see
+  next section). Resume Landed Cost discussion (still not building) once user is ready.
+
+## GRN Vendor Goods Receipt - false "Posted" status FIXED (Sep 16 2026, real incident PO 29284/WFJEZ2)
+- Root cause #1 (primary): `sap_playwright_supplier_pgr_service.py` declared a PO "posted" purely
+  because no error toast was visible after "Save and Close" - absence of a visible error was wrongly
+  treated as proof of success. Fixed: now does a REAL positive check against SAP's own confirmation
+  report (`sap_inbound_delivery_report_client`, same one already used for the pre-check dedupe) with a
+  short retry for its indexing lag, before EVER reporting "posted". A Goods Receipt SAP can't confirm is
+  now reported as a genuine, Retry-able failure - never a false "Posted".
+- Root cause #2 (compounding): `SAP_ODATA_BUSINESS_PASSWORD` in `.env` was STALE (`UAdmin@11334`, one
+  digit off the correct current password `UAdmin@11335` used by the near-identical `SAP_ODATA_PASSWORD`
+  for the SAME account `UNEECOPSTEAM`) - silently 401'ing every confirmation-report call (including the
+  existing duplicate-GR dedupe pre-check, which had been silently disabled this whole time). Fixed in
+  `.env` and verified live.
+- Since a shipment already wrongly marked "posted"/"partial" hides its Retry button entirely (no way
+  back before this fix), added `supplier_shipment_service.verify_and_correct_gr_status()` +
+  `POST /api/admin/grn/{doc_code}/verify-sap-status` (admin-gated) + a "Verify with SAP" button on
+  `GrnApprovalPage.jsx` (shown only when `sap_sync_status === "posted"`) - re-checks every PO already
+  marked "posted" against SAP's confirmation report, flips any SAP can't confirm back to "failed" with
+  an explanatory event, and recomputes the shipment's overall status - restoring the Retry button.
+- Live-verified end-to-end in this preview (synthetic test record + real SAP query for PO 29284):
+  confirmed SAP genuinely has ZERO confirmed rows for that PO's notification (matches user's real-world
+  finding), and confirmed `verify_and_correct_gr_status` correctly flips it "posted"->"failed" and
+  shipment status "posted"->"pending" (Retry re-enabled). **User must deploy, then click "Verify with
+  SAP" on shipment WFJEZ2 in production to unstick this specific already-stuck record** - this preview's
+  local DB has no record of it (separate DB from production, same as STO-000415 earlier this session).
+
+## Production Azure AD login failure FIXED (Sep 16 2026)
+- Root cause: production Deploy Secret `AZURE_AD_CLIENT_ID` was literally set to the placeholder text
+  "Emergent" instead of the real GUID `afc4224f-c02c-4f80-93f0-3e2586ca40f5` - user fixed via Deploy
+  Secrets panel. Follow-up: callback then 500'd - added a safety net in `auth_service.py`'s callback
+  (try/except around `acquire_token_by_auth_code_flow`, plus surfacing the real Entra
+  error/error_description via a new `auth_reason` URL param and a matching error banner on
+  `LoginPage.jsx`) so any future auth failure shows the real reason on-screen instead of a raw 500 or a
+  silent redirect. Root cause of the SPECIFIC 500 was traced to an `aud` claim mismatch (MSAL's own
+  strict `client_id == token["aud"]` check) - likely a stray character/quote in how the Client ID was
+  re-entered; user was mid-troubleshooting this when the conversation moved to other urgent items. Both
+  `AZURE_AD_CLIENT_ID` and `AZURE_AD_CLIENT_SECRET` (the "MRP" secret under the shared "VMS" Entra App
+  Registration, expires 11/8/2028) were confirmed correct/matching. **NOT YET CONFIRMED fully resolved
+  by user** - last status was the improved error banner deployed, awaiting a fresh login attempt/error.
 

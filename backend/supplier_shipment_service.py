@@ -59,6 +59,7 @@ from datetime import datetime, timedelta, timezone
 
 import inventory_service
 import sap_po_client
+from sap_playwright_supplier_pgr_service import _build_notification_id
 from sap_wip_clearing_client import company_and_set_of_books_for_site
 
 PO_CACHE_COLLECTION = "supplier_portal_po_cache"
@@ -1010,19 +1011,8 @@ def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_c
     # on retry (SAP's Cancelled state doesn't revert), and the posted
     # one already has real stock to move. New "partial" status is a
     # distinct, terminal, no-more-retry-needed outcome.
-    all_settled = bool(gr_results) and all(r.get("status") in ("posted", "skipped") for r in gr_results)
-    any_posted = any(r.get("status") == "posted" for r in gr_results)
+    sap_sync_status = _compute_sap_sync_status(gr_results, doc.get("sap_gr_retry_count", 0))
     sap_gr_result = {"ok": all_ok, "per_po": gr_results, "sap_username": sap_username}
-    if all_ok:
-        sap_sync_status = "posted"
-    elif all_skipped:
-        sap_sync_status = "skipped"
-    elif all_settled and any_posted:
-        sap_sync_status = "partial"
-    elif doc.get("sap_gr_retry_count", 0) >= MAX_GR_RETRIES_BEFORE_FAILED:
-        sap_sync_status = "failed"
-    else:
-        sap_sync_status = "pending"
 
     sap_movement_status = "not_applicable"
     sap_movement_result = None
@@ -1044,6 +1034,70 @@ def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_c
 
 
 MAX_GR_RETRIES_BEFORE_FAILED = 3
+
+
+def _compute_sap_sync_status(gr_results: list, retry_count: int) -> str:
+    all_ok = bool(gr_results) and all(r.get("status") == "posted" for r in gr_results)
+    all_skipped = bool(gr_results) and all(r.get("status") == "skipped" for r in gr_results)
+    all_settled = bool(gr_results) and all(r.get("status") in ("posted", "skipped") for r in gr_results)
+    any_posted = any(r.get("status") == "posted" for r in gr_results)
+    if all_ok:
+        return "posted"
+    if all_skipped:
+        return "skipped"
+    if all_settled and any_posted:
+        return "partial"
+    if retry_count >= MAX_GR_RETRIES_BEFORE_FAILED:
+        return "failed"
+    return "pending"
+
+
+def verify_and_correct_gr_status(db, doc_code: str, confirmation_report_client) -> dict:
+    """Sep 16 2026, real incident (PO 29284 / shipment WFJEZ2, user's own
+    screenshot) - `sap_playwright_supplier_pgr_service.py` now positively
+    verifies against SAP's own confirmation report before ever reporting
+    "posted" (previously just assumed success whenever no error toast was
+    visible - a genuinely silent SAP-side failure got reported as a false
+    "Posted" with no Retry button available, permanently stuck). That fix
+    only protects FRESH attempts - a shipment already wrongly marked
+    posted/partial before it shipped stays stuck with no way back. This
+    re-checks every PO on this shipment currently marked "posted" against
+    that same (now also credential-fixed - see .env SAP_ODATA_BUSINESS_
+    PASSWORD) confirmation report, flips any PO SAP can't actually
+    confirm back to "failed" with an explanatory event, and recomputes
+    the shipment's overall status via the same rule finalize_goods_receipt
+    uses - restoring the Retry button for a genuinely-unposted PO instead
+    of leaving it stuck behind a false "Posted"."""
+    doc = get_shipment_by_code(db, doc_code)
+    gr_result = doc.get("sap_gr_result") or {}
+    per_po = gr_result.get("per_po") or []
+    corrected = []
+    for po in per_po:
+        if po.get("status") != "posted":
+            continue
+        notification_id = _build_notification_id(doc.get("supplier_doc_num"), doc_code, po["po_number"])
+        try:
+            confirmed_rows = confirmation_report_client.find_confirmation_rows(po["po_number"], notification_id)
+        except Exception as e:
+            corrected.append({"po_number": po["po_number"], "verify_error": str(e)})
+            continue
+        if not confirmed_rows:
+            po["status"] = "failed"
+            po["events"] = (po.get("events") or []) + [
+                "Re-verified against SAP (Sep 16 2026 fix) - SAP shows NO confirmed Goods Receipt for "
+                "this PO despite it being marked Posted. Corrected to Failed so it can be Retried."
+            ]
+            corrected.append({"po_number": po["po_number"], "corrected_to": "failed"})
+    any_status_change = any(c.get("corrected_to") for c in corrected)
+    if any_status_change:
+        sap_sync_status = _compute_sap_sync_status(per_po, doc.get("sap_gr_retry_count", 0))
+        db[SHIPMENTS_COLLECTION].update_one(
+            {"_id": doc["_id"]},
+            {"$set": {"sap_gr_result.per_po": per_po, "sap_sync_status": sap_sync_status}},
+        )
+    updated_doc = get_shipment_by_code(db, doc_code)
+    updated_doc["gr_verification_result"] = corrected
+    return updated_doc
 
 
 def reset_gr_retry_count(db, doc_code: str) -> dict:
