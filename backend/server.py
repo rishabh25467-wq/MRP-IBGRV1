@@ -7704,7 +7704,13 @@ async def post_inbound_receipt(sto_id: str, payload: InboundReceiptRequest, requ
             logger.error(f"Inbound receipt job {job_id} ({sto_id}) failed: {e}")
             friendly_error = "Could not reach SAP's receipt screen - please retry" if "Executable doesn't exist" in str(e) or "BrowserType.launch" in str(e) else str(e)
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": friendly_error})
-            await asyncio.to_thread(db[stock_transfer_service.STO_COLLECTION].update_one, {"_id": sto_id}, {"$set": {"receipt_error": friendly_error}})
+            # Bug fix (Sep 16 2026, user's explicit report - "most STOs
+            # show Pending Receipt even after failing"): this used to only
+            # set receipt_error, leaving receipt_status untouched (still
+            # "pending" or missing) - so the Pending tab's badge showed the
+            # same plain yellow "Pending Receipt" for a genuinely-failed
+            # attempt as for a never-tried row, hiding the failure entirely.
+            await asyncio.to_thread(db[stock_transfer_service.STO_COLLECTION].update_one, {"_id": sto_id}, {"$set": {"receipt_status": "failed", "receipt_error": friendly_error}})
 
     asyncio.create_task(run())
     return {"job_id": job_id}
