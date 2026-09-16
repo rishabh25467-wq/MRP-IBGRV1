@@ -1,0 +1,25 @@
+{
+  "summary": "Iteration 177: Verified Sep 16 2026 bug fix for real production incident (PO 29284/shipment WFJEZ2 - false 'posted' when SAP GR was never actually done). Backend-only testing per main-agent's safety directive (no live Playwright GR trigger). All 5 pytest tests passed (100%). Verified: (1) sap_playwright_supplier_pgr_service.py post-Save verification block via code review - retry loop bounded at 4 attempts with wait_for_timeout(4000), exception handling appends events without crashing, correctly calls _capture_failure with 'Please verify in SAP and Retry' message when confirmation_rows empty. (2) POST /api/admin/grn/{doc_code}/verify-sap-status - live-verified against a seeded shipment matching PO 29284/notification TP/26-27/377-WFJEZ2-29284: endpoint correctly flipped the falsely-posted PO to 'failed' and recomputed shipment sap_sync_status to 'pending', DB persistence confirmed, explanatory event appended. (3) 403 for non-admin, 404 for unknown doc_code. (4) SAP_ODATA_BUSINESS_PASSWORD in .env now returns HTTP 200 from find_confirmation_rows (previously 401). (5) _compute_sap_sync_status helper rules verified: posted/skipped/partial/failed/pending combinations. Frontend code-reviewed only (per directive): GrnApprovalPage.jsx lines 898-902 correctly render 'Verify with SAP' button (data-testid='grn-verify-sap-status-button') ONLY when sap_sync_status === 'posted'; other statuses (pending/failed/partial/skipped) preserved their existing buttons/badges unchanged (lines 881-897).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_grn_verify_sap_status_iter177.py",
+    "/app/test_reports/pytest/iter177.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "sap_playwright_supplier_pgr_service.py lines 674-689: retry loop is bounded (4 attempts x 4s), exception handling is defensive (appends event, continues loop), no dead code, control flow correctly returns _capture_failure when no confirmed rows. Sound.",
+    "supplier_shipment_service.verify_and_correct_gr_status: only iterates POs with status=='posted' (safe - won't disturb already-failed/skipped POs), uses shared _compute_sap_sync_status helper (identical rule to finalize_goods_receipt), only writes to DB when a status actually changed - clean.",
+    "server.py POST /admin/grn/{doc_code}/verify-sap-status: role gate ('super_admin','admin'), 404 handled, runs sync work via asyncio.to_thread - correct."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_grn_verify_sap_status_iter177.py (new test file)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "n/a (code review only per directive)"},
+  "test_credentials": "Uses ephemeral seeded auth_users/auth_sessions docs (super_admin + user role), cleaned up in fixture teardown. Real SAP credentials read from /app/backend/.env (SAP_ODATA_BUSINESS_USER/PASSWORD).",
+  "seed_data_creation": "Ephemeral test docs (TEST_ITER177_*) in supplier_portal_shipments + auth_users/auth_sessions - all cleaned up after each test via pytest fixtures. No residual test data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Bug fix verified end-to-end at backend level. Live SAP report call against PO 29284/TP-26-27-377-WFJEZ2-29284 returns 0 confirmed rows (correct - GR genuinely never posted in SAP). Frontend button was code-reviewed only; if a full UI test is needed next round, seed a shipment with sap_sync_status='posted' and load /grn-approval as the supplier.approver.test session (see test_credentials.md).",
+  "rca of the issue": "Original incident: sap_playwright_supplier_pgr_service.py assumed a Goods Receipt succeeded whenever no error toast appeared in SAP UI after Save-and-Close. Fix now positively re-queries SAP's own confirmation report (find_confirmation_rows) with a bounded 4x retry for indexing lag before declaring 'posted'. Additionally, SAP_ODATA_BUSINESS_PASSWORD was stale (off by one digit) which had been silently 401-ing the pre-existing dedupe pre-check - corrected in .env. New admin endpoint (verify-sap-status) lets staff retroactively correct shipments already stuck in false-posted state prior to this fix."
+}
