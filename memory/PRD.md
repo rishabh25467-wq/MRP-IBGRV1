@@ -1169,3 +1169,35 @@ STOs (single-line STOs were already pure-API, unaffected, no change needed there
   `/app/memory/LANDED_COST_DESIGN.md`, user has not yet said "start building"); Azure AD login `aud`
   mismatch fix awaiting user's fresh login confirmation.
 
+
+## Manual Goods Issue unification + automatic Release (Sep 18 2026, same session, 2nd round)
+- Confirmed via 3 independent live investigations (OData, custom ABSL BO, SAP's own read-only
+  `ManageODExtensionIn`) that NO API can ever write SAP's real Delivery custom fields
+  (VehicleNo_KUT/etc) - only the interactive SAP UI can, for any STO, single or multi-line.
+- Real-world proof on 2 live orders (STO-000078/Order 32139/Delivery P1D1-536,
+  STO-000079/Order 32140/Delivery P1D1-537, both posted with all 6 fields left blank): SAP
+  auto-copies quantities from the source order (no manual entry needed), AND Release itself does
+  NOT require those fields filled first. So `try_post_goods_issue` now automatically tries a plain
+  API Release (`release_outbound_delivery`) on any Delivery Analytics has found but not yet marked
+  Finished - succeeds immediately once SAP's "Consistency Status" is ready, giving FULL automation
+  with zero manual work in the common case. Only pauses "awaiting_manual_gi" if that Release attempt
+  itself fails.
+- Single-line STOs unified into the same manual-capable flow (previously thought "already automatic"
+  via `post_goods_issue`, but that call never wrote the compliance fields either - now both single and
+  multi-line share one code path in `try_post_goods_issue`).
+- ERP Portal sync sequencing fixed: now only fires once `gi_status` is confirmed "posted" (from the
+  background poll's own "posted" branch, or "Complete STO Process" success) - previously fired
+  immediately/in parallel right at STO creation, regardless of whether Goods Issue had happened yet.
+- STO detail modal reordered: Created in SAP -> Goods Issue status -> Synced to ERP Portal (ERP used
+  to render before Goods Issue). Removed the "Hide/Show debug screenshots (admin)" section and the
+  "GST / Transport details recorded on the SAP Customer Requirement note" banner entirely (both
+  Playwright-era leftovers, the GST one was actively misleading).
+- Verified: testing_agent iteration_180, 100% frontend pass, 0 bugs (banner order, disabled fields,
+  no debug/GST banners, Complete STO Process error handling, no regression on existing posted order).
+  Backend logic separately live-verified by main agent against the 2 real orders above (exact match
+  with SAP's own Analytics report) plus a safe fake-order fixture.
+- Separately investigated and confirmed via existing code docstrings (not new work): the Inbound STO
+  RECEIPT side ("Post Goods Receipts as Planned" at the destination site) is genuinely API-disabled at
+  the tenant level (`InboundDeliveryPGRBackground` OData action, confirmed live HTTP 500 "action is
+  disabled") - this is a SAP Basis/Support ticket item, not fixable from app code. Stays on Playwright.
+

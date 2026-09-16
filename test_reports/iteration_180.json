@@ -1,0 +1,29 @@
+{
+  "summary": "Frontend-only verification of unified Manual Goods Issue for STOs (single + multi-line). Seeded TESTMANUALGI3 fixture, exercised STO creation form validation, opened both the awaiting-manual-GI fixture modal and an existing 'posted' order (STO-000079), and clicked 'Complete STO Process' against the fake SAP order id to verify graceful error handling. All 4 scenarios in the review request passed with zero regressions.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "verified_behaviors": [
+    "STO creation form: 6 transportation fields (Transportation Mode, Vehicle No., Place Of Supply, G.R No., Date Of Supply, Freight Forwarder) render disabled with 'Filled in SAP' placeholder and NO asterisk on labels. Confirmed via DOM inspection of all 6 inputs having disabled=true and data-testid attributes (stock-transfer-vehicle-no-input / place-of-supply-input / gr-no-input / date-of-supply-input / freight-forwarder-input) and the Transportation Mode select being disabled with value 'By Road'.",
+    "Only Ship-to Site*, Ship-to Location*, Requested Delivery Date* labels carry asterisks. Empty transportation fields do NOT block the Review action — clicking 'Review & Create Stock Transfer Order' with all fields empty produced only the item-level error 'Select at least one item.' — no complaint about transport fields.",
+    "TESTMANUALGI3 detail modal shows banners in the required order (verified via DOM order of data-testid nodes): 1) stock-transfer-detail-success (green 'Created in SAP', SAP Order ID 999997), 2) stock-transfer-detail-gi-status (blue 'Awaiting Manual Goods Issue in SAP' with Delivery Request TESTDR-999997 + the 6 fields mentioned in instructions), 3) stock-transfer-detail-complete-manual-gi-button ('Complete STO Process'), 4) stock-transfer-detail-erp-status (yellow 'ERP Portal: waiting on Goods Issue before syncing.') — ERP banner correctly appears AFTER the GI banner.",
+    "No 'Hide/Show debug screenshots' section anywhere in the modal (regex check on modal textContent returned false).",
+    "No green 'GST / Transport details recorded on the SAP Customer Requirement note' banner anywhere in the modal (regex check returned false).",
+    "Clicking 'Complete STO Process' on TESTMANUALGI3 (fake sap_order_id '999997') produced a clean, non-crashing error toast: 'No Delivery found in SAP yet for this order - create the Delivery in SAP and post Goods Issue first, then try again.' The order stayed in awaiting_manual_gi state and the blue banner remained visible.",
+    "Existing 'posted' order STO-000079 renders with banners in correct order: Created in SAP (Order 32140) -> Goods Issue posted - delivery released (Outbound Delivery P1D1-537) -> Synced to ERP Portal (Portal Sale No 39125 / 971). No debug section and no GST-transport banner. No regressions on the previously-passing posted-state path."
+  ],
+  "test_report_links": ["/app/test_reports/_seed_iter180.py"],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [],
+  "success_rate": {"backend": "skipped (per request)", "frontend": "100%"},
+  "test_credentials": "vms_session cookie for super_admin 'STO Manual GI Tester' (from review request) attached via context.add_cookies with url=https://sap-data-sync.preview.emergentagent.com — worked first try.",
+  "seed_data_creation": "Seeded TESTMANUALGI3 STO order (fake sap_order_id 999997, gi_status awaiting_manual_gi) via /app/test_reports/_seed_iter180.py and DELETED it from MongoDB after tests completed (verified deleted_count=1).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "This 2nd round of Manual GI testing (unified single/multi-line + automatic Release fallback) fully passed on frontend. The fixture TESTMANUALGI3 has been cleaned up. No open issues. iteration_179 covered the multi-line-only round. If a 3rd round is requested for this feature, focus on the automatic Release success path against a real SAP order (requires main agent to set up a live SAP order fixture, cannot be done via mongo-only seed).",
+  "rca of the issue": "N/A — no bugs found."
+}
