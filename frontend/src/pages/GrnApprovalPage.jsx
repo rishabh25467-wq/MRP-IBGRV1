@@ -500,6 +500,10 @@ export default function GrnApprovalPage() {
       toast.error("Select a Site and Warehouse before approving");
       return;
     }
+    if (!supplierDocNum.trim() || !billDate) {
+      toast.error("Supplier Invoice Number and Bill Date are required before approving");
+      return;
+    }
     setBusy(true);
     setJobProgress(null);
     try {
@@ -902,7 +906,7 @@ export default function GrnApprovalPage() {
               <div className="mt-5 border-t border-[#D0D5DD] pt-4 space-y-3">
                 <div className="grid sm:grid-cols-4 gap-3">
                   <div>
-                    <Label className="text-xs text-[#475467]">Supplier Invoice Number</Label>
+                    <Label className="text-xs text-[#475467]">Supplier Invoice Number <span className="text-[#B42318]">*</span></Label>
                     <Input
                       placeholder="e.g. INV-4521"
                       value={supplierDocNum}
@@ -913,7 +917,7 @@ export default function GrnApprovalPage() {
                     />
                   </div>
                   <div>
-                    <Label className="text-xs text-[#475467]">Bill Date</Label>
+                    <Label className="text-xs text-[#475467]">Bill Date <span className="text-[#B42318]">*</span></Label>
                     <Input
                       type="date"
                       value={billDate}
@@ -951,7 +955,13 @@ export default function GrnApprovalPage() {
                 </div>
 
                 <div className="flex gap-2">
-                  <Button onClick={approve} disabled={busy || siteAccessBlocked || !!user?.grn_blocked_shipment} title={user?.grn_blocked_shipment ? "Blocked - resolve your open GRN quantity mismatch first" : undefined} className="h-8 rounded-sm bg-[#027A48] hover:bg-[#02623A] text-white px-4 text-[13px] font-bold transition-colors" data-testid="grn-approve-button">
+                  <Button
+                    onClick={approve}
+                    disabled={busy || siteAccessBlocked || !!user?.grn_blocked_shipment || !supplierDocNum.trim() || !billDate}
+                    title={user?.grn_blocked_shipment ? "Blocked - resolve your open GRN quantity mismatch first" : (!supplierDocNum.trim() || !billDate) ? "Enter the Supplier Invoice Number and Bill Date first" : undefined}
+                    className="h-8 rounded-sm bg-[#027A48] hover:bg-[#02623A] text-white px-4 text-[13px] font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    data-testid="grn-approve-button"
+                  >
                     <CheckCircle size={14} className="mr-1" /> {busy ? "Posting..." : "Approve & Post to SAP"}
                   </Button>
                   <Button onClick={() => setRejectOpen(true)} disabled={busy} className="h-8 rounded-sm bg-[#B42318] hover:bg-[#912018] text-white px-4 text-[13px] font-bold transition-colors" data-testid="grn-reject-button">

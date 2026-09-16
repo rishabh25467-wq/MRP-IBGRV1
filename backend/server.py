@@ -8286,23 +8286,14 @@ async def get_admin_grn_lookup(doc_code: str, request: Request):
     # (same source as the Supplier Portal dashboard), falling back to the
     # locally-computed figure (po_qty minus already shipped before this
     # shipment) only if SAP hasn't been read for that item yet.
-    def _attach_open_po_qty():
-        for it in doc.get("items", []):
-            sap_cached = supplier_shipment_service.get_sap_open_qty(db, it.get("po_number"), it.get("item_number"))
-            if sap_cached:
-                it["open_po_qty"] = sap_cached["open_qty"]
-            else:
-                it["open_po_qty"] = round((it.get("po_qty") or 0) - (it.get("already_shipped_qty") or 0), 4)
-    await asyncio.to_thread(_attach_open_po_qty)
     # Sep 9 2026, user's explicit ask: "show PO price also to the GRN
     # person" - unit_price/currency already captured on every PO pull,
     # just never surfaced on this screen before.
-    await asyncio.to_thread(supplier_shipment_service.attach_po_pricing, db, doc.get("vendor_code"), doc.get("items", []))
     # Sep 10 2026, user's explicit ask: surface the tenant's custom
     # (printed) SAP PO Number alongside every item - live-fetch (not
     # just cache-only) here since a single lookup only ever touches a
     # handful of distinct POs, unlike the list endpoints.
-    await asyncio.to_thread(supplier_shipment_service.ensure_sap_po_numbers_live, db, doc.get("items", []), sap_po_write_client)
+    await _attach_grn_display_fields(doc)
     # "RI and RT Site should be non-editable and pre-fixed based on shipment
     # code" (mrp vendor side changes.docx, Sep 2026): narrow the Site choices
     # down to only the buying entity's own sites, further narrowed by this
@@ -8333,6 +8324,10 @@ async def post_admin_grn_approve(doc_code: str, payload: GrnApproveRequest, requ
     approver = (request.state.user.get("name") or request.state.user.get("email") or "Unknown").strip()
     if not _has_site_access(request.state.user, payload.site_id):
         raise HTTPException(status_code=403, detail="You are not bound to this site")
+    # Sep 16 2026, user's explicit ask - Supplier Invoice Number and Bill
+    # Date are now mandatory before a GRN can be approved/posted to SAP.
+    if not payload.supplier_doc_num.strip() or not payload.bill_date.strip():
+        raise HTTPException(status_code=400, detail="Supplier Invoice Number and Bill Date are required before approving")
     # Sep 17 2026, Manual GRN feature - a user with an unresolved quantity
     # mismatch on a PRIOR manual GRN they approved is blocked from
     # approving ANY new GRN (user's explicit ask) until it's fixed
@@ -8356,6 +8351,7 @@ async def post_admin_grn_approve(doc_code: str, payload: GrnApproveRequest, requ
     except supplier_shipment_service.ShipmentValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     job_id = _start_manual_grn_job(doc_code, doc) if grn_mode == "manual" else _start_supplier_grn_job(doc_code, doc, owner_party_id)
+    doc = await _attach_grn_display_fields(doc)
     return {"job_id": job_id, "shipment": doc}
 
 
@@ -8386,6 +8382,33 @@ async def _run_playwright_job_with_retries(job_id: str, fn, max_attempts: int = 
                 await asyncio.to_thread(job_store.update_job, db, job_id, {"phase": "retrying"})
                 await asyncio.sleep(8)
     raise last_error
+
+
+async def _attach_grn_display_fields(doc: dict) -> dict:
+    """Sep 16 2026 bug fix (real user report: "PO Price is not visible")
+    - every endpoint that hands a shipment back to the frontend to
+    `setShipment(...)` (lookup, approve, retry, reset-retry, verify-sap-
+    status, recheck-manual-gr, retry-movement) needs the SAME 3 display-
+    only enrichments `/admin/grn/lookup/{doc_code}` already attached -
+    unit_price/currency, the tenant's printed SAP PO Number, and Open PO
+    Qty. Several of these action endpoints used to return the bare
+    shipment doc straight from Mongo instead, silently wiping those
+    columns back to "\u2014" the moment staff clicked ANY action button
+    after the initial lookup."""
+    if not doc:
+        return doc
+    await asyncio.to_thread(supplier_shipment_service.attach_po_pricing, db, doc.get("vendor_code"), doc.get("items", []))
+    await asyncio.to_thread(supplier_shipment_service.ensure_sap_po_numbers_live, db, doc.get("items", []), sap_po_write_client)
+
+    def _attach_open_po_qty():
+        for it in doc.get("items", []):
+            sap_cached = supplier_shipment_service.get_sap_open_qty(db, it.get("po_number"), it.get("item_number"))
+            if sap_cached:
+                it["open_po_qty"] = sap_cached["open_qty"]
+            else:
+                it["open_po_qty"] = round((it.get("po_qty") or 0) - (it.get("already_shipped_qty") or 0), 4)
+    await asyncio.to_thread(_attach_open_po_qty)
+    return doc
 
 
 def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> str:
@@ -8445,6 +8468,7 @@ def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> st
             except Exception as e:
                 logger.warning(f"Targeted Open PO Qty refresh after GRN {doc_code} failed, shared loop will catch up: {e}")
             on_progress("done", gr_result["total_steps"], gr_result["total_steps"])
+            final = await _attach_grn_display_fields(final)
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
         except Exception as e:
             logger.error(f"Supplier GRN job {job_id} ({doc_code}) failed: {e}")
@@ -8478,6 +8502,7 @@ def _start_manual_grn_job(doc_code: str, doc: dict) -> str:
                 po_items, sap_inbound_delivery_notification_client,
             )
             final = await asyncio.to_thread(supplier_shipment_service.finalize_manual_notification, db, doc_code, results)
+            final = await _attach_grn_display_fields(final)
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
         except Exception as e:
             logger.error(f"Manual GRN notification job {job_id} ({doc_code}) failed: {e}")
@@ -8514,9 +8539,10 @@ async def post_admin_grn_retry_movement(doc_code: str, request: Request):
         if doc.get("site_id") and not _has_site_access(request.state.user, doc["site_id"]):
             raise HTTPException(status_code=403, detail="You are not bound to this site")
         owner_party_id, _ = company_and_set_of_books_for_site(doc.get("site_id"))
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             supplier_shipment_service.retry_goods_movement, db, doc_code, sap_goods_movement_client, sap_inventory_client, owner_party_id,
         )
+        return await _attach_grn_display_fields(result)
     except supplier_shipment_service.ShipmentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except supplier_shipment_service.ShipmentValidationError as e:
@@ -8533,7 +8559,8 @@ async def post_admin_grn_reset_retry(doc_code: str, request: Request):
     if request.state.user.get("role") not in ("super_admin", "admin"):
         raise HTTPException(status_code=403, detail="Admin access required to reset a failed SAP sync")
     try:
-        return await asyncio.to_thread(supplier_shipment_service.reset_gr_retry_count, db, doc_code)
+        result = await asyncio.to_thread(supplier_shipment_service.reset_gr_retry_count, db, doc_code)
+        return await _attach_grn_display_fields(result)
     except supplier_shipment_service.ShipmentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except supplier_shipment_service.ShipmentValidationError as e:
@@ -8551,9 +8578,12 @@ async def post_admin_grn_verify_sap_status(doc_code: str, request: Request):
     if request.state.user.get("role") not in ("super_admin", "admin"):
         raise HTTPException(status_code=403, detail="Admin access required to verify SAP status")
     try:
-        return await asyncio.to_thread(supplier_shipment_service.verify_and_correct_gr_status, db, doc_code, sap_inbound_delivery_report_client)
+        result = await asyncio.to_thread(supplier_shipment_service.verify_and_correct_gr_status, db, doc_code, sap_inbound_delivery_report_client)
     except supplier_shipment_service.ShipmentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    # Sep 16 2026 bug fix (real user report: "PO Price is not visible" -
+    # after clicking "Verify with SAP") - see _attach_grn_display_fields.
+    return await _attach_grn_display_fields(result)
 
 
 @api_router.get("/admin/grn/failure-screenshot")
@@ -8612,10 +8642,15 @@ async def post_admin_grn_recheck_manual(doc_code: str, request: Request):
         if doc.get("site_id") and not _has_site_access(request.state.user, doc["site_id"]):
             raise HTTPException(status_code=403, detail="You are not bound to this site")
         owner_party_id, _ = company_and_set_of_books_for_site(doc.get("site_id"))
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             supplier_shipment_service.check_manual_gr_quantities, db, doc_code, sap_inbound_delivery_report_client,
             sap_goods_movement_client, sap_inventory_client, owner_party_id,
         )
+        recheck_result = result.pop("recheck_result", None)
+        result = await _attach_grn_display_fields(result)
+        if recheck_result:
+            result["recheck_result"] = recheck_result
+        return result
     except supplier_shipment_service.ShipmentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except supplier_shipment_service.ShipmentValidationError as e:
@@ -8766,6 +8801,7 @@ async def post_admin_grn_fetch_inbound_delivery(doc_code: str, request: Request)
                 updated = await asyncio.to_thread(
                     supplier_shipment_service.manually_confirm_inbound_delivery, db, doc_code, po_number, inbound_delivery_id, actor,
                 )
+            updated = await _attach_grn_display_fields(updated)
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "result": {"shipment": updated, "warnings": match["errors"]}, "error": None})
         except Exception as e:
             logger.error(f"Manual inbound-delivery fetch failed for {doc_code}: {e}")

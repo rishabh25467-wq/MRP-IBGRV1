@@ -1369,10 +1369,22 @@ def fetch_inbound_delivery_ids_from_sap(doc: dict, report_client) -> dict:
         delivery_ids = {r["CDELIVERY_UUID"] for r in matched_rows if r.get("CDELIVERY_UUID")}
         if not delivery_ids:
             errors.append(f"PO {po_number}: no matching confirmation found in SAP yet for bill '{supplier_doc_num}'")
-        elif len(delivery_ids) > 1:
-            errors.append(f"PO {po_number}: found multiple different Inbound Delivery IDs ({', '.join(sorted(delivery_ids))}) in SAP - ambiguous, please check manually")
         else:
-            found[po_number] = delivery_ids.pop()
+            # Sep 16 2026 bug fix (real user report: "once I fetch from
+            # SAP, the Inbound Delivery # should fill" - it wasn't).
+            # Root cause: this report can carry STALE/orphaned rows from
+            # earlier abandoned notification-create attempts sharing the
+            # exact same bill number (confirmed live on a different
+            # shipment this session, see check_manual_gr_quantities's own
+            # Sep 16 2026 fix) - `len(delivery_ids) > 1` used to treat
+            # that as "ambiguous" and refuse to fill anything at all. The
+            # highest/most recent CDELIVERY_UUID is the real, current one
+            # (SAP assigns these sequentially) - same "latest wins"
+            # resolution already applied for Manual GRN Re-check.
+            try:
+                found[po_number] = max(delivery_ids, key=lambda d: int(d))
+            except (TypeError, ValueError):
+                found[po_number] = sorted(delivery_ids)[-1]
     return {"found": found, "errors": errors}
 
 
