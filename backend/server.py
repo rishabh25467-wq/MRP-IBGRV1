@@ -8598,6 +8598,34 @@ BOM_CACHE_REFRESH_INTERVAL_SECONDS = 6 * 60 * 60
 # check_component_availability's live-first behavior below.
 INVENTORY_CACHE_REFRESH_INTERVAL_SECONDS = 30 * 60
 
+# Sep 16 2026 incident fix - during today's SAP account lockout, these
+# background loops kept silently retrying every few minutes with the
+# same stale/locked credential, which re-triggered SAP's own lockout
+# policy each time right after it was manually cleared - turning a
+# one-time fix into a repeating loop. A small consecutive-auth-failure
+# counter per loop backs off to a long cooldown instead of the loop's
+# normal interval once SAP starts returning a Logon/401-shaped error, so
+# a locked/expired account can't be hammered back into locked while
+# someone's mid-fix.
+SAP_AUTH_FAILURE_COOLDOWN_SECONDS = 30 * 60
+SAP_AUTH_FAILURE_THRESHOLD = 3
+_SAP_AUTH_ERROR_MARKERS = ("401", "logon failed", "logon error", "is locked", "authentication failed", "change password")
+
+
+def _looks_like_sap_auth_error(exc: Exception) -> bool:
+    return any(marker in str(exc).lower() for marker in _SAP_AUTH_ERROR_MARKERS)
+
+
+def _next_loop_sleep(exc, normal_interval: float, consecutive_failures: int, loop_name: str) -> float:
+    if exc is not None and consecutive_failures >= SAP_AUTH_FAILURE_THRESHOLD and _looks_like_sap_auth_error(exc):
+        logger.error(
+            f"{loop_name}: {consecutive_failures} consecutive SAP auth-looking failures - backing off "
+            f"{SAP_AUTH_FAILURE_COOLDOWN_SECONDS}s instead of the usual {normal_interval}s to avoid "
+            f"re-triggering SAP's account lockout on a stale/expired credential."
+        )
+        return SAP_AUTH_FAILURE_COOLDOWN_SECONDS
+    return normal_interval
+
 
 @app.on_event("startup")
 async def start_bom_cache_refresh_loop():
@@ -8605,13 +8633,18 @@ async def start_bom_cache_refresh_loop():
         # Small delay before the first sweep so a server restart doesn't
         # immediately hammer SAP with a full refresh cycle.
         await asyncio.sleep(30)
+        consecutive_failures = 0
         while True:
+            exc = None
             try:
                 stats = await asyncio.to_thread(bom_cache_service.refresh_stale_nodes, sap_soap_client, db)
                 logger.info(f"BOM cache background refresh complete: {stats}")
+                consecutive_failures = 0
             except Exception as e:
+                exc = e
+                consecutive_failures += 1
                 logger.error(f"BOM cache background refresh failed: {e}")
-            await asyncio.sleep(BOM_CACHE_REFRESH_INTERVAL_SECONDS)
+            await asyncio.sleep(_next_loop_sleep(exc, BOM_CACHE_REFRESH_INTERVAL_SECONDS, consecutive_failures, "BOM cache refresh loop"))
 
     asyncio.create_task(loop())
 
@@ -8620,13 +8653,18 @@ async def start_bom_cache_refresh_loop():
 async def start_inventory_cache_refresh_loop():
     async def loop():
         await asyncio.sleep(45)
+        consecutive_failures = 0
         while True:
+            exc = None
             try:
                 cached = await asyncio.to_thread(refresh_inventory_cache, db, sap_inventory_client, sap_valuation_client)
                 logger.info(f"Inventory cache background refresh complete: {len(cached['items'])} item(s) as of {cached['updated_at'].isoformat()}")
+                consecutive_failures = 0
             except Exception as e:
+                exc = e
+                consecutive_failures += 1
                 logger.error(f"Inventory cache background refresh failed: {e}")
-            await asyncio.sleep(INVENTORY_CACHE_REFRESH_INTERVAL_SECONDS)
+            await asyncio.sleep(_next_loop_sleep(exc, INVENTORY_CACHE_REFRESH_INTERVAL_SECONDS, consecutive_failures, "Inventory cache refresh loop"))
 
     asyncio.create_task(loop())
 
@@ -8644,7 +8682,9 @@ SUPPLIER_PO_CACHE_REFRESH_INTERVAL_SECONDS = 10 * 60
 async def start_supplier_po_cache_refresh_loop():
     async def loop():
         await asyncio.sleep(20)
+        consecutive_failures = 0
         while True:
+            exc = None
             try:
                 fetch_result = await asyncio.to_thread(sap_po_client.fetch_recent_window, db)
                 stats = await asyncio.to_thread(
@@ -8660,11 +8700,14 @@ async def start_supplier_po_cache_refresh_loop():
                 if backfill_chunk["rows"]:
                     backfill_stats = await asyncio.to_thread(supplier_shipment_service.merge_backfill_rows, db, backfill_chunk["rows"])
                     logger.info(f"Supplier Portal older-PO backfill chunk complete: {backfill_stats}")
+                consecutive_failures = 0
             except SAPPurchaseOrderNotConfiguredError:
                 pass
             except Exception as e:
+                exc = e
+                consecutive_failures += 1
                 logger.error(f"Supplier Portal PO cache background refresh failed: {e}")
-            await asyncio.sleep(SUPPLIER_PO_CACHE_REFRESH_INTERVAL_SECONDS)
+            await asyncio.sleep(_next_loop_sleep(exc, SUPPLIER_PO_CACHE_REFRESH_INTERVAL_SECONDS, consecutive_failures, "Supplier Portal PO cache refresh loop"))
 
     asyncio.create_task(loop())
 
@@ -8684,7 +8727,9 @@ SAP_PO_NUMBER_CACHE_REFRESH_INTERVAL_SECONDS = 5 * 60
 async def start_sap_po_number_refresh_loop():
     async def loop():
         await asyncio.sleep(90)
+        consecutive_failures = 0
         while True:
+            exc = None
             try:
                 po_numbers = await asyncio.to_thread(supplier_shipment_service.list_po_numbers_missing_custom_number, db)
                 for po_number in po_numbers:
@@ -8693,9 +8738,12 @@ async def start_sap_po_number_refresh_loop():
                         await asyncio.to_thread(supplier_shipment_service.store_sap_po_number, db, po_number, value)
                 if po_numbers:
                     logger.info(f"SAP custom PO Number cache: checked {len(po_numbers)} PO(s)")
+                consecutive_failures = 0
             except Exception as e:
+                exc = e
+                consecutive_failures += 1
                 logger.error(f"SAP custom PO Number cache refresh failed: {e}")
-            await asyncio.sleep(SAP_PO_NUMBER_CACHE_REFRESH_INTERVAL_SECONDS)
+            await asyncio.sleep(_next_loop_sleep(exc, SAP_PO_NUMBER_CACHE_REFRESH_INTERVAL_SECONDS, consecutive_failures, "SAP custom PO Number cache refresh loop"))
 
     asyncio.create_task(loop())
 # refresh was CANCELLED per user's explicit ask ("we cannot go with
@@ -8715,16 +8763,21 @@ SAP_OPEN_QTY_CACHE_REFRESH_INTERVAL_SECONDS = 5 * 60
 async def start_sap_open_qty_refresh_loop():
     async def loop():
         await asyncio.sleep(60)
+        consecutive_failures = 0
         while True:
+            exc = None
             try:
                 po_numbers = await asyncio.to_thread(supplier_shipment_service.list_active_po_numbers, db)
                 if po_numbers:
                     results = await asyncio.to_thread(sap_po_analytics_client.fetch_open_po_quantities, po_numbers)
                     stats = await asyncio.to_thread(supplier_shipment_service.store_sap_open_qty_cache, db, results)
                     logger.info(f"SAP Open PO Quantity cache refresh complete: {stats}")
+                consecutive_failures = 0
             except Exception as e:
+                exc = e
+                consecutive_failures += 1
                 logger.error(f"SAP Open PO Quantity cache refresh failed: {e}")
-            await asyncio.sleep(SAP_OPEN_QTY_CACHE_REFRESH_INTERVAL_SECONDS)
+            await asyncio.sleep(_next_loop_sleep(exc, SAP_OPEN_QTY_CACHE_REFRESH_INTERVAL_SECONDS, consecutive_failures, "SAP Open PO Quantity cache refresh loop"))
 
     asyncio.create_task(loop())
 
@@ -8888,14 +8941,19 @@ DRAWING_URL_BACKFILL_INTERVAL_SECONDS = 15 * 60
 async def start_drawing_url_backfill_loop():
     async def loop():
         await asyncio.sleep(60)
+        consecutive_failures = 0
         while True:
+            exc = None
             try:
                 stats = await asyncio.to_thread(backfill_drawing_urls, db, sap_material_client)
                 if stats["checked"] > 0:
                     logger.info(f"Drawing URL background backfill: checked {stats['checked']}, found {stats['found']}")
+                consecutive_failures = 0
             except Exception as e:
+                exc = e
+                consecutive_failures += 1
                 logger.error(f"Drawing URL background backfill failed: {e}")
-            await asyncio.sleep(DRAWING_URL_BACKFILL_INTERVAL_SECONDS)
+            await asyncio.sleep(_next_loop_sleep(exc, DRAWING_URL_BACKFILL_INTERVAL_SECONDS, consecutive_failures, "Drawing URL background backfill loop"))
 
     asyncio.create_task(loop())
 
