@@ -655,8 +655,42 @@ async def _post_one_po(page, po_number: str, doc_code: str, supplier_doc_num: st
     # response includes the ID in a parseable form, so this is
     # best-effort (None if it can't be found, never blocks the result).
     confirmation_text = await _extract_confirmation_text(page)
-    events.append("SAP confirmed the Goods Receipt was posted")
-    return {"po_number": po_number, "status": "posted", "inbound_delivery_id": _extract_inbound_delivery_id(confirmation_text), "skipped_items": skipped_items, "events": events}
+    inbound_delivery_id = _extract_inbound_delivery_id(confirmation_text)
+
+    # Sep 16 2026 BUG FOUND + FIXED (real incident, user's own screenshot:
+    # PO 29284/notification TP/26-27/377-WFJEZ2-29284 - app reported
+    # "posted", SAP Inbound Delivery # stayed blank, and the user
+    # confirmed directly in SAP the Goods Receipt was NEVER actually
+    # done). Root cause: this used to declare "posted" purely because NO
+    # error toast was found - but absence of a visible error is NOT
+    # proof of success (the toast can disappear before this runs, the
+    # save can silently no-op on a slow/flaky tenant, etc). Now does a
+    # REAL positive check against SAP's own confirmation report (the
+    # SAME one already used for the pre-check/dedupe above) with a short
+    # retry for its indexing lag (same pattern as the search-retry above)
+    # before ever claiming success - a Goods Receipt that SAP itself
+    # can't yet confirm is reported as a FAILURE (Retry-able), never as
+    # "posted", no matter how quiet the UI was.
+    confirmed_rows = []
+    for attempt in range(4):
+        try:
+            confirmed_rows = await asyncio.to_thread(confirmation_report_client.find_confirmation_rows, po_number, notification_id)
+        except Exception as e:
+            events.append(f"Could not verify the Goods Receipt against SAP's own confirmation report (attempt {attempt + 1}/4): {e}")
+        if confirmed_rows:
+            break
+        await page.wait_for_timeout(4000)
+    if not confirmed_rows:
+        result = await _capture_failure(
+            page, po_number, "saving",
+            "SAP's UI showed no error after Save and Close, but SAP's own confirmation report still shows no confirmed Goods Receipt for this PO - it may not have actually posted. Please verify in SAP and Retry.",
+            events=events,
+        )
+        return result
+    if not inbound_delivery_id:
+        inbound_delivery_id = next((r.get("CDELIVERY_UUID") for r in confirmed_rows if r.get("CDELIVERY_UUID")), None)
+    events.append(f"SAP's own confirmation report confirms the Goods Receipt was posted (Inbound Delivery {inbound_delivery_id or 'ID pending'})")
+    return {"po_number": po_number, "status": "posted", "inbound_delivery_id": inbound_delivery_id, "skipped_items": skipped_items, "events": events}
 
 
 STEPS_PER_PO = 4
