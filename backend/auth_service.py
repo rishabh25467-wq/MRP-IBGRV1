@@ -389,6 +389,18 @@ def user_public_view(user: dict) -> dict:
         "role": role,
         "allowed_pages": sorted(PAGE_KEYS) if role in ("super_admin", "admin") else user.get("allowed_pages", []),
         "bound_sites": user.get("bound_sites", []),
+        # Sep 17 2026, Manual GRN (No-Playwright) feature - a user-level
+        # preference (self-service toggle on the GRN Approval page, see
+        # PUT /api/admin/grn/my-preference) for whether their own approvals
+        # go through the SAP UI automation (Playwright) or stop after the
+        # SOAP Notification create and wait for staff to post the Goods
+        # Receipt manually in SAP. `grn_blocked_shipment`/`grn_blocked_reason`
+        # enforce the strict qty-match rule: a user who approved a manual GRN
+        # that SAP later disagrees with (quantity mismatch) is blocked from
+        # approving ANY new GRN until it's resolved or an admin overrides it.
+        "manual_grn_preference": bool(user.get("manual_grn_preference", False)),
+        "grn_blocked_shipment": user.get("grn_blocked_shipment"),
+        "grn_blocked_reason": user.get("grn_blocked_reason"),
     }
 
 

@@ -815,6 +815,61 @@ def total_progress_steps(total_pos: int) -> int:
     return 2 + total_pos * STEPS_PER_PO + 1
 
 
+async def create_inbound_delivery_notifications_only(po_items: dict, notification_client) -> list:
+    """Sep 17 2026, Manual GRN (No-Playwright) path - user's explicit ask
+    to eliminate Playwright flakiness for staff who'd rather post the
+    actual Goods Receipt themselves directly in SAP. Runs ONLY the SOAP
+    Inbound Delivery Notification create step already proven inside
+    `_post_one_po` above (identical `notification_id` derivation, so the
+    exact same notification a staff member sees in SAP's own "Inbound
+    Delivery Notifications" list is what gets quantity-checked later) -
+    no browser, no Post Goods Receipt/Actual Quantity/Save-and-Close
+    automation at all. `supplier_shipment_service.check_manual_gr_quantities`
+    later verifies what staff actually entered in SAP against what this
+    shipment claims was shipped.
+
+    `po_items` is the same shape `post_goods_receipt_via_ui` takes (see its
+    own docstring). Returns [{"po_number", "notification_id", "status":
+    "notification_created"|"failed", "error"?}] - one entry per PO, never
+    raises (a single PO's SAP hiccup can't block the others)."""
+    results = []
+    for po_number, spec in po_items.items():
+        item_qtys = dict(spec.get("item_qtys") or {})
+        item_products = spec.get("item_products") or {}
+        item_uoms = spec.get("item_uoms") or {}
+        doc_code = spec.get("doc_code")
+        supplier_doc_num = spec.get("supplier_doc_num")
+        bill_date = spec.get("bill_date")
+        vendor_code = spec.get("vendor_code")
+        delivery_date = (bill_date or datetime.now(timezone.utc).strftime("%Y-%m-%d"))[:10]
+        notification_id = _build_notification_id(supplier_doc_num, doc_code, po_number)
+        missing_products = [n for n in item_qtys if not item_products.get(n)]
+        if missing_products:
+            item_qtys = {k: v for k, v in item_qtys.items() if k not in missing_products}
+        if not item_qtys:
+            results.append({
+                "po_number": po_number, "notification_id": None, "status": "failed",
+                "error": f"Cannot create Inbound Delivery Notification for PO {po_number} - Product ID missing in cached PO data for item(s) {', '.join(missing_products)}",
+            })
+            continue
+        soap_items = [
+            {"item_number": n, "quantity": q, "unit_of_measure": item_uoms.get(n) or "EA", "product_id": item_products.get(n)}
+            for n, q in item_qtys.items()
+        ]
+        try:
+            await asyncio.to_thread(notification_client.maintain_bundle, notification_id, po_number, vendor_code, delivery_date, soap_items, False)
+            results.append({"po_number": po_number, "notification_id": notification_id, "status": "notification_created"})
+        except Exception as e:
+            if "already exist" in str(e).lower():
+                results.append({"po_number": po_number, "notification_id": notification_id, "status": "notification_created"})
+            else:
+                results.append({
+                    "po_number": po_number, "notification_id": notification_id, "status": "failed",
+                    "error": f"Could not create the Inbound Delivery Notification in SAP for PO {po_number}: {e}",
+                })
+    return results
+
+
 # Sep 2 2026: the Playwright-based `fetch_open_po_quantities` that used
 # to live here was CANCELLED per user's explicit ask ("we cannot go with
 # playwright for this") - it was live-hammering SAP's UI sequentially

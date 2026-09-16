@@ -8121,6 +8121,76 @@ class GrnApproveRequest(BaseModel):
     item_actual_qtys: List[GrnItemActualQty] = []
 
 
+class GrnPreferenceRequest(BaseModel):
+    manual_grn_preference: bool
+
+
+class GrnOverrideBlockRequest(BaseModel):
+    reason: str
+
+
+@api_router.put("/admin/grn/my-preference")
+async def put_admin_grn_my_preference(payload: GrnPreferenceRequest, request: Request):
+    """Sep 17 2026, Manual GRN feature - user-level self-service toggle
+    (user's explicit choice: "keep the choice for users") between the
+    existing Playwright-automated Goods Receipt and the new Manual GRN
+    (SOAP Notification only, staff post the actual Goods Receipt
+    themselves in SAP). Read by post_admin_grn_approve at the moment of
+    each approval - a later toggle never changes an already-approved
+    shipment's own `grn_mode`."""
+    await asyncio.to_thread(
+        db[auth_service.USERS_COLLECTION].update_one,
+        {"_id": request.state.user["_id"]},
+        {"$set": {"manual_grn_preference": payload.manual_grn_preference}},
+    )
+    return {"ok": True, "manual_grn_preference": payload.manual_grn_preference}
+
+
+@api_router.get("/admin/grn/blocked-users")
+async def get_admin_grn_blocked_users(request: Request):
+    """Admin-only list of every user currently blocked from approving new
+    GRNs due to an unresolved Manual GRN quantity mismatch - feeds the
+    "Blocked Users" override panel on the GRN Approval screen."""
+    if request.state.user.get("role") not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    docs = await asyncio.to_thread(
+        lambda: list(db[auth_service.USERS_COLLECTION].find({"grn_blocked_shipment": {"$ne": None}}))
+    )
+    return {"users": [
+        {"_id": d["_id"], "name": d.get("name"), "email": d.get("email"),
+         "grn_blocked_shipment": d.get("grn_blocked_shipment"), "grn_blocked_reason": d.get("grn_blocked_reason"),
+         "grn_blocked_at": d.get("grn_blocked_at")}
+        for d in docs
+    ]}
+
+
+@api_router.post("/admin/grn/override-block/{user_id}")
+async def post_admin_grn_override_block(user_id: str, payload: GrnOverrideBlockRequest, request: Request):
+    """Admin-only escape hatch (user's explicit ask: "Button + mandatory
+    reason/comment logged") - clears a user's GRN block WITHOUT requiring
+    the underlying SAP mismatch to actually resolve first. Every override
+    is permanently logged to `grn_mismatch_overrides` for audit."""
+    if request.state.user.get("role") not in ("super_admin", "admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    reason = (payload.reason or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="An override reason is required")
+    target = await asyncio.to_thread(db[auth_service.USERS_COLLECTION].find_one, {"_id": user_id})
+    if not target or not target.get("grn_blocked_shipment"):
+        raise HTTPException(status_code=404, detail="This user is not currently blocked")
+    await asyncio.to_thread(db["grn_mismatch_overrides"].insert_one, {
+        "user_id": user_id, "user_name": target.get("name"), "doc_code": target.get("grn_blocked_shipment"),
+        "reason": reason, "overridden_by": request.state.user.get("name") or request.state.user.get("email"),
+        "overridden_at": datetime.now(timezone.utc),
+    })
+    await asyncio.to_thread(
+        db[auth_service.USERS_COLLECTION].update_one,
+        {"_id": user_id},
+        {"$set": {"grn_blocked_shipment": None, "grn_blocked_reason": None, "grn_blocked_at": None}},
+    )
+    return {"ok": True}
+
+
 @api_router.get("/admin/grn/sites")
 async def get_admin_grn_sites(request: Request):
     """Site dropdown for the GRN screen - a store-bound user only ever
@@ -8214,18 +8284,29 @@ async def post_admin_grn_approve(doc_code: str, payload: GrnApproveRequest, requ
     approver = (request.state.user.get("name") or request.state.user.get("email") or "Unknown").strip()
     if not _has_site_access(request.state.user, payload.site_id):
         raise HTTPException(status_code=403, detail="You are not bound to this site")
+    # Sep 17 2026, Manual GRN feature - a user with an unresolved quantity
+    # mismatch on a PRIOR manual GRN they approved is blocked from
+    # approving ANY new GRN (user's explicit ask) until it's fixed
+    # (Re-check SAP) or an Admin overrides it.
+    if request.state.user.get("grn_blocked_shipment"):
+        raise HTTPException(
+            status_code=403,
+            detail=f"You are blocked from approving new GRNs - shipment {request.state.user['grn_blocked_shipment']} "
+                   f"has an unresolved SAP quantity mismatch. Use 'Re-check SAP' on that shipment to clear it, or ask an admin to override.",
+        )
     owner_party_id, _ = company_and_set_of_books_for_site(payload.site_id)
     item_actual_qtys = {(i.po_number, i.item_number): i.actual_qty for i in payload.item_actual_qtys}
+    grn_mode = "manual" if request.state.user.get("manual_grn_preference") else "auto"
     try:
         doc = await asyncio.to_thread(
-            supplier_shipment_service.prepare_approval, db, doc_code, approver, payload.supplier_doc_num,
-            payload.bill_date, payload.site_id, payload.warehouse_id, item_actual_qtys,
+            supplier_shipment_service.prepare_approval, db, doc_code, approver, request.state.user["_id"], payload.supplier_doc_num,
+            payload.bill_date, payload.site_id, payload.warehouse_id, item_actual_qtys, grn_mode,
         )
     except supplier_shipment_service.ShipmentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except supplier_shipment_service.ShipmentValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    job_id = _start_supplier_grn_job(doc_code, doc, owner_party_id)
+    job_id = _start_manual_grn_job(doc_code, doc) if grn_mode == "manual" else _start_supplier_grn_job(doc_code, doc, owner_party_id)
     return {"job_id": job_id, "shipment": doc}
 
 
@@ -8325,6 +8406,38 @@ def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> st
     return job_id
 
 
+def _start_manual_grn_job(doc_code: str, doc: dict) -> str:
+    """Sep 17 2026, Manual GRN (No-Playwright) path - kicks off the SOAP-
+    only Inbound Delivery Notification create as a background job (same
+    job_store/polling pattern as _start_supplier_grn_job, even though this
+    step is fast, so the GRN Approval screen's existing progress-polling
+    code works unchanged for either mode). Terminates in
+    "awaiting_manual_gr" (or "failed" if every PO's create failed) - never
+    reaches Playwright or the Goods Movement step here; that only happens
+    once staff post the real Goods Receipt in SAP themselves and someone
+    clicks "Re-check SAP" (see check_manual_gr_quantities)."""
+    job_id = str(uuid.uuid4())
+    po_items = supplier_shipment_service.group_items_by_po_for_gr(doc)
+    job_store.create_job(db, job_id, {
+        "doc_code": doc_code, "kind": "manual_grn_notification", "status": "running", "phase": "creating_notifications",
+        "progress_current": 0, "progress_total": 1, "result": None, "error": None,
+    })
+
+    async def run():
+        try:
+            results = await sap_playwright_supplier_pgr_service.create_inbound_delivery_notifications_only(
+                po_items, sap_inbound_delivery_notification_client,
+            )
+            final = await asyncio.to_thread(supplier_shipment_service.finalize_manual_notification, db, doc_code, results)
+            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
+        except Exception as e:
+            logger.error(f"Manual GRN notification job {job_id} ({doc_code}) failed: {e}")
+            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": str(e)})
+
+    asyncio.create_task(run())
+    return job_id
+
+
 @api_router.get("/admin/playwright-reliability-report")
 async def get_playwright_reliability_report(request: Request, days: int = 7):
     """Internal-only report (user's explicit ask, "between you and me",
@@ -8417,6 +8530,17 @@ async def post_admin_grn_retry_goods_receipt(doc_code: str, request: Request):
         if doc.get("site_id") and not _has_site_access(request.state.user, doc["site_id"]):
             raise HTTPException(status_code=403, detail="You are not bound to this site")
         owner_party_id, _ = company_and_set_of_books_for_site(doc.get("site_id"))
+        # Sep 17 2026, Manual GRN feature - a manual-mode shipment has no
+        # Playwright step to retry at all; "Retry" here only re-attempts
+        # the SOAP Notification create, and only makes sense while that
+        # create itself is what failed. Once a notification exists,
+        # "Re-check SAP" (a separate endpoint) is the only forward path.
+        if doc.get("grn_mode") == "manual":
+            if doc.get("sap_sync_status") != "failed":
+                raise supplier_shipment_service.ShipmentValidationError(
+                    "This is a Manual GRN shipment - once staff have posted the Goods Receipt in SAP, use 'Re-check SAP' instead of Retry"
+                )
+            return {"job_id": _start_manual_grn_job(doc_code, doc)}
         doc = await asyncio.to_thread(supplier_shipment_service.prepare_retry_goods_receipt, db, doc_code)
     except supplier_shipment_service.ShipmentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -8424,6 +8548,29 @@ async def post_admin_grn_retry_goods_receipt(doc_code: str, request: Request):
         raise HTTPException(status_code=400, detail=str(e))
     job_id = _start_supplier_grn_job(doc_code, doc, owner_party_id)
     return {"job_id": job_id}
+
+
+@api_router.post("/admin/grn/{doc_code}/recheck-manual-gr")
+async def post_admin_grn_recheck_manual(doc_code: str, request: Request):
+    """Sep 17 2026, Manual GRN feature - the "Re-check SAP" button staff
+    click once they've posted the actual Goods Receipt themselves in SAP.
+    Compares SAP's own confirmed quantity against this shipment's
+    confirmed qty and either finalizes the GRN (same terminal state as
+    the Playwright path) or flags a mismatch + blocks the approver - see
+    supplier_shipment_service.check_manual_gr_quantities."""
+    try:
+        doc = await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
+        if doc.get("site_id") and not _has_site_access(request.state.user, doc["site_id"]):
+            raise HTTPException(status_code=403, detail="You are not bound to this site")
+        owner_party_id, _ = company_and_set_of_books_for_site(doc.get("site_id"))
+        return await asyncio.to_thread(
+            supplier_shipment_service.check_manual_gr_quantities, db, doc_code, sap_inbound_delivery_report_client,
+            sap_material_client, sap_goods_movement_client, sap_inventory_client, owner_party_id,
+        )
+    except supplier_shipment_service.ShipmentNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except supplier_shipment_service.ShipmentValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @api_router.post("/admin/grn/{doc_code}/discrepancy")

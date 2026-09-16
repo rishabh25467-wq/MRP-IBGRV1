@@ -62,6 +62,14 @@ import sap_po_client
 from sap_playwright_supplier_pgr_service import _build_notification_id
 from sap_wip_clearing_client import company_and_set_of_books_for_site
 
+# Sep 17 2026, Manual GRN feature - the auth_users collection name is
+# duplicated here as a plain string (NOT `import auth_service`) because
+# server.py imports this module BEFORE load_dotenv() runs, and
+# auth_service.py reads AZURE_AD_* env vars at module level - importing
+# it this early would crash with a KeyError. Must stay in sync with
+# auth_service.USERS_COLLECTION.
+AUTH_USERS_COLLECTION = "auth_users"
+
 PO_CACHE_COLLECTION = "supplier_portal_po_cache"
 SAP_OPEN_QTY_COLLECTION = "sap_po_open_qty_cache"
 SAP_PO_NUMBER_COLLECTION = "sap_po_custom_number_cache"
@@ -940,15 +948,25 @@ def group_items_by_po_for_gr(doc: dict) -> dict:
     return grouped
 
 
-def prepare_approval(db, doc_code: str, approved_by: str, supplier_doc_num: str, bill_date: str, site_id: str,
-                      warehouse_id: str, item_actual_qtys: dict) -> dict:
+def prepare_approval(db, doc_code: str, approved_by: str, approved_by_user_id: str, supplier_doc_num: str, bill_date: str, site_id: str,
+                      warehouse_id: str, item_actual_qtys: dict, grn_mode: str = "auto") -> dict:
     """Records the internal approval unconditionally (staff have already
     physically matched goods + invoice) - sync/fast, the live SAP write
     itself (Playwright, slow) happens as a background job kicked off by
     the caller right after this returns (see server.py's approve
     endpoint). `item_actual_qtys`: {(po_number, item_number): qty} - the
     staff-CONFIRMED received quantity, defaults to the vendor's own
-    claimed ship_qty for any line not explicitly overridden."""
+    claimed ship_qty for any line not explicitly overridden.
+
+    Sep 17 2026, Manual GRN feature: `grn_mode` ("auto"|"manual") is the
+    approver's own user-level preference at the moment they clicked
+    Approve (see auth_users.manual_grn_preference) - stored on the
+    shipment so every later step (job dispatch, retry, the GRN Approval
+    screen's own UI) treats this exact shipment consistently even if the
+    approver later flips their own preference. `approved_by_user_id` is
+    the approver's auth_users `_id` - needed later so a quantity mismatch
+    found in `check_manual_gr_quantities` can block THIS specific person
+    (not just whoever happens to click "Re-check SAP")."""
     doc = get_shipment_by_code(db, doc_code)
     if doc["status"] not in ("in_transit", "discrepancy"):
         raise ShipmentValidationError(f"Shipment is already {doc['status']}")
@@ -966,9 +984,11 @@ def prepare_approval(db, doc_code: str, approved_by: str, supplier_doc_num: str,
         {"_id": doc["_id"]},
         {"$set": {
             "items": items, "status": "approved", "approved_at": datetime.now(timezone.utc), "approved_by": approved_by,
+            "approved_by_user_id": approved_by_user_id, "grn_mode": grn_mode,
             "supplier_doc_num": (supplier_doc_num or "").strip() or None, "bill_date": (bill_date or "").strip() or None,
             "site_id": site_id, "warehouse_id": warehouse_id, "sap_sync_status": "pending", "sap_gr_result": None,
             "sap_movement_status": "not_applicable", "sap_movement_result": None,
+            "manual_gr_notification_ids": None, "manual_gr_mismatch_items": None,
         }},
     )
     return get_shipment_by_code(db, doc_code)
@@ -1050,6 +1070,139 @@ def _compute_sap_sync_status(gr_results: list, retry_count: int) -> str:
     if retry_count >= MAX_GR_RETRIES_BEFORE_FAILED:
         return "failed"
     return "pending"
+
+
+def finalize_manual_notification(db, doc_code: str, results: list) -> dict:
+    """Sep 17 2026, Manual GRN (No-Playwright) path - called after
+    sap_playwright_supplier_pgr_service.create_inbound_delivery_notifications_only
+    returns. Unlike the auto/Playwright path, this is NOT a terminal
+    outcome - it just means staff can now go post the actual Goods
+    Receipt themselves in SAP using these exact notification IDs.
+    `sap_sync_status="awaiting_manual_gr"` is what unlocks the "Re-check
+    SAP" button on the GRN Approval screen (see check_manual_gr_quantities
+    below). Only truly `"failed"` when EVERY PO's notification create
+    failed - nothing left for staff to even go post in SAP."""
+    doc = get_shipment_by_code(db, doc_code)
+    notification_ids = {r["po_number"]: r["notification_id"] for r in results if r.get("notification_id")}
+    any_created = any(r.get("status") == "notification_created" for r in results)
+    sap_sync_status = "awaiting_manual_gr" if any_created else "failed"
+    db[SHIPMENTS_COLLECTION].update_one(
+        {"_id": doc["_id"]},
+        {"$set": {
+            "sap_sync_status": sap_sync_status, "sap_gr_result": {"ok": any_created, "per_po": results},
+            "manual_gr_notification_ids": notification_ids,
+        }},
+    )
+    return get_shipment_by_code(db, doc_code)
+
+
+MISMATCH_QTY_TOLERANCE = 1e-3
+
+
+def _resolve_product_uuid(db, material_client, product_id: str) -> str:
+    """Sep 17 2026 - SAP's confirmation report keys rows by Product UUID
+    (CPRODUCT_UUID/TPRODUCT_UUID), not the plain text Product ID this app
+    uses everywhere else. Reuses `component_master.product_uuid` (already
+    populated for ~2271 items by the Sep 14 2026 lead-time bulk push, see
+    PRD.md) as a cache, self-healing any still-missing item via a live
+    SAP lookup - same pattern as resolve_material_info elsewhere."""
+    cached = db["component_master"].find_one({"_id": product_id}, {"product_uuid": 1})
+    if cached and cached.get("product_uuid"):
+        return cached["product_uuid"]
+    uuid_val = material_client.resolve_uuid(product_id)
+    if uuid_val:
+        db["component_master"].update_one({"_id": product_id}, {"$set": {"product_uuid": uuid_val}}, upsert=True)
+    return uuid_val
+
+
+def check_manual_gr_quantities(db, doc_code: str, report_client, material_client, goods_movement_client,
+                                inventory_client, owner_party_id: str) -> dict:
+    """Sep 17 2026, Manual GRN feature - the "Re-check SAP" button.
+    Compares SAP's own confirmed quantity (FCCONF_QUAN on the same
+    "Inbound Delivery Detailed Details" report already used elsewhere in
+    this app, matched on this exact notification_id) against what this
+    shipment claims staff confirmed (`actual_qty`) for every line, grouped
+    by SAP Product UUID (never by item_number - a PO can have more than
+    one line for the identical product, see
+    sap_playwright_supplier_pgr_service.py's own matching-key docstring
+    for why item_number alone isn't a safe correlation key against SAP's
+    own product-level report rows).
+
+    On a full match: reuses `finalize_goods_receipt` (same function the
+    auto/Playwright path uses) so this shipment ends up in the exact same
+    terminal "posted"/warehouse-movement state either way - one behavior,
+    two ways to get the SAP Goods Receipt itself done. Also clears the
+    approver's block if one was set by an earlier mismatch on this exact
+    shipment.
+
+    On any mismatch: FLAGS every line sharing that mismatched product
+    (can't tell which specific line is wrong once >1 line shares a
+    product - same limitation, stated plainly) and BLOCKS the original
+    approver (`approved_by_user_id`) from approving any further GRN until
+    an Admin override clears it or a later Re-check finds SAP corrected."""
+    doc = get_shipment_by_code(db, doc_code)
+    if doc.get("sap_sync_status") not in ("awaiting_manual_gr", "manual_mismatch"):
+        raise ShipmentValidationError("This shipment is not awaiting a manual SAP Goods Receipt")
+    notification_ids = doc.get("manual_gr_notification_ids") or {}
+    po_numbers = sorted({it["po_number"] for it in doc["items"] if notification_ids.get(it["po_number"])})
+    if not po_numbers:
+        raise ShipmentValidationError("No Inbound Delivery Notification was ever created in SAP for this shipment - nothing to re-check")
+    mismatches = []
+    for po_number in po_numbers:
+        notification_id = notification_ids[po_number]
+        try:
+            rows = report_client.find_confirmation_rows(po_number, notification_id)
+        except Exception as e:
+            raise ShipmentValidationError(f"Could not reach SAP to verify PO {po_number}: {e}")
+        confirmed_by_uuid = {}
+        for r in rows:
+            uuid_key = r.get("CPRODUCT_UUID") or r.get("TPRODUCT_UUID")
+            if uuid_key:
+                confirmed_by_uuid[uuid_key] = confirmed_by_uuid.get(uuid_key, 0) + float(r.get("FCCONF_QUAN") or 0)
+        shipped_by_uuid = {}
+        for it in doc["items"]:
+            if it["po_number"] != po_number:
+                continue
+            uuid_val = _resolve_product_uuid(db, material_client, it["product_id"])
+            if not uuid_val:
+                mismatches.append({"po_number": po_number, "item_number": it["item_number"], "product_id": it["product_id"], "reason": "Could not resolve this line's SAP Product UUID to verify it"})
+                continue
+            shipped_by_uuid.setdefault(uuid_val, []).append(it)
+        for uuid_val, group_items in shipped_by_uuid.items():
+            shipped_qty = sum(it.get("actual_qty", it["ship_qty"]) for it in group_items)
+            confirmed_qty = confirmed_by_uuid.get(uuid_val, 0.0)
+            if not rows or abs(shipped_qty - confirmed_qty) > MISMATCH_QTY_TOLERANCE:
+                for it in group_items:
+                    mismatches.append({
+                        "po_number": po_number, "item_number": it["item_number"], "product_id": it["product_id"],
+                        "shipped_qty": shipped_qty, "sap_confirmed_qty": confirmed_qty,
+                    })
+    approved_by_user_id = doc.get("approved_by_user_id")
+    if mismatches:
+        db[SHIPMENTS_COLLECTION].update_one(
+            {"_id": doc["_id"]}, {"$set": {"sap_sync_status": "manual_mismatch", "manual_gr_mismatch_items": mismatches}},
+        )
+        if approved_by_user_id:
+            db[AUTH_USERS_COLLECTION].update_one(
+                {"_id": approved_by_user_id},
+                {"$set": {
+                    "grn_blocked_shipment": doc_code,
+                    "grn_blocked_reason": f"SAP-confirmed quantity does not match the shipped/confirmed quantity on shipment {doc_code} ({len(mismatches)} line(s) flagged)",
+                    "grn_blocked_at": datetime.now(timezone.utc),
+                }},
+            )
+        result = get_shipment_by_code(db, doc_code)
+        result["recheck_result"] = "mismatch"
+        return result
+    gr_results = [{"po_number": po, "status": "posted", "inbound_delivery_id": None, "events": [f"Manually confirmed via SAP Re-check (notification {notification_ids[po]}) - quantities matched"]} for po in po_numbers]
+    final = finalize_goods_receipt(db, doc_code, gr_results, goods_movement_client, inventory_client, owner_party_id)
+    if approved_by_user_id:
+        db[AUTH_USERS_COLLECTION].update_one(
+            {"_id": approved_by_user_id, "grn_blocked_shipment": doc_code},
+            {"$set": {"grn_blocked_shipment": None, "grn_blocked_reason": None, "grn_blocked_at": None}},
+        )
+    final["recheck_result"] = "matched"
+    return final
 
 
 def verify_and_correct_gr_status(db, doc_code: str, confirmation_report_client) -> dict:

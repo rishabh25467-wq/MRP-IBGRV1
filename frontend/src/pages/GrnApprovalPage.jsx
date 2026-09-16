@@ -1,11 +1,12 @@
 import { useState, useEffect } from "react";
 import "@/App.css";
 import axios from "axios";
-import { MagnifyingGlass, CheckCircle, XCircle, Truck, PlugsConnected, Shield, WarningCircle, ArrowsClockwise } from "@phosphor-icons/react";
+import { MagnifyingGlass, CheckCircle, XCircle, Truck, PlugsConnected, Shield, WarningCircle, ArrowsClockwise, LockKey } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -15,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
+import { useAuth } from "@/contexts/AuthContext";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -33,6 +35,15 @@ const STATUS_BADGE = {
 // until sap_sync_status actually confirms SAP posted the Goods Receipt.
 const resolveStatusBadge = (shipment) => {
   if (shipment.status === "approved" && shipment.sap_sync_status !== "posted" && shipment.sap_sync_status !== "partial") {
+    // Sep 17 2026, Manual GRN feature - distinct badges for the two new
+    // no-Playwright states so the pending/confirmed lists read correctly
+    // without needing to open the shipment.
+    if (shipment.sap_sync_status === "awaiting_manual_gr") {
+      return { label: "Awaiting Manual GR in SAP", className: "bg-[#EFF4FF] text-[#3538CD] border border-[#C7D7FE] rounded-sm" };
+    }
+    if (shipment.sap_sync_status === "manual_mismatch") {
+      return { label: "Qty Mismatch - Blocked", className: "bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA] rounded-sm" };
+    }
     return shipment.sap_sync_status === "failed"
       ? { label: "SAP Sync Failed", className: "bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA] rounded-sm" }
       : { label: "Pending SAP Sync", className: "bg-[#FFFAEB] text-[#B54708] border border-[#FEDF89] rounded-sm" };
@@ -119,6 +130,7 @@ function summarizeMovementResult(movementResult) {
 }
 
 export default function GrnApprovalPage() {
+  const { user, refresh: refreshAuth } = useAuth();
   const [code, setCode] = useState("");
   const [shipment, setShipment] = useState(null);
   const [searching, setSearching] = useState(false);
@@ -128,6 +140,60 @@ export default function GrnApprovalPage() {
   const [rejectReason, setRejectReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [screenshotModal, setScreenshotModal] = useState(null);
+
+  // Sep 17 2026, Manual GRN (No-Playwright) feature - user's explicit ask
+  // ("keep the choice for users") to self-toggle between the existing
+  // Playwright automation and manually posting the Goods Receipt in SAP.
+  const [prefBusy, setPrefBusy] = useState(false);
+  const toggleManualGrnPreference = async (checked) => {
+    setPrefBusy(true);
+    try {
+      await axios.put(`${API}/admin/grn/my-preference`, { manual_grn_preference: checked });
+      await refreshAuth();
+      toast.success(checked ? "Manual GRN mode enabled - future approvals only create the SAP Notification, you post the Goods Receipt yourself in SAP" : "Auto (Playwright) GRN mode enabled");
+    } catch (err) {
+      toast.error("Could not save preference", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setPrefBusy(false);
+    }
+  };
+
+  // Admin-only "Blocked Users" override panel (Sep 17 2026).
+  const [blockedUsersOpen, setBlockedUsersOpen] = useState(false);
+  const [blockedUsers, setBlockedUsers] = useState([]);
+  const [overrideReasons, setOverrideReasons] = useState({});
+  const [overrideBusyId, setOverrideBusyId] = useState(null);
+  const isGrnAdmin = user && (user.role === "super_admin" || user.role === "admin");
+  const loadBlockedUsers = async () => {
+    try {
+      const { data } = await axios.get(`${API}/admin/grn/blocked-users`);
+      setBlockedUsers(data.users || []);
+    } catch (err) {
+      toast.error("Could not load blocked users", { description: err?.response?.data?.detail || err.message });
+    }
+  };
+  const openBlockedUsers = () => {
+    setBlockedUsersOpen(true);
+    loadBlockedUsers();
+  };
+  const overrideBlock = async (userId) => {
+    const reason = (overrideReasons[userId] || "").trim();
+    if (!reason) {
+      toast.error("An override reason is required");
+      return;
+    }
+    setOverrideBusyId(userId);
+    try {
+      await axios.post(`${API}/admin/grn/override-block/${userId}`, { reason });
+      toast.success("User unblocked");
+      loadBlockedUsers();
+      refreshAuth();
+    } catch (err) {
+      toast.error("Override failed", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setOverrideBusyId(null);
+    }
+  };
 
   const [sites, setSites] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
@@ -451,6 +517,8 @@ export default function GrnApprovalPage() {
         toast.success(`Goods Receipt posted + stock moved to ${result.site_id}/${result.warehouse_id}`);
       } else if (result.sap_sync_status === "posted") {
         toast.warning("Goods Receipt posted - warehouse movement still pending", { description: summarizeMovementResult(result.sap_movement_result), duration: 8000 });
+      } else if (result.sap_sync_status === "awaiting_manual_gr") {
+        toast.success("SAP Notification created - go post the Goods Receipt in SAP, then click 'Re-check SAP' here", { duration: 8000 });
       } else {
         toast.error("Approved internally - SAP posting failed, use Retry Goods Receipt below", { description: summarizeGrResult(result.sap_gr_result), duration: 8000 });
         openDiagnosticsIfFailed(result.sap_gr_result);
@@ -514,6 +582,27 @@ export default function GrnApprovalPage() {
       }
     } catch (err) {
       toast.error("Could not verify against SAP", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Sep 17 2026, Manual GRN feature - "Re-check SAP" button, used once
+  // staff have posted the actual Goods Receipt themselves in SAP.
+  const recheckManualGr = async () => {
+    setBusy(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/grn/${shipment._id}/recheck-manual-gr`);
+      setShipment(data);
+      if (data.recheck_result === "matched") {
+        toast.success("Quantities matched - Goods Receipt confirmed" + (data.sap_movement_status === "posted" ? ` + stock moved to ${data.site_id}/${data.warehouse_id}` : ""));
+      } else if (data.recheck_result === "mismatch") {
+        toast.error(`Quantity mismatch found on ${(data.manual_gr_mismatch_items || []).length} line(s) - you're blocked from approving new GRNs until this is resolved`, { duration: 10000 });
+      }
+      loadPending();
+      loadConfirmed();
+    } catch (err) {
+      toast.error("Re-check failed", { description: err?.response?.data?.detail || err.message });
     } finally {
       setBusy(false);
     }
@@ -620,6 +709,36 @@ export default function GrnApprovalPage() {
           <h1 className="font-heading text-xl font-bold text-[#1D2939]">GRN Approval</h1>
         </div>
         <p className="text-sm text-[#475467]">Enter the 6-character shipment code from the delivery paperwork, physically match the goods and supplier invoice, then approve.</p>
+
+        {/* Sep 17 2026, Manual GRN feature - self-service toggle between
+            the Playwright-automated Goods Receipt and posting it manually
+            in SAP, plus the admin "Blocked Users" override entry point. */}
+        <div className="bg-white border border-[#D0D5DD] rounded-sm p-3 flex flex-wrap items-center justify-between gap-3 shadow-[0_1px_2px_0_rgba(16,24,40,0.05)]">
+          <div className="flex items-center gap-3">
+            <Switch
+              checked={!!user?.manual_grn_preference}
+              onCheckedChange={toggleManualGrnPreference}
+              disabled={prefBusy}
+              data-testid="grn-manual-mode-toggle"
+            />
+            <div className="leading-tight">
+              <div className="text-sm font-semibold text-[#1D2939]">{user?.manual_grn_preference ? "Manual GRN mode" : "Auto GRN mode (Playwright)"}</div>
+              <div className="text-xs text-[#667085]">{user?.manual_grn_preference ? "Your approvals only create the SAP Notification - you post the Goods Receipt yourself in SAP" : "Your approvals post the Goods Receipt in SAP automatically"}</div>
+            </div>
+          </div>
+          {isGrnAdmin && (
+            <Button size="sm" variant="outline" onClick={openBlockedUsers} className="h-8 rounded-sm text-xs" data-testid="grn-open-blocked-users-button">
+              <LockKey size={14} className="mr-1" /> Blocked Users
+            </Button>
+          )}
+        </div>
+
+        {user?.grn_blocked_shipment && (
+          <div className="text-sm px-3 py-2.5 rounded-sm border border-[#E02424]/30 bg-[#E02424]/5 text-[#B91C1C] flex items-center gap-2" data-testid="grn-user-blocked-banner">
+            <WarningCircle size={16} weight="fill" />
+            <span>You are blocked from approving new GRNs - shipment <strong>{user.grn_blocked_shipment}</strong> has an unresolved quantity mismatch. {user.grn_blocked_reason}</span>
+          </div>
+        )}
 
         <div className="bg-white border border-[#D0D5DD] rounded-sm p-3 flex items-center gap-3 shadow-[0_1px_2px_0_rgba(16,24,40,0.05)]">
           <Input
@@ -832,7 +951,7 @@ export default function GrnApprovalPage() {
                 </div>
 
                 <div className="flex gap-2">
-                  <Button onClick={approve} disabled={busy || siteAccessBlocked} className="h-8 rounded-sm bg-[#027A48] hover:bg-[#02623A] text-white px-4 text-[13px] font-bold transition-colors" data-testid="grn-approve-button">
+                  <Button onClick={approve} disabled={busy || siteAccessBlocked || !!user?.grn_blocked_shipment} title={user?.grn_blocked_shipment ? "Blocked - resolve your open GRN quantity mismatch first" : undefined} className="h-8 rounded-sm bg-[#027A48] hover:bg-[#02623A] text-white px-4 text-[13px] font-bold transition-colors" data-testid="grn-approve-button">
                     <CheckCircle size={14} className="mr-1" /> {busy ? "Posting..." : "Approve & Post to SAP"}
                   </Button>
                   <Button onClick={() => setRejectOpen(true)} disabled={busy} className="h-8 rounded-sm bg-[#B42318] hover:bg-[#912018] text-white px-4 text-[13px] font-bold transition-colors" data-testid="grn-reject-button">
@@ -850,9 +969,9 @@ export default function GrnApprovalPage() {
             {shipment.status === "approved" && !busy && (
               <div className="mt-4 space-y-2">
                 <div className="text-sm px-3 py-2 rounded-sm flex items-center justify-between gap-2 border" data-testid="grn-sap-sync-status"
-                     style={shipment.sap_sync_status === "posted" || shipment.sap_sync_status === "partial" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : shipment.sap_sync_status === "failed" ? { color: "#B42318", background: "rgba(180,35,24,0.08)", borderColor: "rgba(180,35,24,0.3)" } : { color: "#B45309", background: "rgba(227,160,8,0.1)", borderColor: "rgba(227,160,8,0.3)" }}>
+                     style={shipment.sap_sync_status === "posted" || shipment.sap_sync_status === "partial" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : shipment.sap_sync_status === "failed" || shipment.sap_sync_status === "manual_mismatch" ? { color: "#B42318", background: "rgba(180,35,24,0.08)", borderColor: "rgba(180,35,24,0.3)" } : shipment.sap_sync_status === "awaiting_manual_gr" ? { color: "#3538CD", background: "rgba(53,56,205,0.08)", borderColor: "rgba(53,56,205,0.3)" } : { color: "#B45309", background: "rgba(227,160,8,0.1)", borderColor: "rgba(227,160,8,0.3)" }}>
                   <span className="flex items-center gap-2">
-                    {shipment.sap_sync_status === "posted" || shipment.sap_sync_status === "partial" ? <CheckCircle size={16} /> : <PlugsConnected size={16} />}
+                    {shipment.sap_sync_status === "posted" || shipment.sap_sync_status === "partial" ? <CheckCircle size={16} /> : shipment.sap_sync_status === "manual_mismatch" ? <WarningCircle size={16} weight="fill" /> : <PlugsConnected size={16} />}
                     {shipment.sap_sync_status === "posted"
                       ? "Goods Receipt posted to SAP"
                       : shipment.sap_sync_status === "partial"
@@ -860,6 +979,20 @@ export default function GrnApprovalPage() {
                         <span className="flex items-center gap-2">
                           <Badge className="bg-[#ECFDF3] text-[#027A48] border border-[#ABEFC6]" data-testid="grn-sap-partial-badge">Partially Posted</Badge>
                           {`${(shipment.sap_gr_result?.per_po || []).filter((p) => p.status === "posted").length} of ${(shipment.sap_gr_result?.per_po || []).length} PO(s) posted - the rest were permanently skipped (see per-PO diagnostics below), nothing left to retry`}
+                        </span>
+                      )
+                      : shipment.sap_sync_status === "awaiting_manual_gr"
+                      ? (
+                        <span className="flex items-center gap-2">
+                          <Badge className="bg-[#EFF4FF] text-[#3538CD] border border-[#C7D7FE]" data-testid="grn-sap-awaiting-manual-badge">Awaiting Manual GR in SAP</Badge>
+                          SAP Notification created - go post the Goods Receipt yourself in SAP, then click Re-check SAP
+                        </span>
+                      )
+                      : shipment.sap_sync_status === "manual_mismatch"
+                      ? (
+                        <span className="flex items-center gap-2">
+                          <Badge className="bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA]" data-testid="grn-sap-manual-mismatch-badge">Qty Mismatch - Approver Blocked</Badge>
+                          {`SAP's confirmed quantity does not match ${(shipment.manual_gr_mismatch_items || []).length} line(s) - correct it in SAP and Re-check`}
                         </span>
                       )
                       : shipment.sap_sync_status === "skipped"
@@ -878,14 +1011,24 @@ export default function GrnApprovalPage() {
                         </span>
                       )}
                   </span>
-                  {shipment.sap_sync_status === "partial" ? null : shipment.sap_sync_status === "skipped" ? (
+                  {shipment.sap_sync_status === "partial" ? null : shipment.sap_sync_status === "awaiting_manual_gr" || shipment.sap_sync_status === "manual_mismatch" ? (
+                    <Button size="sm" variant="outline" onClick={recheckManualGr} disabled={busy} className="rounded-sm h-7 text-xs" data-testid="grn-recheck-manual-gr-button">
+                      <ArrowsClockwise size={12} className="mr-1" /> Re-check SAP
+                    </Button>
+                  ) : shipment.sap_sync_status === "skipped" ? (
                     <Button size="sm" variant="outline" onClick={retryGoodsReceipt} disabled={busy} className="rounded-sm h-7 text-xs" data-testid="grn-retry-goods-receipt-button">
                       <ArrowsClockwise size={12} className="mr-1" /> Retry
                     </Button>
                   ) : shipment.sap_sync_status === "failed" ? (
-                    <Button size="sm" variant="outline" onClick={resetRetry} disabled={busy} className="rounded-sm h-7 text-xs" data-testid="grn-reset-retry-button" title="Only use once your SAP Admin confirms the underlying SAP error is fixed">
-                      <ArrowsClockwise size={12} className="mr-1" /> Reset Retry
-                    </Button>
+                    shipment.grn_mode === "manual" ? (
+                      <Button size="sm" variant="outline" onClick={retryGoodsReceipt} disabled={busy} className="rounded-sm h-7 text-xs" data-testid="grn-retry-goods-receipt-button">
+                        <ArrowsClockwise size={12} className="mr-1" /> Retry
+                      </Button>
+                    ) : (
+                      <Button size="sm" variant="outline" onClick={resetRetry} disabled={busy} className="rounded-sm h-7 text-xs" data-testid="grn-reset-retry-button" title="Only use once your SAP Admin confirms the underlying SAP error is fixed">
+                        <ArrowsClockwise size={12} className="mr-1" /> Reset Retry
+                      </Button>
+                    )
                   ) : shipment.sap_sync_status !== "posted" && (
                     retryUnlockInMin(shipment.approved_at) > 0 ? (
                       <span className="text-xs text-[#98A2B3] shrink-0" data-testid="grn-retry-cooldown">Retry available in {retryUnlockInMin(shipment.approved_at)}m</span>
@@ -901,6 +1044,37 @@ export default function GrnApprovalPage() {
                     </Button>
                   )}
                 </div>
+                {shipment.sap_sync_status === "awaiting_manual_gr" && shipment.manual_gr_notification_ids && (
+                  <div className="text-xs text-[#3538CD] bg-[#EFF4FF] border border-[#C7D7FE] rounded-sm px-3 py-2 space-y-1" data-testid="grn-manual-notification-ids">
+                    {Object.entries(shipment.manual_gr_notification_ids).map(([po, nid]) => (
+                      <div key={po} data-testid={`grn-manual-notification-id-${po}`}>PO <strong>{po}</strong> - post the Goods Receipt in SAP against Delivery Notification ID <span className="font-data font-bold">{nid}</span></div>
+                    ))}
+                  </div>
+                )}
+                {shipment.sap_sync_status === "manual_mismatch" && (shipment.manual_gr_mismatch_items || []).length > 0 && (
+                  <table className="border-collapse w-full text-xs border border-[#FECDCA] rounded-sm overflow-hidden" data-testid="grn-manual-mismatch-table">
+                    <thead className="bg-[#FEF3F2] text-[#B42318] font-bold uppercase tracking-wide">
+                      <tr>
+                        <th className="border border-[#FECDCA] p-1.5 text-left">PO Number</th>
+                        <th className="border border-[#FECDCA] p-1.5 text-left">Item</th>
+                        <th className="border border-[#FECDCA] p-1.5 text-left">Product</th>
+                        <th className="border border-[#FECDCA] p-1.5 text-right">Shipped/Confirmed Qty</th>
+                        <th className="border border-[#FECDCA] p-1.5 text-right">SAP Confirmed Qty</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {shipment.manual_gr_mismatch_items.map((m, i) => (
+                        <tr key={i} className="bg-white odd:bg-[#FEF3F2]/40" data-testid={`grn-manual-mismatch-row-${i}`}>
+                          <td className="border border-[#FECDCA] px-2 py-1 font-data">{m.po_number}</td>
+                          <td className="border border-[#FECDCA] px-2 py-1 font-data">{m.item_number}</td>
+                          <td className="border border-[#FECDCA] px-2 py-1">{m.product_id}</td>
+                          <td className="border border-[#FECDCA] px-2 py-1 text-right font-data">{m.shipped_qty ?? "\u2014"}</td>
+                          <td className="border border-[#FECDCA] px-2 py-1 text-right font-data">{m.sap_confirmed_qty ?? m.reason ?? "\u2014"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
                 {(shipment.sap_sync_status === "posted" || shipment.sap_sync_status === "partial") && shipment.sap_gr_result?.per_po?.some((p) => p.inbound_delivery_id) && (
                   <div className="text-xs text-[#667085] px-3 font-data" data-testid="grn-inbound-delivery-ids">
                     SAP Inbound Delivery #: {shipment.sap_gr_result.per_po.filter((p) => p.inbound_delivery_id).map((p) => p.inbound_delivery_id).join(", ")}
@@ -921,13 +1095,13 @@ export default function GrnApprovalPage() {
                     </button>
                   </div>
                 )}
-                {shipment.sap_gr_result?.per_po?.some((p) => (p.status !== "posted" && p.events?.length) || p.skipped_items?.length) && (
+                {shipment.sap_gr_result?.per_po?.some((p) => (p.status !== "posted" && p.status !== "notification_created" && p.events?.length) || p.skipped_items?.length) && (
                   <div className="px-3">
                     <button
                       type="button"
                       className="text-xs text-[#475467] font-bold hover:underline"
                       data-testid="grn-view-diagnostics-button"
-                      onClick={() => setDiagnosticsModal(shipment.sap_gr_result.per_po.find((p) => (p.status !== "posted" && p.events?.length) || p.skipped_items?.length))}
+                      onClick={() => setDiagnosticsModal(shipment.sap_gr_result.per_po.find((p) => (p.status !== "posted" && p.status !== "notification_created" && p.events?.length) || p.skipped_items?.length))}
                     >
                       View Diagnostics
                     </button>
@@ -1087,6 +1261,10 @@ export default function GrnApprovalPage() {
                           <Badge className="bg-[#ECFDF3] text-[#027A48] border border-[#ABEFC6]">Posted</Badge>
                         ) : s.sap_sync_status === "failed" ? (
                           <Badge className="bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA]">Sync Failed</Badge>
+                        ) : s.sap_sync_status === "awaiting_manual_gr" ? (
+                          <Badge className="bg-[#EFF4FF] text-[#3538CD] border border-[#C7D7FE]">Awaiting Manual GR</Badge>
+                        ) : s.sap_sync_status === "manual_mismatch" ? (
+                          <Badge className="bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA]">Qty Mismatch</Badge>
                         ) : (
                           <Badge className="bg-[#FFFAEB] text-[#B54708] border border-[#FEDF89]">In Process</Badge>
                         )}
@@ -1113,6 +1291,43 @@ export default function GrnApprovalPage() {
             <Button variant="outline" className="rounded-sm" onClick={() => setRejectOpen(false)}>Cancel</Button>
             <Button onClick={reject} disabled={busy} className="rounded-sm bg-[#E02424] hover:bg-[#B91C1C] transition-colors duration-150" data-testid="grn-reject-confirm-button">Confirm Reject</Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={blockedUsersOpen} onOpenChange={setBlockedUsersOpen}>
+        <DialogContent className="rounded-sm max-w-xl" data-testid="grn-blocked-users-dialog">
+          <DialogHeader>
+            <DialogTitle className="font-heading">Blocked GRN Users</DialogTitle>
+            <DialogDescription>Users blocked from approving new GRNs due to an unresolved Manual GRN quantity mismatch. Overriding requires a reason and is logged for audit.</DialogDescription>
+          </DialogHeader>
+          {blockedUsers.length === 0 ? (
+            <div className="text-sm text-[#667085] py-4" data-testid="grn-blocked-users-empty">No users are currently blocked.</div>
+          ) : (
+            <div className="space-y-3 max-h-[60vh] overflow-auto">
+              {blockedUsers.map((u) => (
+                <div key={u._id} className="border border-[#D0D5DD] rounded-sm p-3 space-y-2" data-testid={`grn-blocked-user-row-${u._id}`}>
+                  <div className="text-sm font-semibold text-[#1D2939]">{u.name || u.email}</div>
+                  <div className="text-xs text-[#B42318]">Shipment {u.grn_blocked_shipment}: {u.grn_blocked_reason}</div>
+                  <Textarea
+                    placeholder="Override reason (required, logged for audit)"
+                    value={overrideReasons[u._id] || ""}
+                    onChange={(e) => setOverrideReasons((prev) => ({ ...prev, [u._id]: e.target.value }))}
+                    className="rounded-sm border-[#D0D5DD] text-sm"
+                    data-testid={`grn-override-reason-input-${u._id}`}
+                  />
+                  <Button
+                    size="sm"
+                    onClick={() => overrideBlock(u._id)}
+                    disabled={overrideBusyId === u._id}
+                    className="rounded-sm bg-[#B54708] hover:bg-[#93370D] text-white text-xs"
+                    data-testid={`grn-override-block-button-${u._id}`}
+                  >
+                    {overrideBusyId === u._id ? "Overriding..." : "Override & Unblock User"}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 
