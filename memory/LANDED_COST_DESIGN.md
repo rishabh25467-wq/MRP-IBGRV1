@@ -70,10 +70,10 @@ each needs its own GL account mapping (see section 6).
     tied to that Shipment/GRN record. The Landed Cost page then lets the user search/find the right
     internal Shipment Code by EITHER Shipment Code OR Bilty Number (whichever the user has on hand from
     whatever document they're processing) - both resolve to the same underlying GRN/inbound-delivery
-    items for the actual allocation. **NOT YET RE-CONFIRMED with user**: exact capture point (GRN
-    approval screen vs. the Shipment creation step on the supplier portal side) - main agent's best
-    guess is GRN approval time (receiving side, matches physical paperwork in hand at that moment), but
-    should be explicitly confirmed before building.
+    items for the actual allocation. **CONFIRMED (Sep 16 2026)**: captured on the **Vendor Goods
+    Receipt page** (GRN approval, `GrnApprovalPage.jsx` - same screen/moment as the existing Shipment
+    Code entry) - user's exact answer: "vendor goods receipt page". NOT at the Shipment creation step
+    on the supplier portal side.
 
 ## 5b. Customs Duty component structure - FINALIZED (Sep 16 2026 cont'd)
 - Exactly 2 landed cost components for Customs, not 4: **"Customs Duty"** (combines BCD + SWS + Cess -
