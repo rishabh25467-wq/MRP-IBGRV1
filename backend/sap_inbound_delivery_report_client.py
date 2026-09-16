@@ -47,7 +47,7 @@ class SAPInboundDeliveryReportClient:
         params = {
             "$format": "json",
             "$filter": f"CREF_MST_ID eq '{po_number}' and CREF_ID eq '{supplier_doc_num}'",
-            "$select": "CDELIVERY_UUID,CPRODUCT_UUID,TPRODUCT_UUID,FCCONF_QUAN,CTA_DATE",
+            "$select": "CDELIVERY_UUID,CPRODUCT_UUID,TPRODUCT_UUID,FCCONF_QUAN,FCINV_QUAN,CTA_DATE",
         }
         try:
             resp = requests.get(self.report_url, auth=self.auth, params=params,

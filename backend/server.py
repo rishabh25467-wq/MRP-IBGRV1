@@ -8614,7 +8614,7 @@ async def post_admin_grn_recheck_manual(doc_code: str, request: Request):
         owner_party_id, _ = company_and_set_of_books_for_site(doc.get("site_id"))
         return await asyncio.to_thread(
             supplier_shipment_service.check_manual_gr_quantities, db, doc_code, sap_inbound_delivery_report_client,
-            sap_material_client, sap_goods_movement_client, sap_inventory_client, owner_party_id,
+            sap_goods_movement_client, sap_inventory_client, owner_party_id,
         )
     except supplier_shipment_service.ShipmentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

@@ -1115,34 +1115,33 @@ def _parse_sap_qty(value) -> float:
         return 0.0
 
 
-def _resolve_product_uuid(db, material_client, product_id: str) -> str:
-    """Sep 17 2026 - SAP's confirmation report keys rows by Product UUID
-    (CPRODUCT_UUID/TPRODUCT_UUID), not the plain text Product ID this app
-    uses everywhere else. Reuses `component_master.product_uuid` (already
-    populated for ~2271 items by the Sep 14 2026 lead-time bulk push, see
-    PRD.md) as a cache, self-healing any still-missing item via a live
-    SAP lookup - same pattern as resolve_material_info elsewhere."""
-    cached = db["component_master"].find_one({"_id": product_id}, {"product_uuid": 1})
-    if cached and cached.get("product_uuid"):
-        return cached["product_uuid"]
-    uuid_val = material_client.resolve_uuid(product_id)
-    if uuid_val:
-        db["component_master"].update_one({"_id": product_id}, {"$set": {"product_uuid": uuid_val}}, upsert=True)
-    return uuid_val
-
-
-def check_manual_gr_quantities(db, doc_code: str, report_client, material_client, goods_movement_client,
+def check_manual_gr_quantities(db, doc_code: str, report_client, goods_movement_client,
                                 inventory_client, owner_party_id: str) -> dict:
     """Sep 17 2026, Manual GRN feature - the "Re-check SAP" button.
     Compares SAP's own confirmed quantity (FCCONF_QUAN on the same
     "Inbound Delivery Detailed Details" report already used elsewhere in
     this app, matched on this exact notification_id) against what this
     shipment claims staff confirmed (`actual_qty`) for every line, grouped
-    by SAP Product UUID (never by item_number - a PO can have more than
-    one line for the identical product, see
-    sap_playwright_supplier_pgr_service.py's own matching-key docstring
-    for why item_number alone isn't a safe correlation key against SAP's
-    own product-level report rows).
+    by product_id (never by item_number - a PO can have more than one
+    line for the identical product, see sap_playwright_supplier_pgr_
+    service.py's own matching-key docstring for why item_number alone
+    isn't a safe correlation key against SAP's own product-level report
+    rows).
+
+    Sep 16 2026 bug fix (real live-tested mismatch that never cleared,
+    user report re: shipment 3B8VR3/delivery 53483): `CPRODUCT_UUID` on
+    this report is, DESPITE ITS NAME, just the plain-text Product ID -
+    confirmed live (row for PO 29535 showed `CPRODUCT_UUID: "IRON-SCR"`,
+    `TPRODUCT_UUID: "IRON SCRAP (72041000)"` - i.e. CPRODUCT_UUID is the
+    code, TPRODUCT_UUID is the description, same "misleadingly named"
+    pattern this report's own module docstring already documents for
+    CDELIVERY_UUID). The original version of this function resolved each
+    item's product_id to a REAL SAP material UUID via sap_material_client
+    and matched on that instead - which could never match a report row
+    keyed by the plain product_id, so every Re-check found `sap_confirmed_
+    qty=0` regardless of what was actually posted in SAP. Matching
+    directly on product_id (no resolution needed at all) is both simpler
+    and the only value that's actually correct here.
 
     On a full match: reuses `finalize_goods_receipt` (same function the
     auto/Playwright path uses) so this shipment ends up in the exact same
@@ -1170,23 +1169,39 @@ def check_manual_gr_quantities(db, doc_code: str, report_client, material_client
             rows = report_client.find_confirmation_rows(po_number, notification_id)
         except Exception as e:
             raise ShipmentValidationError(f"Could not reach SAP to verify PO {po_number}: {e}")
-        confirmed_by_uuid = {}
+        # Sep 16 2026 bug fix #2 (real live-tested case, user screenshot-
+        # confirmed against SAP's own Inbound Deliveries screen for
+        # shipment 3B8VR3/PO 29535): this analytics report can carry
+        # STALE/orphaned rows from earlier abandoned notification-create
+        # attempts sharing the exact same CREF_ID (reference) - SAP's own
+        # UI showed exactly ONE real Inbound Delivery (ID 53483) for this
+        # shipment, yet the report returned 3 extra older CDELIVERY_UUIDs
+        # too. Only the row(s) for the MOST RECENT CDELIVERY_UUID are
+        # real/current - summing every row ever extracted under this
+        # reference massively over-counts. Also: FCCONF_QUAN itself reads
+        # 2x SAP's own displayed "Fulfilled Quantity" on that exact row
+        # (confirmed via screenshot: SAP showed "1 kg" Fulfilled Quantity,
+        # FCCONF_QUAN said "2.0000000 kg") - FCINV_QUAN matched the real
+        # "Fulfilled Quantity" exactly, so that's the field trusted here.
+        if rows:
+            try:
+                latest_delivery_id = max(rows, key=lambda r: int(r.get("CDELIVERY_UUID") or 0)).get("CDELIVERY_UUID")
+            except (TypeError, ValueError):
+                latest_delivery_id = rows[-1].get("CDELIVERY_UUID")
+            rows = [r for r in rows if r.get("CDELIVERY_UUID") == latest_delivery_id]
+        confirmed_by_product = {}
         for r in rows:
-            uuid_key = r.get("CPRODUCT_UUID") or r.get("TPRODUCT_UUID")
-            if uuid_key:
-                confirmed_by_uuid[uuid_key] = confirmed_by_uuid.get(uuid_key, 0) + _parse_sap_qty(r.get("FCCONF_QUAN"))
-        shipped_by_uuid = {}
+            product_key = r.get("CPRODUCT_UUID")
+            if product_key:
+                confirmed_by_product[product_key] = confirmed_by_product.get(product_key, 0) + _parse_sap_qty(r.get("FCINV_QUAN"))
+        shipped_by_product = {}
         for it in doc["items"]:
             if it["po_number"] != po_number:
                 continue
-            uuid_val = _resolve_product_uuid(db, material_client, it["product_id"])
-            if not uuid_val:
-                mismatches.append({"po_number": po_number, "item_number": it["item_number"], "product_id": it["product_id"], "reason": "Could not resolve this line's SAP Product UUID to verify it"})
-                continue
-            shipped_by_uuid.setdefault(uuid_val, []).append(it)
-        for uuid_val, group_items in shipped_by_uuid.items():
+            shipped_by_product.setdefault(it["product_id"], []).append(it)
+        for product_id, group_items in shipped_by_product.items():
             shipped_qty = sum(it.get("actual_qty", it["ship_qty"]) for it in group_items)
-            confirmed_qty = confirmed_by_uuid.get(uuid_val, 0.0)
+            confirmed_qty = confirmed_by_product.get(product_id, 0.0)
             if not rows or abs(shipped_qty - confirmed_qty) > MISMATCH_QTY_TOLERANCE:
                 for it in group_items:
                     mismatches.append({
