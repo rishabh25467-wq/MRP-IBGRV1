@@ -568,8 +568,12 @@ class SAPPurchaseOrderWriteClient:
         """Read-back verification (same PurchaseOrderByIDQuery_sync
         operation get_purchase_order_number already uses) - confirms a
         cancel actually landed rather than trusting the write
-        response's own silence. Returns
-        {"lifecycle_status_code", "items": [{"item_id",
+        response's own silence. Also used (Sep 17 2026 fix, see
+        server.py's create_purchase_order) to confirm the best-effort
+        `release_purchase_order` call right after PO creation actually
+        took effect before a PO is allowed onto the Supplier Portal - see
+        `approval_status_code` below. Returns {"lifecycle_status_code",
+        "approval_status_code", "items": [{"item_id",
         "cancellation_status_code"}, ...]} or None on any failure."""
         if not self.endpoint:
             return None
@@ -592,6 +596,7 @@ class SAPPurchaseOrderWriteClient:
             if resp.status_code != 200:
                 return None
             lifecycle_match = re.search(r"<PurchaseOrderLifeCycleStatusCode>([^<]*)</PurchaseOrderLifeCycleStatusCode>", resp.text)
+            approval_match = re.search(r"<ApprovalStatusCode>([^<]*)</ApprovalStatusCode>", resp.text)
             items = [
                 {"item_id": m.group(1), "cancellation_status_code": m.group(2)}
                 for m in re.finditer(
@@ -601,6 +606,7 @@ class SAPPurchaseOrderWriteClient:
             ]
             return {
                 "lifecycle_status_code": lifecycle_match.group(1) if lifecycle_match else None,
+                "approval_status_code": approval_match.group(1) if approval_match else None,
                 "items": items,
             }
         except Exception:

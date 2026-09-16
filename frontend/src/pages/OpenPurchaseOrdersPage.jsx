@@ -43,6 +43,7 @@ export default function OpenPurchaseOrdersPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [cancelTarget, setCancelTarget] = useState(null); // {po_number} or {po_number, item_id, description}
   const [cancelling, setCancelling] = useState(false);
+  const [verifyingRelease, setVerifyingRelease] = useState(null); // po_number currently being verified
   const wrapperRef = useRef(null);
   const debounceRef = useRef(null);
 
@@ -145,6 +146,29 @@ export default function OpenPurchaseOrdersPage() {
   const reSearch = async () => {
     if (selectedSupplier) await pickSupplier(selectedSupplier);
     else if (poSearchActive) await searchByPoNumber();
+  };
+
+  // Sep 17 2026, real incident remediation (PO 29581 - see
+  // server.py's verify-release endpoint docstring): a PO that was
+  // wrongly cached as "open" right after creation, before its
+  // best-effort auto-release actually took effect, never self-heals -
+  // this re-checks SAP right now and pulls it out of the vendor-visible
+  // cache if it's still genuinely "In Preparation".
+  const verifyRelease = async (poNumber) => {
+    setVerifyingRelease(poNumber);
+    try {
+      const { data } = await axios.post(`${API}/admin/purchase-orders/${poNumber}/verify-release`);
+      if (data.still_in_preparation) {
+        toast.error(`PO ${poNumber} is still "In Preparation" in SAP - removed from the Supplier Portal until it's actually released`, { duration: 8000 });
+        await reSearch();
+      } else {
+        toast.success(`PO ${poNumber} is genuinely released in SAP - correctly visible to the vendor`);
+      }
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not verify release status against SAP");
+    } finally {
+      setVerifyingRelease(null);
+    }
   };
 
   const confirmCancel = async () => {
@@ -300,6 +324,15 @@ export default function OpenPurchaseOrdersPage() {
                     )}
                     <span className="text-xs text-[#667085]">Buyer: {poItems[0]?.buyer_entity_name || "-"} · PO Date: {poItems[0]?.po_date || "-"}</span>
                   </div>
+                  <Button
+                    size="sm" variant="outline"
+                    className="h-7 rounded-sm text-[11px] border-[#D0D5DD] text-[#344054] hover:bg-[#F2F4F7]"
+                    onClick={() => verifyRelease(poNumber)}
+                    disabled={verifyingRelease === poNumber}
+                    data-testid={`open-pos-verify-release-button-${poNumber}`}
+                  >
+                    <ArrowsClockwise size={12} className="mr-1" /> {verifyingRelease === poNumber ? "Verifying..." : "Verify Release Status"}
+                  </Button>
                   <Button
                     size="sm" variant="outline"
                     className="h-7 rounded-sm text-[11px] border-[#FDA29B] text-[#B42318] hover:bg-[#FEF3F2]"

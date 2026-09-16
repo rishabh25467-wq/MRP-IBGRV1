@@ -40,7 +40,7 @@ from sap_material_physical_client import (
     SAPMaterialPhysicalClient, SAPMaterialPhysicalError, PHYSICAL_FIELD_TO_SAP_PROPERTY, bulk_push_physical_to_sap,
 )
 from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplierAuthError, SAPSupplierNotConfiguredError
-from sap_po_client import SAPPurchaseOrderClient, SAPPurchaseOrderError, SAPPurchaseOrderNotConfiguredError, WATERMARK_COLLECTION as SAP_PO_WATERMARK_COLLECTION
+from sap_po_client import SAPPurchaseOrderClient, SAPPurchaseOrderError, SAPPurchaseOrderNotConfiguredError, WATERMARK_COLLECTION as SAP_PO_WATERMARK_COLLECTION, NOT_YET_RELEASED_APPROVAL_STATUS_CODE
 from sap_po_analytics_client import SAPPOAnalyticsClient
 from sap_outbound_delivery_analytics_client import SAPOutboundDeliveryAnalyticsClient
 from sap_gsa_write_client import SAPGSAWriteClient
@@ -5878,6 +5878,30 @@ async def po_lookup_by_number(po_number: str = Query(..., min_length=1, descript
     return {"po_number": po_number.strip(), "items": items}
 
 
+@api_router.post("/admin/purchase-orders/{po_number}/verify-release")
+async def post_admin_verify_po_release(po_number: str):
+    """Sep 17 2026, remediation for a real incident (user report: PO
+    29581 sat "In Preparation" in SAP - its best-effort auto-release
+    right after creation silently failed - yet was fully visible on the
+    Supplier Portal, because the immediate post-creation cache seed
+    used to run unconditionally; see create_purchase_order's own Sep 17
+    2026 fix for the going-forward prevention). This is the CLEANUP side
+    for any PO that got wrongly cached BEFORE that fix shipped: re-reads
+    the real status from SAP right now and, if it's still genuinely
+    unreleased, expires it out of the vendor-visible cache immediately
+    instead of leaving it there until the next background sync happens
+    to catch it (it wouldn't - the background sync only ever adds/
+    refreshes rows, `_parse_pos` skipping an unreleased PO never removes
+    an already-cached one, see sap_po_client.py's own docstring)."""
+    status = await asyncio.to_thread(sap_po_write_client.get_purchase_order_status, po_number)
+    if not status:
+        raise HTTPException(status_code=502, detail="Could not reach SAP to verify this PO's release status")
+    still_in_preparation = status.get("approval_status_code") == NOT_YET_RELEASED_APPROVAL_STATUS_CODE
+    if still_in_preparation:
+        await asyncio.to_thread(supplier_shipment_service.expire_po_cache, db, po_number)
+    return {"po_number": po_number, "still_in_preparation": still_in_preparation, "removed_from_supplier_view": still_in_preparation}
+
+
 @api_router.post("/purchase-orders/{po_number}/cancel")
 async def cancel_purchase_order(po_number: str):
     """Sep 14 2026, user's explicit ask ("build cancel PO... for full
@@ -6255,6 +6279,25 @@ async def create_purchase_order(payload: PurchaseOrderCreateRequest, request: Re
     except Exception as e:
         logger.warning(f"Purchase Order {result['po_number']}: best-effort release to 'Sent' failed (PO itself is fine): {e}")
 
+    # Sep 17 2026 CRITICAL FIX (real incident, user report: PO 29581 sat
+    # "In Preparation" in SAP - never actually released - yet was fully
+    # visible/shippable-against on the Supplier Portal, because
+    # seed_po_cache_items below used to run UNCONDITIONALLY regardless of
+    # whether the best-effort release above actually took effect. Read
+    # the real status back from SAP (same field sap_po_client.py's own
+    # live-fetch filter checks) before deciding this PO is safe to hand
+    # a vendor at all - if the release silently failed, skip seeding: the
+    # PO stays correctly invisible until a human releases it in SAP (or a
+    # later PO creation history retry) and the background sync's own
+    # filter naturally picks it up once it's genuinely released.
+    po_released = True
+    try:
+        release_status = await asyncio.to_thread(sap_po_write_client.get_purchase_order_status, result["po_number"])
+        if release_status and release_status.get("approval_status_code") == NOT_YET_RELEASED_APPROVAL_STATUS_CODE:
+            po_released = False
+    except Exception as e:
+        logger.warning(f"Purchase Order {result['po_number']}: could not verify release status, assuming released: {e}")
+
     user = request.state.user
     now = datetime.now(timezone.utc)
     # zip (not a product_id re-lookup) so two lines sharing the same
@@ -6305,21 +6348,27 @@ async def create_purchase_order(payload: PurchaseOrderCreateRequest, request: Re
     # numbers "1","2","3"... in the exact order items were submitted
     # (confirmed against real created POs) - best-effort, a wrong guess
     # here just self-heals within 30 min via the real background loop.
-    cache_items = [
-        {
-            "po_number": result["po_number"], "item_number": str(idx + 1),
-            "product_id": it["product_id"], "description": it["description"],
-            "po_qty": it["quantity"], "unit_of_measure": it["unit_of_measure"],
-            "due_date": it["delivery_date"], "ship_to_site_id": it["site_id"],
-            "po_date": payload.po_date, "buyer_code": company_code, "currency": payload.currency,
-            "unit_price": it["unit_price"], "subtotal": it["quantity"] * it["unit_price"],
-            "vendor_name": supplier_doc.get("name") if supplier_doc else None,
-        }
-        for idx, it in enumerate(items)
-    ]
-    await asyncio.to_thread(supplier_shipment_service.seed_po_cache_items, db, payload.supplier_code, cache_items)
+    # Sep 17 2026 fix: only seed if `po_released` above actually
+    # confirmed SAP left "In Preparation" - see that check's own comment.
+    if po_released:
+        cache_items = [
+            {
+                "po_number": result["po_number"], "item_number": str(idx + 1),
+                "product_id": it["product_id"], "description": it["description"],
+                "po_qty": it["quantity"], "unit_of_measure": it["unit_of_measure"],
+                "due_date": it["delivery_date"], "ship_to_site_id": it["site_id"],
+                "po_date": payload.po_date, "buyer_code": company_code, "currency": payload.currency,
+                "unit_price": it["unit_price"], "subtotal": it["quantity"] * it["unit_price"],
+                "vendor_name": supplier_doc.get("name") if supplier_doc else None,
+            }
+            for idx, it in enumerate(items)
+        ]
+        await asyncio.to_thread(supplier_shipment_service.seed_po_cache_items, db, payload.supplier_code, cache_items)
 
-    return {"po_number": result["po_number"], "po_uuid": result["po_uuid"], "sap_po_number": sap_po_number}
+    return {
+        "po_number": result["po_number"], "po_uuid": result["po_uuid"], "sap_po_number": sap_po_number,
+        "released": po_released,
+    }
 
 
 # ---------------------------------------------------------------------
