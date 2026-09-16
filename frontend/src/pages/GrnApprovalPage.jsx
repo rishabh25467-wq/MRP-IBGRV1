@@ -810,6 +810,9 @@ export default function GrnApprovalPage() {
                   <th className="border border-[#D0D5DD] p-1.5 text-right">PO Price</th>
                   <th className="border border-[#D0D5DD] p-1.5 text-right">Line Value</th>
                   {shipment.sap_gr_result?.per_po && (
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">SAP Inbound Delivery #</th>
+                  )}
+                  {shipment.sap_gr_result?.per_po && (
                     <th className="border border-[#D0D5DD] p-1.5 text-left">PO Status</th>
                   )}
                 </tr>
@@ -858,6 +861,11 @@ export default function GrnApprovalPage() {
                         {lineValue != null ? `${it.currency || ""} ${lineValue.toFixed(2)}` : "-"}
                       </td>
                       {shipment.sap_gr_result?.per_po && (
+                        <td className="border border-[#D0D5DD] px-2 py-1 font-data" data-testid={`grn-item-inbound-delivery-id-${i}`}>
+                          {poResult?.inbound_delivery_id || "-"}
+                        </td>
+                      )}
+                      {shipment.sap_gr_result?.per_po && (
                         <td className="border border-[#D0D5DD] px-2 py-1 whitespace-nowrap" data-testid={`grn-item-po-status-${i}`}>
                           {poResult ? (
                             <button
@@ -877,7 +885,7 @@ export default function GrnApprovalPage() {
                   );
                 })}
                 {isActionable && (
-                  <tr><td colSpan={shipment.sap_gr_result?.per_po ? 9 : 8} className="border border-[#D0D5DD] px-2 py-1 text-xs text-[#475467]">Actual Qty defaults to Ship Qty - adjust only if the physical count differs. PO Price/Line Value are for reference only, from SAP's last cached rate.</td></tr>
+                  <tr><td colSpan={shipment.sap_gr_result?.per_po ? 10 : 8} className="border border-[#D0D5DD] px-2 py-1 text-xs text-[#475467]">Actual Qty defaults to Ship Qty - adjust only if the physical count differs. PO Price/Line Value are for reference only, from SAP's last cached rate.</td></tr>
                 )}
               </tbody>
             </table>
@@ -1087,12 +1095,7 @@ export default function GrnApprovalPage() {
                     </tbody>
                   </table>
                 )}
-                {(shipment.sap_sync_status === "posted" || shipment.sap_sync_status === "partial") && shipment.sap_gr_result?.per_po?.some((p) => p.inbound_delivery_id) && (
-                  <div className="text-xs text-[#667085] px-3 font-data" data-testid="grn-inbound-delivery-ids">
-                    SAP Inbound Delivery #: {shipment.sap_gr_result.per_po.filter((p) => p.inbound_delivery_id).map((p) => p.inbound_delivery_id).join(", ")}
-                  </div>
-                )}
-                {shipment.sap_sync_status !== "posted" && shipment.sap_sync_status !== "partial" && shipment.sap_gr_result?.per_po?.some((p) => p.screenshot_path) && (
+                {(shipment.sap_sync_status !== "posted" && shipment.sap_sync_status !== "partial") && shipment.sap_gr_result?.per_po?.some((p) => p.screenshot_path) && (
                   <div className="px-3">
                     <button
                       type="button"
