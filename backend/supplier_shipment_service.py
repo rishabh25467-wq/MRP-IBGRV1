@@ -1099,6 +1099,22 @@ def finalize_manual_notification(db, doc_code: str, results: list) -> dict:
 MISMATCH_QTY_TOLERANCE = 1e-3
 
 
+def _parse_sap_qty(value) -> float:
+    """Sep 16 2026 bug fix (real error, user-triggered "Re-check SAP"
+    500'd): SAP's confirmation report returns FCCONF_QUAN as e.g.
+    '2.0000000 kg', not a bare number - same "value unit" shape
+    sap_po_analytics_client.py's own `_parse_qty` already handles for a
+    different report. `float()` on the raw string crashed every single
+    Re-check."""
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    try:
+        return float(text.split()[0].replace(",", ""))
+    except ValueError:
+        return 0.0
+
+
 def _resolve_product_uuid(db, material_client, product_id: str) -> str:
     """Sep 17 2026 - SAP's confirmation report keys rows by Product UUID
     (CPRODUCT_UUID/TPRODUCT_UUID), not the plain text Product ID this app
@@ -1158,7 +1174,7 @@ def check_manual_gr_quantities(db, doc_code: str, report_client, material_client
         for r in rows:
             uuid_key = r.get("CPRODUCT_UUID") or r.get("TPRODUCT_UUID")
             if uuid_key:
-                confirmed_by_uuid[uuid_key] = confirmed_by_uuid.get(uuid_key, 0) + float(r.get("FCCONF_QUAN") or 0)
+                confirmed_by_uuid[uuid_key] = confirmed_by_uuid.get(uuid_key, 0) + _parse_sap_qty(r.get("FCCONF_QUAN"))
         shipped_by_uuid = {}
         for it in doc["items"]:
             if it["po_number"] != po_number:
