@@ -1201,3 +1201,26 @@ STOs (single-line STOs were already pure-API, unaffected, no change needed there
   the tenant level (`InboundDeliveryPGRBackground` OData action, confirmed live HTTP 500 "action is
   disabled") - this is a SAP Basis/Support ticket item, not fixable from app code. Stays on Playwright.
 
+
+
+## Multi-line STO "Save" automation - 2 more attempts tried, both confirmed dead ends (Sep 18 2026, new fork continuation)
+- User's ask: try 2-3 more SAP API approaches to automate the one remaining manual step (blank "Save" click on
+  SAP's Delivery Proposal screen) before accepting it as final.
+- **Attempt #8 - Site Logistics Task** (`sap_site_logistics_client.py`, already built but never live-verified):
+  fixed the query schema (dropping `UpperBoundarySiteID`, adding `ProcessingConditions` - SAP throws a generic
+  unhelpful SY530 fault without them) and confirmed live: this tenant's Site Logistics Task object is used ONLY
+  for a production material-issue/receipt scenario (`OperationTypeCode=30`) - zero hits for any of 4 real STO
+  order IDs tried (30215, 30129, 32139, 32140, including 2 that fully completed Goods Issue). Dead end, matches
+  the same conclusion already reached independently for the Inbound/GRN side.
+- **Attempt #9 - `StockTransferProposalRequest`**: found via a fresh `$metadata` re-scan of the custom OData
+  service - a FunctionImport never tried before, notably the only action in that whole service actually named
+  for Stock Transfer specifically. Confirmed live DEAD END - declared in `$metadata` but returns 404 "resource
+  not found" when actually called (both quoted/unquoted ObjectID), meaning it was never really implemented in
+  the backend ABSL script despite being in the schema.
+- **No code behavior changed** - both attempts were read-only or safely rejected before any real SAP write;
+  the already-shipped "automatic Release" flow (previous PRD entry above) is untouched and still the final state.
+  Full findings documented in both clients' own docstrings for any future re-investigation.
+- **Conclusion given to user**: the one remaining manual step (blank "Save" click, no fields/quantities) cannot
+  be automated with this app's current SAP API access - every discoverable avenue (9 attempts total across 2
+  sessions) is now exhausted. Closing this out; only a NEW SAP Basis-provisioned service (not something this
+  app can request/build itself) could close the gap further.

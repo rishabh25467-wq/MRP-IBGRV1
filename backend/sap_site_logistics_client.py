@@ -20,9 +20,30 @@ same one-Delivery result the UI gets.
 Same raw-XML + SOAPAction-header pattern as every other SAP SOAP client
 in this codebase (see sap_sto_client.py) - both WSDLs were uploaded live
 by the user, schema is fixed/documented, no zeep/runtime WSDL parsing
-needed. Exact live-tested field requirements for MaintainBundle_V1 are
-still UNVERIFIED as of writing this - see stock_transfer_service.py's
-module docstring for what live testing confirmed/rejected.
+needed.
+
+CONFIRMED DEAD END (Sep 18 2026, live-verified, read-only - no
+MaintainBundle_V1 write ever attempted, so no live confirm risk taken):
+`find_tasks_for_site` genuinely works (fixed the query schema - dropping
+`UpperBoundarySiteID` and adding the `ProcessingConditions` node, both
+required or SAP throws a generic unhelpful "An exception was raised"
+SY530 fault instead of a clean result) and returns REAL data - but for
+site P2, EVERY one of the 18 Site Logistics Tasks that exist (checked
+with no other filter, i.e. every task SAP has ever created at that site)
+is `OperationTypeCode=30` (a production material-issue/receipt task,
+e.g. product "Wall Support"/"Arc Moving-42" with `MaterialInput`+
+`MaterialOutput` nodes, dated 2023-08 through 2025-12) - NONE reference
+any Outbound Delivery Request/Stock Transfer Order at all. Also queried
+directly `SelectionByReferenceDocumentID` for 4 real STO SAP order IDs
+(30215, 30129, 32139, 32140 - including 2 that DID successfully complete
+Goods Issue) - zero hits on all 4. Conclusion: this tenant's Site
+Logistics Task object is used ONLY for a specific production logistics
+scenario, never for Stock Transfer/Outbound Delivery - same class of
+finding sap_playwright_pgr_service.py already reached independently for
+the INBOUND side (0 hits for ProcessTypeCode=1). This whole SOAP pair
+stays dormant/unused for the outbound STO flow; kept only as a reference
+in case a future SAP Basis configuration change ever starts routing
+Stock Transfer through task-based execution.
 """
 import re
 from datetime import datetime, timezone

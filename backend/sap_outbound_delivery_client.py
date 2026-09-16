@@ -137,7 +137,56 @@ requires either ABSL (ruled out) or a pre-existing "Site Logistics
 Request" object this app has no service to create (attempt #6). Kept
 as a best-effort pre-step ahead of the always-safe per-line loop
 below; any failure here is caught/logged and changes nothing about the
-existing, proven fallback."""
+existing, proven fallback.
+
+Attempt #8 (Sep 18 2026, user's explicit ask to try a couple more
+angles even after the manual-Save unification shipped): `sap_site_logistics_client.py`
+(a NEW SOAP pair - QuerySiteLogisticsTaskIn/ManageSiteLogisticsTaskIn -
+the user's Basis team set up specifically hoping it would let a
+multi-select-and-confirm-together UI action be replayed via API).
+CONFIRMED LIVE DEAD END - see that module's own docstring for the full
+live-verified finding: this tenant's Site Logistics Task object is only
+ever used for a production material-issue/receipt scenario
+(OperationTypeCode 30), zero hits for any of 4 real STO order IDs
+tried (including 2 that fully completed Goods Issue), so it plays no
+role in the Outbound Delivery/Stock Transfer flow at all here.
+
+Attempt #9 (Sep 18 2026, same session): re-enumerated this exact
+service's own `$metadata` fresh (in case anything changed since the
+original Aug 27 attempts) and found ONE FunctionImport never tried
+before - `StockTransferProposalRequest(ObjectID: Edm.String) ->
+StockTransferProposal` (`EntitySet=StockTransferProposalCollection`,
+`m:HttpMethod=POST`) - promising precisely because it's the only action
+in this whole service actually NAMED for Stock Transfer specifically
+(unlike the generic Sales-Order-oriented ones in attempts #1-7).
+CONFIRMED LIVE DEAD END: `StockTransferProposalCollection` itself reads
+fine (200, returns real existing rows, e.g. ID 21605) proving the
+service/auth is fine, but calling the actual `StockTransferProposalRequest`
+POST action itself - tried both with and without the OData string-literal
+quotes around a real Outbound Delivery Request Item's own
+`ParentObjectID` (STO-000044, product IRON-SCR) - returns a clean
+"The server has not found any resource matching the Data Services
+Request URI" (unquoted: "Malformed URI literal syntax", the expected
+error for a bare Edm.String that still confirms the endpoint IS being
+routed, just rejecting the literal syntax; quoted: 404). Conclusion:
+this FunctionImport is declared in the service's EDMX/`$metadata` but
+was never actually implemented/deployed in the backend ABSL script -
+a known ByD custom-OData-service gotcha (metadata can lag or include
+abandoned design-time-only entries). No further live write was
+attempted against it once 404 confirmed it doesn't exist at runtime.
+
+Net result after attempts #8-#9: no additional automation found. The
+one remaining manual step (a blank "Save" click on SAP's own Delivery
+Proposal screen, no fields/quantities needed) still requires the
+interactive SAP UI - every avenue this app's own granted API surface
+exposes has now been exhausted twice over. The only way to close this
+gap further would be the user's SAP Basis team provisioning a NEW
+Communication Arrangement for the standard `II_MANAGE_OUTBOUND_DELIVERY_IN`
+service (confirmed via SAP's own official docs to only support
+Update/Release/Read/UndoRelease on an ALREADY-EXISTING delivery, so it
+would not help either) or a custom ABSL Business Object exposing SAP's
+internal "confirm multi-select proposal" logic directly - out of scope
+for this app's existing API access."""
 import requests
 from requests.auth import HTTPBasicAuth
 
