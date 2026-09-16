@@ -242,57 +242,6 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
       {order.status === "created_in_sap" && (
         <div
           className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
-            order.erp_portal_status === "synced" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
-            : order.erp_portal_status === "failed" ? "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
-            : "bg-[#FEF0C7] border border-[#FEDF89] text-[#93370D]"
-          }`}
-          data-testid="stock-transfer-detail-erp-status"
-        >
-          {order.erp_portal_status === "synced" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : order.erp_portal_status === "failed" ? <WarningCircle size={16} className="mt-0.5 shrink-0" /> : <CircleNotch size={16} className="mt-0.5 shrink-0 animate-spin" />}
-          <div>
-            <p className="font-bold">
-              {order.erp_portal_status === "synced" ? "Synced to ERP Portal."
-                : order.erp_portal_status === "failed" ? "ERP Portal sync failed:"
-                : "ERP Portal: syncing..."}
-            </p>
-            {order.erp_portal_status === "failed" && <p className="mt-0.5">{order.erp_portal_error || "See logs."}</p>}
-            {order.erp_portal_status !== "synced" && (
-              <>
-                <p className="mt-1 text-xs opacity-80">
-                  {order.erp_portal_status === "failed"
-                    ? "No legal Delivery Challan can be printed until this syncs - Serial Number comes from the ERP portal."
-                    : "Looks stuck? Click Retry ERP Sync - safe to click anytime before this shows Synced."}
-                </p>
-                <Button
-                  size="sm" variant="outline" className="mt-2"
-                  onClick={() => onRetryErpSync(order.sto_id)}
-                  disabled={retryingErpStoId === order.sto_id}
-                  data-testid="stock-transfer-retry-erp-sync-btn"
-                >
-                  {retryingErpStoId === order.sto_id ? <CircleNotch size={14} className="animate-spin mr-1.5" /> : null}
-                  Retry ERP Sync
-                </Button>
-                {isAdmin && (
-                  <Button
-                    size="sm" variant="outline" className="mt-2 ml-2"
-                    onClick={() => onManualErpLink(order.sto_id)}
-                    data-testid="stock-transfer-manual-erp-link-btn"
-                  >
-                    Link to Existing Challan
-                  </Button>
-                )}
-              </>
-            )}
-            {order.erp_portal_status === "synced" && (
-              <p className="mt-0.5 text-xs opacity-80">Portal Sale No: {order.erp_sale_no} / {order.erp_sale_noc}</p>
-            )}
-          </div>
-        </div>
-      )}
-
-      {order.status === "created_in_sap" && (
-        <div
-          className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
             order.gi_status === "posted" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
             : order.gi_status === "failed" || order.gi_status === "not_found_timeout" ? "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
             : order.gi_status === "awaiting_manual_gi" ? "bg-[#EFF8FF] border border-[#B2DDFF] text-[#175CD3]"
@@ -368,18 +317,59 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
                 Force Stop This Job Now
               </Button>
             )}
-            {isAdmin && <DebugScreenshotsViewer stoId={order.sto_id} />}
           </div>
         </div>
       )}
 
-      {order.gst_note_pushed && (
+      {order.status === "created_in_sap" && (
         <div
-          className="rounded-sm p-3 text-sm flex items-start gap-2 bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
-          data-testid="stock-transfer-detail-gst-status"
+          className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
+            order.erp_portal_status === "synced" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
+            : order.erp_portal_status === "failed" ? "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
+            : "bg-[#FEF0C7] border border-[#FEDF89] text-[#93370D]"
+          }`}
+          data-testid="stock-transfer-detail-erp-status"
         >
-          <CheckCircle size={16} className="mt-0.5 shrink-0" />
-          <p className="font-bold">GST / Transport details recorded on the SAP Customer Requirement note.</p>
+          {order.erp_portal_status === "synced" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : order.erp_portal_status === "failed" ? <WarningCircle size={16} className="mt-0.5 shrink-0" /> : <CircleNotch size={16} className="mt-0.5 shrink-0 animate-spin" />}
+          <div>
+            <p className="font-bold">
+              {order.erp_portal_status === "synced" ? "Synced to ERP Portal."
+                : order.erp_portal_status === "failed" ? "ERP Portal sync failed:"
+                : order.gi_status === "posted" ? "ERP Portal: syncing..."
+                : "ERP Portal: waiting on Goods Issue before syncing."}
+            </p>
+            {order.erp_portal_status === "failed" && <p className="mt-0.5">{order.erp_portal_error || "See logs."}</p>}
+            {order.erp_portal_status !== "synced" && order.gi_status === "posted" && (
+              <>
+                <p className="mt-1 text-xs opacity-80">
+                  {order.erp_portal_status === "failed"
+                    ? "No legal Delivery Challan can be printed until this syncs - Serial Number comes from the ERP portal."
+                    : "Looks stuck? Click Retry ERP Sync - safe to click anytime before this shows Synced."}
+                </p>
+                <Button
+                  size="sm" variant="outline" className="mt-2"
+                  onClick={() => onRetryErpSync(order.sto_id)}
+                  disabled={retryingErpStoId === order.sto_id}
+                  data-testid="stock-transfer-retry-erp-sync-btn"
+                >
+                  {retryingErpStoId === order.sto_id ? <CircleNotch size={14} className="animate-spin mr-1.5" /> : null}
+                  Retry ERP Sync
+                </Button>
+                {isAdmin && (
+                  <Button
+                    size="sm" variant="outline" className="mt-2 ml-2"
+                    onClick={() => onManualErpLink(order.sto_id)}
+                    data-testid="stock-transfer-manual-erp-link-btn"
+                  >
+                    Link to Existing Challan
+                  </Button>
+                )}
+              </>
+            )}
+            {order.erp_portal_status === "synced" && (
+              <p className="mt-0.5 text-xs opacity-80">Portal Sale No: {order.erp_sale_no} / {order.erp_sale_noc}</p>
+            )}
+          </div>
         </div>
       )}
 

@@ -7350,8 +7350,16 @@ async def _run_submit_sto_to_sap_job(job_id: str, sto_id: str):
         # Delivery Request) - progress is only visible via the STO doc's
         # own gi_status field, same as any other field the Recent Orders
         # table/detail modal already read.
+        #
+        # ERP Portal sync (Sep 18 2026, user's explicit ask) used to fire
+        # here too, immediately and independently of Goods Issue - now it
+        # only fires once Goods Issue is actually confirmed "posted"
+        # (from _run_goods_issue_job's own "posted" branch, or from
+        # post_stock_transfer_complete_manual_gi's "Complete STO Process"
+        # success path), since the Delivery Challan it produces should
+        # reflect real shipped goods, not just an order that merely exists
+        # in SAP.
         asyncio.create_task(_run_goods_issue_job(sto_id))
-        asyncio.create_task(_run_erp_portal_sync_job(sto_id))
     except Exception as e:
         logger.error(f"Stock Transfer Order {sto_id}: live SAP submit job {job_id} failed: {e}")
         job_store.update_job(db, job_id, {"status": "failed", "result": None, "error": str(e)})
@@ -7390,13 +7398,20 @@ async def _run_goods_issue_job(sto_id: str):
             logger.info(f"Stock Transfer Order {sto_id}: Goods Issue automation stopped by user request.")
             return
         try:
-            outcome = await asyncio.to_thread(stock_transfer_service.try_post_goods_issue, db, sap_outbound_delivery_client, sap_outbound_delivery_analytics_client, sap_inventory_client, sto_id)
+            outcome = await asyncio.to_thread(stock_transfer_service.try_post_goods_issue, db, sap_outbound_delivery_client, sap_outbound_delivery_analytics_client, sto_id)
             # "awaiting_manual_gi" (Sep 18 2026, Manual Goods Issue shift)
             # is a terminal pause, not a transient state to keep polling -
             # staff complete the Delivery+GI themselves in SAP, then use
             # "Complete STO Process" (see post_stock_transfer_complete_manual_gi)
             # rather than this background loop.
-            if outcome in ("posted", "awaiting_manual_gi"):
+            if outcome == "posted":
+                # ERP Portal sync (Sep 18 2026, user's explicit ask) now
+                # only fires once Goods Issue is actually confirmed - see
+                # _run_submit_sto_to_sap_job's own docstring for why it no
+                # longer fires immediately at order-creation time.
+                asyncio.create_task(_run_erp_portal_sync_job(sto_id))
+                return
+            if outcome == "awaiting_manual_gi":
                 return
         except SAPOutboundDeliveryError as e:
             # A real SAP-side rejection of the Goods Issue itself (as
@@ -7505,6 +7520,7 @@ async def post_stock_transfer_complete_manual_gi(sto_id: str):
         raise HTTPException(status_code=404, detail=str(e))
     except stock_transfer_service.StockTransferValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    asyncio.create_task(_run_erp_portal_sync_job(sto_id))
     return _sto_to_response(doc)
 
 
