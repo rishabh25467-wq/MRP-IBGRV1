@@ -298,7 +298,16 @@ def handle_callback(request: Request, db):
         return RedirectResponse("/?auth_error=state_expired")
     db[OAUTH_STATES_COLLECTION].delete_one({"_id": state})
 
-    result = _build_msal_app().acquire_token_by_auth_code_flow(saved["flow"], params)
+    try:
+        result = _build_msal_app().acquire_token_by_auth_code_flow(saved["flow"], params)
+    except Exception:
+        # MSAL normally returns an {"error": ...} dict on failure (handled below) rather
+        # than raising - but state/scope/transport problems can raise ValueError/
+        # AssertionError/connection errors instead, which would otherwise surface as a
+        # raw, unhelpful 500 to the user. Log the full traceback server-side and fail
+        # the same graceful way as a normal MSAL error result.
+        logger.exception(f"Azure AD login: acquire_token_by_auth_code_flow raised (state={state})")
+        return RedirectResponse("/?auth_error=login_failed")
     if "error" in result:
         logger.warning(f"Azure AD login failed: {result.get('error')}: {result.get('error_description')}")
         return RedirectResponse("/?auth_error=login_failed")

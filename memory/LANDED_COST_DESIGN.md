@@ -119,6 +119,77 @@ POSTING the invoice alone doesn't touch valuation and is still correctable in SA
   computed %. Success -> `completed` (SAP has updated MAP). Failure -> stays `invoice_posted`, retry-able
   without ever re-posting the invoice.
 
+## 8b. Customs Duty - SEPARATE track from Freight/Insurance/Loading (LOCKED, Sep 16 2026 cont'd)
+Customs Duty does NOT follow the same rules as Freight - real-world sequence is: Customs paid/cleared
+FIRST (at port, direct to government), THEN goods invoice + freight invoice arrive later. This broke the
+original "goods invoice must exist first" universal rule - that rule now applies ONLY to
+Freight/Insurance/Loading, NOT Customs.
+
+- **Reference document**: Bill of Entry (BOE) - a customs authority document that ALREADY declares the
+  exact duty amount PER PRODUCT LINE. No Weight/Invoice-Value waterfall computation needed for Customs
+  at all - the per-line amounts are taken directly from the BOE and fed to SAP's Allocation Document as
+  `NetAmount` (not `Percent`).
+- **Precondition**: needs the GRN to exist first (confirmed by user, option "A") - does NOT need the
+  goods invoice to be posted first (unlike Freight). So Customs can be posted/allocated independently,
+  on its own earlier timeline.
+- **Rejected/QI lines**: NO refund/adjustment/debit process exists for customs duty on a later-rejected
+  item (confirmed by user) - the duty stays allocated as a sunk cost, no reversal, no "supplier debit"
+  equivalent (that concept doesn't apply here anyway since customs is paid to government, not a vendor).
+- **No vendor for Customs Duty** (paid direct to government, confirmed by user) - but SAP's
+  `ManageSupplierInvoiceIn` requires SOME Supplier/BusinessPartner reference on every invoice. Resolved:
+  user will create a **dummy/standing "Customs Authority" Business Partner** in SAP with the Supplier
+  role activated (standard SAP ByD practice for statutory/government postings) - just needs Name,
+  Address, Company assignment (RI/RT), Currency (INR), Payment Terms (never actually used for a real AP
+  payment run against this vendor). User is going to create this - AWAITING the resulting Supplier
+  ID/UUID to be shared once done.
+- **Invoice structure is multi-component, not one lump sum**: the Customs "invoice" has separate lines
+  per DUTY TYPE - e.g. BCD, SWS, IGST, Cess (user's own example) - NOT one generic "Customs Duty" line.
+  **IMPORTANT UNRESOLVED NUANCE flagged by main agent, not yet answered by user**: BCD/SWS/Cess are
+  typically non-recoverable (should capitalize into inventory/landed cost via the Allocation Document
+  route), while IGST paid on import is typically available as Input Tax Credit (recoverable against
+  output GST liability) in Indian GST law - so IGST likely should NOT be allocated to inventory value at
+  all (should post straight to a GST Input Credit receivable GL account instead, bypassing the
+  Allocation Document entirely). User has NOT yet confirmed: (a) whether each duty type needs its own
+  separate landed cost component, (b) whether IGST should be excluded from inventory allocation, (c)
+  whether the BOE gives a per-product breakdown for EACH duty type separately or one combined total per
+  product that we'd need to split into BCD/SWS/Cess ourselves. Discussion moved on to the UX flow before
+  circling back to this - MUST be answered before building the Customs invoice-posting logic.
+- **Trade-off explicitly discussed and RESOLVED**: user confirmed they want Customs Duty capitalized
+  into inventory value at the item level (not GL-only like a typical GST posting) - this is WHY the
+  dummy-vendor Supplier Invoice + Allocation Document route is needed at all (a plain GL Journal Entry,
+  like how GST is normally posted, would NOT feed into SAP's Moving Average Price recalculation - only
+  the Allocation Document mechanism, tied to a Supplier Invoice's landed cost component, does that).
+
+## 8c. Customs Duty UX flow - "BOE Payment" tab + GRN-time reconciliation (LOCKED concept, details open)
+User's own proposed design (main agent confirmed technically feasible, same pattern as this app's
+existing "Action Needed" notifications):
+1. **New "Customs Duty Payment" tab/entry** - whenever duty is actually paid (before goods arrive), user
+   enters BOE details, uploads the BOE document copy (for record), and enters the TOTAL amount paid.
+   Saved in-app immediately, NO SAP posting yet at this stage (just record-keeping) - status something
+   like `pending_reconciliation`.
+2. **GRN-time flash/prompt**: when a GRN is later created/confirmed, the app checks whether that GRN's
+   PO has a pending unreconciled BOE Payment record - if yes, immediately surfaces a prompt (same
+   pattern as existing "Action Needed" panel) inviting the user to complete the item-level breakdown
+   right then: for each product in the GRN, enter its BCD/SWS/IGST/Cess amounts (per section 8b).
+3. **Validation on save**: the SUM of all entered per-item duty amounts across all duty types must
+   equal the originally-recorded TOTAL paid amount from step 1 - confirmed by user as **hard block,
+   with a small rounding tolerance allowed** (exact tolerance amount, e.g. paise/rupee-level, not yet
+   specified - default to something like +/- Rs. 2 unless user specifies otherwise when building).
+4. THEN (not yet fully re-confirmed after this UX flow was introduced, but implied) the app proceeds
+   with the actual SAP posting: Customs Duty invoice (dummy vendor, one line per duty type used, per
+   8b's still-open nuance) + Allocation Document (NetAmount per product per duty type, from the
+   reconciled breakdown).
+- **STILL OPEN, unanswered as of this save-point**:
+  - Linking key for the "flash" - is PO Number always sufficient (1 BOE Payment <-> 1 PO), or can one
+    BOE cover items from MULTIPLE POs in the same shipment (would need multiple PO numbers taggable on
+    one BOE Payment entry, flash fires on a GRN against ANY of them)?
+  - User confirmed "BOE can have only 1 invoice, multiple items" - main agent's interpretation: one BOE
+    ties to exactly one goods invoice, and (implied, not explicitly confirmed) is received in exactly
+    ONE GRN - i.e. the reconciliation flash/prompt only ever needs to fire ONCE per BOE, never
+    accumulating across multiple partial GRNs the way Freight's multi-GRN case can. NOT YET EXPLICITLY
+    CONFIRMED by user - re-verify before building.
+  - Exact rounding tolerance value for the hard-block validation (section 8c point 3) - not specified.
+
 ## 9. Open items / not yet decided
 - Exact GL account per cost-type component - needs confirming with SAP admin (business config, not
   something this app's code decides).
