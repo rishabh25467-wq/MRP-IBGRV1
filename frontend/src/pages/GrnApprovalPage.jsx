@@ -716,18 +716,20 @@ export default function GrnApprovalPage() {
 
         {/* Sep 17 2026, Manual GRN feature - self-service toggle between
             the Playwright-automated Goods Receipt and posting it manually
-            in SAP, plus the admin "Blocked Users" override entry point. */}
+            in SAP, plus the admin "Blocked Users" override entry point.
+            Sep 16 2026, user's explicit ask - Manual GRN is now the ONLY
+            path for Supplier GRN; toggle kept visible but disabled (not
+            removed) in case Playwright is ever wanted back. */}
         <div className="bg-white border border-[#D0D5DD] rounded-sm p-3 flex flex-wrap items-center justify-between gap-3 shadow-[0_1px_2px_0_rgba(16,24,40,0.05)]">
           <div className="flex items-center gap-3">
             <Switch
-              checked={!!user?.manual_grn_preference}
-              onCheckedChange={toggleManualGrnPreference}
-              disabled={prefBusy}
+              checked={true}
+              disabled={true}
               data-testid="grn-manual-mode-toggle"
             />
             <div className="leading-tight">
-              <div className="text-sm font-semibold text-[#1D2939]">{user?.manual_grn_preference ? "Manual GRN mode" : "Auto GRN mode (Playwright)"}</div>
-              <div className="text-xs text-[#667085]">{user?.manual_grn_preference ? "Your approvals only create the SAP Notification - you post the Goods Receipt yourself in SAP" : "Your approvals post the Goods Receipt in SAP automatically"}</div>
+              <div className="text-sm font-semibold text-[#1D2939]">Manual GRN mode</div>
+              <div className="text-xs text-[#667085]">Approvals only create the SAP Notification - you post the Goods Receipt yourself in SAP</div>
             </div>
           </div>
           {isGrnAdmin && (
@@ -962,7 +964,7 @@ export default function GrnApprovalPage() {
                     className="h-8 rounded-sm bg-[#027A48] hover:bg-[#02623A] text-white px-4 text-[13px] font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     data-testid="grn-approve-button"
                   >
-                    <CheckCircle size={14} className="mr-1" /> {busy ? "Posting..." : "Approve & Post to SAP"}
+                    <CheckCircle size={14} className="mr-1" /> {busy ? "Creating..." : "Create SAP Notification"}
                   </Button>
                   <Button onClick={() => setRejectOpen(true)} disabled={busy} className="h-8 rounded-sm bg-[#B42318] hover:bg-[#912018] text-white px-4 text-[13px] font-bold transition-colors" data-testid="grn-reject-button">
                     <XCircle size={14} className="mr-1" /> Reject

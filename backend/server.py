@@ -8340,7 +8340,12 @@ async def post_admin_grn_approve(doc_code: str, payload: GrnApproveRequest, requ
         )
     owner_party_id, _ = company_and_set_of_books_for_site(payload.site_id)
     item_actual_qtys = {(i.po_number, i.item_number): i.actual_qty for i in payload.item_actual_qtys}
-    grn_mode = "manual" if request.state.user.get("manual_grn_preference") else "auto"
+    # Sep 16 2026, user's explicit ask ("we do not need Playwright GRN
+    # now... this is more foolproof") - Manual GRN is now the ONLY path
+    # for Supplier GRN, regardless of a user's own `manual_grn_preference`
+    # toggle (kept dormant, not deleted, in case Playwright is ever
+    # wanted back - see `_start_supplier_grn_job` below, still intact).
+    grn_mode = "manual"
     try:
         doc = await asyncio.to_thread(
             supplier_shipment_service.prepare_approval, db, doc_code, approver, request.state.user["_id"], payload.supplier_doc_num,
