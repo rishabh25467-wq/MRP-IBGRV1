@@ -292,19 +292,34 @@ def create_stock_transfer_order(db, payload: dict, created_by: str, sap_hsn_clie
     # Remark (Sep 2 2026, user's explicit ask) - optional free text,
     # positioned right after Freight Forwarder everywhere it's shown.
     remark = (payload.get("remark") or "").strip()
-    # Sep 18 2026, user's explicit ask (Manual Goods Issue architecture
-    # shift - see try_post_goods_issue_multiline's docstring): these were
-    # mandatory here because Playwright used them to fill the Outbound
-    # Delivery's own header fields in SAP. Playwright is now removed from
-    # this flow - staff fill these fields themselves directly in SAP when
-    # they complete the Delivery/Goods Issue manually - so they're now
-    # optional here (still captured/stored if provided, e.g. by a
-    # single-line order that never needed the manual step at all).
-    if date_of_supply:
-        try:
-            date.fromisoformat(date_of_supply)
-        except ValueError:
-            raise StockTransferValidationError("Date Of Supply is not a valid date.")
+    # Sep 18 2026 architecture shift briefly made these optional (staff
+    # were expected to fill them directly in SAP's Delivery screen since
+    # Playwright was removed) - REVERTED per user's explicit follow-up
+    # ask: these 6 fields are mandatory again here in the app. They are
+    # still NEVER pushed to SAP itself (confirmed live, SAP hard-locks
+    # these custom fields against any API write once its scheduler picks
+    # the order up - see sap_outbound_delivery_client.py's docstring) -
+    # only captured/stored on this app's own STO doc, and pushed to the
+    # legacy ERP portal for the 4 fields that actually have a column
+    # there (Vehicle No./G.R No./Date Of Supply/Freight Forwarder - see
+    # sync_to_erp_portal below); Transportation Mode/Place Of Supply have
+    # no corresponding ERP proc parameter at all, so they stay app-only.
+    if not transportation_mode:
+        raise StockTransferValidationError("Transportation Mode is required.")
+    if not vehicle_no:
+        raise StockTransferValidationError("Vehicle No. is required.")
+    if not place_of_supply:
+        raise StockTransferValidationError("Place Of Supply is required.")
+    if not gr_no:
+        raise StockTransferValidationError("G.R No. is required.")
+    if not date_of_supply:
+        raise StockTransferValidationError("Date Of Supply is required.")
+    try:
+        date.fromisoformat(date_of_supply)
+    except ValueError:
+        raise StockTransferValidationError("Date Of Supply is not a valid date.")
+    if not freight_forwarder:
+        raise StockTransferValidationError("Freight Forwarder is required.")
 
     ship_to_warehouses = {w["warehouse_id"]: w["warehouse_name"] for w in list_known_warehouses_for_site(db, ship_to_site_id)}
     if ship_to_location_id not in ship_to_warehouses:

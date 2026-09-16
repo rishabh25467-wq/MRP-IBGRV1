@@ -705,12 +705,22 @@ export default function StockTransferPage() {
   // so a long-running background job just sits stale until the user
   // manually reloads. Auto-refresh only while something is actually
   // in-flight.
+  // Bug fix (real user report, screenshot showing the detail modal stuck
+  // on a spinning "ERP Portal: syncing..." even though the backend sync
+  // had actually already finished) - this polling gate only ever looked
+  // at `gi_job_running`, which flips to false the MOMENT Goods Issue
+  // posts, i.e. exactly when the separate background ERP sync job starts
+  // running. So polling stopped right as ERP sync began, freezing the
+  // modal on "syncing..." forever until a full manual page reload. Now
+  // also polls while any order has ERP sync genuinely in flight (Goods
+  // Issue posted, but erp_portal_status not yet a terminal synced/failed).
   const hasRunningGiJob = recentOrders.some((o) => o.gi_job_running);
+  const hasRunningErpSync = recentOrders.some((o) => o.gi_status === "posted" && !["synced", "failed"].includes(o.erp_portal_status));
   useEffect(() => {
-    if (!hasRunningGiJob) return;
-    const id = setInterval(loadRecentOrders, 20000);
+    if (!hasRunningGiJob && !hasRunningErpSync) return;
+    const id = setInterval(loadRecentOrders, 5000);
     return () => clearInterval(id);
-  }, [hasRunningGiJob]);
+  }, [hasRunningGiJob, hasRunningErpSync]);
 
   // Real bug (user's screenshot, Sep 2026): the detail modal is a static
   // snapshot from whatever row was clicked - it never refreshed on its
@@ -869,9 +879,16 @@ export default function StockTransferPage() {
     if (!shipToLocationId) return "Ship-to Location is required.";
     if (!requestedDeliveryDate) return "Requested Delivery Date is required.";
     if (requestedDeliveryDate < todayISO()) return "Requested Delivery Date cannot be earlier than today.";
-    // Sep 18 2026, Manual Goods Issue architecture shift - these are no
-    // longer required here; staff now fill them directly in SAP
-    // themselves when completing the Delivery/Goods Issue manually.
+    // Reverted per user's explicit follow-up ask (Sep 18 2026): mandatory
+    // again - never written to SAP (kept app-only / pushed to the legacy
+    // ERP portal only where it has a matching column, see
+    // stock_transfer_service.py's create_stock_transfer_order).
+    if (!transportationMode) return "Transportation Mode is required.";
+    if (!vehicleNo.trim()) return "Vehicle No. is required.";
+    if (!placeOfSupply.trim()) return "Place Of Supply is required.";
+    if (!grNo.trim()) return "G.R No. is required.";
+    if (!dateOfSupply) return "Date Of Supply is required.";
+    if (!freightForwarder.trim()) return "Freight Forwarder is required.";
     return null;
   };
 
@@ -1309,40 +1326,40 @@ export default function StockTransferPage() {
           </div>
         </div>
 
-        {/* GST / E-way bill compliance fields - Sep 18 2026, Manual Goods
-            Issue architecture shift (user's explicit ask): no longer
-            filled here - staff now enter these directly on SAP's own
-            Delivery screen when they complete the Goods Issue manually.
-            Kept visible (disabled) rather than removed outright. */}
+        {/* GST / E-way bill compliance fields - mandatory again per
+            user's explicit follow-up ask (Sep 18 2026): NOT written to
+            SAP (confirmed hard-locked against API writes), kept on this
+            app's own record and pushed to the legacy ERP portal for the
+            4 fields that actually have a column there. */}
         <div className="grid grid-cols-1 sm:grid-cols-3 md:grid-cols-6 gap-3">
           <div>
-            <Label className="text-xs font-bold text-[#344054]">Transportation Mode</Label>
-            <Select value={transportationMode} onValueChange={setTransportationMode} disabled>
-              <SelectTrigger data-testid="stock-transfer-transportation-mode-select" disabled><SelectValue /></SelectTrigger>
+            <Label className="text-xs font-bold text-[#344054]">Transportation Mode<span className="text-[#D92D20]">*</span></Label>
+            <Select value={transportationMode} onValueChange={setTransportationMode}>
+              <SelectTrigger data-testid="stock-transfer-transportation-mode-select"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {["By Road", "By Rail", "By Air", "By Self"].map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
           <div>
-            <Label className="text-xs font-bold text-[#344054]">Vehicle No.</Label>
-            <Input value={vehicleNo} disabled onChange={(e) => setVehicleNo(e.target.value.toUpperCase())} placeholder="Filled in SAP" data-testid="stock-transfer-vehicle-no-input" />
+            <Label className="text-xs font-bold text-[#344054]">Vehicle No.<span className="text-[#D92D20]">*</span></Label>
+            <Input value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value.toUpperCase())} placeholder="e.g. MH12AB1234" data-testid="stock-transfer-vehicle-no-input" />
           </div>
           <div>
-            <Label className="text-xs font-bold text-[#344054]">Place Of Supply</Label>
-            <Input value={placeOfSupply} disabled onChange={(e) => setPlaceOfSupply(e.target.value)} placeholder="Filled in SAP" data-testid="stock-transfer-place-of-supply-input" />
+            <Label className="text-xs font-bold text-[#344054]">Place Of Supply<span className="text-[#D92D20]">*</span></Label>
+            <Input value={placeOfSupply} onChange={(e) => setPlaceOfSupply(e.target.value)} placeholder="e.g. Maharashtra" data-testid="stock-transfer-place-of-supply-input" />
           </div>
           <div>
-            <Label className="text-xs font-bold text-[#344054]">G.R No.</Label>
-            <Input value={grNo} disabled onChange={(e) => setGrNo(e.target.value.replace(/\D/g, ""))} inputMode="numeric" placeholder="Filled in SAP" data-testid="stock-transfer-gr-no-input" />
+            <Label className="text-xs font-bold text-[#344054]">G.R No.<span className="text-[#D92D20]">*</span></Label>
+            <Input value={grNo} onChange={(e) => setGrNo(e.target.value.replace(/\D/g, ""))} inputMode="numeric" placeholder="e.g. 12345" data-testid="stock-transfer-gr-no-input" />
           </div>
           <div>
-            <Label className="text-xs font-bold text-[#344054]">Date Of Supply</Label>
-            <Input type="date" value={dateOfSupply} disabled onChange={(e) => setDateOfSupply(e.target.value)} data-testid="stock-transfer-date-of-supply-input" />
+            <Label className="text-xs font-bold text-[#344054]">Date Of Supply<span className="text-[#D92D20]">*</span></Label>
+            <Input type="date" value={dateOfSupply} onChange={(e) => setDateOfSupply(e.target.value)} data-testid="stock-transfer-date-of-supply-input" />
           </div>
           <div>
-            <Label className="text-xs font-bold text-[#344054]">Freight Forwarder</Label>
-            <Input value={freightForwarder} disabled onChange={(e) => setFreightForwarder(e.target.value)} placeholder="Filled in SAP" data-testid="stock-transfer-freight-forwarder-input" />
+            <Label className="text-xs font-bold text-[#344054]">Freight Forwarder<span className="text-[#D92D20]">*</span></Label>
+            <Input value={freightForwarder} onChange={(e) => setFreightForwarder(e.target.value)} placeholder="e.g. ABC Logistics" data-testid="stock-transfer-freight-forwarder-input" />
           </div>
           <div>
             <Label className="text-xs font-bold text-[#344054]">Remark</Label>

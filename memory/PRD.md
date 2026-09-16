@@ -1223,4 +1223,25 @@ STOs (single-line STOs were already pure-API, unaffected, no change needed there
 - **Conclusion given to user**: the one remaining manual step (blank "Save" click, no fields/quantities) cannot
   be automated with this app's current SAP API access - every discoverable avenue (9 attempts total across 2
   sessions) is now exhausted. Closing this out; only a NEW SAP Basis-provisioned service (not something this
+
+## Bug fix: STO detail modal stuck on "ERP syncing..." + reverted 6 custom fields to mandatory (Sep 18 2026, new fork continuation)
+- **Bug (real user report + screenshots)**: after Goods Issue posted, the detail modal showed "ERP Portal:
+  syncing..." with a spinning icon that never resolved on its own - closing the modal and doing a full page
+  reload showed everything green/synced. Root cause: `StockTransferPage.js`'s auto-poll (`hasRunningGiJob`)
+  only watched `gi_job_running`, which flips to `false` the instant Goods Issue posts - exactly when the
+  separate background ERP sync job starts. So polling stopped right as ERP sync began, freezing the modal
+  until a manual reload. Fixed by also polling while any order has `gi_status === "posted"` but
+  `erp_portal_status` not yet a terminal `synced`/`failed` value (interval reduced 20s -> 5s for snappier
+  feedback).
+- **Reverted 6 custom fields (Transportation Mode, Vehicle No., Place Of Supply, G.R No., Date Of Supply,
+  Freight Forwarder) back to mandatory + editable** in the STO creation form (`StockTransferPage.js` +
+  `stock_transfer_service.py`'s `create_stock_transfer_order`) - user's explicit follow-up ask, reversing the
+  "optional, filled in SAP" change from the Sep 18 architecture shift entry above. Still NEVER written to SAP
+  (confirmed hard-locked, no code change there) - kept on this app's own STO doc, and already pushed to the
+  legacy ERP portal for the 4 fields with a matching `Pro_DeliveryChallan_Insert` param (Vehicle No./G.R
+  No./Date Of Supply/Freight Forwarder → `veh_no`/`gr_no`/`gr_date`/`trans`); Transportation Mode and Place Of
+  Supply have no corresponding ERP proc parameter, so they remain app-only by design (nothing to add there).
+- Verified: backend curl confirms all 6 fields now rejected as required; frontend compiles clean; ERP field
+  mapping confirmed unchanged/already correct by re-reading `erp_portal_client.py`'s proc signature.
+
   app can request/build itself) could close the gap further.
