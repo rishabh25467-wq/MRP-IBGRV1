@@ -980,4 +980,23 @@ Extend the existing SAP BOM viewer application: Production Plan page (OMS Open-P
 - Tested: backend endpoints via curl (real data returned), frontend via screenshot (page + nav dropdown both verified). Full submit-to-SAP flow intentionally not tested yet - user said more changes are coming to this form next.
 - **PENDING**: user said "then we will apply some changes" - awaiting next instructions on what should differ from the original Create PO form.
 
+## Session (Sep 16 2026) - STO Print Preview missing price (STO-000415) FIXED
+- Root cause: `sync_to_erp_portal()` fetches the SAP Moving Average price via `_get_daily_cached_costs`
+  exactly ONCE (at ERP-portal sync time) and permanently freezes `rate`/`amount` on the order's stored
+  `items`. If that one-time SAP valuation lookup returned nothing that day, `rate` stayed `None`/`0`
+  FOREVER - `get_delivery_note_data()` (print preview + Excel export) just reads this frozen value back.
+  Reproduced locally on 5 real orders in this preview's DB (STO-000032/039/042/050, all `erp_portal_status:
+  "synced"` but `rate: None`) - confirmed a real, recurring bug (STO-000415 itself lives only in
+  production's separate DB, not this preview's local Mongo, so could not be queried directly).
+- Fix (`stock_transfer_service.py`): `get_delivery_note_data(db, erp_portal_client, sto_id,
+  sap_valuation_client=None)` - any item with a missing/zero stored `rate` gets ONE live SAP price retry
+  (reusing `_get_daily_cached_costs`) at print/export time, and self-heals by persisting the corrected
+  `rate`/`amount` back onto the order so future prints are instant. `server.py`'s `/delivery-note` and
+  `/delivery-note/excel` endpoints updated to pass `sap_valuation_client`.
+- Live-verified in preview: STO-000032/039/042/050 all now show/persist real SAP prices (e.g. STO-000032
+  P27175 -> rate 2.47, amount 7.41), confirmed via curl JSON payload + rendered print preview screenshot.
+  Will self-heal STO-000415 in production the next time its print preview/Excel export is opened, once
+  this fix is deployed.
+- **NEXT** (per handoff, still pending): Model ID missing in Confirmed Production Report (P1); Landed
+  Cost feature (P1, logic already agreed: Weight -> Invoice Value -> PO Line Value fallback).
 

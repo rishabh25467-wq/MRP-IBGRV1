@@ -1631,7 +1631,7 @@ def reset_erp_portal_sync_for_retry(db, sto_id: str) -> None:
     }})
 
 
-def get_delivery_note_data(db, erp_portal_client, sto_id: str) -> dict:
+def get_delivery_note_data(db, erp_portal_client, sto_id: str, sap_valuation_client=None) -> dict:
     """Data for the in-app "Delivery Challan" print view (Aug 27 2026,
     user's explicit ask, referencing SAP's own printed template as the
     layout target), plus the ERP portal's own Sale_No/Sale_Noc as the
@@ -1643,9 +1643,21 @@ def get_delivery_note_data(db, erp_portal_client, sto_id: str) -> dict:
     every print - they're read straight off this order's own `items`,
     where sync_to_erp_portal already persisted them (Moving Average
     price, HSN Code) the ONE time this order was synced to the ERP
-    portal. An order that hasn't synced yet simply has no rate/hsn_code
-    stored (shows 0 / "—") - printing before syncing was never a
-    supported flow anyway (the Serial Number itself only exists post-sync).
+    portal.
+
+    Sep 2026 fix (real incident STO-000415, price missing/blank on the
+    printed challan): a stored rate of 0/None means that ONE-TIME
+    sync_to_erp_portal price snapshot either never ran yet, or its SAP
+    valuation lookup happened to come back empty that day (e.g. a
+    transient SAP timeout) - previously that stayed frozen at 0 forever,
+    since nothing ever revisited it afterwards. Any item still missing a
+    real stored rate now gets ONE live SAP valuation retry right here
+    (same `_get_daily_cached_costs` helper sync_to_erp_portal/
+    submit_order_to_sap already use, so a genuinely-still-missing SAP
+    price isn't re-hit on every single print) and, if that succeeds, is
+    persisted straight back onto the order - so this self-heals once and
+    every later print/export for that order is instant again, same as an
+    order that synced cleanly the first time.
 
     Company Name/Address/GSTIN/PAN/current-fiscal-`session` for BOTH the
     Ship-from and Ship-to sites comes from company_cache_service (Mongo
@@ -1662,12 +1674,35 @@ def get_delivery_note_data(db, erp_portal_client, sto_id: str) -> dict:
     if not doc:
         raise StockTransferOrderNotFoundError(f"Stock Transfer Order {sto_id} not found.")
 
+    live_rates = {}
+    missing_price_product_ids = [it["product_id"] for it in doc["items"] if not (it.get("rate") or 0)]
+    if missing_price_product_ids and sap_valuation_client:
+        try:
+            product_uuid_by_id = {
+                c["_id"]: c.get("product_uuid")
+                for c in db["component_master"].find({"_id": {"$in": missing_price_product_ids}}, {"product_uuid": 1})
+            }
+            product_uuids = [u for u in product_uuid_by_id.values() if u]
+            costs = _get_daily_cached_costs(db, sap_valuation_client, product_uuids, doc["ship_from_site_id"]) if product_uuids else {}
+            for pid, product_uuid in product_uuid_by_id.items():
+                cost = costs.get(product_uuid.upper()) if product_uuid else None
+                if cost:
+                    live_rates[pid] = cost["amount"]
+        except Exception as e:
+            logger.warning(f"Delivery note {sto_id}: live SAP price fallback failed for {missing_price_product_ids}: {e}")
+
     items = []
+    stored_items = []
+    items_updated = False
     total_amount = 0.0
     for item in doc["items"]:
         rate = item.get("rate") or 0.0
         qty = item["requested_qty"]
         amount = item.get("amount")
+        if not rate and item["product_id"] in live_rates:
+            rate = live_rates[item["product_id"]]
+            amount = round(rate * qty, 3)
+            items_updated = True
         if amount is None:
             amount = round(rate * qty, 3)
         total_amount += amount
@@ -1680,6 +1715,10 @@ def get_delivery_note_data(db, erp_portal_client, sto_id: str) -> dict:
             "rate": rate,
             "amount": amount,
         })
+        stored_items.append({**item, "rate": rate, "amount": amount})
+
+    if items_updated:
+        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"items": stored_items}})
 
     company_info = company_cache_service.get_cached_company_info(
         db, [doc["ship_from_site_id"], doc["ship_to_site_id"]], erp_portal_client,

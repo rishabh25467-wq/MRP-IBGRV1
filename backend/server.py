@@ -7187,7 +7187,7 @@ async def get_stock_transfer_inventory(product_id: str, include_non_usable: bool
 @api_router.get("/stock-transfer/{sto_id}/delivery-note")
 async def get_stock_transfer_delivery_note(sto_id: str):
     try:
-        return await asyncio.to_thread(stock_transfer_service.get_delivery_note_data, db, erp_portal_client, sto_id)
+        return await asyncio.to_thread(stock_transfer_service.get_delivery_note_data, db, erp_portal_client, sto_id, sap_valuation_client)
     except stock_transfer_service.StockTransferOrderNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -7199,7 +7199,7 @@ async def get_stock_transfer_delivery_note_excel(sto_id: str):
     # page setup/fit-to-page on write) to server-side openpyxl, see
     # delivery_note_excel_service.py.
     try:
-        data = await asyncio.to_thread(stock_transfer_service.get_delivery_note_data, db, erp_portal_client, sto_id)
+        data = await asyncio.to_thread(stock_transfer_service.get_delivery_note_data, db, erp_portal_client, sto_id, sap_valuation_client)
     except stock_transfer_service.StockTransferOrderNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     buffer = await asyncio.to_thread(delivery_note_excel_service.build_delivery_note_excel, data)
