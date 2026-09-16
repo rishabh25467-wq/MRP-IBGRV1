@@ -1057,10 +1057,14 @@ export default function GrnApprovalPage() {
                   )}
                 </div>
                 {shipment.sap_sync_status === "awaiting_manual_gr" && shipment.manual_gr_notification_ids && (
-                  <div className="text-xs text-[#3538CD] bg-[#EFF4FF] border border-[#C7D7FE] rounded-sm px-3 py-2 space-y-1" data-testid="grn-manual-notification-ids">
-                    {Object.entries(shipment.manual_gr_notification_ids).map(([po, nid]) => (
-                      <div key={po} data-testid={`grn-manual-notification-id-${po}`}>PO <strong>{po}</strong> - post the Goods Receipt in SAP against Delivery Notification ID <span className="font-data font-bold">{nid}</span></div>
-                    ))}
+                  <div className="text-xs text-[#3538CD] bg-[#EFF4FF] border border-[#C7D7FE] rounded-sm px-3 py-2.5 space-y-2" data-testid="grn-manual-notification-ids">
+                    <div className="font-bold text-[#1D2939]">Next step: go post the Goods Receipt in SAP</div>
+                    <div className="text-[#3538CD]">In SAP, find each Inbound Delivery Notification below, enter the quantities as physically received, and post/confirm the Goods Receipt against it. Once done in SAP, come back here and click "Re-check SAP" above.</div>
+                    <div className="space-y-1 pt-1">
+                      {Object.entries(shipment.manual_gr_notification_ids).map(([po, nid]) => (
+                        <div key={po} data-testid={`grn-manual-notification-id-${po}`}>PO <strong>{po}</strong> - Inbound Delivery Notification ID <span className="font-data font-bold">{nid}</span></div>
+                      ))}
+                    </div>
                   </div>
                 )}
                 {shipment.sap_sync_status === "manual_mismatch" && (shipment.manual_gr_mismatch_items || []).length > 0 && (
