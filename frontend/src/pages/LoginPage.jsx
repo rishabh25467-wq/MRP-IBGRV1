@@ -1,9 +1,12 @@
-import { Shield } from "@phosphor-icons/react";
+import { Shield, WarningCircle } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/AuthContext";
 
 export default function LoginPage() {
   const { login } = useAuth();
+  const params = new URLSearchParams(window.location.search);
+  const authError = params.get("auth_error");
+  const authReason = params.get("auth_reason");
 
   return (
     <div className="min-h-screen bg-[#0E7C86] flex items-center justify-center p-4" data-testid="login-page">
@@ -31,6 +34,15 @@ export default function LoginPage() {
         <p className="text-xs text-[#98A2B3] text-center">
           Access is managed by your IT administrator. Contact them if you're unable to sign in.
         </p>
+        {authError && (
+          <div
+            className="w-full flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-700"
+            data-testid="login-error-banner"
+          >
+            <WarningCircle size={16} weight="fill" className="shrink-0 mt-0.5" />
+            <span>{authReason ? decodeURIComponent(authReason) : "Sign-in failed. Please try again."}</span>
+          </div>
+        )}
       </div>
     </div>
   );

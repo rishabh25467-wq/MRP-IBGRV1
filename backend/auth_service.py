@@ -34,6 +34,7 @@ import logging
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 import asyncio
 
@@ -298,18 +299,29 @@ def handle_callback(request: Request, db):
         return RedirectResponse("/?auth_error=state_expired")
     db[OAUTH_STATES_COLLECTION].delete_one({"_id": state})
 
+    if params.get("error"):
+        # Entra can redirect back with an error/error_description instead of a code
+        # (e.g. consent declined, conditional access block) - surface it directly in
+        # the redirect (safe: no secrets/tokens in these fields) so this is diagnosable
+        # without needing raw backend logs.
+        reason = params.get("error_description") or params.get("error")
+        logger.warning(f"Azure AD login: Entra returned an error before code exchange: {reason}")
+        return RedirectResponse(f"/?auth_error=login_failed&auth_reason={quote(reason[:2000])}")
+
     try:
         result = _build_msal_app().acquire_token_by_auth_code_flow(saved["flow"], params)
-    except Exception:
+    except Exception as e:
         # MSAL normally returns an {"error": ...} dict on failure (handled below) rather
         # than raising - but state/scope/transport problems can raise ValueError/
         # AssertionError/connection errors instead, which would otherwise surface as a
-        # raw, unhelpful 500 to the user. Log the full traceback server-side and fail
-        # the same graceful way as a normal MSAL error result.
+        # raw, unhelpful 500 to the user. Log the full traceback server-side and also
+        # surface a safe summary via the redirect for diagnosis without log access.
         logger.exception(f"Azure AD login: acquire_token_by_auth_code_flow raised (state={state})")
-        return RedirectResponse("/?auth_error=login_failed")
+        return RedirectResponse(f"/?auth_error=login_failed&auth_reason={quote(str(e)[:2000])}")
     if "error" in result:
         logger.warning(f"Azure AD login failed: {result.get('error')}: {result.get('error_description')}")
+        reason = result.get("error_description") or result.get("error")
+        return RedirectResponse(f"/?auth_error=login_failed&auth_reason={quote(reason[:2000])}")
         return RedirectResponse("/?auth_error=login_failed")
 
     claims = result.get("id_token_claims", {})
