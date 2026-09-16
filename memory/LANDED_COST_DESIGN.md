@@ -41,14 +41,50 @@ each needs its own GL account mapping (see section 6).
   as an INTERNAL-ONLY "supplier debit" record (product, PO/GRN ref, amount, reason) for AP/finance to
   raise an actual debit note against the supplier. Never pushed to SAP.
 
-## 5. Where it lives in the app (LOCKED)
+## 5. Where it lives in the app (LOCKED, REVISED Sep 16 2026 cont'd - see correction below)
 - Standalone "Landed Cost" page (NOT squeezed into the GRN detail page) - because one invoice can span
   multiple GRNs across different receipt dates, and the invoice itself usually arrives well AFTER the
   GRN (transporters bill weekly/monthly). A single-GRN-scoped screen couldn't naturally pull in sibling
   GRNs from the same shipment.
-- GRN page gets ONE lightweight addition: an optional "Bilty/LR No." field, captured at receipt time
-  (it's genuinely known then, on the physical paperwork) - purely informational, no cost logic. This
-  becomes the natural search/match key later when the Landed Cost page needs to pull in the right GRNs.
+- **CORRECTION (Sep 16 2026, later this session)**: originally planned to add a NEW "Bilty/LR No."
+  field to the GRN page as the linking key. This is now SUPERSEDED - this app ALREADY has a real
+  "Shipment Code" mechanism (`supplier_shipment_service.py` - a unique, system-generated 6-character
+  code, never user-typed at creation; supplier creates a shipment bundling one or more PO line items,
+  gets this code; GRN approval already requires physically matching + entering this same 6-char code -
+  see `GrnApprovalPage.jsx` line ~604 "Enter the 6-character shipment code from the delivery paperwork").
+  **Use this EXISTING Shipment Code as the universal linking key for ALL landed cost types (Freight,
+  Insurance, Loading, AND Customs/BOE)** - NOT a new Bilty field, NOT PO Number directly. User's own
+  words: "we will map BOE with the Shipment Code as we map GRN today" and "Shipment code is the source
+  of truth." This also naturally covers the multi-PO-per-shipment case (a shipment can already bundle
+  multiple POs' items) and the multi-GRN-per-shipment case (if a shipment is received across several
+  partial GRNs, they'd all already reference the same shipment code today).
+  **No GRN page changes needed at all for Landed Cost linking** - the field already exists and is
+  already mandatory at GRN approval time.
+
+## 5b. Customs Duty component structure - FINALIZED (Sep 16 2026 cont'd)
+- Exactly 2 landed cost components for Customs, not 4: **"Customs Duty"** (combines BCD + SWS + Cess -
+  all non-recoverable, ALL get capitalized/allocated to inventory) and **"IGST"** (kept separate).
+- **IGST is EXCLUDED from inventory allocation entirely** (confirmed) - posts straight to a GST Input
+  Credit receivable GL account, since it's recoverable Input Tax Credit, not a real landed cost. Never
+  goes through the Allocation Document / NetAmount-per-product flow - just a plain posting, no per-GRN
+  linkage needed at all for IGST.
+- **BOE gives a genuine per-product breakdown for EACH duty type separately** (confirmed - "Gives
+  breakdown") - so no proportional splitting needed by our app for ANY of BCD/SWS/IGST/Cess; the BOE's
+  own numbers ARE the per-product NetAmount inputs already. Our app's job here is just to sum
+  BCD+SWS+Cess per product into the "Customs Duty" component's per-product NetAmount (for the
+  Allocation Document), and separately sum IGST per product for the direct GST Input Credit posting
+  (no allocation document needed for that part).
+- **BOE <-> Shipment linking, revised** (supersedes earlier "1 BOE = 1 PO" assumption): one BOE Payment
+  CAN cover items from multiple POs (confirmed "Yes multiple is possible") - handled naturally since
+  linking is by **Shipment Code** (see section 5 correction above), not by PO number directly. The
+  earlier open question about "does BOE always arrive in exactly one GRN" is superseded - **Shipment
+  Code is the single source of truth** for however many GRNs/POs a given BOE's goods actually span.
+- **Rounding tolerance for the hard-block reconciliation validation**: confirmed **1%** (not a fixed
+  rupee amount) - i.e. sum of entered per-item duty amounts must be within 1% of the originally
+  recorded BOE-paid total to save; otherwise hard-blocked.
+- User's own framing going forward: "discuss only as we need to build freight as well with duty" -
+  i.e. whenever building starts, Freight AND Customs Duty both need to be built together, not
+  Customs-only.
 
 ## 6. SAP write-back mechanism (LOCKED - real native SAP feature, not a custom shadow calculation)
 Researched via web search (help.sap.com + SAP Community blogs) - SAP ByDesign has a REAL native
