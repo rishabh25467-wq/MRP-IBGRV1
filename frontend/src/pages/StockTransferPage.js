@@ -635,7 +635,25 @@ export default function StockTransferPage() {
     try {
       await axios.post(`${API}/stock-transfer/refresh-item-stock`, null, { params: { product_id: productId } });
       const { data: inv } = await axios.get(`${API}/stock-transfer/inventory`, { params: { product_id: productId, include_non_usable: true } });
-      setItems((prev) => prev.map((i) => (i.key === itemKey ? { ...i, locations: inv.locations || [], hsn_code: inv.hsn_code } : i)));
+      setItems((prev) => prev.map((i) => {
+        if (i.key !== itemKey) return i;
+        const freshLocations = inv.locations || [];
+        // Bug fix (Sep 18 2026, real user report): the "Available Qty"
+        // column used to keep showing whatever qty was captured at the
+        // moment the warehouse was picked/suggested - after a live
+        // Refresh updates `locations` (the dropdown's own source), the
+        // already-selected warehouse's `available_qty` never re-synced,
+        // so the dropdown label and the Available Qty column visibly
+        // disagreed. Re-look up the currently selected warehouse in the
+        // freshly refreshed locations and sync available_qty to match.
+        const selectedLoc = i.source_warehouse_id ? freshLocations.find((l) => l.warehouse_id === i.source_warehouse_id) : null;
+        return {
+          ...i,
+          locations: freshLocations,
+          hsn_code: inv.hsn_code,
+          available_qty: selectedLoc ? selectedLoc.qty : i.available_qty,
+        };
+      }));
       toast.success(`${productId} stock refreshed live from SAP.`);
     } catch (e) {
       toast.error(e?.response?.data?.detail || e.message || "Could not refresh item stock.");
