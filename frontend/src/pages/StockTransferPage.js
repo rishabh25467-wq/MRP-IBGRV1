@@ -736,6 +736,31 @@ export default function StockTransferPage() {
     if (updated && updated !== selectedOrder) setSelectedOrder(updated);
   }, [recentOrders]);
 
+  // Direct fix (user's follow-up report: the modal still didn't update
+  // live even with the cross-sync above + the list's own polling fixed -
+  // that path only refreshes the modal WHEN the list itself happens to
+  // poll, and depends on the list's own running-job gate correctly
+  // catching every in-flight state; too indirect). While the detail
+  // modal is open, poll its OWN single-order endpoint directly every 4s
+  // (already used elsewhere for the just-created-order progress view -
+  // see GET /stock-transfer/orders/{sto_id} above) and push the fresh
+  // copy into both `selectedOrder` and the matching `recentOrders` row,
+  // so it reflects live status without needing to close and reopen it.
+  useEffect(() => {
+    if (!selectedOrder) return;
+    const stoId = selectedOrder.sto_id;
+    const id = setInterval(async () => {
+      try {
+        const { data } = await axios.get(`${API}/stock-transfer/orders/${stoId}`);
+        setSelectedOrder(data);
+        setRecentOrders((prev) => prev.map((o) => (o.sto_id === stoId ? data : o)));
+      } catch {
+        // transient network hiccup - next tick retries, nothing to show the user for this
+      }
+    }, 4000);
+    return () => clearInterval(id);
+  }, [selectedOrder?.sto_id]);
+
   // Ship-to Site options depend on the (derived) Ship-from Site - refetch
   // whenever the first line item's warehouse pick resolves/changes it.
   // User's explicit ask: once Ship-to Site/Location are picked they should

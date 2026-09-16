@@ -1235,6 +1235,17 @@ STOs (single-line STOs were already pure-API, unaffected, no change needed there
   feedback).
 - **Reverted 6 custom fields (Transportation Mode, Vehicle No., Place Of Supply, G.R No., Date Of Supply,
   Freight Forwarder) back to mandatory + editable** in the STO creation form (`StockTransferPage.js` +
+
+## Bug fix: detail modal still not updating live (Sep 18 2026, same session, follow-up)
+- User reported the previous list-polling fix wasn't enough - the open detail modal itself stayed frozen; only
+  closing it (revealing the already-updated table) or reclicking to reopen showed fresh status.
+- Root cause: the existing cross-sync effect only refreshed `selectedOrder` whenever the OUTER list
+  (`recentOrders`) happened to refresh - too indirect and dependent on the list's own running-job gate.
+- Fix: added a direct polling `useEffect` keyed on `selectedOrder?.sto_id` that, while the modal is open, calls
+  `GET /stock-transfer/orders/{sto_id}` (the same single-order endpoint already used for post-creation progress)
+  every 4s and pushes the fresh copy into both `selectedOrder` and the matching `recentOrders` row. Stops
+  automatically on close (cleanup clears the interval).
+
   `stock_transfer_service.py`'s `create_stock_transfer_order`) - user's explicit follow-up ask, reversing the
   "optional, filled in SAP" change from the Sep 18 architecture shift entry above. Still NEVER written to SAP
   (confirmed hard-locked, no code change there) - kept on this app's own STO doc, and already pushed to the
