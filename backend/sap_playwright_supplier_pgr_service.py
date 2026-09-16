@@ -481,7 +481,13 @@ async def _post_one_po(page, po_number: str, doc_code: str, supplier_doc_num: st
         already_confirmed = []
         events.append(f"Could not pre-check SAP for an existing confirmation on PO {po_number} (continuing): {e}")
     if already_confirmed:
-        existing_delivery_id = next((r.get("CDELIVERY_UUID") for r in already_confirmed if r.get("CDELIVERY_UUID")), None)
+        # Sep 16 2026 fix - same "latest wins" resolution (see the other
+        # occurrence below) - don't blindly trust the first row's ID.
+        delivery_ids = [r.get("CDELIVERY_UUID") for r in already_confirmed if r.get("CDELIVERY_UUID")]
+        try:
+            existing_delivery_id = max(delivery_ids, key=int) if delivery_ids else None
+        except (TypeError, ValueError):
+            existing_delivery_id = sorted(delivery_ids)[-1] if delivery_ids else None
         events.append(f"PO {po_number} already has a confirmed Goods Receipt in SAP for notification {notification_id} (Inbound Delivery {existing_delivery_id}) - skipping re-creation to avoid a duplicate receipt")
         return {"po_number": po_number, "status": "posted", "inbound_delivery_id": existing_delivery_id, "events": events}
     # Sep 12 2026 fix (real incident, PO 29456: SAP rejected the SOAP
@@ -688,7 +694,18 @@ async def _post_one_po(page, po_number: str, doc_code: str, supplier_doc_num: st
         )
         return result
     if not inbound_delivery_id:
-        inbound_delivery_id = next((r.get("CDELIVERY_UUID") for r in confirmed_rows if r.get("CDELIVERY_UUID")), None)
+        # Sep 16 2026 fix - same "latest wins" resolution now used by
+        # check_manual_gr_quantities/fetch_inbound_delivery_ids_from_sap:
+        # this report can carry stale/orphaned CDELIVERY_UUIDs from
+        # earlier abandoned attempts sharing the same notification/bill
+        # reference, so blindly taking the FIRST row risked surfacing a
+        # stale ID instead of the real one just posted.
+        delivery_ids = [r.get("CDELIVERY_UUID") for r in confirmed_rows if r.get("CDELIVERY_UUID")]
+        if delivery_ids:
+            try:
+                inbound_delivery_id = max(delivery_ids, key=int)
+            except (TypeError, ValueError):
+                inbound_delivery_id = sorted(delivery_ids)[-1]
     events.append(f"SAP's own confirmation report confirms the Goods Receipt was posted (Inbound Delivery {inbound_delivery_id or 'ID pending'})")
     return {"po_number": po_number, "status": "posted", "inbound_delivery_id": inbound_delivery_id, "skipped_items": skipped_items, "events": events}
 

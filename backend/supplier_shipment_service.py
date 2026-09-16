@@ -1163,6 +1163,7 @@ def check_manual_gr_quantities(db, doc_code: str, report_client, goods_movement_
     if not po_numbers:
         raise ShipmentValidationError("No Inbound Delivery Notification was ever created in SAP for this shipment - nothing to re-check")
     mismatches = []
+    delivery_id_by_po = {}
     for po_number in po_numbers:
         notification_id = notification_ids[po_number]
         try:
@@ -1189,6 +1190,7 @@ def check_manual_gr_quantities(db, doc_code: str, report_client, goods_movement_
             except (TypeError, ValueError):
                 latest_delivery_id = rows[-1].get("CDELIVERY_UUID")
             rows = [r for r in rows if r.get("CDELIVERY_UUID") == latest_delivery_id]
+            delivery_id_by_po[po_number] = latest_delivery_id
         confirmed_by_product = {}
         for r in rows:
             product_key = r.get("CPRODUCT_UUID")
@@ -1225,7 +1227,13 @@ def check_manual_gr_quantities(db, doc_code: str, report_client, goods_movement_
         result = get_shipment_by_code(db, doc_code)
         result["recheck_result"] = "mismatch"
         return result
-    gr_results = [{"po_number": po, "status": "posted", "inbound_delivery_id": None, "events": [f"Manually confirmed via SAP Re-check (notification {notification_ids[po]}) - quantities matched"]} for po in po_numbers]
+    gr_results = [
+        {
+            "po_number": po, "status": "posted", "inbound_delivery_id": delivery_id_by_po.get(po),
+            "events": [f"Manually confirmed via SAP Re-check (notification {notification_ids[po]}) - quantities matched"],
+        }
+        for po in po_numbers
+    ]
     final = finalize_goods_receipt(db, doc_code, gr_results, goods_movement_client, inventory_client, owner_party_id)
     if approved_by_user_id:
         db[AUTH_USERS_COLLECTION].update_one(
