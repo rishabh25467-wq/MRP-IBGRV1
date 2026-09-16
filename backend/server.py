@@ -7391,7 +7391,12 @@ async def _run_goods_issue_job(sto_id: str):
             return
         try:
             outcome = await asyncio.to_thread(stock_transfer_service.try_post_goods_issue, db, sap_outbound_delivery_client, sap_outbound_delivery_analytics_client, sap_inventory_client, sto_id)
-            if outcome == "posted":
+            # "awaiting_manual_gi" (Sep 18 2026, Manual Goods Issue shift)
+            # is a terminal pause, not a transient state to keep polling -
+            # staff complete the Delivery+GI themselves in SAP, then use
+            # "Complete STO Process" (see post_stock_transfer_complete_manual_gi)
+            # rather than this background loop.
+            if outcome in ("posted", "awaiting_manual_gi"):
                 return
         except SAPOutboundDeliveryError as e:
             # A real SAP-side rejection of the Goods Issue itself (as
@@ -7486,6 +7491,21 @@ async def post_stock_transfer_order_retry_goods_issue(sto_id: str):
         raise HTTPException(status_code=400, detail=str(e))
     asyncio.create_task(_run_goods_issue_job(sto_id))
     return {"status": "restarted"}
+
+
+@api_router.post("/stock-transfer/orders/{sto_id}/complete-manual-gi")
+async def post_stock_transfer_complete_manual_gi(sto_id: str):
+    """"Complete STO Process" button (Sep 18 2026, Manual Goods Issue
+    architecture shift) - staff click this once they've manually
+    completed the Delivery + Goods Issue themselves in SAP. See
+    stock_transfer_service.check_manual_gi_completion's own docstring."""
+    try:
+        doc = await asyncio.to_thread(stock_transfer_service.check_manual_gi_completion, db, sap_outbound_delivery_analytics_client, sto_id)
+    except stock_transfer_service.StockTransferOrderNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except stock_transfer_service.StockTransferValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _sto_to_response(doc)
 
 
 @api_router.post("/stock-transfer/orders/{sto_id}/force-stop-gi")

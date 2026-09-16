@@ -867,7 +867,9 @@ export default function GrnApprovalPage() {
                       )}
                       {shipment.sap_gr_result?.per_po && (
                         <td className="border border-[#D0D5DD] px-2 py-1 whitespace-nowrap" data-testid={`grn-item-po-status-${i}`}>
-                          {poResult ? (
+                          {poResult?.status === "notification_created" ? (
+                            <span className="text-[11px] font-semibold text-[#3538CD]">Notification Created</span>
+                          ) : poResult ? (
                             <button
                               type="button"
                               className={`text-[11px] font-semibold hover:underline ${poResult.status === "posted" ? "text-[#027A48]" : poResult.status === "skipped" ? "text-[#B54708]" : "text-[#B42318]"}`}

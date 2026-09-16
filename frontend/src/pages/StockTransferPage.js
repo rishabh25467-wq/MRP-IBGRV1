@@ -139,7 +139,7 @@ const DebugScreenshotsViewer = ({ stoId }) => {
   );
 };
 
-export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingErpStoId, onRetryErpSync, onManualErpLink, retryingGiStoId, onRetryGoodsIssue, stoppingGiStoId, onForceStopGi, isAdmin, notifications, activateResults, activatingId, confirmActivateFor, setConfirmActivateFor, onActivate }) => {
+export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingErpStoId, onRetryErpSync, onManualErpLink, retryingGiStoId, onRetryGoodsIssue, completingGiStoId, onCompleteManualGi, stoppingGiStoId, onForceStopGi, isAdmin, notifications, activateResults, activatingId, confirmActivateFor, setConfirmActivateFor, onActivate }) => {
   if (!order) return null;
   // User's explicit ask (Sep 3 2026): the "Activate this site" fix action
   // for a "No valid planning data..." rejection used to live ONLY in the
@@ -295,6 +295,7 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
           className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
             order.gi_status === "posted" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
             : order.gi_status === "failed" || order.gi_status === "not_found_timeout" ? "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
+            : order.gi_status === "awaiting_manual_gi" ? "bg-[#EFF8FF] border border-[#B2DDFF] text-[#175CD3]"
             : "bg-[#FEF0C7] border border-[#FEDF89] text-[#93370D]"
           }`}
           data-testid="stock-transfer-detail-gi-status"
@@ -306,11 +307,18 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
                 : order.gi_status === "failed" ? "Goods Issue failed:"
                 : order.gi_status === "not_found_timeout" ? "Goods Issue still pending after 20 min - the order itself is unaffected."
                 : order.gi_status === "insufficient_stock" ? "Goods Issue: insufficient live stock at the source warehouse."
+                : order.gi_status === "awaiting_manual_gi" ? "Awaiting Manual Goods Issue in SAP."
                 : order.gi_progress_phase === "opening_delivery" ? `Goods Issue: opening delivery ${order.gi_delivery_request_id || ""} in SAP...`
                 : order.gi_progress_phase === "posting_goods_issue" ? `Goods Issue: posting delivery ${order.gi_delivery_request_id || ""} now...`
                 : "Goods Issue: checking SAP for the delivery..."}
             </p>
-            {!["posted", "failed", "not_found_timeout", "insufficient_stock"].includes(order.gi_status) && (
+            {order.gi_status === "awaiting_manual_gi" && (
+              <p className="mt-0.5 text-xs opacity-80" data-testid="stock-transfer-detail-manual-gi-instructions">
+                In SAP, find this order{order.gi_delivery_request_id ? ` (Delivery Request ${order.gi_delivery_request_id})` : order.sap_order_id ? ` (Order ${formatSapId(order.sap_order_id)})` : ""}
+                {order.outbound_delivery_ids?.length > 0 ? `, open Delivery ${order.outbound_delivery_ids.join(", ")}` : ", create its Delivery"}, fill Vehicle No./Transportation Mode/Place Of Supply/G.R No./Date Of Supply/Freight Forwarder, then post Goods Issue. Then click "Complete STO Process" below.
+              </p>
+            )}
+            {!["posted", "failed", "not_found_timeout", "insufficient_stock", "awaiting_manual_gi"].includes(order.gi_status) && (
               <p className="mt-0.5 text-xs opacity-80" data-testid="stock-transfer-detail-gi-progress">Auto-checking every 20s - this can take a few minutes.</p>
             )}
             {order.gi_delivery_request_id && !["posted", "failed"].includes(order.gi_status) && (
@@ -320,7 +328,7 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
               <p className="mt-0.5 text-xs opacity-80" data-testid="stock-transfer-detail-gi-posted-at">Posted at: {formatDateTime(order.gi_posted_at)}</p>
             )}
             {(order.gi_status === "failed" || order.gi_status === "insufficient_stock") && <p className="mt-0.5">{parseGiError(order.gi_error) || "See logs."}</p>}
-            {order.outbound_delivery_ids?.length > 0 && (order.gi_status === "posted" || order.gi_status === "failed") ? (
+            {order.outbound_delivery_ids?.length > 0 && (order.gi_status === "posted" || order.gi_status === "failed" || order.gi_status === "awaiting_manual_gi") ? (
               <p className="mt-0.5 text-xs opacity-80" data-testid="stock-transfer-detail-delivery-ids">
                 Outbound Delivery: {order.outbound_delivery_ids.join(", ")}
               </p>
@@ -336,6 +344,17 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
               >
                 {retryingGiStoId === order.sto_id ? <CircleNotch size={14} className="animate-spin mr-1" /> : null}
                 Retry Goods Issue
+              </Button>
+            )}
+            {order.gi_status === "awaiting_manual_gi" && (
+              <Button
+                size="sm" className="mt-2"
+                onClick={() => onCompleteManualGi(order.sto_id)}
+                disabled={completingGiStoId === order.sto_id}
+                data-testid="stock-transfer-detail-complete-manual-gi-button"
+              >
+                {completingGiStoId === order.sto_id ? <CircleNotch size={14} className="animate-spin mr-1" /> : null}
+                Complete STO Process
               </Button>
             )}
             {(order.gi_job_running || order.gi_status === "insufficient_stock") && (
@@ -547,6 +566,21 @@ export default function StockTransferPage() {
       setRetryingGiStoId(null);
     }
   };
+
+  const [completingGiStoId, setCompletingGiStoId] = useState(null);
+  const handleCompleteManualGi = async (stoId) => {
+    setCompletingGiStoId(stoId);
+    try {
+      await axios.post(`${API}/stock-transfer/orders/${stoId}/complete-manual-gi`);
+      toast.success("Goods Issue confirmed in SAP - Stock Transfer Order complete.");
+      loadRecentOrders();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not confirm the manual Goods Issue.");
+    } finally {
+      setCompletingGiStoId(null);
+    }
+  };
+
 
   const [stoppingGiStoId, setStoppingGiStoId] = useState(null);
   const handleForceStopGi = async (stoId) => {
@@ -827,13 +861,9 @@ export default function StockTransferPage() {
     if (!shipToLocationId) return "Ship-to Location is required.";
     if (!requestedDeliveryDate) return "Requested Delivery Date is required.";
     if (requestedDeliveryDate < todayISO()) return "Requested Delivery Date cannot be earlier than today.";
-    if (!transportationMode) return "Transportation Mode is required.";
-    if (!vehicleNo.trim()) return "Vehicle No. is required.";
-    if (!placeOfSupply.trim()) return "Place Of Supply is required.";
-    if (!grNo.trim()) return "G.R No. is required.";
-    if (!/^\d+$/.test(grNo.trim())) return "G.R No. must be numeric only.";
-    if (!dateOfSupply) return "Date Of Supply is required.";
-    if (!freightForwarder.trim()) return "Freight Forwarder is required.";
+    // Sep 18 2026, Manual Goods Issue architecture shift - these are no
+    // longer required here; staff now fill them directly in SAP
+    // themselves when completing the Delivery/Goods Issue manually.
     return null;
   };
 
@@ -885,8 +915,9 @@ export default function StockTransferPage() {
         }));
         const done = data.gi_status === "posted";
         const failed = data.gi_status === "failed" || data.gi_status === "not_found_timeout";
-        setStepStatuses((prev) => ({ ...prev, post_goods_issue: done ? "done" : failed ? "failed" : "active" }));
-        if (done || failed) { loadRecentOrders(); return; }
+        const manual = data.gi_status === "awaiting_manual_gi";
+        setStepStatuses((prev) => ({ ...prev, post_goods_issue: done ? "done" : failed ? "failed" : manual ? "active" : "active" }));
+        if (done || failed || manual) { loadRecentOrders(); return; }
       } catch { /* keep polling - a transient blip here shouldn't stop the loop */ }
       if (!giPollStopRef.current) setTimeout(tick, 4000);
     };
@@ -1270,38 +1301,40 @@ export default function StockTransferPage() {
           </div>
         </div>
 
-        {/* GST / E-way bill compliance fields (Aug 2026, user's explicit
-            ask) - mandatory before the order can move forward, even
-            though pushing these into SAP itself is pending Basis. */}
+        {/* GST / E-way bill compliance fields - Sep 18 2026, Manual Goods
+            Issue architecture shift (user's explicit ask): no longer
+            filled here - staff now enter these directly on SAP's own
+            Delivery screen when they complete the Goods Issue manually.
+            Kept visible (disabled) rather than removed outright. */}
         <div className="grid grid-cols-1 sm:grid-cols-3 md:grid-cols-6 gap-3">
           <div>
-            <Label className="text-xs font-bold text-[#344054]">Transportation Mode*</Label>
-            <Select value={transportationMode} onValueChange={setTransportationMode}>
-              <SelectTrigger data-testid="stock-transfer-transportation-mode-select"><SelectValue /></SelectTrigger>
+            <Label className="text-xs font-bold text-[#344054]">Transportation Mode</Label>
+            <Select value={transportationMode} onValueChange={setTransportationMode} disabled>
+              <SelectTrigger data-testid="stock-transfer-transportation-mode-select" disabled><SelectValue /></SelectTrigger>
               <SelectContent>
                 {["By Road", "By Rail", "By Air", "By Self"].map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
           <div>
-            <Label className="text-xs font-bold text-[#344054]">Vehicle No.*</Label>
-            <Input value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value.toUpperCase())} placeholder="e.g. UP85ET2398" data-testid="stock-transfer-vehicle-no-input" />
+            <Label className="text-xs font-bold text-[#344054]">Vehicle No.</Label>
+            <Input value={vehicleNo} disabled onChange={(e) => setVehicleNo(e.target.value.toUpperCase())} placeholder="Filled in SAP" data-testid="stock-transfer-vehicle-no-input" />
           </div>
           <div>
-            <Label className="text-xs font-bold text-[#344054]">Place Of Supply*</Label>
-            <Input value={placeOfSupply} onChange={(e) => setPlaceOfSupply(e.target.value)} placeholder="e.g. Uttar Pradesh" data-testid="stock-transfer-place-of-supply-input" />
+            <Label className="text-xs font-bold text-[#344054]">Place Of Supply</Label>
+            <Input value={placeOfSupply} disabled onChange={(e) => setPlaceOfSupply(e.target.value)} placeholder="Filled in SAP" data-testid="stock-transfer-place-of-supply-input" />
           </div>
           <div>
-            <Label className="text-xs font-bold text-[#344054]">G.R No.*</Label>
-            <Input value={grNo} onChange={(e) => setGrNo(e.target.value.replace(/\D/g, ""))} inputMode="numeric" placeholder="e.g. 6839" data-testid="stock-transfer-gr-no-input" />
+            <Label className="text-xs font-bold text-[#344054]">G.R No.</Label>
+            <Input value={grNo} disabled onChange={(e) => setGrNo(e.target.value.replace(/\D/g, ""))} inputMode="numeric" placeholder="Filled in SAP" data-testid="stock-transfer-gr-no-input" />
           </div>
           <div>
-            <Label className="text-xs font-bold text-[#344054]">Date Of Supply*</Label>
-            <Input type="date" value={dateOfSupply} onChange={(e) => setDateOfSupply(e.target.value)} data-testid="stock-transfer-date-of-supply-input" />
+            <Label className="text-xs font-bold text-[#344054]">Date Of Supply</Label>
+            <Input type="date" value={dateOfSupply} disabled onChange={(e) => setDateOfSupply(e.target.value)} data-testid="stock-transfer-date-of-supply-input" />
           </div>
           <div>
-            <Label className="text-xs font-bold text-[#344054]">Freight Forwarder*</Label>
-            <Input value={freightForwarder} onChange={(e) => setFreightForwarder(e.target.value)} placeholder="e.g. Pooja Transport Company" data-testid="stock-transfer-freight-forwarder-input" />
+            <Label className="text-xs font-bold text-[#344054]">Freight Forwarder</Label>
+            <Input value={freightForwarder} disabled onChange={(e) => setFreightForwarder(e.target.value)} placeholder="Filled in SAP" data-testid="stock-transfer-freight-forwarder-input" />
           </div>
           <div>
             <Label className="text-xs font-bold text-[#344054]">Remark</Label>
@@ -1422,6 +1455,8 @@ export default function StockTransferPage() {
                     ? { label: "GI Pending (20min+)", className: "bg-[#FEF0C7] text-[#93370D]" }
                     : o.gi_status === "insufficient_stock"
                     ? { label: "Insufficient Stock", className: "bg-[#FEF0C7] text-[#93370D]" }
+                    : o.gi_status === "awaiting_manual_gi"
+                    ? { label: "Awaiting Manual GI", className: "bg-[#EFF8FF] text-[#175CD3]" }
                     : o.gi_status === "awaiting_delivery"
                     ? { label: "Awaiting Delivery", className: "bg-[#FEF0C7] text-[#93370D]" }
                     : null;
@@ -1454,10 +1489,16 @@ export default function StockTransferPage() {
                       <td className="border border-[#D0D5DD] px-2 py-1.5">{o.requested_delivery_date}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5 font-mono" data-testid={`stock-transfer-recent-sap-id-${o.sto_id}`}>
                         {formatSapId(o.sap_order_id) || "—"}
-                        {o.gi_status === "posted" && o.outbound_delivery_ids?.length > 0 && (
+                        {o.outbound_delivery_ids?.length > 0 ? (
                           <div className="mt-0.5" data-testid={`stock-transfer-recent-outbound-no-${o.sto_id}`}>
                             <span className="inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]">
                               Outbound: {o.outbound_delivery_ids.join(", ")}
+                            </span>
+                          </div>
+                        ) : o.gi_status === "awaiting_manual_gi" && o.gi_delivery_request_id && (
+                          <div className="mt-0.5" data-testid={`stock-transfer-recent-delivery-request-${o.sto_id}`}>
+                            <span className="inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-[#EFF8FF] border border-[#B2DDFF] text-[#175CD3]">
+                              Delivery Req: {o.gi_delivery_request_id}
                             </span>
                           </div>
                         )}
@@ -1531,6 +1572,7 @@ export default function StockTransferPage() {
                   retryingStoId={retryingStoId} onRetryOrder={handleRetryOrder}
                   retryingErpStoId={retryingErpStoId} onRetryErpSync={handleRetryErpSync} onManualErpLink={handleManualErpLink}
                   retryingGiStoId={retryingGiStoId} onRetryGoodsIssue={handleRetryGoodsIssue}
+                  completingGiStoId={completingGiStoId} onCompleteManualGi={handleCompleteManualGi}
                   stoppingGiStoId={stoppingGiStoId} onForceStopGi={handleForceStopGi} isAdmin={isAdmin}
                   notifications={notifications} activateResults={activateResults} activatingId={activatingId}
                   confirmActivateFor={confirmActivateFor} setConfirmActivateFor={setConfirmActivateFor} onActivate={handleActivate}
@@ -1608,6 +1650,7 @@ export default function StockTransferPage() {
                 retryingStoId={retryingStoId} onRetryOrder={handleRetryOrder}
                 retryingErpStoId={retryingErpStoId} onRetryErpSync={handleRetryErpSync} onManualErpLink={handleManualErpLink}
                 retryingGiStoId={retryingGiStoId} onRetryGoodsIssue={handleRetryGoodsIssue}
+                completingGiStoId={completingGiStoId} onCompleteManualGi={handleCompleteManualGi}
                 stoppingGiStoId={stoppingGiStoId} onForceStopGi={handleForceStopGi} isAdmin={isAdmin}
                 notifications={notifications} activateResults={activateResults} activatingId={activatingId}
                 confirmActivateFor={confirmActivateFor} setConfirmActivateFor={setConfirmActivateFor} onActivate={handleActivate}
