@@ -564,21 +564,21 @@ def _price_hsn_for_note(db, doc: dict, sap_valuation_client) -> list:
 # Sep 18 2026, user's explicit ask + build instruction (real, reproducible
 # "Determination of source inventory failed for product X" SAP error at
 # Site P8, confirmed on multiple products/warehouses - see PRD.md/
-# STO_CONTEXT.md for the full diagnosis: SAP's own automatic source
-# Logistics Area determination is broken for some warehouses/products at
-# this site's master data, root cause not yet fixable from our side).
-# Workaround: relocate stock to P8-SFG (user-confirmed this warehouse
-# reliably works for source determination) via a real SOAP Goods
-# Movement BEFORE creating the STO, for every item shipping from Site P8
-# - regardless of which source warehouse was picked in this app's own
-# form. Fully silent/automatic per user's explicit ask - no new UI, no
-# visible extra step, just a real background SAP write ahead of the
-# existing STO creation call below.
+# STO_CONTEXT.md for the full diagnosis). ROOT CAUSE CONFIRMED (user's own
+# live screenshot of Site P8's Material Flow "Basic Rule"): Site P8 has
+# `Source Logistics Area` hardcoded to `P8-FG` - SAP's automatic outbound
+# source determination for Site P8 ONLY ever looks there, regardless of
+# where the product's real stock sits. (Site P1's same rule has Source
+# left BLANK/unrestricted - confirmed live why P1-origin transfers never
+# hit this.) First attempt targeted P8-SFG based on the user's own
+# "confirmed it works" - live-tested and DISPROVED (order 32183, stock
+# genuinely relocated there, same failure anyway) - P8-FG is the real,
+# rule-confirmed target.
 RELOCATION_SITE_ID = "P8"
-RELOCATION_TARGET_WAREHOUSE_ID = "P8-SFG"
+RELOCATION_TARGET_WAREHOUSE_ID = "P8-FG"
 
 
-def _relocate_items_to_p8_sfg(db, sto_id: str, sap_goods_movement_client, doc: dict, items: list) -> None:
+def _relocate_items_to_p8_source_warehouse(db, sto_id: str, sap_goods_movement_client, doc: dict, items: list) -> None:
     from store_approval_service import _trigger_goods_movement
 
     owner_party_id, _ = company_and_set_of_books_for_site(RELOCATION_SITE_ID)
@@ -638,7 +638,7 @@ def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None, sap
 
     if doc.get("ship_from_site_id") == RELOCATION_SITE_ID and sap_goods_movement_client:
         try:
-            _relocate_items_to_p8_sfg(db, sto_id, sap_goods_movement_client, doc, items)
+            _relocate_items_to_p8_source_warehouse(db, sto_id, sap_goods_movement_client, doc, items)
         except StockTransferValidationError as e:
             db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"status": "sap_failed", "error_message": str(e)}})
             raise
@@ -1169,6 +1169,16 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str)
         (the stored proc itself has no parameter for this column at all,
         so it's set via one extra UPDATE right after the insert).
     """
+    # Sep 18 2026, user's explicit ask: "do not create any entries on ERP
+    # since its polluting the sequence there... hold off" while the P8
+    # SAP source-determination issue is unresolved. Env-flag kill switch
+    # (lazily read, same reason as store_approval_service.is_dry_run -
+    # server.py imports this module before load_dotenv runs) rather than
+    # deleting/commenting out the real logic below, so re-enabling later
+    # is a single .env flip, not a code change.
+    if os.environ.get("STO_ERP_SYNC_PAUSED", "false").lower() == "true":
+        logger.info(f"ERP portal sync paused (STO_ERP_SYNC_PAUSED=true) - skipping for {sto_id}.")
+        return
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:
         raise StockTransferOrderNotFoundError(f"Stock Transfer Order {sto_id} not found.")

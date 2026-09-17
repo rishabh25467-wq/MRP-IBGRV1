@@ -1291,6 +1291,22 @@ STOs (single-line STOs were already pure-API, unaffected, no change needed there
 - **Live-verified real SAP write** (Sep 18 2026): created STO-000089 (P16097-B, 1 EA, P8-RM -> P1-SFG) - the
   relocation posted for real (GACID 278717, P8-RM -> P8-SFG), and the STO itself then created successfully in
   SAP (order 32159, `status: created_in_sap`, no error) - the exact product/warehouse combo that previously
+
+## Fix retargeted: P8-FG (not P8-SFG) + ERP sync paused (Sep 18 2026, same session, continued)
+- **Relocation target corrected**: user shared a live screenshot of Site P8's Material Flow "Basic Rule" -
+  `Source Logistics Area` is hardcoded to `P8-FG`, confirming SAP's outbound source determination for Site P8
+  ONLY ever looks there (Site P1's same rule has Source left blank/unrestricted, which is why P1-origin
+  transfers never hit this). The first attempt (P8-SFG) was live-tested and disproved (order 32183 - stock
+  genuinely relocated there via a confirmed real goods movement, same failure anyway). Renamed
+  `_relocate_items_to_p8_sfg` -> `_relocate_items_to_p8_source_warehouse`, target constant now `P8-FG`.
+  Live-tested (STO-000092) - relocation posts real, STO creates cleanly; full downstream Delivery/GI still
+  needs the user's own manual "Save" step to fully confirm.
+- **ERP portal sync paused**: user's explicit ask ("do not create any entries on ERP since its polluting the
+  sequence there... hold off") while the P8 SAP issue is unresolved. Added `STO_ERP_SYNC_PAUSED` env flag
+  (lazily read, same pattern as `store_approval_service.is_dry_run`) - `sync_to_erp_portal` now returns
+  immediately, no-op, when `STO_ERP_SYNC_PAUSED=true` (set in `.env` now). Flip back to `false`/remove to
+  resume - single .env change, no code change needed.
+
   failed with "Determination of source inventory failed" when NOT relocated first.
 - **Not yet verified**: the full downstream flow through actual Goods Issue (still requires the existing
   manual "Save" step in SAP) - only the pre-relocation + STO creation steps were confirmed working live.
