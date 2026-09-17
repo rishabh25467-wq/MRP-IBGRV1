@@ -1270,3 +1270,28 @@ STOs (single-line STOs were already pure-API, unaffected, no change needed there
   mapping confirmed unchanged/already correct by re-reading `erp_portal_client.py`'s proc signature.
 
   app can request/build itself) could close the gap further.
+
+## New feature: silent P8-SFG relocation workaround for "Determination of source inventory failed" (Sep 18 2026)
+- User's ask + build instruction: for every STO shipping from Site P8 (any source warehouse), silently relocate
+  the exact quantity to `P8-SFG` via a real SAP Goods Movement SOAP call BEFORE creating the STO - a
+  workaround for SAP's own broken automatic source Logistics Area determination at some P8 warehouses
+  (confirmed reproducible, real "Determination of source inventory failed for product X" error, product
+  P16097-B / SAP order 32174 - full diagnosis in STO_CONTEXT.md). User confirmed P8-SFG reliably works for
+  source determination.
+- Implemented in `stock_transfer_service.py`: new `_relocate_items_to_p8_sfg()` (reuses the already-live,
+  already-tested `store_approval_service._trigger_goods_movement` + `sap_goods_movement_client.py` - the SAME
+  Goods Movement SOAP path Store Approval already uses routinely for RM->SFG moves), called from
+  `submit_order_to_sap()` right before the existing Check/Maintain calls, gated on
+  `ship_from_site_id == "P8"`. Skips the no-op case (source already `P8-SFG`). On failure, aborts STO creation
+  with a clear error (never silently proceeds to create an STO that would likely still fail downstream).
+  `server.py`'s `_run_submit_sto_to_sap_job` now also passes the existing global `sap_goods_movement_client`.
+- Fully silent/automatic per user's explicit ask - no new UI, no visible extra step. Each relocated item gets
+  a `p8_relocation: {from, to, gac_id}` field persisted on the STO doc (internal audit trail only, not shown
+  in the UI).
+- **Live-verified real SAP write** (Sep 18 2026): created STO-000089 (P16097-B, 1 EA, P8-RM -> P1-SFG) - the
+  relocation posted for real (GACID 278717, P8-RM -> P8-SFG), and the STO itself then created successfully in
+  SAP (order 32159, `status: created_in_sap`, no error) - the exact product/warehouse combo that previously
+  failed with "Determination of source inventory failed" when NOT relocated first.
+- **Not yet verified**: the full downstream flow through actual Goods Issue (still requires the existing
+  manual "Save" step in SAP) - only the pre-relocation + STO creation steps were confirmed working live.
+

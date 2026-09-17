@@ -561,7 +561,52 @@ def _price_hsn_for_note(db, doc: dict, sap_valuation_client) -> list:
     return entries
 
 
-def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None, sap_valuation_client=None) -> dict:
+# Sep 18 2026, user's explicit ask + build instruction (real, reproducible
+# "Determination of source inventory failed for product X" SAP error at
+# Site P8, confirmed on multiple products/warehouses - see PRD.md/
+# STO_CONTEXT.md for the full diagnosis: SAP's own automatic source
+# Logistics Area determination is broken for some warehouses/products at
+# this site's master data, root cause not yet fixable from our side).
+# Workaround: relocate stock to P8-SFG (user-confirmed this warehouse
+# reliably works for source determination) via a real SOAP Goods
+# Movement BEFORE creating the STO, for every item shipping from Site P8
+# - regardless of which source warehouse was picked in this app's own
+# form. Fully silent/automatic per user's explicit ask - no new UI, no
+# visible extra step, just a real background SAP write ahead of the
+# existing STO creation call below.
+RELOCATION_SITE_ID = "P8"
+RELOCATION_TARGET_WAREHOUSE_ID = "P8-SFG"
+
+
+def _relocate_items_to_p8_sfg(db, sto_id: str, sap_goods_movement_client, doc: dict, items: list) -> None:
+    from store_approval_service import _trigger_goods_movement
+
+    owner_party_id, _ = company_and_set_of_books_for_site(RELOCATION_SITE_ID)
+    relocated_any = False
+    for doc_item, item in zip(doc["items"], items):
+        source_warehouse_id = doc_item.get("source_warehouse_id")
+        if not source_warehouse_id or source_warehouse_id == RELOCATION_TARGET_WAREHOUSE_ID:
+            continue
+        result = _trigger_goods_movement(
+            sap_goods_movement_client, owner_party_id, item["product_id"],
+            source_warehouse_id, RELOCATION_TARGET_WAREHOUSE_ID,
+            item["requested_qty"], item["unit_code"], RELOCATION_SITE_ID,
+        )
+        if not result.get("ok"):
+            raise StockTransferValidationError(
+                f"Could not relocate {item['product_id']} from {source_warehouse_id} to "
+                f"{RELOCATION_TARGET_WAREHOUSE_ID} ahead of STO creation: {result.get('error') or result.get('error_detail') or 'unknown SAP error'}"
+            )
+        doc_item["p8_relocation"] = {
+            "from": source_warehouse_id, "to": RELOCATION_TARGET_WAREHOUSE_ID,
+            "gac_id": result.get("external_id"),
+        }
+        relocated_any = True
+    if relocated_any:
+        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"items": doc["items"]}})
+
+
+def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None, sap_valuation_client=None, sap_goods_movement_client=None) -> dict:
     """Runs SAP's Check operation first (always-on safety net, not a
     togglable dry-run - user's explicit ask, Aug 2026), then - only if that
     comes back clean - the real Maintain write. Mutates the STO's Mongo doc
@@ -590,6 +635,13 @@ def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None, sap
         }
         for it in doc["items"]
     ]
+
+    if doc.get("ship_from_site_id") == RELOCATION_SITE_ID and sap_goods_movement_client:
+        try:
+            _relocate_items_to_p8_sfg(db, sto_id, sap_goods_movement_client, doc, items)
+        except StockTransferValidationError as e:
+            db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"status": "sap_failed", "error_message": str(e)}})
+            raise
 
     note_text = _build_gst_note_text(doc, _price_hsn_for_note(db, doc, sap_valuation_client))
     try:

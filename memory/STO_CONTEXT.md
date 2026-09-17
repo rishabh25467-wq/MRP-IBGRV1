@@ -93,6 +93,18 @@ manual "Save" click as permanent for now.
 - `/app/backend/sap_playwright_outbound_gi_service.py` - dormant/superseded Playwright automation.
 - `/app/frontend/src/pages/StockTransferPage.js` - creation form + recent orders list + detail modal.
 
+## Workaround: silent P8-SFG relocation (Sep 18 2026)
+
+Root-caused as a SAP master-data issue at Site P8 (some warehouses' automatic source Logistics Area
+determination is broken for certain products - "Determination of source inventory failed for product X",
+reproduced live on P16097-B / SAP order 32174). Rather than wait on a SAP-side master-data fix, built a
+silent workaround: for every STO shipping from Site P8, `stock_transfer_service._relocate_items_to_p8_sfg()`
+posts a real SOAP Goods Movement (reusing `store_approval_service._trigger_goods_movement` +
+`sap_goods_movement_client.py`) moving the exact requested quantity from whatever source warehouse was
+picked in the app to `P8-SFG` (user-confirmed reliable) BEFORE the STO is created in SAP. Fully automatic,
+no UI change - each item gets an internal `p8_relocation: {from, to, gac_id}` record for audit. Live-verified
+working (STO-000089, SAP order 32159, GACID 278717) on the exact product that previously failed.
+
 ## Public documentation
 
 Every SAP integration this app uses (STO included) is now documented at the public, no-login page
