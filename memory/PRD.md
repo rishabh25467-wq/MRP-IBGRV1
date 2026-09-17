@@ -1,3 +1,10 @@
+## FEATURE (LIVE-VERIFIED, real SAP write): "Receive" is now one-click, no qty dialog/progress popup (Sep 2026 session, same-day follow-up)
+- **User's ask**: "STO receipt page > 'Receive' button should not open any detail modal for qty or progress bar, just complete the goods movement showing with a small progress bar and mark when its done."
+- **Fix**: `InboundReceiptsPage.js` - removed the `receiveTarget` qty-review Dialog entirely (no more manual qty entry). Clicking "Receive" on a row now immediately posts the full shipped quantity via the same background-job mechanism the bulk "Receive Selected" action already used (new shared `startReceiveJobs`/`handleReceiveOne`). Progress now shows inline on the row itself: the existing status badge (Queued/Processing/Done/Failed) plus a new small animated progress bar underneath while running.
+- **Verified live**: clicked Receive on real pending STO-000015 - no modal opened, row showed "Queued" badge + progress bar immediately, and ~60s later the order correctly moved off the Pending list into Completed (real SAP Goods Receipt posted end-to-end).
+
+
+
 ## FEATURE (self-verified via screenshot, live data): Warehouse Move popover shows per-item movement ID breakdown (Sep 2026 session, same-day follow-up)
 - **User's ask**: "show popview of movement (item with movement id)".
 - **Fix**: `InboundReceiptsPage.js` - new `RelocationPopover` component (shadcn Popover) wraps the "Moved to <warehouse>" / "Partially moved" / "Move failed" label on the Completed tab; clicking it opens a small table of every line's Product ID next to its own Goods Movement ID (green "GM <id>") or its own failure reason (red), instead of one flat summary line.
