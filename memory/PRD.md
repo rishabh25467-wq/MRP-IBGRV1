@@ -49,15 +49,26 @@ manual-confirm button (`check_manual_gi_completion`) as fallback. User explicitl
   f0b2b06, not caused by this fix), and a direct mocked-call-path check across P1/P2/P3/P8.
 
 ## In progress this session (see /app/memory/SESSION_NOTES_2026-09-18.md for full detail)
-- ERP sync resume: user confirmed flip `STO_ERP_SYNC_PAUSED` to "false" for NEW STOs only
-  (do not retry existing "paused" records). NOT YET FLIPPED - still gathering what changed
-  on the ERP side (open question to user) before flipping.
+- ERP sync resume: DONE. `STO_ERP_SYNC_PAUSED` flipped to "false" in `/app/backend/.env`
+  (Sep 17-18 2026), backend restarted and verified healthy. New STOs will now sync to the
+  legacy ERP portal again; existing STOs stuck at `erp_portal_status: "paused"` were
+  deliberately left untouched per user's instruction (no retries). User confirmed no
+  ERP-side field/format changes needed accounting for.
 - GRN S000001 warehouse-move bug (site P3, items IRON-SCR/13INTIEBELT): same P8-only
   `{site}-RM` hardcoding bug found in a 3rd file, `supplier_shipment_service.py`
   (`_post_goods_movement_for_items`). FIXED (generalized `source_area` to `f"{site_id}-HOLD"`
-  for all sites, mirrors Task 1 STO fix) and self-verified via mock, but NOT yet confirmed
-  against the real live SAP tenant - awaiting user to retry GRN S000001 live and confirm
-  both line items post successfully.
+  for all sites, mirrors Task 1 STO fix) and self-verified via mock. ALSO fixed 2 related
+  frontend bugs in `GrnApprovalPage.jsx`: (1) Confirmed GRNs detail modal was missing the
+  warehouse-move Retry button entirely (only existed in the Pending Shipments modal) - added
+  `retryConfirmedMovement` + a "Warehouse Move" status/retry section; (2) Diagnostics modal
+  always showed "item(s) below were dropped...likely crashed immediately" for ANY "posted"
+  PO regardless of whether anything was actually wrong - now correctly distinguishes clean
+  success / dropped items / warehouse-movement-failed-only (via new `poDiagnostics()` helper
+  that attaches `sap_movement_result` errors matched by po_number), and the PO Status column
+  label now shows "Posted (movement failed)" when relevant. Verified live via screenshot
+  against real GRN S000001 data - both button and new diagnostics messaging render correctly.
+  STILL AWAITING: user to click the (now working) Retry button live on GRN S000001 and report
+  whether IRON-SCR/13INTIEBELT actually post successfully now.
 
 ## Known pre-existing issue (not introduced this session, not fixed)
 - `tests/test_p8_receipt_relocation_iter181.py::test_relocate_returns_stock_not_exist_error_for_zero_hold_stock`

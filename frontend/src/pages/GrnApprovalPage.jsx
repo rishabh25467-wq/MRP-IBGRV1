@@ -166,6 +166,24 @@ function summarizeMovementResult(movementResult) {
   return failed.map((i) => `${i.product_id || `item ${i.item_number}`}: ${i.error || "failed"}`).join(" | ");
 }
 
+// Sep 18 2026, user's explicit ask - the Diagnostics modal used to only
+// ever look at the Goods Receipt result (sap_gr_result.per_po), so a PO
+// that posted cleanly (step 1) but whose warehouse movement (step 2)
+// then failed showed the same hardcoded "item(s) below were dropped...
+// likely crashed immediately" text as a genuinely dropped/crashed PO -
+// misleading for GRN S000001 (Site P3, IRON-SCR/13INTIEBELT: GR posted
+// fine, only the warehouse move itself failed). Attaches this PO's own
+// movement errors (matched by po_number, same shape _post_goods_
+// movement_for_items already returns) so the modal can tell "clean
+// success" apart from "GR fine, movement failed" apart from "items
+// genuinely dropped".
+function poDiagnostics(doc, poResult) {
+  return {
+    ...poResult,
+    movement_issues: (doc?.sap_movement_result?.per_item || []).filter((m) => m.po_number === poResult.po_number && m.error),
+  };
+}
+
 export default function GrnApprovalPage() {
   const { user, refresh: refreshAuth } = useAuth();
   const [code, setCode] = useState("");
@@ -345,6 +363,30 @@ export default function GrnApprovalPage() {
       loadConfirmed();
     } catch (err) {
       toast.error("Reset failed", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setConfirmedRetryBusy(false);
+    }
+  };
+
+  // Sep 18 2026, user's explicit ask (GRN S000001, Site P3) - the
+  // warehouse-move Retry button already existed for the Pending
+  // Shipments modal (retryMovement above) but was never wired into this
+  // Confirmed GRNs detail modal, so a GRN whose Goods Receipt posted
+  // fine but whose warehouse move failed had NO way to retry it once it
+  // showed up here - only the (unrelated) "Retry Goods Receipt" flow.
+  const retryConfirmedMovement = async (doc) => {
+    setConfirmedRetryBusy(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/grn/${doc._id}/retry-movement`);
+      if (confirmedDetail?._id === doc._id) setConfirmedDetail(data);
+      if (data.sap_movement_status === "posted") {
+        toast.success(`Stock moved to ${data.site_id}/${data.warehouse_id}`);
+      } else {
+        toast.warning("Movement still pending", { description: summarizeMovementResult(data.sap_movement_result), duration: 8000 });
+      }
+      loadConfirmed();
+    } catch (err) {
+      toast.error("Retry failed", { description: err?.response?.data?.detail || err.message });
     } finally {
       setConfirmedRetryBusy(false);
     }
@@ -908,11 +950,11 @@ export default function GrnApprovalPage() {
                           ) : poResult ? (
                             <button
                               type="button"
-                              className={`text-[11px] font-semibold hover:underline ${poResult.status === "posted" ? "text-[#027A48]" : poResult.status === "skipped" ? "text-[#B54708]" : "text-[#B42318]"}`}
-                              onClick={() => setDiagnosticsModal(poResult)}
+                              className={`text-[11px] font-semibold hover:underline ${poResult.status !== "posted" ? (poResult.status === "skipped" ? "text-[#B54708]" : "text-[#B42318]") : poDiagnostics(shipment, poResult).movement_issues.length > 0 ? "text-[#B54708]" : "text-[#027A48]"}`}
+                              onClick={() => setDiagnosticsModal(poDiagnostics(shipment, poResult))}
                               data-testid={`grn-item-diagnostics-link-${i}`}
                             >
-                              {poResult.status === "posted" ? "Posted" : poResult.status === "skipped" ? "Skipped" : "Failed"} - Diagnostics
+                              {poResult.status === "posted" ? (poDiagnostics(shipment, poResult).movement_issues.length > 0 ? "Posted (movement failed)" : "Posted") : poResult.status === "skipped" ? "Skipped" : "Failed"} - Diagnostics
                             </button>
                           ) : (
                             <span className="text-[11px] text-[#98A2B3]">Not attempted yet</span>
@@ -1154,7 +1196,7 @@ export default function GrnApprovalPage() {
                       type="button"
                       className="text-xs text-[#475467] font-bold hover:underline"
                       data-testid="grn-view-diagnostics-button"
-                      onClick={() => setDiagnosticsModal(shipment.sap_gr_result.per_po.find((p) => (p.status !== "posted" && p.status !== "notification_created" && p.events?.length) || p.skipped_items?.length))}
+                      onClick={() => setDiagnosticsModal(poDiagnostics(shipment, shipment.sap_gr_result.per_po.find((p) => (p.status !== "posted" && p.status !== "notification_created" && p.events?.length) || p.skipped_items?.length)))}
                     >
                       View Diagnostics
                     </button>
@@ -1482,6 +1524,33 @@ export default function GrnApprovalPage() {
                 <div><span className="text-[#475467]">Site:</span> <span className="font-data font-semibold">{confirmedDetail.site_id}</span></div>
                 <div><span className="text-[#475467]">Approved By:</span> <span className="font-semibold">{confirmedDetail.approved_by} · {confirmedDetail.approved_at ? new Date(confirmedDetail.approved_at).toLocaleString() : "\u2014"}</span></div>
               </div>
+              {confirmedDetail.sap_movement_status && confirmedDetail.sap_movement_status !== "not_applicable" && (
+                <div className="text-sm px-3 py-2 rounded-sm flex items-center justify-between gap-2 border" data-testid="grn-confirmed-detail-sap-movement-status"
+                     style={confirmedDetail.sap_movement_status === "posted" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : { color: "#B45309", background: "rgba(227,160,8,0.1)", borderColor: "rgba(227,160,8,0.3)" }}>
+                  <span className="flex items-center gap-2">
+                    {confirmedDetail.sap_movement_status === "posted" ? <CheckCircle size={16} /> : <PlugsConnected size={16} />}
+                    {confirmedDetail.sap_movement_status === "posted"
+                      ? `Stock moved to ${confirmedDetail.site_id}/${confirmedDetail.warehouse_id}`
+                      : `Warehouse movement pending${confirmedDetail.warehouse_id ? ` (target ${confirmedDetail.site_id}/${confirmedDetail.warehouse_id})` : ""}`}
+                  </span>
+                  {confirmedDetail.sap_movement_status !== "posted" && (
+                    confirmedRetryBusy ? (
+                      <span className="text-xs text-[#B54708] font-semibold" data-testid="grn-confirmed-detail-movement-retrying-label">Retrying...</span>
+                    ) : (
+                      <Button size="sm" variant="outline" onClick={() => retryConfirmedMovement(confirmedDetail)} disabled={confirmedRetryBusy} className="rounded-sm h-7 text-xs" data-testid="grn-confirmed-detail-retry-movement-button">
+                        <ArrowsClockwise size={12} className="mr-1" /> Retry
+                      </Button>
+                    )
+                  )}
+                </div>
+              )}
+              {confirmedDetail.sap_movement_status && confirmedDetail.sap_movement_status !== "posted" && confirmedDetail.sap_movement_result?.per_item?.some((p) => p.error) && (
+                <div className="text-xs text-[#B54708] bg-[#FFFAEB] border border-[#FEDF89] rounded-sm px-3 py-2 space-y-1" data-testid="grn-confirmed-detail-movement-error-detail">
+                  {confirmedDetail.sap_movement_result.per_item.filter((p) => p.error).map((p, i) => (
+                    <div key={i} data-testid={`grn-confirmed-detail-movement-error-${i}`}><strong>{p.product_id}:</strong> {p.error}</div>
+                  ))}
+                </div>
+              )}
               {confirmedDetail.sap_sync_status !== "posted" && confirmedDetail.sap_gr_result?.per_po?.some((p) => p.screenshot_path) && (
                 <div>
                   <button
@@ -1503,7 +1572,7 @@ export default function GrnApprovalPage() {
                     type="button"
                     className="text-xs text-[#475467] font-bold hover:underline"
                     data-testid="grn-confirmed-detail-view-diagnostics-button"
-                    onClick={() => setDiagnosticsModal(confirmedDetail.sap_gr_result.per_po.find((p) => (p.status !== "posted" && p.events?.length) || p.skipped_items?.length))}
+                    onClick={() => setDiagnosticsModal(poDiagnostics(confirmedDetail, confirmedDetail.sap_gr_result.per_po.find((p) => (p.status !== "posted" && p.events?.length) || p.skipped_items?.length)))}
                   >
                     View Diagnostics
                   </button>
@@ -1551,11 +1620,11 @@ export default function GrnApprovalPage() {
                             ) : poResult ? (
                               <button
                                 type="button"
-                                className={`text-[11px] font-semibold hover:underline ${poResult.status === "posted" ? "text-[#027A48]" : poResult.status === "skipped" ? "text-[#B54708]" : "text-[#B42318]"}`}
-                                onClick={() => setDiagnosticsModal(poResult)}
+                                className={`text-[11px] font-semibold hover:underline ${poResult.status !== "posted" ? (poResult.status === "skipped" ? "text-[#B54708]" : "text-[#B42318]") : poDiagnostics(confirmedDetail, poResult).movement_issues.length > 0 ? "text-[#B54708]" : "text-[#027A48]"}`}
+                                onClick={() => setDiagnosticsModal(poDiagnostics(confirmedDetail, poResult))}
                                 data-testid={`grn-confirmed-detail-diagnostics-link-${i}`}
                               >
-                                {poResult.status === "posted" ? "Posted" : poResult.status === "skipped" ? "Skipped" : "Failed"} - Diagnostics
+                                {poResult.status === "posted" ? (poDiagnostics(confirmedDetail, poResult).movement_issues.length > 0 ? "Posted (movement failed)" : "Posted") : poResult.status === "skipped" ? "Skipped" : "Failed"} - Diagnostics
                               </button>
                             ) : (
                               <span className="text-[11px] text-[#98A2B3]">Not attempted yet</span>
@@ -1605,7 +1674,13 @@ export default function GrnApprovalPage() {
                   {diagnosticsModal.status === "skipped" ? (
                     <span className="text-[#B54708] font-semibold">Skipped - never sent to SAP</span>
                   ) : diagnosticsModal.status === "posted" ? (
-                    <span className="text-[#B54708] font-semibold">Posted to SAP - but item(s) below were dropped from this PO</span>
+                    diagnosticsModal.skipped_items?.length > 0 ? (
+                      <span className="text-[#B54708] font-semibold">Posted to SAP - but item(s) below were dropped from this PO</span>
+                    ) : diagnosticsModal.movement_issues?.length > 0 ? (
+                      <span className="text-[#B54708] font-semibold">Posted to SAP - but the warehouse movement into place failed</span>
+                    ) : (
+                      <span className="text-[#027A48] font-semibold">Posted to SAP successfully - no issues</span>
+                    )
                   ) : (
                     <>Failed while: <strong className="text-[#7A1E1E]">{describeFailedStep(diagnosticsModal.failed_step)}</strong></>
                   )}
@@ -1626,6 +1701,16 @@ export default function GrnApprovalPage() {
                   </ul>
                 </div>
               )}
+              {diagnosticsModal.movement_issues?.length > 0 && (
+                <div className="text-sm text-[#7A1E1E] bg-[#FEF3F2] border border-[#FDA29B] rounded-sm p-2" data-testid="grn-diagnostics-movement-issues">
+                  <strong>Goods Receipt posted fine - warehouse movement into place failed:</strong>
+                  <ul className="mt-1 space-y-1">
+                    {diagnosticsModal.movement_issues.map((m, i) => (
+                      <li key={i} data-testid={`grn-diagnostics-movement-issue-${i}`}>{m.product_id}: {m.error}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <div>
                 <p className="text-xs font-heading font-bold uppercase tracking-wide text-[#667085] mb-1.5">
                   {diagnosticsModal.status === "skipped" ? "What happened before it was skipped" : diagnosticsModal.status === "posted" ? "Events completed for this PO" : "Events completed successfully before the failure"}
@@ -1639,6 +1724,8 @@ export default function GrnApprovalPage() {
                       </li>
                     ))}
                   </ol>
+                ) : diagnosticsModal.status === "posted" ? (
+                  <p className="text-sm text-[#98A2B3]">No additional diagnostic events were recorded for this PO.</p>
                 ) : (
                   <p className="text-sm text-[#98A2B3]">No events were logged before this failure - it likely crashed immediately.</p>
                 )}
