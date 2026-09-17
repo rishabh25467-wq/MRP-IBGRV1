@@ -1,3 +1,11 @@
+## BUG FIX (LIVE-VERIFIED, real SAP write): GRN warehouse move falsely reported "already in P8-RM" - stock was actually still in P8-HOLD (Sep 2026 session, same-day follow-up)
+- **User's report + proof**: shared SAP's own "Inbound Warehouse Order Overview" for delivery 53599 showing Target Logistics Area ID = P8-HOLD for the Put Away (not P8-RM) - stock never actually reached P8-RM despite the app saying "Moved to P8-RM"/"Already in P8-RM on receipt - no movement needed".
+- **Root cause**: `_post_goods_movement_for_items` assumed every site's Goods Receipt lands in its generic `"{site}-RM"` warehouse. Site P8 is the exception - same Material Flow Destination quirk already worked around for inbound STOs (`P8-HOLD` staging) - so for P8 shipments the function's assumed source area ("P8-RM") coincidentally equalled the chosen target ("P8-RM"), making it conclude "no movement needed" when the real stock was still sitting untouched in P8-HOLD.
+- **Fix**: source area is now `"P8-HOLD"` specifically for `site_id == "P8"`, `"{site}-RM"` for every other site (unchanged).
+- **Data correction**: found + re-ran the Goods Movement for the 2 shipments already wrongly marked (S7KKXU, VNAEMS) via the existing `/retry-movement` endpoint - both now show real GM IDs (S7KKXU: 279306/279332, VNAEMS: 279307/279317) in the movement popover instead of the false "no movement needed" text.
+
+
+
 ## BUG FIX + FEATURES (LIVE-VERIFIED, real SAP write): GRN "Fetch from SAP" fixed, SAP Reference column, auto warehouse move, movement popover (Sep 2026 session)
 - **User's report** (S7KKXU/PO 29685): "Fetch from SAP" failed with "no matching confirmation found in SAP yet for bill 'Test/2535/235'" even though the manual GR notification was genuinely created.
 - **Root cause**: `fetch_inbound_delivery_ids_from_sap` always searched SAP's confirmation report by the bare `supplier_doc_num` alone - but the REAL reference SAP has on file (for both the manual-notification path AND the current auto/Playwright path) is the composite `_build_notification_id` string (e.g. "Test/2535/235-S7KKXU-29685"), which this one function never adopted (predates that convention).

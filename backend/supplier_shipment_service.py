@@ -906,7 +906,20 @@ def _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_cli
             per_item.append({"po_number": it["po_number"], "item_number": it["item_number"], "product_id": it["product_id"], "ok": True, "skipped": True, "note": "Goods Receipt for this line was skipped in SAP (missing Product ID) - no stock to move"})
             continue
         qty = it.get("actual_qty", it["ship_qty"])
-        source_area = f"{site_id}-RM"
+        # Sep 17 2026 bug fix (real user report + SAP screenshot proof,
+        # shipment S7KKXU/delivery 53599: SAP's own "Inbound Warehouse
+        # Order Overview" showed Target Logistics Area ID = P8-HOLD for
+        # the Put Away, NOT P8-RM): Site P8's Material Flow Destination
+        # rule routes EVERY inbound Goods Receipt into the neutral
+        # P8-HOLD staging warehouse regardless of warehouse_id chosen at
+        # approval time - the exact same quirk already documented/worked
+        # around for inbound STOs (see inbound_receipt_service.py's
+        # RECEIPT_RELOCATION_HOLD_WAREHOUSE_ID). The generic "{site}-RM"
+        # default below only holds for every OTHER site - assuming it for
+        # P8 meant this function thought source==target ("Already in
+        # P8-RM on receipt") when the stock was actually still sitting in
+        # P8-HOLD, never actually moved anywhere.
+        source_area = "P8-HOLD" if site_id == "P8" else f"{site_id}-RM"
         # Sep 12 2026 bug fix (real incident, shipment LFG29A/PO 29482 -
         # user's explicit report "after success grn why an error
         # occurred": "SAP rejected the movement: Source and target
