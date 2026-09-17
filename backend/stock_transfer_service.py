@@ -1177,8 +1177,23 @@ def sync_to_erp_portal(db, erp_portal_client, sap_valuation_client, sto_id: str)
     # server.py imports this module before load_dotenv runs) rather than
     # deleting/commenting out the real logic below, so re-enabling later
     # is a single .env flip, not a code change.
+    #
+    # Bug fix (real user report, Sep 2026 - "why r u refreshing this page
+    # again n again?"): this used to just silently `return` here, leaving
+    # whatever `mark_erp_portal_syncing`/reset_erp_portal_sync_for_retry
+    # had JUST set (a non-terminal "syncing"/"retrying" status) stuck
+    # that way forever. The frontend's poll-while-in-flight logic reads
+    # exactly that field, so every GI-posted order looked eternally "in
+    # progress" and the list kept auto-refreshing every 5s with no way
+    # to ever stop. Now stamps a genuinely terminal "paused" status
+    # instead, so the frontend can tell "intentionally paused" apart
+    # from "actually still working".
     if os.environ.get("STO_ERP_SYNC_PAUSED", "false").lower() == "true":
         logger.info(f"ERP portal sync paused (STO_ERP_SYNC_PAUSED=true) - skipping for {sto_id}.")
+        db[STO_COLLECTION].update_one(
+            {"_id": sto_id, "erp_portal_status": {"$ne": "synced"}},
+            {"$set": {"erp_portal_status": "paused"}},
+        )
         return
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:

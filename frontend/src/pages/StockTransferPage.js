@@ -385,20 +385,23 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
           className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
             order.erp_portal_status === "synced" ? "bg-[#ECFDF3] border border-[#ABEFC6] text-[#027A48]"
             : order.erp_portal_status === "failed" ? "bg-[#FEF3F2] border border-[#FDA29B] text-[#912018]"
+            : order.erp_portal_status === "paused" ? "bg-[#F2F4F7] border border-[#D0D5DD] text-[#475467]"
             : "bg-[#FEF0C7] border border-[#FEDF89] text-[#93370D]"
           }`}
           data-testid="stock-transfer-detail-erp-status"
         >
-          {order.erp_portal_status === "synced" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : order.erp_portal_status === "failed" ? <WarningCircle size={16} className="mt-0.5 shrink-0" /> : <CircleNotch size={16} className="mt-0.5 shrink-0 animate-spin" />}
+          {order.erp_portal_status === "synced" ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : order.erp_portal_status === "failed" || order.erp_portal_status === "paused" ? <WarningCircle size={16} className="mt-0.5 shrink-0" /> : <CircleNotch size={16} className="mt-0.5 shrink-0 animate-spin" />}
           <div>
             <p className="font-bold">
               {order.erp_portal_status === "synced" ? "Synced to ERP Portal."
                 : order.erp_portal_status === "failed" ? "ERP Portal sync failed:"
+                : order.erp_portal_status === "paused" ? "ERP Portal sync is paused."
                 : order.gi_status === "posted" ? "ERP Portal: syncing..."
                 : "ERP Portal: waiting on Goods Issue before syncing."}
             </p>
             {order.erp_portal_status === "failed" && <p className="mt-0.5">{order.erp_portal_error || "See logs."}</p>}
-            {order.erp_portal_status !== "synced" && order.gi_status === "posted" && (
+            {order.erp_portal_status === "paused" && <p className="mt-0.5 text-xs opacity-80">Sync was intentionally turned off for now - this isn't stuck, no Delivery Challan will be created until it's turned back on.</p>}
+            {!["synced", "paused"].includes(order.erp_portal_status) && order.gi_status === "posted" && (
               <>
                 <p className="mt-1 text-xs opacity-80">
                   {order.erp_portal_status === "failed"
@@ -774,7 +777,7 @@ export default function StockTransferPage() {
   // also polls while any order has ERP sync genuinely in flight (Goods
   // Issue posted, but erp_portal_status not yet a terminal synced/failed).
   const hasRunningGiJob = recentOrders.some((o) => o.gi_job_running);
-  const hasRunningErpSync = recentOrders.some((o) => o.gi_status === "posted" && !["synced", "failed"].includes(o.erp_portal_status));
+  const hasRunningErpSync = recentOrders.some((o) => o.gi_status === "posted" && !["synced", "failed", "paused"].includes(o.erp_portal_status));
   useEffect(() => {
     if (!hasRunningGiJob && !hasRunningErpSync) return;
     const id = setInterval(loadRecentOrders, 5000);
@@ -1020,7 +1023,7 @@ export default function StockTransferPage() {
         setCreatedOrderLive(data);
         setStepStatuses((prev) => ({
           ...prev,
-          erp_sync: data.erp_portal_status === "synced" ? "done" : data.erp_portal_status === "failed" ? "failed" : "active",
+          erp_sync: ["synced", "paused"].includes(data.erp_portal_status) ? "done" : data.erp_portal_status === "failed" ? "failed" : "active",
         }));
         const done = data.gi_status === "posted";
         const failed = data.gi_status === "failed" || data.gi_status === "not_found_timeout";
@@ -1576,6 +1579,8 @@ export default function StockTransferPage() {
                     ? { label: "Synced", className: "bg-[#ECFDF3] text-[#027A48]" }
                     : o.erp_portal_status === "failed"
                     ? { label: "Sync Failed", className: "bg-[#FEF3F2] text-[#B42318]" }
+                    : o.erp_portal_status === "paused"
+                    ? { label: "Sync Paused", className: "bg-[#F2F4F7] text-[#475467]" }
                     : o.erp_portal_status === "retrying"
                     ? { label: "Retrying...", className: "bg-[#FEF0C7] text-[#93370D]" }
                     : o.status === "created_in_sap"

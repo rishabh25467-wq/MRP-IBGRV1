@@ -1,3 +1,12 @@
+## BUG FIX (LIVE-VERIFIED): "why r u refreshing this page again n again?" - Inter-Plant Stock Transfer page was polling every 5s forever (Sep 2026 session, same-day follow-up)
+- **User's report**: the STO list page kept auto-refreshing continuously.
+- **Root cause**: `STO_ERP_SYNC_PAUSED=true` (deliberately set last session) made `sync_to_erp_portal` silently `return` without ever updating `erp_portal_status` - but `mark_erp_portal_syncing`/`reset_erp_portal_sync_for_retry` had ALREADY stamped it "syncing"/"retrying" right before. Every GI-posted order was therefore stuck in a non-terminal ERP status forever, and `StockTransferPage.js`'s `hasRunningErpSync` polling gate (`setInterval(loadRecentOrders, 5000)`) treated that as "still actively syncing" - so it never stopped polling, ever, for the whole time the pause flag is on.
+- **Fix**: `stock_transfer_service.py`'s pause guard now stamps a genuinely terminal `erp_portal_status: "paused"` (unless already `synced`) instead of leaving the prior status untouched. `StockTransferPage.js` - `hasRunningErpSync` now excludes `"paused"`; added a distinct grey "Sync Paused" badge (list) and a clear non-spinning "ERP Portal sync is paused - not stuck" banner (detail modal + creation dialog step tracker), replacing the endless "syncing..." spinner.
+- **One-time cleanup**: bulk-updated the 17 existing orders already stuck at `syncing`/`retrying`/`pending` to `paused` in Mongo, so the fix applies retroactively too.
+- **Verified live**: 0 polling requests fired over a 14s idle window on the page (previously fired every 5s indefinitely).
+
+
+
 ## FEATURE (LIVE-VERIFIED): STO detail modal now shows the backend warehouse move too, display-renamed HOLD -> MOV (Sep 2026 session, same-day follow-up)
 - **User's ask**: also show the backend relocation info in the STO detail modal (not just the list column); display it as "{SITE}-MOV" since HOLD will eventually be renamed to MOV in SAP.
 - **Fix**: `StockTransferPage.js` - new `movDisplayName()` helper (`.replace(/-HOLD$/, "-MOV")`) applied everywhere the HOLD warehouse is shown to a user - the list column, the new detail-modal banner ("Backend warehouse move: N items moved into P8-MOV" + `RelocationPopover` for item/movement breakdown), and the "awaiting manual GI" instructions text. Backend warehouse ID (`P8-HOLD`) is unchanged - display-only rename.
