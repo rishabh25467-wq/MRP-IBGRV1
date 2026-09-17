@@ -31,6 +31,7 @@ import SupplierPortalInvitePage from "@/pages/SupplierPortalInvitePage";
 import PlaywrightReliabilityReportPage from "@/pages/PlaywrightReliabilityReportPage";
 import GrnApprovalPage from "@/pages/GrnApprovalPage";
 import ListPriceInstructionsPage from "@/pages/ListPriceInstructionsPage";
+import SapIntegrationsDocsPage from "@/pages/SapIntegrationsDocsPage";
 import SupplierSignupPage from "@/pages/supplier-portal/SupplierSignupPage";
 import SupplierLoginPage from "@/pages/supplier-portal/SupplierLoginPage";
 import SupplierPendingPage from "@/pages/supplier-portal/SupplierPendingPage";
@@ -188,6 +189,11 @@ function AppShell() {
   // member, must never be wrapped by AuthGate's Microsoft sign-in.
   if (pathname === "/list-price-instructions") {
     return <ListPriceInstructionsPage />;
+  }
+  // Public, no-login SAP SOAP/OData integration reference (user's
+  // explicit ask, Sep 18 2026) - same bypass pattern as above.
+  if (pathname === "/docs/sap-integrations") {
+    return <SapIntegrationsDocsPage />;
   }
   if (pathname.startsWith("/supplier-portal")) {
     return (

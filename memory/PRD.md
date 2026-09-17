@@ -1247,6 +1247,20 @@ STOs (single-line STOs were already pure-API, unaffected, no change needed there
   automatically on close (cleanup clears the interval).
 
   `stock_transfer_service.py`'s `create_stock_transfer_order`) - user's explicit follow-up ask, reversing the
+
+## New feature: public SAP integration reference page (Sep 18 2026, same session)
+- User's ask: a public (no login), internal-team-shareable page documenting every SOAP/OData API this app talks
+  to, with real endpoint URLs, for SAP consultant reference.
+- Built `sap_integration_docs.py` (curated static catalogue, 38 integrations across 8 categories: Inbound/GRN,
+  Outbound/STO, Production, Purchase Order, Master Data, Analytics/Reporting, plus deprecated-Playwright
+  entries) + public backend endpoint `GET /api/public/sap-integrations` + new `PUBLIC_API_PATH_PREFIXES =
+  ("/api/public/",)` exemption in `auth_service.py`'s middleware.
+- Frontend: `SapIntegrationsDocsPage.jsx` at public route `/docs/sap-integrations` (bypasses AuthGate, same
+  pattern as the existing `/list-price-instructions` page) - searchable, grouped by category, shows protocol/
+  status badges, real endpoint URL, technical user, operations, client file per integration.
+- Verified live: endpoint returns 200 with no auth cookie both internally and via the external preview URL;
+  page renders correctly with real data (38 total / 32 active / 21 SOAP / 15 OData / 3 Playwright).
+
   "optional, filled in SAP" change from the Sep 18 architecture shift entry above. Still NEVER written to SAP
   (confirmed hard-locked, no code change there) - kept on this app's own STO doc, and already pushed to the
   legacy ERP portal for the 4 fields with a matching `Pro_DeliveryChallan_Insert` param (Vehicle No./G.R

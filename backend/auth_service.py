@@ -243,6 +243,12 @@ PUBLIC_PATHS = {"/api/", "/api/auth/login", "/api/auth/callback", "/api/auth/me"
 # have no `vms_session` cookie at all).
 EXTERNAL_PORTAL_PATH_PREFIXES = ("/api/supplier-portal/",)
 
+# Sep 18 2026, user's explicit ask: a public, no-login SAP integration
+# reference page (see sap_integration_docs.py) - genuinely read-only
+# static reference info, no PII/business data, meant to be shareable
+# with SAP consultants who have no app account at all.
+PUBLIC_API_PATH_PREFIXES = ("/api/public/",)
+
 
 def ensure_indexes(db) -> None:
     """TTL indexes so expired sessions/OAuth flow state get cleaned up
@@ -416,6 +422,7 @@ def create_auth_middleware(db):
             or not path.startswith("/api/")
             or path in PUBLIC_PATHS
             or path.startswith(EXTERNAL_PORTAL_PATH_PREFIXES)
+            or path.startswith(PUBLIC_API_PATH_PREFIXES)
         ):
             return await call_next(request)
 

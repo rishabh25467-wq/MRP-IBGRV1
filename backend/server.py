@@ -29,6 +29,7 @@ from sap_production_lot_client import SAPProductionLotClient, SAPProductionLotEr
 from sap_wip_clearing_client import SAPWipClearingClient, SAPWipClearingError, company_and_set_of_books_for_site
 from sap_production_proposal_client import SAPProductionProposalClient, SAPProductionProposalError
 from sap_sto_client import SAPSTOClient
+import sap_integration_docs
 from qms_drawings_client import QMSDrawingsClient, QMSDrawingsError
 from sap_outbound_delivery_client import SAPOutboundDeliveryClient, SAPOutboundDeliveryError
 from erp_portal_client import ERPPortalClient, ERPPortalError
@@ -717,6 +718,14 @@ class PurchasingPlanJobStatus(BaseModel):
 @api_router.get("/")
 async def root():
     return {"message": "SAP BOM Lookup API"}
+
+
+@api_router.get("/public/sap-integrations")
+async def get_public_sap_integrations_doc():
+    """Public, no-auth reference page (user's explicit ask, Sep 18 2026):
+    every SOAP/OData integration this app talks to, for internal team/SAP
+    consultant reference. See sap_integration_docs.py."""
+    return sap_integration_docs.get_sap_integrations_doc()
 
 
 @api_router.get("/auth/login")
