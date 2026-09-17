@@ -1,3 +1,10 @@
+## FEATURE (LIVE-VERIFIED): Outbound STO list now shows the silent P8-HOLD relocation with per-item movement IDs (Sep 2026 session, same-day follow-up)
+- **User's ask**: "you are moving stock in the backend while creation STO ex: P8D1-235. Need to add pop up view with movement & item same as you add in STO receipt."
+- **Fix**: `StockTransferPage.js` - new "Warehouse Move" column in the Recent Stock Transfer Orders table, using the same `RelocationPopover` pattern built for Inbound Receipts. Reads the existing `item.p8_relocation` field (already stored per line by `_relocate_items_to_p8_source_warehouse` in `stock_transfer_service.py`, previously never surfaced in the UI). Click "Moved to P8-HOLD" to see each item next to its own SAP Goods Movement ID; "—" when no pre-STO relocation was needed for that order. Added `e.stopPropagation()` on the trigger so it doesn't also open the row's detail modal.
+- **Verified live**: STO-000101 popover correctly shows G12LW→GM 279120, G12NUT→GM 279147, G12FW→GM 279161; STO-000098 (no relocation needed) shows "—". No overflow at 1920px/390px, detail modal does not open behind the popover.
+
+
+
 ## FEATURE (LIVE-VERIFIED, real SAP write): "Receive" is now one-click, no qty dialog/progress popup (Sep 2026 session, same-day follow-up)
 - **User's ask**: "STO receipt page > 'Receive' button should not open any detail modal for qty or progress bar, just complete the goods movement showing with a small progress bar and mark when its done."
 - **Fix**: `InboundReceiptsPage.js` - removed the `receiveTarget` qty-review Dialog entirely (no more manual qty entry). Clicking "Receive" on a row now immediately posts the full shipped quantity via the same background-job mechanism the bulk "Receive Selected" action already used (new shared `startReceiveJobs`/`handleReceiveOne`). Progress now shows inline on the row itself: the existing status badge (Queued/Processing/Done/Failed) plus a new small animated progress bar underneath while running.

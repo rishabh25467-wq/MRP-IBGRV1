@@ -20,6 +20,7 @@ import { Label } from "@/components/ui/label";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
@@ -28,6 +29,40 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
 const formatQty = (v) => (v == null ? "—" : Number(v).toLocaleString("en-IN", { maximumFractionDigits: 3 }));
+
+// Popover for the pre-STO backend relocation (RAW/actual warehouse ->
+// P8-HOLD) that happens silently while creating an outbound STO from
+// Site P8 - user's explicit ask (Sep 2026): "same as you add in STO
+// receipt" - shows each moved item next to its own real SAP Goods
+// Movement ID.
+const RelocationPopover = ({ lines, to, stoId, children }) => (
+  <Popover>
+    <PopoverTrigger asChild>
+      <button className="underline-offset-2 hover:underline text-left" onClick={(e) => e.stopPropagation()} data-testid={`stock-transfer-recent-relocation-trigger-${stoId}`}>
+        {children}
+      </button>
+    </PopoverTrigger>
+    <PopoverContent className="w-72 p-3" align="start" data-testid={`stock-transfer-recent-relocation-popover-${stoId}`}>
+      <p className="text-xs font-semibold text-[#101828] mb-2">Warehouse Move &rarr; {to}</p>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-[#667085]">
+            <th className="text-left font-medium py-1">Item</th>
+            <th className="text-right font-medium py-1">Movement</th>
+          </tr>
+        </thead>
+        <tbody>
+          {lines.map((l) => (
+            <tr key={l.product_id} className="border-t border-[#EAECF0]">
+              <td className="py-1.5 pr-2 font-mono text-[#344054]">{l.product_id}</td>
+              <td className="py-1.5 text-right font-mono text-[#027A48]">GM {l.gac_id}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </PopoverContent>
+  </Popover>
+);
 const formatSapId = (id) => (id ? id.replace(/^0+(?=\d)/, "") : id);
 const cleanSapMessage = (msg) => (msg ? msg.replace(/\s{2,}/g, " ").trim() : msg);
 const formatDateTime = (iso) => (iso ? new Date(iso).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", second: "2-digit" }) : null);
@@ -1485,7 +1520,7 @@ export default function StockTransferPage() {
             <table className="w-full text-[12px] border-collapse min-w-[900px]" data-testid="stock-transfer-recent-table">
               <thead>
                 <tr>
-                  {["STO ID", "Created", "By", "Ship-from", "Ship-to", "Location", "Items", "Delivery Date", "SAP Order ID", "Status", "Goods Issue", "SAP User", "GST Push", "ERP Portal"].map((h) => (
+                  {["STO ID", "Created", "By", "Ship-from", "Ship-to", "Location", "Items", "Delivery Date", "SAP Order ID", "Status", "Warehouse Move", "Goods Issue", "SAP User", "GST Push", "ERP Portal"].map((h) => (
                     <th key={h} className="bg-[#EAECF0] border border-[#D0D5DD] p-1.5 text-left text-[11px] font-bold text-[#344054] font-heading uppercase whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -1523,6 +1558,8 @@ export default function StockTransferPage() {
                     : o.status === "created_in_sap"
                     ? { label: "Pending", className: "bg-[#FEF0C7] text-[#93370D]" }
                     : null;
+                  const relocatedLines = (o.items || []).filter((it) => it.p8_relocation).map((it) => ({ product_id: it.product_id, gac_id: it.p8_relocation.gac_id }));
+                  const relocationTo = (o.items || []).find((it) => it.p8_relocation)?.p8_relocation?.to;
                   return (
                     <tr
                       key={o.sto_id}
@@ -1556,6 +1593,15 @@ export default function StockTransferPage() {
                       </td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">
                         <span className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold ${badge.className}`}>{badge.label}</span>
+                      </td>
+                      <td className="border border-[#D0D5DD] px-2 py-1.5" data-testid={`stock-transfer-recent-relocation-${o.sto_id}`}>
+                        {relocatedLines.length > 0 ? (
+                          <RelocationPopover lines={relocatedLines} to={relocationTo} stoId={o.sto_id}>
+                            <span className="text-[#027A48] font-medium">Moved to {relocationTo}</span>
+                          </RelocationPopover>
+                        ) : (
+                          <span className="text-[#98A2B3]">—</span>
+                        )}
                       </td>
                       <td className="border border-[#D0D5DD] px-2 py-1.5">
                         {giBadge ? <span className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold ${giBadge.className}`}>{giBadge.label}</span> : <span className="text-[#98A2B3]">—</span>}
