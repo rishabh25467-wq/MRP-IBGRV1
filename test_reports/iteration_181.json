@@ -1,0 +1,26 @@
+{
+  "summary": "Iteration 181 - Verified the P8-HOLD -> real target warehouse relocation was correctly re-wired from the OUTBOUND 'Complete STO Process' endpoint to the INBOUND 'Receive' path. 10/10 backend pytest tests pass, frontend Completed tab shows the new 'Warehouse Move' column with correct green 'Moved to <wh>' / red 'Move failed' + Retry / '—' states.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_p8_receipt_relocation_iter181.py",
+    "/app/test_reports/pytest/iter181_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "inbound_receipt_service._relocate_receipt_from_hold pre-flights P8-HOLD stock via get_product_stock_locations(product_id) BEFORE calling SAP - correctly short-circuits with the exact user-required error 'Stock does not exist in the STO warehouse' (never leaks a raw SAP fault).",
+    "Per-line result rollup (done/partial/failed) is correct; retry_receipt_relocation properly validates receipt_status in ('received','partial') and ship_to_site_id=='P8'.",
+    "server.py: check_manual_gi_completion call no longer passes sap_goods_movement_client (matches new signature); old /stock-transfer/.../retry-receipt-relocation endpoint is fully removed (returns 404); new /inbound-receipts/{sto_id}/retry-receipt-relocation returns 400 with ValueError-derived messages.",
+    "stock_transfer_service.py: confirmed no _relocate_receipt_from_hold / retry_receipt_relocation / RECEIPT_RELOCATION_* symbols remain (module attribute check).",
+    "StockTransferPage.js OrderDetailBody: no 'Warehouse move' / 'Retry warehouse move' text or handler remains (grep-verified).",
+    "InboundReceiptsPage.js Completed tab: new 'Warehouse Move' TableHead + relocation cell with data-testids inbound-receipts-completed-relocation-{sto_id} and inbound-receipts-completed-retry-relocation-{sto_id}; verified live rendering."
+  ],
+  "updated_files": ["/app/backend/tests/test_p8_receipt_relocation_iter181.py"],
+  "success_rate": {"backend": "100% (10/10)", "frontend": "100% (Completed tab verified)"},
+  "test_credentials": "vms_session=u-8qIcJoBrX8l6ZyV2JKWMte5t5GJsd_vzm6WzC1vqc (allowed_pages now includes both stock_transfer and inbound_stock_transfer, valid 7 days)",
+  "seed_data_creation": "Two temporary STOs (TEST_UI_RELO_OK, TEST_UI_RELO_FAIL) were seeded to verify the frontend Completed tab renders relocation status correctly; both were deleted after screenshot verification. No live SAP writes were triggered.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 181 test file: /app/backend/tests/test_p8_receipt_relocation_iter181.py. Run with `python -m pytest tests/test_p8_receipt_relocation_iter181.py -o addopts=''` from /app/backend (default pytest.ini uses -n auto which errors when pytest-xdist load-balances across only ephemeral fixtures). The 'Stock does not exist in the STO warehouse' path was verified WITHOUT calling SAP - test injects a failing GM client that raises AssertionError if any attribute is accessed, and passes because the stock preflight fails first. Real happy-path P8-HOLD -> target-warehouse relocation was intentionally NOT triggered against live SAP.",
+  "rca of the issue": "N/A - fix already implemented by main agent, testing only. Verified rewiring of P8-HOLD relocation from outbound Complete-STO to inbound Receive is correct end-to-end (backend + UI)."
+}
