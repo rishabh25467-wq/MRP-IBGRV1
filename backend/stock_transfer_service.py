@@ -565,17 +565,18 @@ def _price_hsn_for_note(db, doc: dict, sap_valuation_client) -> list:
 # "Determination of source inventory failed for product X" SAP error at
 # Site P8, confirmed on multiple products/warehouses - see PRD.md/
 # STO_CONTEXT.md for the full diagnosis). ROOT CAUSE CONFIRMED (user's own
-# live screenshot of Site P8's Material Flow "Basic Rule"): Site P8 has
-# `Source Logistics Area` hardcoded to `P8-FG` - SAP's automatic outbound
-# source determination for Site P8 ONLY ever looks there, regardless of
-# where the product's real stock sits. (Site P1's same rule has Source
-# left BLANK/unrestricted - confirmed live why P1-origin transfers never
-# hit this.) First attempt targeted P8-SFG based on the user's own
-# "confirmed it works" - live-tested and DISPROVED (order 32183, stock
-# genuinely relocated there, same failure anyway) - P8-FG is the real,
-# rule-confirmed target.
+# live screenshot of Site P8's Material Flow "Basic Rule" originally
+# showed `Source Logistics Area` hardcoded to `P8-FG`). First attempt
+# targeted P8-SFG (disproved live, order 32183). Second attempt targeted
+# P8-FG per that rule (live-tested working, STO-000092/order... no error).
+# FINAL target per user's explicit correction (same session): P8-HOLD -
+# user has set up P8-HOLD as the single staging warehouse for BOTH
+# directions at Site P8 (see the mirror-image receiving-side fix,
+# _relocate_receipt_from_hold below, which moves P8-HOLD -> target on
+# the way IN). Move stock here FIRST, THEN create the STO - matches the
+# exact same pattern on the outbound side too, for consistency.
 RELOCATION_SITE_ID = "P8"
-RELOCATION_TARGET_WAREHOUSE_ID = "P8-FG"
+RELOCATION_TARGET_WAREHOUSE_ID = "P8-HOLD"
 
 
 def _relocate_items_to_p8_source_warehouse(db, sto_id: str, sap_goods_movement_client, doc: dict, items: list) -> None:

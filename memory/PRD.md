@@ -1329,6 +1329,16 @@ STOs (single-line STOs were already pure-API, unaffected, no change needed there
   immediately, no-op, when `STO_ERP_SYNC_PAUSED=true` (set in `.env` now). Flip back to `false`/remove to
   resume - single .env change, no code change needed.
 
+## Retargeted again: P8-HOLD (unified staging warehouse both directions) (Sep 18 2026, same session, final)
+- User's explicit correction: the source-side pre-STO relocation should ALSO target `P8-HOLD` (not `P8-FG`),
+  matching the receiving-side design (`_relocate_receipt_from_hold`) - P8-HOLD is now the single staging
+  warehouse for BOTH outbound (before STO creation) and inbound (after receipt, before the final move to the
+  real target) at Site P8.
+- `RELOCATION_TARGET_WAREHOUSE_ID` changed `P8-FG` -> `P8-HOLD` in `stock_transfer_service.py`.
+- Live-verified (STO-000097, P16097-B, P8-RM -> P1-SFG): relocation posted for real (GACID 278987, P8-RM ->
+  P8-HOLD), STO created cleanly in SAP (order 32233), no error.
+
+
   failed with "Determination of source inventory failed" when NOT relocated first.
 - **Not yet verified**: the full downstream flow through actual Goods Issue (still requires the existing
   manual "Save" step in SAP) - only the pre-relocation + STO creation steps were confirmed working live.
