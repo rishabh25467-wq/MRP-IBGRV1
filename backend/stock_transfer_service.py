@@ -810,60 +810,7 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_outbound_delivery
 MANUAL_GI_QTY_TOLERANCE = 0.01
 
 
-RECEIPT_RELOCATION_SITE_ID = "P8"
-RECEIPT_RELOCATION_HOLD_WAREHOUSE_ID = "P8-HOLD"
-
-
-def _relocate_receipt_from_hold(sap_goods_movement_client, doc: dict) -> dict:
-    """Sep 18 2026, user's explicit ask - mirrors _relocate_items_to_p8_source_warehouse
-    but on the RECEIVING side: user has reconfigured Site P8's Material
-    Flow Destination rule to route incoming STOs to P8-HOLD (a neutral
-    staging area) instead of wherever it would otherwise default to.
-    This moves the received quantity from P8-HOLD to the actual target
-    warehouse (`ship_to_location_id`) the user picked when creating the
-    STO. Called from check_manual_gi_completion, AFTER GI is confirmed -
-    by the time staff click "Complete STO Process" for a P8-destination
-    order, they've manually done the SAP-side receipt too (no API can
-    detect that moment - Release/PGRBackground on the Inbound Delivery
-    Notification both confirmed live "action is disabled" in this
-    tenant). Never raises - failure here must never undo the
-    already-successful GI confirmation; caller stores the result."""
-    ship_to_location_id = doc.get("ship_to_location_id")
-    if ship_to_location_id == RECEIPT_RELOCATION_HOLD_WAREHOUSE_ID:
-        return {"status": "skipped_same_warehouse"}
-    from store_approval_service import _trigger_goods_movement
-    owner_party_id, _ = company_and_set_of_books_for_site(RECEIPT_RELOCATION_SITE_ID)
-    gac_ids = []
-    for item in doc.get("items", []):
-        result = _trigger_goods_movement(
-            sap_goods_movement_client, owner_party_id, item["product_id"],
-            RECEIPT_RELOCATION_HOLD_WAREHOUSE_ID, ship_to_location_id,
-            item["requested_qty"], item["unit_code"], RECEIPT_RELOCATION_SITE_ID,
-        )
-        if not result.get("ok"):
-            return {"status": "failed", "error": result.get("error") or result.get("error_detail") or "unknown SAP error"}
-        gac_ids.append(result.get("external_id"))
-    return {"status": "done", "to": ship_to_location_id, "gac_ids": gac_ids}
-
-
-def retry_receipt_relocation(db, sap_goods_movement_client, sto_id: str) -> dict:
-    """Retry button for when _relocate_receipt_from_hold failed on the
-    first "Complete STO Process" click (e.g. receipt genuinely wasn't
-    done in SAP yet at that moment) - re-attempts without needing GI
-    itself to be re-verified (it's already posted by this point)."""
-    doc = db[STO_COLLECTION].find_one({"_id": sto_id})
-    if not doc:
-        raise StockTransferOrderNotFoundError(f"Stock Transfer Order {sto_id} not found.")
-    if doc.get("gi_status") != "posted":
-        raise StockTransferValidationError("Goods Issue must be posted before retrying the warehouse move.")
-    if doc.get("ship_to_site_id") != RECEIPT_RELOCATION_SITE_ID:
-        raise StockTransferValidationError(f"This retry only applies to Site {RECEIPT_RELOCATION_SITE_ID} destinations.")
-    result = _relocate_receipt_from_hold(sap_goods_movement_client, doc)
-    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"receipt_relocation": result}})
-    return get_stock_transfer_order(db, sto_id)
-
-
-def check_manual_gi_completion(db, sap_outbound_delivery_analytics_client, sto_id: str, sap_goods_movement_client=None) -> dict:
+def check_manual_gi_completion(db, sap_outbound_delivery_analytics_client, sto_id: str) -> dict:
     """"Complete STO Process" button (Sep 18 2026, Manual Goods Issue
     architecture shift, user's explicit ask - mirrors the Manual GRN
     "Re-check SAP" pattern already built for Supplier GRN). Staff click
@@ -912,9 +859,6 @@ def check_manual_gi_completion(db, sap_outbound_delivery_analytics_client, sto_i
             ". Correct it in SAP (or here) and try again."
         )
     _finalize_gi_posted(db, sto_id, doc, found_ids)
-    if doc.get("ship_to_site_id") == RECEIPT_RELOCATION_SITE_ID and sap_goods_movement_client:
-        result = _relocate_receipt_from_hold(sap_goods_movement_client, doc)
-        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"receipt_relocation": result}})
     return get_stock_transfer_order(db, sto_id)
 
 

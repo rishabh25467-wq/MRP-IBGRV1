@@ -53,6 +53,9 @@ import re
 from datetime import datetime, timezone
 
 import job_store
+import stock_transfer_service
+from sap_wip_clearing_client import company_and_set_of_books_for_site
+from store_approval_service import _trigger_goods_movement
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +64,72 @@ _PENDING_QUERY = {
     "gi_status": "posted",
     "receipt_status": {"$nin": ["received"]},
 }
+
+# Sep 2026, corrected placement (moved off the Outbound "Complete STO
+# Process" button where it was mistakenly wired at first - see
+# /app/memory/STO_CONTEXT.md): Site P8's Material Flow Destination rule
+# routes every incoming STO into P8-HOLD (a neutral staging area)
+# regardless of the real target warehouse picked at STO creation. Once
+# the actual SAP Goods Receipt has posted via the "Receive" button
+# above, this moves the received quantity from P8-HOLD to that real
+# target warehouse (`ship_to_location_id`).
+RECEIPT_RELOCATION_SITE_ID = "P8"
+RECEIPT_RELOCATION_HOLD_WAREHOUSE_ID = "P8-HOLD"
+
+
+def _relocate_receipt_from_hold(db, sap_goods_movement_client, doc: dict) -> dict:
+    """Called right after a Receive job's finalize_receipt confirms the
+    real SAP Goods Receipt posted (received or partial - never for a
+    fully failed receipt, nothing landed in P8-HOLD to move). Checks
+    live stock in P8-HOLD per line first - user's explicit ask - a line
+    that genuinely never received (failed delivery within a partial
+    receipt) naturally has no stock there yet, surfaced as a per-line
+    "Stock does not exist in the STO warehouse" error rather than a
+    confusing SAP rejection. Never raises - failure here must never
+    undo the already-successful receipt; caller stores the result."""
+    ship_to_location_id = doc.get("ship_to_location_id")
+    if not ship_to_location_id or ship_to_location_id == RECEIPT_RELOCATION_HOLD_WAREHOUSE_ID:
+        return {"status": "skipped_same_warehouse"}
+    items = doc.get("items") or []
+    if not items:
+        return {"status": "skipped_no_items"}
+    owner_party_id, _ = company_and_set_of_books_for_site(RECEIPT_RELOCATION_SITE_ID)
+    line_results = []
+    for item in items:
+        stock = stock_transfer_service.get_product_stock_locations(db, item["product_id"])
+        location = next((l for l in stock["locations"] if l["warehouse_id"] == RECEIPT_RELOCATION_HOLD_WAREHOUSE_ID), None)
+        if location is None or location["qty"] + 1e-6 < item["requested_qty"]:
+            line_results.append({"product_id": item["product_id"], "ok": False, "error": "Stock does not exist in the STO warehouse"})
+            continue
+        result = _trigger_goods_movement(
+            sap_goods_movement_client, owner_party_id, item["product_id"],
+            RECEIPT_RELOCATION_HOLD_WAREHOUSE_ID, ship_to_location_id,
+            item["requested_qty"], item.get("unit_of_measure") or "EA", RECEIPT_RELOCATION_SITE_ID,
+        )
+        if not result.get("ok"):
+            line_results.append({"product_id": item["product_id"], "ok": False, "error": result.get("error") or result.get("error_detail") or "unknown SAP error"})
+        else:
+            line_results.append({"product_id": item["product_id"], "ok": True, "gac_id": result.get("external_id")})
+    all_ok = all(r["ok"] for r in line_results)
+    any_ok = any(r["ok"] for r in line_results)
+    status = "done" if all_ok else ("partial" if any_ok else "failed")
+    return {"status": status, "to": ship_to_location_id, "lines": line_results}
+
+
+def retry_receipt_relocation(db, sap_goods_movement_client, sto_id: str) -> dict:
+    """Retry button on the Inbound Receipts (Completed tab) page for
+    when _relocate_receipt_from_hold failed or partially failed after a
+    successful "Receive"."""
+    doc = db[STO_COLLECTION].find_one({"_id": sto_id})
+    if not doc:
+        raise ValueError(f"Stock Transfer Order {sto_id} not found.")
+    if doc.get("receipt_status") not in ("received", "partial"):
+        raise ValueError("This order must be received before retrying the warehouse move.")
+    if doc.get("ship_to_site_id") != RECEIPT_RELOCATION_SITE_ID:
+        raise ValueError(f"This retry only applies to Site {RECEIPT_RELOCATION_SITE_ID} destinations.")
+    result = _relocate_receipt_from_hold(db, sap_goods_movement_client, doc)
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"receipt_relocation": result}})
+    return result
 
 
 def _backfill_missing_delivery_ids(db, sap_outbound_delivery_client, doc: dict) -> list:
@@ -172,6 +241,7 @@ def list_completed_receipts(db, site_id: str = None, date_from: datetime = None,
         "receipt_completed_at": doc.get("receipt_completed_at"),
         "receipt_duration_seconds": doc.get("receipt_duration_seconds"),
         "items_count": len(doc.get("items") or []),
+        "receipt_relocation": doc.get("receipt_relocation"),
     } for doc in docs]
 
 
@@ -203,7 +273,7 @@ def build_line_overrides(doc: dict, quantity_overrides: dict) -> dict:
     return result
 
 
-def finalize_receipt(db, sto_id: str, results: list, actor: str, had_overrides: bool = False, sap_username: str = None) -> dict:
+def finalize_receipt(db, sto_id: str, results: list, actor: str, had_overrides: bool = False, sap_username: str = None, sap_goods_movement_client=None) -> dict:
     """Persists the final receipt outcome after the Playwright PGR run -
     same status rollup this feature has always used. Also stamps
     `receipt_completed_at` and, when `receipt_started_at` was recorded
@@ -216,7 +286,12 @@ def finalize_receipt(db, sto_id: str, results: list, actor: str, had_overrides: 
 
     Sep 12 2026, user's explicit ask ("which user you used while
     receiving...in SAP") - `sap_username` stamps which pooled SAP UI
-    login (see playwright_concurrency.py) actually ran THIS attempt."""
+    login (see playwright_concurrency.py) actually ran THIS attempt.
+
+    Sep 2026: once the receipt genuinely lands stock (received or
+    partial - never on a full failure), immediately triggers the
+    P8-HOLD -> real target warehouse Goods Movement for Site P8
+    destinations - see _relocate_receipt_from_hold."""
     doc = db[STO_COLLECTION].find_one({"_id": sto_id}) or {}
     any_failed = any(r["status"] != "received" for r in results)
     overall = "failed" if all(r["status"] != "received" for r in results) else ("partial" if any_failed else "received")
@@ -225,7 +300,7 @@ def finalize_receipt(db, sto_id: str, results: list, actor: str, had_overrides: 
     started_at = doc.get("receipt_started_at")
     if started_at and started_at.tzinfo is None:
         started_at = started_at.replace(tzinfo=timezone.utc)
-    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
+    update = {
         "receipt_status": overall,
         "receipt_results": results,
         "receipt_error": error_summary,
@@ -234,8 +309,13 @@ def finalize_receipt(db, sto_id: str, results: list, actor: str, had_overrides: 
         "received_by": actor,
         "receipt_completed_at": now,
         "receipt_duration_seconds": round((now - started_at).total_seconds()) if started_at else None,
-    }})
-    return {"status": overall, "results": results, "had_overrides": had_overrides, "error": error_summary, "sap_username": sap_username}
+    }
+    relocation = None
+    if overall in ("received", "partial") and doc.get("ship_to_site_id") == RECEIPT_RELOCATION_SITE_ID and sap_goods_movement_client:
+        relocation = _relocate_receipt_from_hold(db, sap_goods_movement_client, doc)
+        update["receipt_relocation"] = relocation
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": update})
+    return {"status": overall, "results": results, "had_overrides": had_overrides, "error": error_summary, "sap_username": sap_username, "receipt_relocation": relocation}
 
 
 def _humanize_sap_error(raw: str) -> str:

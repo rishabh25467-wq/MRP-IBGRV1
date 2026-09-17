@@ -139,7 +139,7 @@ const DebugScreenshotsViewer = ({ stoId }) => {
   );
 };
 
-export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingErpStoId, onRetryErpSync, onManualErpLink, retryingGiStoId, onRetryGoodsIssue, completingGiStoId, onCompleteManualGi, stoppingGiStoId, onForceStopGi, retryingReceiptStoId, onRetryReceiptRelocation, isAdmin, notifications, activateResults, activatingId, confirmActivateFor, setConfirmActivateFor, onActivate }) => {
+export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingErpStoId, onRetryErpSync, onManualErpLink, retryingGiStoId, onRetryGoodsIssue, completingGiStoId, onCompleteManualGi, stoppingGiStoId, onForceStopGi, isAdmin, notifications, activateResults, activatingId, confirmActivateFor, setConfirmActivateFor, onActivate }) => {
   if (!order) return null;
   // User's explicit ask (Sep 3 2026): the "Activate this site" fix action
   // for a "No valid planning data..." rejection used to live ONLY in the
@@ -276,20 +276,6 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
             )}
             {order.gi_status === "posted" && formatDateTime(order.gi_posted_at) && (
               <p className="mt-0.5 text-xs opacity-80" data-testid="stock-transfer-detail-gi-posted-at">Posted at: {formatDateTime(order.gi_posted_at)}</p>
-            )}
-            {order.ship_to_site_id === "P8" && order.gi_status === "posted" && order.receipt_relocation && (
-              <div className="mt-1.5 flex items-center gap-2" data-testid="stock-transfer-detail-receipt-relocation">
-                {order.receipt_relocation.status === "done" || order.receipt_relocation.status === "skipped_same_warehouse" ? (
-                  <p className="text-xs">Warehouse move: P8-HOLD &rarr; {order.receipt_relocation.to || order.ship_to_location_id} done.</p>
-                ) : (
-                  <>
-                    <p className="text-xs text-[#912018]">Warehouse move failed: {order.receipt_relocation.error}</p>
-                    <Button size="sm" variant="outline" onClick={() => onRetryReceiptRelocation(order.sto_id)} disabled={retryingReceiptStoId === order.sto_id} data-testid="stock-transfer-detail-retry-receipt-relocation-button">
-                      {retryingReceiptStoId === order.sto_id ? <CircleNotch size={14} className="animate-spin mr-1" /> : null}Retry warehouse move
-                    </Button>
-                  </>
-                )}
-              </div>
             )}
             {(order.gi_status === "failed" || order.gi_status === "insufficient_stock") && <p className="mt-0.5">{parseGiError(order.gi_error) || "See logs."}</p>}
             {order.outbound_delivery_ids?.length > 0 && (order.gi_status === "posted" || order.gi_status === "failed" || order.gi_status === "awaiting_manual_gi") ? (
@@ -583,21 +569,6 @@ export default function StockTransferPage() {
       toast.error(e?.response?.data?.detail || "Could not confirm the manual Goods Issue.");
     } finally {
       setCompletingGiStoId(null);
-    }
-  };
-
-
-  const [retryingReceiptStoId, setRetryingReceiptStoId] = useState(null);
-  const handleRetryReceiptRelocation = async (stoId) => {
-    setRetryingReceiptStoId(stoId);
-    try {
-      await axios.post(`${API}/stock-transfer/orders/${stoId}/retry-receipt-relocation`);
-      toast.success("Warehouse move retried.");
-      loadRecentOrders();
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "Could not retry the warehouse move.");
-    } finally {
-      setRetryingReceiptStoId(null);
     }
   };
 
@@ -1654,7 +1625,6 @@ export default function StockTransferPage() {
                   retryingGiStoId={retryingGiStoId} onRetryGoodsIssue={handleRetryGoodsIssue}
                   completingGiStoId={completingGiStoId} onCompleteManualGi={handleCompleteManualGi}
                   stoppingGiStoId={stoppingGiStoId} onForceStopGi={handleForceStopGi} isAdmin={isAdmin}
-                  retryingReceiptStoId={retryingReceiptStoId} onRetryReceiptRelocation={handleRetryReceiptRelocation}
                   notifications={notifications} activateResults={activateResults} activatingId={activatingId}
                   confirmActivateFor={confirmActivateFor} setConfirmActivateFor={setConfirmActivateFor} onActivate={handleActivate}
                 />
@@ -1733,7 +1703,6 @@ export default function StockTransferPage() {
                 retryingGiStoId={retryingGiStoId} onRetryGoodsIssue={handleRetryGoodsIssue}
                 completingGiStoId={completingGiStoId} onCompleteManualGi={handleCompleteManualGi}
                 stoppingGiStoId={stoppingGiStoId} onForceStopGi={handleForceStopGi} isAdmin={isAdmin}
-                retryingReceiptStoId={retryingReceiptStoId} onRetryReceiptRelocation={handleRetryReceiptRelocation}
                 notifications={notifications} activateResults={activateResults} activatingId={activatingId}
                 confirmActivateFor={confirmActivateFor} setConfirmActivateFor={setConfirmActivateFor} onActivate={handleActivate}
               />

@@ -109,6 +109,20 @@ export default function InboundReceiptsPage() {
   const [completedLoading, setCompletedLoading] = useState(false);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [retryingRelocationStoId, setRetryingRelocationStoId] = useState(null);
+
+  const handleRetryReceiptRelocation = async (stoId) => {
+    setRetryingRelocationStoId(stoId);
+    try {
+      await axios.post(`${API}/inbound-receipts/${stoId}/retry-receipt-relocation`);
+      toast.success("Warehouse move retried.");
+      loadCompletedOrders();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not retry the warehouse move.");
+    } finally {
+      setRetryingRelocationStoId(null);
+    }
+  };
 
   useEffect(() => {
     axios.get(`${API}/inbound-receipts/sites`).then(({ data }) => {
@@ -562,12 +576,14 @@ export default function InboundReceiptsPage() {
                     <TableHead>Ship To</TableHead>
                     <TableHead>Received At</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead>Warehouse Move</TableHead>
                     <TableHead className="text-right">Time Taken</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {completedOrders.map((order) => {
                     const status = COMPLETED_STATUS_STYLE[order.receipt_status] || COMPLETED_STATUS_STYLE.received;
+                    const relocation = order.receipt_relocation;
                     return (
                       <TableRow key={order.sto_id} data-testid={`inbound-receipts-completed-row-${order.sto_id}`}>
                         <TableCell>
@@ -587,6 +603,27 @@ export default function InboundReceiptsPage() {
                           </span>
                           {order.receipt_error && (
                             <div className="text-xs text-[#B42318] mt-1 max-w-xs truncate" title={order.receipt_error}>{order.receipt_error}</div>
+                          )}
+                        </TableCell>
+                        <TableCell data-testid={`inbound-receipts-completed-relocation-${order.sto_id}`}>
+                          {!relocation ? (
+                            <span className="text-xs text-[#98A2B3]">—</span>
+                          ) : relocation.status === "done" || relocation.status === "skipped_same_warehouse" ? (
+                            <span className="text-xs text-[#027A48]">Moved to {relocation.to || order.ship_to_location_name}</span>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-[#B42318]" title={(relocation.lines || []).filter((l) => !l.ok).map((l) => `${l.product_id}: ${l.error}`).join("; ")}>
+                                {relocation.status === "partial" ? "Partially moved" : "Move failed"}
+                              </span>
+                              <Button
+                                size="sm" variant="outline"
+                                onClick={() => handleRetryReceiptRelocation(order.sto_id)}
+                                disabled={retryingRelocationStoId === order.sto_id}
+                                data-testid={`inbound-receipts-completed-retry-relocation-${order.sto_id}`}
+                              >
+                                {retryingRelocationStoId === order.sto_id ? <CircleNotch size={14} className="animate-spin mr-1" /> : null}Retry
+                              </Button>
+                            </div>
                           )}
                         </TableCell>
                         <TableCell className="text-right font-mono text-sm text-[#344054]" data-testid={`inbound-receipts-completed-duration-${order.sto_id}`}>

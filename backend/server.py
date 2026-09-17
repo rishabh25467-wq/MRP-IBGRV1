@@ -7524,26 +7524,12 @@ async def post_stock_transfer_complete_manual_gi(sto_id: str):
     completed the Delivery + Goods Issue themselves in SAP. See
     stock_transfer_service.check_manual_gi_completion's own docstring."""
     try:
-        doc = await asyncio.to_thread(stock_transfer_service.check_manual_gi_completion, db, sap_outbound_delivery_analytics_client, sto_id, sap_goods_movement_client)
+        doc = await asyncio.to_thread(stock_transfer_service.check_manual_gi_completion, db, sap_outbound_delivery_analytics_client, sto_id)
     except stock_transfer_service.StockTransferOrderNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except stock_transfer_service.StockTransferValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     asyncio.create_task(_run_erp_portal_sync_job(sto_id))
-    return _sto_to_response(doc)
-
-
-@api_router.post("/stock-transfer/orders/{sto_id}/retry-receipt-relocation")
-async def post_stock_transfer_retry_receipt_relocation(sto_id: str):
-    """Retry button for when the P8-HOLD -> target warehouse move (see
-    stock_transfer_service._relocate_receipt_from_hold) failed on the
-    "Complete STO Process" click - see retry_receipt_relocation."""
-    try:
-        doc = await asyncio.to_thread(stock_transfer_service.retry_receipt_relocation, db, sap_goods_movement_client, sto_id)
-    except stock_transfer_service.StockTransferOrderNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except stock_transfer_service.StockTransferValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
     return _sto_to_response(doc)
 
 
@@ -7806,7 +7792,7 @@ async def post_inbound_receipt(sto_id: str, payload: InboundReceiptRequest, requ
                     doc.get("outbound_delivery_ids") or [], line_overrides=line_overrides, progress_cb=on_progress,
                 ),
             )
-            final = await asyncio.to_thread(inbound_receipt_service.finalize_receipt, db, sto_id, pgr_result["results"], actor, bool(line_overrides), pgr_result.get("sap_username"))
+            final = await asyncio.to_thread(inbound_receipt_service.finalize_receipt, db, sto_id, pgr_result["results"], actor, bool(line_overrides), pgr_result.get("sap_username"), sap_goods_movement_client)
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
         except Exception as e:
             logger.error(f"Inbound receipt job {job_id} ({sto_id}) failed: {e}")
@@ -7830,6 +7816,18 @@ async def get_inbound_receipt_job_status(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id")
     return job
+
+
+@api_router.post("/inbound-receipts/{sto_id}/retry-receipt-relocation")
+async def post_inbound_receipt_retry_relocation(sto_id: str):
+    """Retry button on the Completed tab for when the P8-HOLD -> real
+    target warehouse move (see inbound_receipt_service._relocate_receipt_from_hold)
+    failed or partially failed after a successful "Receive"."""
+    try:
+        result = await asyncio.to_thread(inbound_receipt_service.retry_receipt_relocation, db, sap_goods_movement_client, sto_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
 
 
 # ==================== Supplier Portal (external vendors, Aug 2026) ====================
