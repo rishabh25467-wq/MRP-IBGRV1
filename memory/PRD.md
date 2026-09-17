@@ -1,3 +1,10 @@
+## FEATURE (LIVE-VERIFIED): STO detail modal now shows the backend warehouse move too, display-renamed HOLD -> MOV (Sep 2026 session, same-day follow-up)
+- **User's ask**: also show the backend relocation info in the STO detail modal (not just the list column); display it as "{SITE}-MOV" since HOLD will eventually be renamed to MOV in SAP.
+- **Fix**: `StockTransferPage.js` - new `movDisplayName()` helper (`.replace(/-HOLD$/, "-MOV")`) applied everywhere the HOLD warehouse is shown to a user - the list column, the new detail-modal banner ("Backend warehouse move: N items moved into P8-MOV" + `RelocationPopover` for item/movement breakdown), and the "awaiting manual GI" instructions text. Backend warehouse ID (`P8-HOLD`) is unchanged - display-only rename.
+- **Verified live**: STO-000101's detail modal correctly shows "Backend warehouse move: 3 items moved into P8-MOV" with a working popover (G12LW/G12NUT/G12FW -> their GM IDs). Fixed a testid collision (list row vs modal both using the same `data-testid` when shown together) by giving the modal instance its own `stock-transfer-detail-relocation-*` prefix.
+
+
+
 ## FEATURE (LIVE-VERIFIED): Outbound STO list now shows the silent P8-HOLD relocation with per-item movement IDs (Sep 2026 session, same-day follow-up)
 - **User's ask**: "you are moving stock in the backend while creation STO ex: P8D1-235. Need to add pop up view with movement & item same as you add in STO receipt."
 - **Fix**: `StockTransferPage.js` - new "Warehouse Move" column in the Recent Stock Transfer Orders table, using the same `RelocationPopover` pattern built for Inbound Receipts. Reads the existing `item.p8_relocation` field (already stored per line by `_relocate_items_to_p8_source_warehouse` in `stock_transfer_service.py`, previously never surfaced in the UI). Click "Moved to P8-HOLD" to see each item next to its own SAP Goods Movement ID; "—" when no pre-STO relocation was needed for that order. Added `e.stopPropagation()` on the trigger so it doesn't also open the row's detail modal.

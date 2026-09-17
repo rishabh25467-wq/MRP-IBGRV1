@@ -30,19 +30,25 @@ const API = `${BACKEND_URL}/api`;
 
 const formatQty = (v) => (v == null ? "—" : Number(v).toLocaleString("en-IN", { maximumFractionDigits: 3 }));
 
+// Display-only rename (user's explicit ask, Sep 2026): the backend
+// warehouse is still literally called "{SITE}-HOLD" in SAP/Mongo - this
+// only renames it to "{SITE}-MOV" wherever it's shown to a user, ahead
+// of the eventual real SAP rename.
+const movDisplayName = (id) => (id ? id.replace(/-HOLD$/, "-MOV") : id);
+
 // Popover for the pre-STO backend relocation (RAW/actual warehouse ->
 // P8-HOLD) that happens silently while creating an outbound STO from
 // Site P8 - user's explicit ask (Sep 2026): "same as you add in STO
 // receipt" - shows each moved item next to its own real SAP Goods
 // Movement ID.
-const RelocationPopover = ({ lines, to, stoId, children }) => (
+const RelocationPopover = ({ lines, to, stoId, testIdPrefix = "stock-transfer-recent-relocation", children }) => (
   <Popover>
     <PopoverTrigger asChild>
-      <button className="underline-offset-2 hover:underline text-left" onClick={(e) => e.stopPropagation()} data-testid={`stock-transfer-recent-relocation-trigger-${stoId}`}>
+      <button className="underline-offset-2 hover:underline text-left" onClick={(e) => e.stopPropagation()} data-testid={`${testIdPrefix}-trigger-${stoId}`}>
         {children}
       </button>
     </PopoverTrigger>
-    <PopoverContent className="w-72 p-3" align="start" data-testid={`stock-transfer-recent-relocation-popover-${stoId}`}>
+    <PopoverContent className="w-72 p-3" align="start" data-testid={`${testIdPrefix}-popover-${stoId}`}>
       <p className="text-xs font-semibold text-[#101828] mb-2">Warehouse Move &rarr; {to}</p>
       <table className="w-full text-xs">
         <thead>
@@ -274,6 +280,23 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
         </div>
       )}
 
+      {(() => {
+        const relocatedLines = (order.items || []).filter((it) => it.p8_relocation).map((it) => ({ product_id: it.product_id, gac_id: it.p8_relocation.gac_id }));
+        const relocationTo = movDisplayName((order.items || []).find((it) => it.p8_relocation)?.p8_relocation?.to);
+        if (relocatedLines.length === 0) return null;
+        return (
+          <div className="bg-[#EFF8FF] border border-[#B2DDFF] rounded-sm p-3 text-sm text-[#175CD3] flex items-start gap-2" data-testid="stock-transfer-detail-relocation">
+            <ArrowsClockwise size={16} className="mt-0.5 shrink-0" />
+            <div>
+              <p className="font-bold">Backend warehouse move: {relocatedLines.length} item{relocatedLines.length === 1 ? "" : "s"} moved into {relocationTo}.</p>
+              <RelocationPopover lines={relocatedLines} to={relocationTo} stoId={order.sto_id} testIdPrefix="stock-transfer-detail-relocation">
+                <span className="text-xs underline mt-0.5 inline-block">View item &amp; movement details</span>
+              </RelocationPopover>
+            </div>
+          </div>
+        );
+      })()}
+
       {order.status === "created_in_sap" && (
         <div
           className={`rounded-sm p-3 text-sm flex items-start gap-2 ${
@@ -300,7 +323,7 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
               <p className="mt-0.5 text-xs opacity-80" data-testid="stock-transfer-detail-manual-gi-instructions">
                 In SAP, find this order{order.gi_delivery_request_id ? ` (Delivery Request ${order.gi_delivery_request_id})` : order.sap_order_id ? ` (Order ${formatSapId(order.sap_order_id)})` : ""}
                 {order.outbound_delivery_ids?.length > 0 ? `, open Delivery ${order.outbound_delivery_ids.join(", ")}` : ", create its Delivery"}, fill Vehicle No./Transportation Mode/Place Of Supply/G.R No./Date Of Supply/Freight Forwarder, then post Goods Issue.
-                {order.ship_to_site_id === "P8" ? " Then complete the Inbound STO Receipt at Site P8 (it will land in P8-HOLD)." : ""} Then click "Complete STO Process" below.
+                {order.ship_to_site_id === "P8" ? ` Then complete the Inbound STO Receipt at Site P8 (it will land in ${movDisplayName("P8-HOLD")}).` : ""} Then click "Complete STO Process" below.
               </p>
             )}
             {!["posted", "failed", "not_found_timeout", "insufficient_stock", "awaiting_manual_gi"].includes(order.gi_status) && (
@@ -1559,7 +1582,7 @@ export default function StockTransferPage() {
                     ? { label: "Pending", className: "bg-[#FEF0C7] text-[#93370D]" }
                     : null;
                   const relocatedLines = (o.items || []).filter((it) => it.p8_relocation).map((it) => ({ product_id: it.product_id, gac_id: it.p8_relocation.gac_id }));
-                  const relocationTo = (o.items || []).find((it) => it.p8_relocation)?.p8_relocation?.to;
+                  const relocationTo = movDisplayName((o.items || []).find((it) => it.p8_relocation)?.p8_relocation?.to);
                   return (
                     <tr
                       key={o.sto_id}
