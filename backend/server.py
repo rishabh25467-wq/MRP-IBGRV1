@@ -8858,10 +8858,12 @@ async def post_admin_grn_fetch_inbound_delivery(doc_code: str, request: Request)
             match = await asyncio.to_thread(supplier_shipment_service.fetch_inbound_delivery_ids_from_sap, doc, sap_inbound_delivery_report_client)
             if not match["found"]:
                 raise Exception("; ".join(match["errors"]) or "No matching confirmation found in SAP")
+            owner_party_id, _ = company_and_set_of_books_for_site(doc.get("site_id")) if doc.get("site_id") else (None, None)
             updated = None
             for po_number, inbound_delivery_id in match["found"].items():
                 updated = await asyncio.to_thread(
                     supplier_shipment_service.manually_confirm_inbound_delivery, db, doc_code, po_number, inbound_delivery_id, actor,
+                    sap_goods_movement_client, sap_inventory_client, owner_party_id,
                 )
             updated = await _attach_grn_display_fields(updated)
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "result": {"shipment": updated, "warnings": match["errors"]}, "error": None})

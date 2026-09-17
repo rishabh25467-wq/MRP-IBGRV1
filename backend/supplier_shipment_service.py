@@ -736,9 +736,25 @@ def list_shipments_for_vendor(db, vendor_code: str) -> list:
     return list(db[SHIPMENTS_COLLECTION].find({"vendor_code": vendor_code}).sort("created_at", -1))
 
 
+def _with_display_notification_ids(doc: dict) -> dict:
+    """Sep 2026, user's explicit ask ("add a column...so user can
+    easily find in SAP") - every approved shipment's real SAP reference
+    is this exact composite ID (see _build_notification_id) whether it
+    went through the manual-notification path (which already stores
+    it) or the auto/Playwright path (which builds and uses the
+    identical ID inline but never persists it) - computed here on
+    read, display-only, so the GRN screen can show it either way."""
+    if doc.get("status") == "approved" and not doc.get("manual_gr_notification_ids"):
+        doc["manual_gr_notification_ids"] = {
+            po: _build_notification_id(doc.get("supplier_doc_num"), doc["_id"], po)
+            for po in {it["po_number"] for it in doc.get("items", [])}
+        }
+    return doc
+
+
 def list_shipments(db, status: str = None) -> list:
     query = {"status": status} if status else {}
-    return list(db[SHIPMENTS_COLLECTION].find(query).sort("created_at", -1))
+    return [_with_display_notification_ids(doc) for doc in db[SHIPMENTS_COLLECTION].find(query).sort("created_at", -1)]
 
 
 def get_shipment_by_code(db, doc_code: str) -> dict:
@@ -748,7 +764,7 @@ def get_shipment_by_code(db, doc_code: str) -> dict:
     buyer_code = shipment_buyer_code(doc)
     doc["buyer_code"] = buyer_code
     doc["buyer_entity_name"] = sap_po_client.buyer_entity_name(buyer_code) if buyer_code else None
-    return doc
+    return _with_display_notification_ids(doc)
 
 
 def reject_shipment(db, doc_code: str, rejected_by: str, reason: str) -> dict:
@@ -1360,7 +1376,20 @@ def fetch_inbound_delivery_ids_from_sap(doc: dict, report_client) -> dict:
     PO (a bill number typo/reuse could otherwise silently match the
     wrong delivery). Returns {"found": {po_number: inbound_delivery_id},
     "errors": [str, ...]} - never raises for a single PO's no-match/
-    ambiguous case, so a multi-PO shipment can still get partial results."""
+    ambiguous case, so a multi-PO shipment can still get partial results.
+
+    Bug fix (real user report, Sep 2026, shipment S7KKXU/PO 29685 -
+    "having issue while fetching inbound number"): this always searched
+    by the bare `supplier_doc_num` alone, but that's never the actual
+    reference SAP has on file for a Delivery Notification/GR posted
+    under either the manual-notification path OR the current auto/
+    Playwright path (both build and submit the composite
+    `_build_notification_id` string, e.g. "Test/2535/235-S7KKXU-29685" -
+    see that function's own docstring) - so a bare-bill-number search
+    could never match, even after the real SAP-side posting was done.
+    Now tries the real composite reference first, falling back to the
+    bare bill number for any shipment created before that convention
+    existed."""
     supplier_doc_num = (doc.get("supplier_doc_num") or "").strip()
     if not supplier_doc_num:
         raise ShipmentValidationError("This shipment has no supplier bill number on file to match against SAP")
@@ -1368,15 +1397,18 @@ def fetch_inbound_delivery_ids_from_sap(doc: dict, report_client) -> dict:
     found, errors = {}, []
     for po_number in po_numbers:
         product_ids = {it["product_id"] for it in doc["items"] if it["po_number"] == po_number}
+        reference = _build_notification_id(supplier_doc_num, doc["_id"], po_number)
         try:
-            rows = report_client.find_confirmation_rows(po_number, supplier_doc_num)
+            rows = report_client.find_confirmation_rows(po_number, reference)
+            if not rows:
+                rows = report_client.find_confirmation_rows(po_number, supplier_doc_num)
         except Exception as e:
             errors.append(f"PO {po_number}: SAP query failed - {e}")
             continue
         matched_rows = [r for r in rows if r.get("CPRODUCT_UUID") in product_ids]
         delivery_ids = {r["CDELIVERY_UUID"] for r in matched_rows if r.get("CDELIVERY_UUID")}
         if not delivery_ids:
-            errors.append(f"PO {po_number}: no matching confirmation found in SAP yet for bill '{supplier_doc_num}'")
+            errors.append(f"PO {po_number}: no matching confirmation found in SAP yet for bill '{supplier_doc_num}' (checked reference '{reference}' too)")
         else:
             # Sep 16 2026 bug fix (real user report: "once I fetch from
             # SAP, the Inbound Delivery # should fill" - it wasn't).
@@ -1396,7 +1428,8 @@ def fetch_inbound_delivery_ids_from_sap(doc: dict, report_client) -> dict:
     return {"found": found, "errors": errors}
 
 
-def manually_confirm_inbound_delivery(db, doc_code: str, po_number: str, inbound_delivery_id: str, confirmed_by: str) -> dict:
+def manually_confirm_inbound_delivery(db, doc_code: str, po_number: str, inbound_delivery_id: str, confirmed_by: str,
+                                       goods_movement_client=None, inventory_client=None, owner_party_id: str = None) -> dict:
     """Applies a staff-triggered SAP-confirmed Inbound Delivery ID onto
     one PO's entry in the shipment's sap_gr_result.per_po (see
     fetch_inbound_delivery_ids_from_sap) - flips that PO's own status to
@@ -1404,7 +1437,19 @@ def manually_confirm_inbound_delivery(db, doc_code: str, po_number: str, inbound
     automated Playwright success everywhere in the UI). Only flips the
     shipment's OVERALL sap_sync_status to "posted" once every PO on the
     shipment has posted (mirrors finalize_goods_receipt's all-or-nothing
-    rule) - a multi-PO shipment with one PO still failed stays as-is."""
+    rule) - a multi-PO shipment with one PO still failed stays as-is.
+
+    Bug fix (user's explicit ask, Sep 2026: "if fetching success then
+    move it to the RM warehouse") - this used to only ever update
+    sap_gr_result/sap_sync_status and left step 2 (the actual Goods
+    Movement into the shipment's chosen warehouse) undone forever, since
+    unlike finalize_goods_receipt/check_manual_gr_quantities (the other
+    two ways a GR can be confirmed) it never called
+    _post_goods_movement_for_items at all. Now runs it once every PO on
+    the shipment is confirmed posted (same all-or-nothing timing as
+    those two), skipped if it already ran (sap_movement_status=="posted")
+    so re-fetching an already-fully-confirmed shipment can't double-move
+    stock."""
     doc = get_shipment_by_code(db, doc_code)
     per_po = list((doc.get("sap_gr_result") or {}).get("per_po") or [])
     now = datetime.now(timezone.utc).isoformat()
@@ -1421,8 +1466,11 @@ def manually_confirm_inbound_delivery(db, doc_code: str, po_number: str, inbound
         per_po.append(entry)
     all_ok = bool(per_po) and all(p.get("status") == "posted" for p in per_po)
     sap_sync_status = "posted" if all_ok else doc.get("sap_sync_status")
-    db[SHIPMENTS_COLLECTION].update_one(
-        {"_id": doc["_id"]},
-        {"$set": {"sap_gr_result": {"ok": all_ok, "per_po": per_po}, "sap_sync_status": sap_sync_status}},
-    )
+    update = {"sap_gr_result": {"ok": all_ok, "per_po": per_po}, "sap_sync_status": sap_sync_status}
+    if all_ok and doc.get("sap_movement_status") != "posted" and goods_movement_client and doc.get("site_id") and doc.get("warehouse_id"):
+        skipped_line_items = _skipped_line_items_from_gr_results(doc, per_po)
+        sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id, doc["site_id"], doc["warehouse_id"], skipped_line_items)
+        update["sap_movement_status"] = "posted" if sap_movement_result.get("ok") else "pending"
+        update["sap_movement_result"] = sap_movement_result
+    db[SHIPMENTS_COLLECTION].update_one({"_id": doc["_id"]}, {"$set": update})
     return get_shipment_by_code(db, doc_code)

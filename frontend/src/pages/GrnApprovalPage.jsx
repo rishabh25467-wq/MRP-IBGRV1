@@ -9,6 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
@@ -27,6 +28,41 @@ const STATUS_BADGE = {
   approved: { label: "Received", className: "bg-[#ECFDF3] text-[#027A48] border border-[#ABEFC6] rounded-sm" },
   rejected: { label: "Rejected", className: "bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA] rounded-sm" },
 };
+
+// Warehouse-move item/movement-ID breakdown popover (user's explicit
+// ask, Sep 2026) - same pattern already used on the STO pages, applied
+// here to sap_movement_result.per_item (product_id + the real SAP
+// Goods Movement external_id/error per line).
+const MovementPopover = ({ items, warehouseLabel, docCode, children }) => (
+  <Popover>
+    <PopoverTrigger asChild>
+      <button className="underline-offset-2 hover:underline text-left" onClick={(e) => e.stopPropagation()} data-testid={`grn-movement-popover-trigger-${docCode}`}>
+        {children}
+      </button>
+    </PopoverTrigger>
+    <PopoverContent className="w-72 p-3" align="start" data-testid={`grn-movement-popover-${docCode}`}>
+      <p className="text-xs font-semibold text-[#101828] mb-2">Warehouse Move{warehouseLabel ? ` — ${warehouseLabel}` : ""}</p>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-[#667085]">
+            <th className="text-left font-medium py-1">Item</th>
+            <th className="text-right font-medium py-1">Movement</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((it, i) => (
+            <tr key={`${it.product_id}-${i}`} className="border-t border-[#EAECF0]">
+              <td className="py-1.5 pr-2 font-mono text-[#344054]">{it.product_id}</td>
+              <td className="py-1.5 text-right font-mono">
+                {it.ok !== false && it.external_id ? <span className="text-[#027A48]">GM {it.external_id}</span> : it.skipped ? <span className="text-[#667085]">{it.note || "Skipped"}</span> : <span className="text-[#B42318]">{it.error || "Failed"}</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </PopoverContent>
+  </Popover>
+);
 
 // Sep 10 2026, user's explicit ask: "do not show status received until
 // the SAP inbound number is received" - internal `status` becomes
@@ -1235,13 +1271,14 @@ export default function GrnApprovalPage() {
                     <th className="border border-[#D0D5DD] p-1.5 text-left">Printed PO #</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-left">Supplier Invoice No</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-left">SAP Inbound Delivery #</th>
+                    <th className="border border-[#D0D5DD] p-1.5 text-left">SAP Reference</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-left">SAP Status</th>
                     <th className="border border-[#D0D5DD] p-1.5 text-left">Approved</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredConfirmed.length === 0 && (
-                    <tr><td colSpan={8} className="border border-[#D0D5DD] px-3 py-6 text-center text-[#475467]" data-testid="grn-confirmed-empty">{confirmed.length === 0 ? "No confirmed GRNs yet." : "No confirmed GRNs match your search."}</td></tr>
+                    <tr><td colSpan={9} className="border border-[#D0D5DD] px-3 py-6 text-center text-[#475467]" data-testid="grn-confirmed-empty">{confirmed.length === 0 ? "No confirmed GRNs yet." : "No confirmed GRNs match your search."}</td></tr>
                   )}
                   {filteredConfirmed.map((s) => (
                     <tr key={s._id} className="cursor-pointer bg-white odd:bg-[#F9FAFB] hover:bg-[#F0F4F8] transition-colors duration-150" onClick={() => setConfirmedDetail(s)} data-testid={`grn-confirmed-row-${s._id}`}>
@@ -1273,6 +1310,11 @@ export default function GrnApprovalPage() {
                           </span>
                         )}
                       </td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data text-[#475467]" data-testid={`grn-confirmed-sap-reference-${s._id}`}>
+                        {Object.keys(s.manual_gr_notification_ids || {}).length > 0
+                          ? [...new Set(Object.values(s.manual_gr_notification_ids))].join(", ")
+                          : "\u2014"}
+                      </td>
                       <td className="border border-[#D0D5DD] px-2 py-1" data-testid={`grn-confirmed-sap-status-${s._id}`}>
                         {s.sap_sync_status === "posted" ? (
                           <Badge className="bg-[#ECFDF3] text-[#027A48] border border-[#ABEFC6]">Posted</Badge>
@@ -1284,6 +1326,15 @@ export default function GrnApprovalPage() {
                           <Badge className="bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA]">Qty Mismatch</Badge>
                         ) : (
                           <Badge className="bg-[#FFFAEB] text-[#B54708] border border-[#FEDF89]">In Process</Badge>
+                        )}
+                        {s.sap_movement_result?.per_item?.length > 0 && (
+                          <div className="mt-1" data-testid={`grn-confirmed-movement-${s._id}`}>
+                            <MovementPopover items={s.sap_movement_result.per_item} warehouseLabel={s.warehouse_id} docCode={s._id}>
+                              <span className={`text-[11px] ${s.sap_movement_status === "posted" ? "text-[#027A48]" : "text-[#B54708]"}`}>
+                                {s.sap_movement_status === "posted" ? `Moved to ${s.warehouse_id}` : "Warehouse move pending"}
+                              </span>
+                            </MovementPopover>
+                          </div>
                         )}
                       </td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-[#475467]">{s.approved_at ? new Date(s.approved_at).toLocaleString() : "\u2014"}</td>
