@@ -35,7 +35,16 @@ UNVERIFIED end-to-end as a REAL create+release (Sep 2026) - the user
 must review the first live MaintainBundle call's result before this is
 trusted for unattended use in the general GRN flow (only
 CheckMaintainBundle has been confirmed safe to call freely, since it
-never commits anything to SAP)."""
+never commits anything to SAP).
+
+Sep 18 2026 fix: added the required `<ProcessingTypeCode>SD</ProcessingTypeCode>`
+field (was missing entirely) - confirmed via SAP's own official docs
+(help.sap.com PSM_ISI_R_II_MANAGE_STAND_INB_NOTIF_IN, "ProcessingTypeCode
+(always SD for standard notifications)"). Several other field-name
+variants were floated during this investigation (VendorInternalID,
+SellerParty/InternalID, BaseQty, ProcessingTypeCode=185/188, etc.) but
+none matched SAP's documented schema and were NOT used here - this
+module sticks to the officially documented element names only."""
 import re
 from xml.sax.saxutils import escape
 
@@ -72,6 +81,7 @@ _ENVELOPE_TEMPLATE = """<?xml version="1.0" encoding="utf-8"?>
  <BasicMessageHeader/>
  <StandardInboundDeliveryNotification actionCode="01" releaseDocumentIndicator="{release}">
   <DeliveryNotificationID>{notification_id}</DeliveryNotificationID>
+  <ProcessingTypeCode>SD</ProcessingTypeCode>
   <DeliveryDate>
    <StartDateTime timeZoneCode="UTC">{delivery_date}T00:00:00Z</StartDateTime>
    <EndDateTime timeZoneCode="UTC">{delivery_date}T23:59:59Z</EndDateTime>
