@@ -609,7 +609,14 @@ export default function InboundReceiptsPage() {
                           {!relocation ? (
                             <span className="text-xs text-[#98A2B3]">—</span>
                           ) : relocation.status === "done" || relocation.status === "skipped_same_warehouse" ? (
-                            <span className="text-xs text-[#027A48]">Moved to {relocation.to || order.ship_to_location_name}</span>
+                            <span className="text-xs text-[#027A48]">
+                              Moved to {relocation.to || order.ship_to_location_name}
+                              {(relocation.lines || []).filter((l) => l.gac_id).length > 0 && (
+                                <span className="text-[#667085] font-mono ml-1">
+                                  (GM {(relocation.lines || []).filter((l) => l.gac_id).map((l) => l.gac_id).join(", ")})
+                                </span>
+                              )}
+                            </span>
                           ) : (
                             <div className="flex items-center gap-2">
                               <span className="text-xs text-[#B42318]" title={(relocation.lines || []).filter((l) => !l.ok).map((l) => `${l.product_id}: ${l.error}`).join("; ")}>

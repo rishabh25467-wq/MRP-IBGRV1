@@ -1,3 +1,10 @@
+## FEATURE (self-verified via screenshot, live data): Warehouse Move column now shows the Goods Movement ID (Sep 2026 session, same-day follow-up)
+- **User's ask**: show the Goods Movement ID next to the "Moved to <warehouse>" text on the Inbound Receipts Completed tab.
+- **Fix**: `InboundReceiptsPage.js` - the green "Moved to..." text now appends `(GM <gac_id>, ...)` using the `gac_id`s already returned per line in `receipt_relocation.lines`.
+- **Verified live**: STO-000098/STO-000099 correctly show "Moved to P8-RM (GM 279080, 279091)" / "Moved to P8-SFG (GM 279112, 279094)". No overflow at 1920px or 390px.
+
+
+
 ## BUG FIX (LIVE-VERIFIED, real SAP write): "Post Goods Receipt is disabled...needs manual SAP Basis intervention" was a false alarm for already-Received deliveries (Sep 2026 session)
 - **User's report**: STO-000098 / delivery P1D1-544 failed to receive with this error.
 - **Root cause, confirmed live via a diagnostic Playwright run**: the delivery's own SAP status was already `Delivery Notification Status: Received`, `Delivery Status: Finished`, `Consistency Status: Consistent` - the Goods Receipt had ALREADY posted in SAP (likely from an earlier attempt whose own post-success re-check, under a different pooled SAP UI login with a different saved list-view state, didn't see the row disappear as expected). "Post Goods Receipt" was disabled simply because there was nothing left to post - not corruption.
