@@ -629,33 +629,53 @@ export default function SupplierDashboardPage() {
       )}
 
       <Dialog open={reviewOpen} onOpenChange={setReviewOpen}>
-        <DialogContent className="rounded-sm max-w-lg" data-testid="supplier-review-dialog">
+        <DialogContent className="rounded-sm max-w-3xl" data-testid="supplier-review-dialog">
           <DialogHeader>
             <DialogTitle className="font-heading">Review Shipment</DialogTitle>
             <DialogDescription>Confirm the items and quantities before generating your shipment code.</DialogDescription>
           </DialogHeader>
-          <div className="max-h-72 overflow-y-auto divide-y divide-[#E2E8F0]">
-            {cartItems.map((c) => (
-              <div key={c.key} className="flex items-center gap-2 py-2" data-testid={`supplier-review-row-${c.key}`}>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium truncate">{c.description || c.item_number}</div>
-                  <div className="text-xs text-[#475569] font-data" data-testid={`supplier-review-row-meta-${c.key}`}>
-                    PO {c.po_number} · Item {c.item_number} · Item Code: {c.product_id || "—"} · Ship To: {c.ship_to_site_id || "—"} · Open Qty: {c.remaining_qty ?? "—"} {c.unit_of_measure}
-                  </div>
-                </div>
-                <Input
-                  type="number"
-                  value={c.ship_qty}
-                  onChange={(e) => updateCartQty(c.key, e.target.value)}
-                  className="h-8 w-24 text-right rounded-sm border-[#E2E8F0] text-xs"
-                  data-testid={`supplier-review-qty-input-${c.key}`}
-                />
-                <span className="text-xs text-[#475569] w-10">{c.unit_of_measure}</span>
-                <button onClick={() => removeFromCart(c.key)} className="text-[#991B1B] hover:bg-[#991B1B]/10 rounded-sm p-1" data-testid={`supplier-review-remove-${c.key}`}>
-                  <X size={14} />
-                </button>
-              </div>
-            ))}
+          <div className="max-h-72 overflow-y-auto overflow-x-auto border border-[#E2E8F0] rounded-sm">
+            <table className="w-full text-xs">
+              <thead className="bg-[#F8FAFC] sticky top-0">
+                <tr>
+                  <th className="border-b border-[#E2E8F0] p-1.5 text-left whitespace-nowrap">PO / Item</th>
+                  <th className="border-b border-[#E2E8F0] p-1.5 text-left whitespace-nowrap">Item Code</th>
+                  <th className="border-b border-[#E2E8F0] p-1.5 text-left">Description</th>
+                  <th className="border-b border-[#E2E8F0] p-1.5 text-left whitespace-nowrap">Ship To</th>
+                  <th className="border-b border-[#E2E8F0] p-1.5 text-right whitespace-nowrap">Open Qty</th>
+                  <th className="border-b border-[#E2E8F0] p-1.5 text-right whitespace-nowrap">Ship Qty</th>
+                  <th className="border-b border-[#E2E8F0] p-1.5"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {cartItems.map((c) => (
+                  <tr key={c.key} className="border-t border-[#E2E8F0]" data-testid={`supplier-review-row-${c.key}`}>
+                    <td className="px-1.5 py-1.5 font-data whitespace-nowrap">PO {c.po_number} · {c.item_number}</td>
+                    <td className="px-1.5 py-1.5 font-data whitespace-nowrap" data-testid={`supplier-review-row-meta-${c.key}`}>{c.product_id || "—"}</td>
+                    <td className="px-1.5 py-1.5">{c.description || "—"}</td>
+                    <td className="px-1.5 py-1.5 font-data whitespace-nowrap">{c.ship_to_site_id || "—"}</td>
+                    <td className="px-1.5 py-1.5 text-right font-data whitespace-nowrap text-[#475569]">{c.remaining_qty ?? "—"} {c.unit_of_measure}</td>
+                    <td className="px-1.5 py-1.5">
+                      <div className="flex items-center justify-end gap-1">
+                        <Input
+                          type="number"
+                          value={c.ship_qty}
+                          onChange={(e) => updateCartQty(c.key, e.target.value)}
+                          className="h-8 w-20 text-right rounded-sm border-[#E2E8F0] text-xs"
+                          data-testid={`supplier-review-qty-input-${c.key}`}
+                        />
+                        <span className="text-[#475569] w-8">{c.unit_of_measure}</span>
+                      </div>
+                    </td>
+                    <td className="px-1.5 py-1.5 text-center">
+                      <button onClick={() => removeFromCart(c.key)} className="text-[#991B1B] hover:bg-[#991B1B]/10 rounded-sm p-1" data-testid={`supplier-review-remove-${c.key}`}>
+                        <X size={14} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
           <div className="flex justify-end gap-2 mt-2">
             <Button variant="outline" className="rounded-sm" onClick={() => setReviewOpen(false)}>Cancel</Button>

@@ -1,3 +1,10 @@
+## FEATURE (LIVE-VERIFIED): Review Shipment redesigned as a proper table (Sep 2026 session, same-day follow-up)
+- **User's ask**: the cramped, wrapping text list in Review Shipment was hard to read - shared a screenshot of the "PO 29685 · Item 1 · Item Code: SH10.0HR · Ship To: — · Open Qty: 12 KGM" style rows.
+- **Fix**: `SupplierDashboardPage.jsx` - replaced the per-item div/text-wrap rows with a proper table (PO/Item, Item Code, Description, Ship To, Open Qty, Ship Qty input, remove) - same pattern as the PO Detail modal. Dialog widened to `max-w-3xl` to fit it.
+- **Verified live**: clean, aligned columns on desktop; horizontally scrollable on mobile (like the app's other data tables) with all data still visible.
+
+
+
 ## FEATURE (LIVE-VERIFIED): "Ship To" location added to Open Orders table, PO Detail modal, Review Shipment view (Sep 2026 session, same-day follow-up)
 - **User's ask**: "Add ship to location in Open order table, all PO table, review shipment view."
 - **Fix**: `SupplierDashboardPage.jsx` - new "Ship To" column in the main Open POs table (works for both "Open Only"/"All" toggle since it's the same table), new "Ship To" column in the PO Detail modal (shows every line of one PO), and "Ship To: {site}" added to the Review Shipment dialog's item meta line. Reads the existing `ship_to_site_id` field already parsed from SAP on every cached PO item - display-only addition, no backend change needed.
