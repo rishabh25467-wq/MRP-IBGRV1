@@ -1,3 +1,10 @@
+## FEATURE (self-verified via screenshot, live data): Warehouse Move popover shows per-item movement ID breakdown (Sep 2026 session, same-day follow-up)
+- **User's ask**: "show popview of movement (item with movement id)".
+- **Fix**: `InboundReceiptsPage.js` - new `RelocationPopover` component (shadcn Popover) wraps the "Moved to <warehouse>" / "Partially moved" / "Move failed" label on the Completed tab; clicking it opens a small table of every line's Product ID next to its own Goods Movement ID (green "GM <id>") or its own failure reason (red), instead of one flat summary line.
+- **Verified live**: STO-000100's popover correctly shows G12LW→GM 279115, G12FW→GM 279116, G12NUT→GM 279143. No overflow at 1920px/390px.
+
+
+
 ## BUG FIX (LIVE-VERIFIED, real SAP write): "Partially moved" false positive on Warehouse Move - stale local cache, not real SAP state (Sep 2026 session, same-day follow-up)
 - **User's report**: STO-000100 showed "Received" but "Partially moved" on the Warehouse Move column.
 - **Root cause**: `inbound_receipt_service._relocate_receipt_from_hold` pre-checked P8-HOLD stock via `stock_transfer_service.get_product_stock_locations`, which reads the local `inventory_cache` collection - refreshed only every couple of HOURS. Run immediately after a real Goods Receipt lands stock in P8-HOLD, that cache hasn't caught up yet - 2 of STO-000100's 3 genuinely-received lines (G12LW, G12FW) were wrongly blocked as "Stock does not exist" while SAP itself already had the stock (only G12NUT happened to already be cached).

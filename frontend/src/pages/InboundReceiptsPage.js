@@ -10,6 +10,7 @@ import { Toaster, toast } from "@/components/ui/sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
@@ -78,6 +79,41 @@ const jobBadge = (job, nowMs) => {
   }
   return { icon: CircleNotch, cls: "text-[#0B6B74]", iconCls: "animate-spin", label: "Processing", detail: etaText(job, nowMs) };
 };
+
+// Per-line breakdown popover for the "Warehouse Move" column (user's
+// explicit ask) - shows each item alongside its own real SAP Goods
+// Movement ID (success) or its own failure reason, instead of a single
+// summary line that hides which item got which movement.
+const RelocationPopover = ({ relocation, stoId, children }) => (
+  <Popover>
+    <PopoverTrigger asChild>
+      <button className="underline-offset-2 hover:underline text-left" data-testid={`inbound-receipts-completed-relocation-trigger-${stoId}`}>
+        {children}
+      </button>
+    </PopoverTrigger>
+    <PopoverContent className="w-72 p-3" align="start" data-testid={`inbound-receipts-completed-relocation-popover-${stoId}`}>
+      <p className="text-xs font-semibold text-[#101828] mb-2">Warehouse Move — {relocation.to}</p>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-[#667085]">
+            <th className="text-left font-medium py-1">Item</th>
+            <th className="text-right font-medium py-1">Movement</th>
+          </tr>
+        </thead>
+        <tbody>
+          {(relocation.lines || []).map((l) => (
+            <tr key={l.product_id} className="border-t border-[#EAECF0]">
+              <td className="py-1.5 pr-2 font-mono text-[#344054]">{l.product_id}</td>
+              <td className="py-1.5 text-right font-mono">
+                {l.ok ? <span className="text-[#027A48]">GM {l.gac_id}</span> : <span className="text-[#B42318]">{l.error}</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </PopoverContent>
+  </Popover>
+);
 
 // Inbound STO Receipt (Aug 28 2026) - lets any logged-in user receive a
 // multi-line STO in one click instead of the SAP UI showing one row per
@@ -608,20 +644,19 @@ export default function InboundReceiptsPage() {
                         <TableCell data-testid={`inbound-receipts-completed-relocation-${order.sto_id}`}>
                           {!relocation ? (
                             <span className="text-xs text-[#98A2B3]">—</span>
-                          ) : relocation.status === "done" || relocation.status === "skipped_same_warehouse" ? (
-                            <span className="text-xs text-[#027A48]">
-                              Moved to {relocation.to || order.ship_to_location_name}
-                              {(relocation.lines || []).filter((l) => l.gac_id).length > 0 && (
-                                <span className="text-[#667085] font-mono ml-1">
-                                  (GM {(relocation.lines || []).filter((l) => l.gac_id).map((l) => l.gac_id).join(", ")})
-                                </span>
-                              )}
-                            </span>
+                          ) : relocation.status === "skipped_same_warehouse" ? (
+                            <span className="text-xs text-[#667085]">Received directly into {relocation.to || order.ship_to_location_name}</span>
+                          ) : relocation.status === "done" ? (
+                            <RelocationPopover relocation={relocation} stoId={order.sto_id}>
+                              <span className="text-xs text-[#027A48]">Moved to {relocation.to}</span>
+                            </RelocationPopover>
                           ) : (
                             <div className="flex items-center gap-2">
-                              <span className="text-xs text-[#B42318]" title={(relocation.lines || []).filter((l) => !l.ok).map((l) => `${l.product_id}: ${l.error}`).join("; ")}>
-                                {relocation.status === "partial" ? "Partially moved" : "Move failed"}
-                              </span>
+                              <RelocationPopover relocation={relocation} stoId={order.sto_id}>
+                                <span className="text-xs text-[#B42318]">
+                                  {relocation.status === "partial" ? "Partially moved" : "Move failed"}
+                                </span>
+                              </RelocationPopover>
                               <Button
                                 size="sm" variant="outline"
                                 onClick={() => handleRetryReceiptRelocation(order.sto_id)}
