@@ -575,31 +575,40 @@ def _price_hsn_for_note(db, doc: dict, sap_valuation_client) -> list:
 # _relocate_receipt_from_hold below, which moves P8-HOLD -> target on
 # the way IN). Move stock here FIRST, THEN create the STO - matches the
 # exact same pattern on the outbound side too, for consistency.
-RELOCATION_SITE_ID = "P8"
-RELOCATION_TARGET_WAREHOUSE_ID = "P8-HOLD"
+#
+# Sep 17 2026, user's explicit ask - generalized from P8-only to every
+# site: user confirmed live they've had SAP Basis create the same
+# "{SITE}-HOLD" staging warehouse (P1-HOLD, P2-HOLD, P3-HOLD, ...) at
+# every site, specifically so this same workaround applies everywhere,
+# not just P8. No hardcoded site check anymore - runs for any
+# ship_from_site_id as long as sap_goods_movement_client is available.
+def _relocation_hold_warehouse_id(site_id: str) -> str:
+    return f"{(site_id or '').strip().upper()}-HOLD"
 
 
-def _relocate_items_to_p8_source_warehouse(db, sto_id: str, sap_goods_movement_client, doc: dict, items: list) -> None:
+def _relocate_items_to_source_hold_warehouse(db, sto_id: str, sap_goods_movement_client, doc: dict, items: list) -> None:
     from store_approval_service import _trigger_goods_movement
 
-    owner_party_id, _ = company_and_set_of_books_for_site(RELOCATION_SITE_ID)
+    site_id = doc["ship_from_site_id"]
+    hold_warehouse_id = _relocation_hold_warehouse_id(site_id)
+    owner_party_id, _ = company_and_set_of_books_for_site(site_id)
     relocated_any = False
     for doc_item, item in zip(doc["items"], items):
         source_warehouse_id = doc_item.get("source_warehouse_id")
-        if not source_warehouse_id or source_warehouse_id == RELOCATION_TARGET_WAREHOUSE_ID:
+        if not source_warehouse_id or source_warehouse_id == hold_warehouse_id:
             continue
         result = _trigger_goods_movement(
             sap_goods_movement_client, owner_party_id, item["product_id"],
-            source_warehouse_id, RELOCATION_TARGET_WAREHOUSE_ID,
-            item["requested_qty"], item["unit_code"], RELOCATION_SITE_ID,
+            source_warehouse_id, hold_warehouse_id,
+            item["requested_qty"], item["unit_code"], site_id,
         )
         if not result.get("ok"):
             raise StockTransferValidationError(
                 f"Could not relocate {item['product_id']} from {source_warehouse_id} to "
-                f"{RELOCATION_TARGET_WAREHOUSE_ID} ahead of STO creation: {result.get('error') or result.get('error_detail') or 'unknown SAP error'}"
+                f"{hold_warehouse_id} ahead of STO creation: {result.get('error') or result.get('error_detail') or 'unknown SAP error'}"
             )
         doc_item["p8_relocation"] = {
-            "from": source_warehouse_id, "to": RELOCATION_TARGET_WAREHOUSE_ID,
+            "from": source_warehouse_id, "to": hold_warehouse_id,
             "gac_id": result.get("external_id"),
         }
         relocated_any = True
@@ -637,9 +646,9 @@ def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None, sap
         for it in doc["items"]
     ]
 
-    if doc.get("ship_from_site_id") == RELOCATION_SITE_ID and sap_goods_movement_client:
+    if sap_goods_movement_client:
         try:
-            _relocate_items_to_p8_source_warehouse(db, sto_id, sap_goods_movement_client, doc, items)
+            _relocate_items_to_source_hold_warehouse(db, sto_id, sap_goods_movement_client, doc, items)
         except StockTransferValidationError as e:
             db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"status": "sap_failed", "error_message": str(e)}})
             raise
