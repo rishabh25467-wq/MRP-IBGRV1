@@ -1,3 +1,11 @@
+## BUG FIX (LIVE-VERIFIED, real SAP write): "Partially moved" false positive on Warehouse Move - stale local cache, not real SAP state (Sep 2026 session, same-day follow-up)
+- **User's report**: STO-000100 showed "Received" but "Partially moved" on the Warehouse Move column.
+- **Root cause**: `inbound_receipt_service._relocate_receipt_from_hold` pre-checked P8-HOLD stock via `stock_transfer_service.get_product_stock_locations`, which reads the local `inventory_cache` collection - refreshed only every couple of HOURS. Run immediately after a real Goods Receipt lands stock in P8-HOLD, that cache hasn't caught up yet - 2 of STO-000100's 3 genuinely-received lines (G12LW, G12FW) were wrongly blocked as "Stock does not exist" while SAP itself already had the stock (only G12NUT happened to already be cached).
+- **Fix**: removed the local-cache pre-check entirely - now attempts the SAP Goods Movement directly every time (real-time source of truth) and only maps SAP's own "negative stock not permitted" rejection to the user-facing "Stock does not exist in the STO warehouse" message.
+- **Verified live**: retried via `POST /api/inbound-receipts/STO-000100/retry-receipt-relocation` - all 3 lines now move successfully (`status: "done"`, GAC 279115/279116/279143).
+
+
+
 ## FEATURE (self-verified via screenshot, live data): Warehouse Move column now shows the Goods Movement ID (Sep 2026 session, same-day follow-up)
 - **User's ask**: show the Goods Movement ID next to the "Moved to <warehouse>" text on the Inbound Receipts Completed tab.
 - **Fix**: `InboundReceiptsPage.js` - the green "Moved to..." text now appends `(GM <gac_id>, ...)` using the `gac_id`s already returned per line in `receipt_relocation.lines`.

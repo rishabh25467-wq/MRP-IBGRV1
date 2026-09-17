@@ -53,7 +53,6 @@ import re
 from datetime import datetime, timezone
 
 import job_store
-import stock_transfer_service
 from sap_wip_clearing_client import company_and_set_of_books_for_site
 from store_approval_service import _trigger_goods_movement
 
@@ -80,13 +79,20 @@ RECEIPT_RELOCATION_HOLD_WAREHOUSE_ID = "P8-HOLD"
 def _relocate_receipt_from_hold(db, sap_goods_movement_client, doc: dict) -> dict:
     """Called right after a Receive job's finalize_receipt confirms the
     real SAP Goods Receipt posted (received or partial - never for a
-    fully failed receipt, nothing landed in P8-HOLD to move). Checks
-    live stock in P8-HOLD per line first - user's explicit ask - a line
-    that genuinely never received (failed delivery within a partial
-    receipt) naturally has no stock there yet, surfaced as a per-line
-    "Stock does not exist in the STO warehouse" error rather than a
-    confusing SAP rejection. Never raises - failure here must never
-    undo the already-successful receipt; caller stores the result."""
+    fully failed receipt, nothing landed in P8-HOLD to move). Attempts
+    the SAP Goods Movement directly and trusts SAP's own live rejection
+    for a genuinely missing/insufficient line - a real incident
+    (STO-000100, Sep 2026) proved a LOCAL stock pre-check here was
+    wrong: it read the `inventory_cache` collection (refreshed only
+    every couple of hours per stock_transfer_service.get_product_stock_locations),
+    which hadn't caught up yet seconds after the real Goods Receipt
+    landed the stock in P8-HOLD - so 2 of 3 genuinely-received lines
+    were wrongly blocked as "no stock" while SAP itself already had it.
+    SAP's own "negative stock not permitted" rejection (real-time, the
+    actual source of truth) is mapped to the user-facing "Stock does
+    not exist in the STO warehouse" instead. Never raises - failure
+    here must never undo the already-successful receipt; caller stores
+    the result."""
     ship_to_location_id = doc.get("ship_to_location_id")
     if not ship_to_location_id or ship_to_location_id == RECEIPT_RELOCATION_HOLD_WAREHOUSE_ID:
         return {"status": "skipped_same_warehouse"}
@@ -96,18 +102,18 @@ def _relocate_receipt_from_hold(db, sap_goods_movement_client, doc: dict) -> dic
     owner_party_id, _ = company_and_set_of_books_for_site(RECEIPT_RELOCATION_SITE_ID)
     line_results = []
     for item in items:
-        stock = stock_transfer_service.get_product_stock_locations(db, item["product_id"])
-        location = next((l for l in stock["locations"] if l["warehouse_id"] == RECEIPT_RELOCATION_HOLD_WAREHOUSE_ID), None)
-        if location is None or location["qty"] + 1e-6 < item["requested_qty"]:
-            line_results.append({"product_id": item["product_id"], "ok": False, "error": "Stock does not exist in the STO warehouse"})
-            continue
         result = _trigger_goods_movement(
             sap_goods_movement_client, owner_party_id, item["product_id"],
             RECEIPT_RELOCATION_HOLD_WAREHOUSE_ID, ship_to_location_id,
             item["requested_qty"], item.get("unit_of_measure") or "EA", RECEIPT_RELOCATION_SITE_ID,
         )
         if not result.get("ok"):
-            line_results.append({"product_id": item["product_id"], "ok": False, "error": result.get("error") or result.get("error_detail") or "unknown SAP error"})
+            raw = result.get("error_detail") or result.get("error") or ""
+            if re.search(r"negative stock not permitted", raw, re.IGNORECASE):
+                error = "Stock does not exist in the STO warehouse"
+            else:
+                error = result.get("error") or raw or "unknown SAP error"
+            line_results.append({"product_id": item["product_id"], "ok": False, "error": error})
         else:
             line_results.append({"product_id": item["product_id"], "ok": True, "gac_id": result.get("external_id")})
     all_ok = all(r["ok"] for r in line_results)
