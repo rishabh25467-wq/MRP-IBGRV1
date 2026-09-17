@@ -48,6 +48,17 @@ manual-confirm button (`check_manual_gi_completion`) as fallback. User explicitl
   blips confirmed by retry, 1 is a pre-existing stale test from an earlier unrelated commit
   f0b2b06, not caused by this fix), and a direct mocked-call-path check across P1/P2/P3/P8.
 
+## BREAKTHROUGH this session - see /app/memory/SOAP_GRN_BREAKTHROUGH_2026-09-18.md
+Direct SOAP GRN posting proven live (no Playwright) via `sap_inbound_delivery_notification_client.py`
+- single-line, multi-line, and partial-quantity all confirmed working on real POs, once a
+site's "Standard Receiving (with task)" Logistics Model is created+released (done for P8
+as "EM1"; P1/P3/others still need it). Full details, exact schema, and next steps are in
+that file - READ IT before touching this area again.
+
+Confirmed NOT an issue: STO creation/receiving is unaffected by the Logistics Model gap
+(51 multi-line STOs already succeed today; Playwright-based receiving already works fine
+on P1 despite its missing "with task" model) - see same file's dedicated section.
+
 ## In progress this session (see /app/memory/SESSION_NOTES_2026-09-18.md for full detail)
 - ERP sync resume: DONE. `STO_ERP_SYNC_PAUSED` flipped to "false" in `/app/backend/.env`
   (Sep 17-18 2026), backend restarted and verified healthy. New STOs will now sync to the
