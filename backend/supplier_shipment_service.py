@@ -914,15 +914,25 @@ def _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_cli
         # Order Overview" showed Target Logistics Area ID = P8-HOLD for
         # the Put Away, NOT P8-RM): Site P8's Material Flow Destination
         # rule routes EVERY inbound Goods Receipt into the neutral
-        # P8-HOLD staging warehouse regardless of warehouse_id chosen at
-        # approval time - the exact same quirk already documented/worked
-        # around for inbound STOs (see inbound_receipt_service.py's
-        # RECEIPT_RELOCATION_HOLD_WAREHOUSE_ID). The generic "{site}-RM"
-        # default below only holds for every OTHER site - assuming it for
-        # P8 meant this function thought source==target ("Already in
-        # P8-RM on receipt") when the stock was actually still sitting in
-        # P8-HOLD, never actually moved anywhere.
-        source_area = "P8-HOLD" if site_id == "P8" else f"{site_id}-RM"
+        # {SITE}-HOLD staging warehouse regardless of warehouse_id chosen
+        # at approval time - the exact same quirk already documented/
+        # worked around for inbound STOs (see inbound_receipt_service.py's
+        # _receipt_hold_warehouse_id).
+        #
+        # Sep 18 2026, generalized from P8-only to every site (real
+        # incident, GRN S000001/PO 29703 at Site P3: SAP's own Inbound
+        # Warehouse Order Overview + Stock Overview screenshots showed
+        # BOTH line items - 13INTIEBELT/IRON-SCR - landed in P3-HOLD under
+        # Quality Inspection status, not P3-RM as this used to assume for
+        # every non-P8 site. Assuming the wrong warehouse meant
+        # _resolve_source_stock_status below found zero matching stock
+        # there and the movement was attempted from the wrong (empty)
+        # area entirely - "No inventory items found"/"You cannot carry
+        # out goods movements involving this logistics area" from SAP).
+        # User confirmed live every site now has its own "{SITE}-HOLD"
+        # staging warehouse for this same reason - no hardcoded site
+        # check needed anymore.
+        source_area = f"{site_id}-HOLD"
         # Sep 12 2026 bug fix (real incident, shipment LFG29A/PO 29482 -
         # user's explicit report "after success grn why an error
         # occurred": "SAP rejected the movement: Source and target

@@ -48,6 +48,17 @@ manual-confirm button (`check_manual_gi_completion`) as fallback. User explicitl
   blips confirmed by retry, 1 is a pre-existing stale test from an earlier unrelated commit
   f0b2b06, not caused by this fix), and a direct mocked-call-path check across P1/P2/P3/P8.
 
+## In progress this session (see /app/memory/SESSION_NOTES_2026-09-18.md for full detail)
+- ERP sync resume: user confirmed flip `STO_ERP_SYNC_PAUSED` to "false" for NEW STOs only
+  (do not retry existing "paused" records). NOT YET FLIPPED - still gathering what changed
+  on the ERP side (open question to user) before flipping.
+- GRN S000001 warehouse-move bug (site P3, items IRON-SCR/13INTIEBELT): same P8-only
+  `{site}-RM` hardcoding bug found in a 3rd file, `supplier_shipment_service.py`
+  (`_post_goods_movement_for_items`). FIXED (generalized `source_area` to `f"{site_id}-HOLD"`
+  for all sites, mirrors Task 1 STO fix) and self-verified via mock, but NOT yet confirmed
+  against the real live SAP tenant - awaiting user to retry GRN S000001 live and confirm
+  both line items post successfully.
+
 ## Known pre-existing issue (not introduced this session, not fixed)
 - `tests/test_p8_receipt_relocation_iter181.py::test_relocate_returns_stock_not_exist_error_for_zero_hold_stock`
   fails because commit `f0b2b06` (STO-000100 incident fix) removed the local inventory-cache
