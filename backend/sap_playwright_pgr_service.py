@@ -201,6 +201,21 @@ async def _set_line_actual_quantity(page, product_id: str, qty: float) -> bool:
     return False
 
 
+async def _row_status_text(page, delivery_id: str) -> str:
+    """Delivery Notification Status column (index 2) for the row matching
+    delivery_id - used to distinguish a genuinely disabled/corrupted
+    delivery from one where SAP shows "Post Goods Receipt" disabled simply
+    because it's already Received (nothing left to post)."""
+    for row in await page.query_selector_all('tr[id^="__table"]'):
+        cells = await row.query_selector_all("td")
+        if len(cells) < 3:
+            continue
+        if (await cells[1].inner_text()).strip() != delivery_id:
+            continue
+        return (await cells[2].inner_text()).strip()
+    return ""
+
+
 async def _post_one_delivery(page, delivery_id: str, line_overrides: dict = None) -> dict:
     # Fresh nav every time - guarantees a known clean state regardless of
     # what the previous delivery in this batch left behind.
@@ -216,6 +231,17 @@ async def _post_one_delivery(page, delivery_id: str, line_overrides: dict = None
 
     click_result = await _click_button(page, "Post Goods Receipt")
     if click_result == "disabled":
+        # Real incident (Sep 2026, P1D1-544): the button is also disabled
+        # whenever this delivery is ALREADY fully Received/Finished in SAP
+        # (nothing left to post) - not just for a genuinely corrupted one.
+        # The row can still show up in this list view under a different
+        # pooled SAP UI login than the one that originally posted it (each
+        # login's own saved list-view filter can differ), so trust the
+        # row's own status text instead of assuming corruption.
+        status_text = (await _row_status_text(page, delivery_id)).lower()
+        if status_text == "received":
+            return {"delivery_id": delivery_id, "status": "received"}
+        await _save_debug_screenshot(page, delivery_id)
         return {"delivery_id": delivery_id, "status": "failed", "error": "Post Goods Receipt is disabled for this delivery in SAP (likely corrupted from an earlier action) - needs manual SAP Basis intervention"}
     if click_result == "not_found":
         return {"delivery_id": delivery_id, "status": "failed", "error": "Post Goods Receipt button not found for this delivery"}
