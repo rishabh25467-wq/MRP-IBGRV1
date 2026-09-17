@@ -1,3 +1,11 @@
+## BUG FIX (LIVE-VERIFIED): GRN "Failed - Diagnostics" was a false alarm - notification was created fine, just mislabeled (Sep 2026 session)
+- **User's report** (shipment S7KKXU, PO 29685): per-line "PO Status" showed "Failed - Diagnostics" even though "SAP Inbound Delivery #" correctly showed "In Process" (not an error state).
+- **Root cause**: `GrnApprovalPage.jsx`'s "Confirmed GRNs" detail modal's per-line status cell never had a special case for `poResult.status === "notification_created"` (the correct, successful state for `grn_mode: "manual"` shipments - the SAP Notification genuinely was created, per `sap_gr_result.ok: true`). It fell through to the generic `posted/skipped/else-Failed` logic and showed "Failed" purely because "notification_created" isn't one of those two. The OTHER (Pending Shipments) table already had this exact special case - just missing here.
+- **Fix**: added the same `"Notification Created"` (blue, non-clickable) label for that status in the Confirmed detail modal, matching the Pending table.
+- **Verified live**: S7KKXU now correctly shows "Notification Created" for both lines instead of "Failed - Diagnostics". Nothing was actually broken in SAP - the notification creation succeeded; staff still need to do the manual step of turning it into an actual Inbound Delivery in SAP (that's what "In Process"/"Retry" is waiting on).
+
+
+
 ## BUG FIX (LIVE-VERIFIED): "why r u refreshing this page again n again?" - Inter-Plant Stock Transfer page was polling every 5s forever (Sep 2026 session, same-day follow-up)
 - **User's report**: the STO list page kept auto-refreshing continuously.
 - **Root cause**: `STO_ERP_SYNC_PAUSED=true` (deliberately set last session) made `sync_to_erp_portal` silently `return` without ever updating `erp_portal_status` - but `mark_erp_portal_syncing`/`reset_erp_portal_sync_for_retry` had ALREADY stamped it "syncing"/"retrying" right before. Every GI-posted order was therefore stuck in a non-terminal ERP status forever, and `StockTransferPage.js`'s `hasRunningErpSync` polling gate (`setInterval(loadRecentOrders, 5000)`) treated that as "still actively syncing" - so it never stopped polling, ever, for the whole time the pause flag is on.
