@@ -110,7 +110,10 @@ def test_new_inbound_retry_endpoint_400_when_not_received(api, db):
         db.stock_transfer_orders.delete_one({"_id": sto_id})
 
 
-def test_new_inbound_retry_endpoint_400_when_non_p8(api, db):
+def test_new_inbound_retry_endpoint_works_for_non_p8_site(api, db):
+    """Sep 17 2026 generalization: relocation now applies to every site's
+    own {SITE}-HOLD, not just P8 - a P1 destination must no longer be
+    rejected with the old 'only applies to Site P8' error."""
     sto_id = f"TEST_RELO_{uuid.uuid4().hex[:8]}"
     db.stock_transfer_orders.insert_one({
         "_id": sto_id, "gi_status": "posted",
@@ -120,8 +123,8 @@ def test_new_inbound_retry_endpoint_400_when_non_p8(api, db):
     })
     try:
         r = api.post(f"{BASE_URL}/api/inbound-receipts/{sto_id}/retry-receipt-relocation")
-        assert r.status_code == 400
-        assert "P8" in r.text
+        assert r.status_code == 200, r.text
+        assert r.json().get("status") == "skipped_no_items"
     finally:
         db.stock_transfer_orders.delete_one({"_id": sto_id})
 

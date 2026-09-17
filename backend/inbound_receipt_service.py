@@ -66,46 +66,54 @@ _PENDING_QUERY = {
 
 # Sep 2026, corrected placement (moved off the Outbound "Complete STO
 # Process" button where it was mistakenly wired at first - see
-# /app/memory/STO_CONTEXT.md): Site P8's Material Flow Destination rule
-# routes every incoming STO into P8-HOLD (a neutral staging area)
-# regardless of the real target warehouse picked at STO creation. Once
-# the actual SAP Goods Receipt has posted via the "Receive" button
-# above, this moves the received quantity from P8-HOLD to that real
-# target warehouse (`ship_to_location_id`).
-RECEIPT_RELOCATION_SITE_ID = "P8"
-RECEIPT_RELOCATION_HOLD_WAREHOUSE_ID = "P8-HOLD"
+# /app/memory/STO_CONTEXT.md): every site's Material Flow Destination
+# rule routes an incoming STO into that site's own "{SITE}-HOLD"
+# staging warehouse regardless of the real target warehouse picked at
+# STO creation. Once the actual SAP Goods Receipt has posted via the
+# "Receive" button above, this moves the received quantity from
+# "{SITE}-HOLD" to that real target warehouse (`ship_to_location_id`).
+#
+# Sep 17 2026, user's explicit ask - generalized from P8-only to every
+# site, mirroring the same fix already made on the outbound side
+# (stock_transfer_service._relocation_hold_warehouse_id): user confirmed
+# live every site now has its own "{SITE}-HOLD" staging warehouse, so
+# this no longer needs a hardcoded site check.
+def _receipt_hold_warehouse_id(site_id: str) -> str:
+    return f"{(site_id or '').strip().upper()}-HOLD"
 
 
 def _relocate_receipt_from_hold(db, sap_goods_movement_client, doc: dict) -> dict:
     """Called right after a Receive job's finalize_receipt confirms the
     real SAP Goods Receipt posted (received or partial - never for a
-    fully failed receipt, nothing landed in P8-HOLD to move). Attempts
+    fully failed receipt, nothing landed in hold to move). Attempts
     the SAP Goods Movement directly and trusts SAP's own live rejection
     for a genuinely missing/insufficient line - a real incident
     (STO-000100, Sep 2026) proved a LOCAL stock pre-check here was
     wrong: it read the `inventory_cache` collection (refreshed only
     every couple of hours per stock_transfer_service.get_product_stock_locations),
     which hadn't caught up yet seconds after the real Goods Receipt
-    landed the stock in P8-HOLD - so 2 of 3 genuinely-received lines
+    landed the stock in hold - so 2 of 3 genuinely-received lines
     were wrongly blocked as "no stock" while SAP itself already had it.
     SAP's own "negative stock not permitted" rejection (real-time, the
     actual source of truth) is mapped to the user-facing "Stock does
     not exist in the STO warehouse" instead. Never raises - failure
     here must never undo the already-successful receipt; caller stores
     the result."""
+    site_id = doc.get("ship_to_site_id")
+    hold_warehouse_id = _receipt_hold_warehouse_id(site_id)
     ship_to_location_id = doc.get("ship_to_location_id")
-    if not ship_to_location_id or ship_to_location_id == RECEIPT_RELOCATION_HOLD_WAREHOUSE_ID:
+    if not ship_to_location_id or ship_to_location_id == hold_warehouse_id:
         return {"status": "skipped_same_warehouse"}
     items = doc.get("items") or []
     if not items:
         return {"status": "skipped_no_items"}
-    owner_party_id, _ = company_and_set_of_books_for_site(RECEIPT_RELOCATION_SITE_ID)
+    owner_party_id, _ = company_and_set_of_books_for_site(site_id)
     line_results = []
     for item in items:
         result = _trigger_goods_movement(
             sap_goods_movement_client, owner_party_id, item["product_id"],
-            RECEIPT_RELOCATION_HOLD_WAREHOUSE_ID, ship_to_location_id,
-            item["requested_qty"], item.get("unit_of_measure") or "EA", RECEIPT_RELOCATION_SITE_ID,
+            hold_warehouse_id, ship_to_location_id,
+            item["requested_qty"], item.get("unit_of_measure") or "EA", site_id,
         )
         if not result.get("ok"):
             raw = result.get("error_detail") or result.get("error") or ""
@@ -131,8 +139,6 @@ def retry_receipt_relocation(db, sap_goods_movement_client, sto_id: str) -> dict
         raise ValueError(f"Stock Transfer Order {sto_id} not found.")
     if doc.get("receipt_status") not in ("received", "partial"):
         raise ValueError("This order must be received before retrying the warehouse move.")
-    if doc.get("ship_to_site_id") != RECEIPT_RELOCATION_SITE_ID:
-        raise ValueError(f"This retry only applies to Site {RECEIPT_RELOCATION_SITE_ID} destinations.")
     result = _relocate_receipt_from_hold(db, sap_goods_movement_client, doc)
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"receipt_relocation": result}})
     return result
@@ -296,8 +302,8 @@ def finalize_receipt(db, sto_id: str, results: list, actor: str, had_overrides: 
 
     Sep 2026: once the receipt genuinely lands stock (received or
     partial - never on a full failure), immediately triggers the
-    P8-HOLD -> real target warehouse Goods Movement for Site P8
-    destinations - see _relocate_receipt_from_hold."""
+    "{SITE}-HOLD" -> real target warehouse Goods Movement for any
+    ship-to site - see _relocate_receipt_from_hold."""
     doc = db[STO_COLLECTION].find_one({"_id": sto_id}) or {}
     any_failed = any(r["status"] != "received" for r in results)
     overall = "failed" if all(r["status"] != "received" for r in results) else ("partial" if any_failed else "received")
@@ -317,7 +323,7 @@ def finalize_receipt(db, sto_id: str, results: list, actor: str, had_overrides: 
         "receipt_duration_seconds": round((now - started_at).total_seconds()) if started_at else None,
     }
     relocation = None
-    if overall in ("received", "partial") and doc.get("ship_to_site_id") == RECEIPT_RELOCATION_SITE_ID and sap_goods_movement_client:
+    if overall in ("received", "partial") and doc.get("ship_to_site_id") and sap_goods_movement_client:
         relocation = _relocate_receipt_from_hold(db, sap_goods_movement_client, doc)
         update["receipt_relocation"] = relocation
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": update})

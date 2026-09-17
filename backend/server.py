@@ -7820,7 +7820,7 @@ async def get_inbound_receipt_job_status(job_id: str):
 
 @api_router.post("/inbound-receipts/{sto_id}/retry-receipt-relocation")
 async def post_inbound_receipt_retry_relocation(sto_id: str):
-    """Retry button on the Completed tab for when the P8-HOLD -> real
+    """Retry button on the Completed tab for when the {SITE}-HOLD -> real
     target warehouse move (see inbound_receipt_service._relocate_receipt_from_hold)
     failed or partially failed after a successful "Receive"."""
     try:

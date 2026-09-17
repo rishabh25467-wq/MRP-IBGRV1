@@ -1,0 +1,23 @@
+{
+  "summary": "Verified the small surgical fix in /app/backend/stock_transfer_service.py that generalizes the STO outbound relocation-to-'{SITE}-HOLD' logic to run for ANY ship_from_site_id (not just P8). Backend testing only, no live SAP writes. All 10 tests pass: (1) live regression on GET /api/stock-transfer/orders + GET /api/stock-transfer/ship-to-sites returned 200 (backend imported cleanly, no startup crash); (2) source-level checks confirm the stale NameError symbols (RELOCATION_SITE_ID / _relocate_items_to_p8_source_warehouse) are gone from stock_transfer_service.py and no hardcoded '== P8' branch remains around the relocation call; (3) unit-level test drives submit_order_to_sap() with mocked db + mocked sap_sto_client + mocked sap_goods_movement_client for ship_from_site_id in {P1, P3, P8} and confirms _relocate_items_to_source_hold_warehouse is invoked in every case with the correct '{SITE}-HOLD' warehouse (P1-HOLD, P3-HOLD, P8-HOLD); (4) confirms relocation is CORRECTLY SKIPPED when sap_goods_movement_client is None (so the code degrades cleanly). Lint clean (ruff/pyflakes: no lint errors found). Backend supervisor log shows normal /api traffic, no exceptions. NOTE: RECEIPT_RELOCATION_SITE_ID='P8' still exists intentionally in /app/backend/inbound_receipt_service.py (INBOUND receipt flow, separate from this fix, unchanged - matches earlier iter181 test coverage).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_sto_relocation_generalized_iter182.py",
+    "/app/test_reports/pytest/iter182_sto_reloc.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "The relocation record on each item is still stored under the historically-named key 'p8_relocation' (stock_transfer_service.py ~line 610) even though it now applies to all sites. Non-blocking but consider renaming to 'hold_relocation' for accuracy - would need to update any downstream reader (frontend detail view, delivery-note builder) that currently reads item['p8_relocation']."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sto_relocation_generalized_iter182.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "n/a (skipped per request)"},
+  "test_credentials": "STO admin cookie vms_session=u-8qIcJoBrX8l6ZyV2JKWMte5t5GJsd_vzm6WzC1vqc (from test_credentials.md, sto.manualgi.test super_admin, allowed_pages=['stock_transfer']) used for the 2 live read-endpoint regression checks.",
+  "seed_data_creation": "None. All relocation code-path tests use monkeypatch + MagicMock in-process, never touched the real DB or live SAP tenant.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "iter182 covered the STO outbound relocation generalization fix (P8-only -> any-site). Test file test_sto_relocation_generalized_iter182.py can be re-run as a regression - it's fully self-contained, uses mocks, no live SAP effects. If actually verifying live SAP relocation is needed later, the safest path is a real STO for a small qty at a non-P8 site with sap_goods_movement_client wired, since a real GoodsMovement WILL land in the SAP tenant. The inbound-side relocation (inbound_receipt_service.py) is a SEPARATE piece still hardcoded to P8 and was NOT in scope here.",
+  "rca of the issue": "Not a bug hunt - this iteration verified E1's already-applied fix. Before fix: submit_order_to_sap only invoked the relocation helper when ship_from_site_id == 'P8' and referenced undefined symbols RELOCATION_SITE_ID / _relocate_items_to_p8_source_warehouse (leftover from an incomplete refactor), which would raise NameError at runtime for any P8 STO (and lint-fail on import). E1's fix: replaced the branch at lines 649-651 with an unconditional `if sap_goods_movement_client: _relocate_items_to_source_hold_warehouse(...)` call, using the already-generalized helper that dynamically builds '{SITE}-HOLD' via _relocation_hold_warehouse_id(). Verified via source inspection + monkeypatched call-path tests + live 200 responses from unrelated read endpoints (proving backend imports cleanly)."
+}
