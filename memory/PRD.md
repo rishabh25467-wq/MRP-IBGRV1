@@ -1303,6 +1303,28 @@ STOs (single-line STOs were already pure-API, unaffected, no change needed there
   needs the user's own manual "Save" step to fully confirm.
 - **ERP portal sync paused**: user's explicit ask ("do not create any entries on ERP since its polluting the
   sequence there... hold off") while the P8 SAP issue is unresolved. Added `STO_ERP_SYNC_PAUSED` env flag
+
+## New feature: Inbound STO Receipt warehouse correction for Site P8 destinations (Sep 18 2026, same session)
+- User's ask: for STOs shipping TO Site P8 (user has reconfigured SAP's Material Flow Destination rule for P8
+  to route incoming stock to `P8-HOLD`, a neutral staging area), the existing "Complete STO Process" button
+  (user calls it "Receive") should also move the received quantity from P8-HOLD to the actual target warehouse
+  (`ship_to_location_id`) picked when the STO was created.
+- Implemented in `stock_transfer_service.py`: `check_manual_gi_completion()` now accepts
+  `sap_goods_movement_client`, and after `_finalize_gi_posted` (source-side GI confirmed), if
+  `ship_to_site_id == "P8"`, calls new `_relocate_receipt_from_hold()` (reuses the same
+  `store_approval_service._trigger_goods_movement` + `sap_goods_movement_client.py` path as the P8-source fix).
+  Never raises - stores `{status, to, gac_ids}` or `{status: "failed", error}` on `receipt_relocation` field,
+  so a failure here never undoes the already-successful GI confirmation.
+- New retry path: `POST /api/stock-transfer/orders/{sto_id}/retry-receipt-relocation` +
+  `retry_receipt_relocation()` service fn - lets staff retry just the warehouse move if it failed the first
+  time (e.g. receipt genuinely wasn't done in SAP yet at that moment), without re-verifying GI.
+- Frontend (`StockTransferPage.js`): manual-GI instructions now mention the P8 receipt step; new status block
+  under the GI section shows "Warehouse move: P8-HOLD -> X done" or a "Retry warehouse move" button on failure.
+- Note: earlier in this same session, fully automating the Inbound Delivery Notification's own
+  Release/PGRBackground actions (which would have let us DETECT receipt completion via API) was live-tested
+  and confirmed "action is disabled" for all 3 real deliveries tried - hence this stays a manual-trigger,
+  piggybacked on the existing "Complete STO Process" click rather than a fully silent automatic flow.
+
   (lazily read, same pattern as `store_approval_service.is_dry_run`) - `sync_to_erp_portal` now returns
   immediately, no-op, when `STO_ERP_SYNC_PAUSED=true` (set in `.env` now). Flip back to `false`/remove to
   resume - single .env change, no code change needed.

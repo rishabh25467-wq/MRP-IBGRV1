@@ -7524,12 +7524,26 @@ async def post_stock_transfer_complete_manual_gi(sto_id: str):
     completed the Delivery + Goods Issue themselves in SAP. See
     stock_transfer_service.check_manual_gi_completion's own docstring."""
     try:
-        doc = await asyncio.to_thread(stock_transfer_service.check_manual_gi_completion, db, sap_outbound_delivery_analytics_client, sto_id)
+        doc = await asyncio.to_thread(stock_transfer_service.check_manual_gi_completion, db, sap_outbound_delivery_analytics_client, sto_id, sap_goods_movement_client)
     except stock_transfer_service.StockTransferOrderNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except stock_transfer_service.StockTransferValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     asyncio.create_task(_run_erp_portal_sync_job(sto_id))
+    return _sto_to_response(doc)
+
+
+@api_router.post("/stock-transfer/orders/{sto_id}/retry-receipt-relocation")
+async def post_stock_transfer_retry_receipt_relocation(sto_id: str):
+    """Retry button for when the P8-HOLD -> target warehouse move (see
+    stock_transfer_service._relocate_receipt_from_hold) failed on the
+    "Complete STO Process" click - see retry_receipt_relocation."""
+    try:
+        doc = await asyncio.to_thread(stock_transfer_service.retry_receipt_relocation, db, sap_goods_movement_client, sto_id)
+    except stock_transfer_service.StockTransferOrderNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except stock_transfer_service.StockTransferValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return _sto_to_response(doc)
 
 
