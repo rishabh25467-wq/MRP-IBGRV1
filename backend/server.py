@@ -9049,7 +9049,7 @@ async def start_sap_po_number_refresh_loop():
         while True:
             exc = None
             try:
-                po_numbers = await asyncio.to_thread(supplier_shipment_service.list_po_numbers_missing_custom_number, db)
+                po_numbers = await asyncio.to_thread(supplier_shipment_service.list_po_numbers_missing_custom_number, db, 75)
                 for po_number in po_numbers:
                     value = await asyncio.to_thread(sap_po_write_client.get_purchase_order_number, po_number)
                     if value:

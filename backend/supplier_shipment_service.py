@@ -53,9 +53,9 @@ discrepancy and puts the shipment back to "in_transit" for re-review.
 Staff can also still directly Approve/Reject straight from "discrepancy"
 if they decide to override rather than wait for an edit.
 """
-import secrets
-import string
 from datetime import datetime, timedelta, timezone
+
+from pymongo import ReturnDocument
 
 import inventory_service
 import sap_po_client
@@ -74,8 +74,6 @@ PO_CACHE_COLLECTION = "supplier_portal_po_cache"
 SAP_OPEN_QTY_COLLECTION = "sap_po_open_qty_cache"
 SAP_PO_NUMBER_COLLECTION = "sap_po_custom_number_cache"
 SHIPMENTS_COLLECTION = "supplier_portal_shipments"
-DOC_CODE_ALPHABET = "".join(c for c in string.ascii_uppercase + string.digits if c not in "0O1I")
-DOC_CODE_LENGTH = 6
 
 # Background refresh runs every 10 min (server.py's
 # start_supplier_po_cache_refresh_loop) - a row must survive 3
@@ -536,11 +534,16 @@ def list_po_numbers_missing_custom_number(db, limit: int = 15) -> list:
 
 
 def _generate_doc_code(db) -> str:
-    for _ in range(20):
-        code = "".join(secrets.choice(DOC_CODE_ALPHABET) for _ in range(DOC_CODE_LENGTH))
-        if not db[SHIPMENTS_COLLECTION].find_one({"_id": code}):
-            return code
-    raise ShipmentError("Could not generate a unique shipment code - please retry")
+    """S000001, S000002, ... - user's explicit ask (Sep 2026): one fixed
+    leading letter "S" followed by a purely numeric, always-incrementing
+    counter, same pattern as this app's other locally-generated IDs
+    (e.g. stock_transfer_service._next_sto_id) - replaces the old fully
+    random 6-char alphanumeric code, which wasn't easy to read/say aloud
+    and gave no sense of shipment order."""
+    counter = db["counters"].find_one_and_update(
+        {"_id": "supplier_shipment"}, {"$inc": {"seq": 1}}, upsert=True, return_document=ReturnDocument.AFTER,
+    )
+    return f"S{counter['seq']:06d}"
 
 
 def _resolve_items(db, vendor_code: str, requested_items: list, exclude_doc_code: str = None) -> list:

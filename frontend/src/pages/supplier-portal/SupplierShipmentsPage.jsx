@@ -110,7 +110,7 @@ export default function SupplierShipmentsPage() {
   }, [editing, addSearch, pos]);
 
   const addItemToEdit = (po) => {
-    setEditing((prev) => ({ ...prev, items: [...prev.items, { po_number: po.po_number, item_number: po.item_number, description: po.description, unit_of_measure: po.unit_of_measure, ship_qty: "" }] }));
+    setEditing((prev) => ({ ...prev, items: [...prev.items, { po_number: po.po_number, item_number: po.item_number, product_id: po.product_id, description: po.description, unit_of_measure: po.unit_of_measure, ship_qty: "" }] }));
   };
 
   const removeItemFromEdit = (idx) => {
@@ -261,7 +261,9 @@ export default function SupplierShipmentsPage() {
               <div key={`${it.po_number}-${it.item_number}`} className="flex items-center gap-2 py-2" data-testid={`supplier-edit-row-${it.po_number}-${it.item_number}`}>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium truncate">{it.description || it.item_number}</div>
-                  <div className="text-xs text-[#475569] font-data">PO {it.po_number} · Item {it.item_number}</div>
+                  <div className="text-xs text-[#475569] font-data" data-testid={`supplier-edit-row-meta-${it.po_number}-${it.item_number}`}>
+                    PO {it.po_number} · Item {it.item_number} · Item Code: {it.product_id || "—"}
+                  </div>
                 </div>
                 <Input
                   type="number"
@@ -297,7 +299,10 @@ export default function SupplierShipmentsPage() {
                     className="w-full text-left px-2 py-1.5 text-xs hover:bg-[#F0F4F8] flex items-center justify-between gap-2"
                     data-testid={`supplier-edit-addable-${po.po_number}-${po.item_number}`}
                   >
-                    <span className="truncate">PO {po.po_number} · {po.description}</span>
+                    <span className="truncate">
+                      PO {po.po_number} · {po.product_id || "Job Work"} · {po.description}
+                      <span className="text-[#475569]"> (Open: {po.remaining_qty ?? "—"} {po.unit_of_measure})</span>
+                    </span>
                     <Plus size={12} className="text-[#1E40AF] shrink-0" />
                   </button>
                 ))}
@@ -378,6 +383,7 @@ export default function SupplierShipmentsPage() {
               <tr>
                 <th className="text-left py-1 font-semibold">PO Number</th>
                 <th className="text-left py-1 font-semibold">Item</th>
+                <th className="text-left py-1 font-semibold">Item Code</th>
                 <th className="text-left py-1 font-semibold">Description</th>
                 <th className="text-right py-1 font-semibold">Ship Qty</th>
                 <th className="text-right py-1 font-semibold">PO Qty</th>
@@ -388,6 +394,7 @@ export default function SupplierShipmentsPage() {
                 <tr key={i} className="border-t border-[#E2E8F0]" data-testid={`supplier-shipment-detail-item-${it.po_number}-${it.item_number}`}>
                   <td className="py-1.5 font-data">{it.po_number}</td>
                   <td className="py-1.5 font-data">{it.item_number}</td>
+                  <td className="py-1.5 font-data" data-testid={`supplier-shipment-detail-item-code-${it.po_number}-${it.item_number}`}>{it.product_id || "—"}</td>
                   <td className="py-1.5">{it.description}</td>
                   <td className="py-1.5 text-right font-data font-semibold">{it.ship_qty} {it.unit_of_measure}</td>
                   <td className="py-1.5 text-right font-data text-[#475569]">{it.po_qty}</td>

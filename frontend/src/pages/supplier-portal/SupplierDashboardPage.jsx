@@ -249,7 +249,7 @@ export default function SupplierDashboardPage() {
       const next = { ...prev };
       const key = cartKey(po);
       if (checked) {
-        next[key] = { po_number: po.po_number, item_number: po.item_number, description: po.description, unit_of_measure: po.unit_of_measure, remaining_qty: po.remaining_qty, ship_qty: "" };
+        next[key] = { po_number: po.po_number, item_number: po.item_number, product_id: po.product_id, ship_to_site_id: po.ship_to_site_id, description: po.description, unit_of_measure: po.unit_of_measure, remaining_qty: po.remaining_qty, ship_qty: "" };
       } else {
         delete next[key];
       }
@@ -271,7 +271,7 @@ export default function SupplierDashboardPage() {
           // Left blank, same as an individual checkbox - a full-remaining-qty
           // prefill across every row in one click was flagged as risky
           // (code review feedback, iteration_124).
-          next[key] = { po_number: p.po_number, item_number: p.item_number, description: p.description, unit_of_measure: p.unit_of_measure, remaining_qty: p.remaining_qty, ship_qty: "" };
+          next[key] = { po_number: p.po_number, item_number: p.item_number, product_id: p.product_id, ship_to_site_id: p.ship_to_site_id, description: p.description, unit_of_measure: p.unit_of_measure, remaining_qty: p.remaining_qty, ship_qty: "" };
         }
       });
       return next;
@@ -478,6 +478,7 @@ export default function SupplierDashboardPage() {
                   <th className="border border-[#E2E8F0] p-1.5 text-left">Item Code</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-left">Description</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-left">PO From</th>
+                  <th className="border border-[#E2E8F0] p-1.5 text-left">Ship To</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-left">
                     <button
                       onClick={() => toggleSort("po_date")}
@@ -551,6 +552,7 @@ export default function SupplierDashboardPage() {
                       </td>
                       <td className="border border-[#E2E8F0] px-2 py-1">{po.description || "-"}</td>
                       <td className="border border-[#E2E8F0] px-2 py-1 text-xs">{po.buyer_entity_name}</td>
+                      <td className="border border-[#E2E8F0] px-2 py-1 font-data text-xs" data-testid={`supplier-po-ship-to-${po.po_number}-${po.item_number}`}>{po.ship_to_site_id || "—"}</td>
                       <td className="border border-[#E2E8F0] px-2 py-1 font-data text-xs whitespace-nowrap">{fmtDate(po.po_date)}</td>
                       <td className="border border-[#E2E8F0] px-2 py-1 text-right font-data text-xs" data-testid={`supplier-po-qty-${po.po_number}-${po.item_number}`}>
                         {po.po_qty} {po.unit_of_measure}
@@ -637,7 +639,9 @@ export default function SupplierDashboardPage() {
               <div key={c.key} className="flex items-center gap-2 py-2" data-testid={`supplier-review-row-${c.key}`}>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium truncate">{c.description || c.item_number}</div>
-                  <div className="text-xs text-[#475569] font-data">PO {c.po_number} · Item {c.item_number}</div>
+                  <div className="text-xs text-[#475569] font-data" data-testid={`supplier-review-row-meta-${c.key}`}>
+                    PO {c.po_number} · Item {c.item_number} · Item Code: {c.product_id || "—"} · Ship To: {c.ship_to_site_id || "—"} · Open Qty: {c.remaining_qty ?? "—"} {c.unit_of_measure}
+                  </div>
                 </div>
                 <Input
                   type="number"
@@ -714,6 +718,7 @@ export default function SupplierDashboardPage() {
                   <th className="border border-[#E2E8F0] p-1.5 text-left whitespace-nowrap">Item</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-left whitespace-nowrap">Item Code</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-left">Description</th>
+                  <th className="border border-[#E2E8F0] p-1.5 text-left whitespace-nowrap">Ship To</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-right whitespace-nowrap">PO Qty</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-right whitespace-nowrap">Unit Price</th>
                   <th className="border border-[#E2E8F0] p-1.5 text-right whitespace-nowrap">Subtotal</th>
@@ -728,6 +733,7 @@ export default function SupplierDashboardPage() {
                       {it.product_id || <span className="text-[#94A3B8] italic font-sans text-xs" title="This line is a Job Work item, not linked to a Product Master in SAP - no Item Code exists to show.">Job Work (no SAP code)</span>}
                     </td>
                     <td className="border border-[#E2E8F0] px-2 py-1.5">{it.description}</td>
+                    <td className="border border-[#E2E8F0] px-2 py-1.5 font-data whitespace-nowrap" data-testid={`supplier-po-detail-ship-to-${it.item_number}`}>{it.ship_to_site_id || "—"}</td>
                     <td className="border border-[#E2E8F0] px-2 py-1.5 text-right font-data whitespace-nowrap">{it.po_qty} {it.unit_of_measure}</td>
                     <td className="border border-[#E2E8F0] px-2 py-1.5 text-right font-data whitespace-nowrap">{fmtMoney(it.unit_price, it.currency)}</td>
                     <td className="border border-[#E2E8F0] px-2 py-1.5 text-right font-data whitespace-nowrap">{fmtMoney(it.subtotal, it.currency)}</td>
@@ -737,7 +743,7 @@ export default function SupplierDashboardPage() {
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={5} className="border border-[#E2E8F0] px-2 py-2 text-right font-semibold text-xs text-[#475569]">PO Total</td>
+                  <td colSpan={6} className="border border-[#E2E8F0] px-2 py-2 text-right font-semibold text-xs text-[#475569]">PO Total</td>
                   <td className="border border-[#E2E8F0] px-2 py-2 text-right font-data font-bold whitespace-nowrap">{fmtMoney(detailItems.reduce((s, it) => s + (it.subtotal || 0), 0), detailItems[0]?.currency)}</td>
                   <td className="border border-[#E2E8F0]"></td>
                 </tr>
