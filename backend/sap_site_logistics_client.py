@@ -22,6 +22,31 @@ in this codebase (see sap_sto_client.py) - both WSDLs were uploaded live
 by the user, schema is fixed/documented, no zeep/runtime WSDL parsing
 needed.
 
+Sep 19 2026 - REVIVED for a DIFFERENT scenario than the one declared
+dead below (that finding was scoped ONLY to the outbound STO/pick-task
+case at site P2/P8 - never tested for inbound). Real user-reported bug:
+the EM1 "Test Full Automated GRN" flow (sap_inbound_delivery_notification_
+client.py's MaintainBundle release=True) creates+releases the Inbound
+Delivery Notification fine (Planned Quantity is always correct - confirmed
+live via user's own SAP screenshot, PO 29685, Warehouse Request 85628),
+but that release ONLY creates the downstream Warehouse Request/Order/
+Delivery/"Put Away" Warehouse Task chain - it never CONFIRMS the actual
+Put Away task, so "Product Fulfilled Quantity" stays 0 forever (user's
+exact words: "fulfilled qty didn't post correctly, should be = planned").
+Live-queried site P8 (Sep 19 2026) and found this Put Away task IS a real
+SiteLogisticsTask (OperationTypeCode=11, e.g. task 69040 for PO 29685) -
+same object this module already knows how to query. `find_tasks_for_site`
+below now parses the full MaterialInput/MaterialOutput line-item detail
+(UUIDs + PlanQuantity) needed to confirm it, and `confirm_tasks_bundle`'s
+payload was corrected against SAP's own official schema (help.sap.com
+PSM_ISI_R_II_MANAGE_SLT_IN) - the previous version was never live-tested
+(this whole file was "dormant" per the dead-end finding) and was missing
+MaterialInput entirely plus using a made-up `SourceLogisticsAreaIDPostSplit`
+field that doesn't exist in the real schema. Wired into
+sap_playwright_supplier_pgr_service.create_and_release_inbound_delivery_
+notifications: right after a successful release, it looks up this PO's
+Put Away task and confirms every line's ActualQuantity = PlanQuantity.
+
 CONFIRMED DEAD END (Sep 18 2026, live-verified, read-only - no
 MaintainBundle_V1 write ever attempted, so no live confirm risk taken):
 `find_tasks_for_site` genuinely works (fixed the query schema - dropping
@@ -69,6 +94,30 @@ def _first_tag(xml: str, tag: str):
 
 def _all_blocks(xml: str, tag: str):
     return [m.group(1) for m in re.finditer(rf"<(?:\w+:)?{tag}(?:\s[^>]*)?>(.*?)</(?:\w+:)?{tag}>", xml, re.S)]
+
+
+def _material_nodes(block: str, tag: str, uuid_tag: str) -> list:
+    """Parses each <MaterialInput>/<MaterialOutput> child of one
+    SiteLogisticsTask's OperationActivity - `uuid_tag` is the QUERY
+    response's own element name for that line's UUID
+    (SiteLogisticsLotMaterialInputUUID/...OutputUUID), which is a
+    DIFFERENT tag name than the WRITE (MaintainBundle_V1) request uses
+    for the same UUID value (MaterialInputUUID/MaterialOutputUUID,
+    confirmed against SAP's own official schema, help.sap.com
+    PSM_ISI_R_II_MANAGE_SLT_IN) - `confirm_tasks_bundle` below re-emits
+    it under the write schema's name."""
+    nodes = []
+    for m in _all_blocks(block, tag):
+        qty_match = re.search(r'<PlanQuantity unitCode="([^"]*)">([^<]*)</PlanQuantity>', m)
+        nodes.append({
+            "uuid": _first_tag(m, uuid_tag),
+            "product_id": _first_tag(m, "ProductID"),
+            "line_item_id": _first_tag(m, "LineItemID"),
+            "plan_quantity": float(qty_match.group(2)) if qty_match else None,
+            "unit_code": qty_match.group(1) if qty_match else "EA",
+            "target_area": _first_tag(m, "TargetLogisticsAreaID"),
+        })
+    return nodes
 
 
 def _format_qty(qty: float) -> str:
@@ -138,8 +187,16 @@ class SAPSiteLogisticsQueryClient:
             results.append({
                 "task_id": _first_tag(block, "SiteLogisticsTaskID"),
                 "task_uuid": task_uuid,
+                "operation_type_code": _first_tag(block, "OperationTypeCode"),
+                # Sep 19 2026: the field the inbound Put Away confirm fix
+                # (module docstring) matches a task to its originating PO
+                # by - confirmed live this holds the plain PO number
+                # (e.g. "29685") for a Put Away task (OperationTypeCode=11).
+                "po_number": _first_tag(block, "BusinessTransactionDocumentReferenceID"),
                 "referenced_object_uuid": _first_tag(block, "ReferencedObjectUUID"),
                 "operation_activity_uuid": _first_tag(block, "SiteLogisticsLotOperationActivityUUID"),
+                "material_inputs": _material_nodes(block, "MaterialInput", "SiteLogisticsLotMaterialInputUUID"),
+                "material_outputs": _material_nodes(block, "MaterialOutput", "SiteLogisticsLotMaterialOutputUUID"),
             })
         return results
 
@@ -151,37 +208,73 @@ class SAPSiteLogisticsManageClient:
 
     def confirm_tasks_bundle(self, tasks: list) -> str:
         """MaintainBundle_V1 - `tasks`: list of dicts, each:
-          {task_uuid, referenced_object_uuid, operation_activity_uuid,
-           product_id, quantity, unit_code, source_warehouse_id,
-           target_warehouse_id}
+          {task_id, task_uuid, referenced_object_uuid, operation_activity_uuid,
+           material_inputs: [{uuid, product_id, actual_quantity, unit_code}],
+           material_outputs: [{uuid, product_id, actual_quantity, unit_code, target_area}]}
+        `task_id` (SiteLogisticTaskID, e.g. "69040") is REQUIRED alongside
+        `task_uuid` - confirmed live (Sep 19 2026): SAP rejected the whole
+        request with a generic "Web service processing error" (no
+        detail) when only the UUID was sent; help.sap.com's own official
+        example always sends both SiteLogisticTaskID and
+        SiteLogisticTaskUUID together.
         ALL tasks are sent in ONE request - the whole point (see module
         docstring): this is the API equivalent of multi-selecting several
         rows in the SAP UI and confirming them together in one shot.
+
+        Sep 19 2026 rewrite (inbound Put Away confirm fix, see module
+        docstring) - corrected against SAP's own official schema
+        (help.sap.com PSM_ISI_R_II_MANAGE_SLT_IN) AND live-verified
+        (real Put Away task 69040, PO 29685, site P8 - SAP returned
+        SeverityCode "S"/"Saved Successfully" and the task then
+        disappeared from find_tasks_for_site's open-task results,
+        confirming it completed): now emits a <MaterialInput> block per
+        line (was missing entirely before - every real Put Away task
+        has BOTH an input and output side, one pair per PO line item),
+        and MaterialOutput no longer sends the non-existent
+        `SourceLogisticsAreaIDPostSplit` field (real schema has no
+        source area on MaterialOutput at all, only ProductID/
+        TargetLogisticsAreaID/ActualQuantity). Two more corrections found
+        only by live-testing (SAP's generic "Web service processing
+        error" gives zero detail on schema mismatches): (1) an empty
+        `<SourceLogisticsAreaID></SourceLogisticsAreaID>` tag on
+        MaterialInput must be OMITTED entirely, not sent blank - SAP
+        rejects the whole bundle if present; (2) `<BasicMessageHeader/>`
+        must be present (empty is fine) even though help.sap.com marks
+        it optional.
         Returns the raw response XML (caller checks for per-task logs)."""
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         task_blocks = []
         for t in tasks:
+            material_input_blocks = "".join(f"""
+            <MaterialInput>
+              <MaterialInputUUID>{escape(mi["uuid"])}</MaterialInputUUID>
+              <ProductID>{escape(mi["product_id"])}</ProductID>
+              <ActualQuantity unitCode="{escape(mi.get("unit_code") or "EA")}">{_format_qty(mi["actual_quantity"])}</ActualQuantity>
+            </MaterialInput>""" for mi in t.get("material_inputs", []))
+            material_output_blocks = "".join(f"""
+            <MaterialOutput>
+              <MaterialOutputUUID>{escape(mo["uuid"])}</MaterialOutputUUID>
+              <ProductID>{escape(mo["product_id"])}</ProductID>
+              <TargetLogisticsAreaID>{escape(mo.get("target_area") or "")}</TargetLogisticsAreaID>
+              <ActualQuantity unitCode="{escape(mo.get("unit_code") or "EA")}">{_format_qty(mo["actual_quantity"])}</ActualQuantity>
+            </MaterialOutput>""" for mo in t.get("material_outputs", []))
             task_blocks.append(f"""
       <SiteLogisticsTask>
+        <SiteLogisticTaskID>{escape(str(t["task_id"]))}</SiteLogisticTaskID>
         <SiteLogisticTaskUUID>{escape(t["task_uuid"])}</SiteLogisticTaskUUID>
         <ActualExecutionOn>{now}</ActualExecutionOn>
         <ReferenceObject>
           <ReferenceObjectUUID>{escape(t["referenced_object_uuid"])}</ReferenceObjectUUID>
           <OperationActivity>
-            <OperationActivityUUID>{escape(t["operation_activity_uuid"])}</OperationActivityUUID>
-            <MaterialOutput>
-              <ProductID>{escape(t["product_id"])}</ProductID>
-              <SourceLogisticsAreaIDPostSplit>{escape(t.get("source_warehouse_id") or "")}</SourceLogisticsAreaIDPostSplit>
-              <TargetLogisticsAreaID>{escape(t.get("target_warehouse_id") or "")}</TargetLogisticsAreaID>
-              <ActualQuantity unitCode="{escape(t.get("unit_code") or "EA")}">{_format_qty(t["quantity"])}</ActualQuantity>
-            </MaterialOutput>
+            <OperationActivityUUID>{escape(t["operation_activity_uuid"])}</OperationActivityUUID>{material_input_blocks}{material_output_blocks}
           </OperationActivity>
         </ReferenceObject>
       </SiteLogisticsTask>""")
         envelope = f"""<?xml version="1.0" encoding="utf-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
   <soapenv:Body>
-    <n0:SiteLogisticsTaskBundleMaintainRequest_sync_V1 xmlns:n0="http://sap.com/xi/SAPGlobal20/Global">{"".join(task_blocks)}
+    <n0:SiteLogisticsTaskBundleMaintainRequest_sync_V1 xmlns:n0="http://sap.com/xi/SAPGlobal20/Global">
+      <BasicMessageHeader/>{"".join(task_blocks)}
     </n0:SiteLogisticsTaskBundleMaintainRequest_sync_V1>
   </soapenv:Body>
 </soapenv:Envelope>"""
@@ -199,8 +292,12 @@ class SAPSiteLogisticsManageClient:
         xml = resp.text
         if resp.status_code >= 400 or "<Fault" in xml or ":Fault" in xml:
             raise SAPSiteLogisticsError(_fault_message(xml, resp.status_code))
+        # Sep 19 2026 fix: live response uses single-letter severity
+        # codes (confirmed: "S" = Success on the real 69040 confirm),
+        # not the numeric "2"/"3" this used to check for (never actually
+        # observed live before this fix - that guess was wrong).
         severities = re.findall(r"<SiteLogisticsTaskSeverityCode>(.*?)</SiteLogisticsTaskSeverityCode>", xml, re.S)
-        if any(s.strip() in ("2", "3") for s in severities):  # 2=Error, 3=Cancellation typical SAP severity codes
+        if any(s.strip().upper() == "E" for s in severities):
             notes = [n.strip() for n in re.findall(r"<SiteLogisticsTaskNote>(.*?)</SiteLogisticsTaskNote>", xml, re.S) if n.strip()]
             raise SAPSiteLogisticsError("; ".join(notes) or "SAP reported an error confirming one or more tasks.")
         return xml

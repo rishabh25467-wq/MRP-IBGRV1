@@ -58,6 +58,7 @@ import quota_arrangement_service
 from sap_valuation_client import SAPValuationClient, SAPValuationError
 from sap_hsn_client import SAPHSNClient
 from sap_inventory_client import SAPInventoryClient, SAPInventoryError
+from sap_site_logistics_client import SAPSiteLogisticsQueryClient, SAPSiteLogisticsManageClient
 from sap_inventory_closing_client import SAPInventoryClosingClient, SAPInventoryClosingError
 from sap_inbound_delivery_report_client import SAPInboundDeliveryReportClient, SAPInboundDeliveryReportError
 from sap_planning_client import SAPPlanningClient, SAPPlanningError, bulk_push_to_sap
@@ -321,6 +322,21 @@ sap_soap_client = SAPSoapBOMClient(
 # for the full hybrid architecture.
 sap_inbound_delivery_notification_client = SAPInboundDeliveryNotificationClient(
     endpoint=os.environ['SAP_SOAP_INBOUND_DELIVERY_NOTIFICATION_ENDPOINT'],
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
+)
+
+# Sep 19 2026 - confirms the SAP Put Away Warehouse Task the EM1 "Test
+# Full Automated GRN" release above generates but never itself confirms
+# (real bug fix, see sap_playwright_supplier_pgr_service.
+# _confirm_put_away_task's docstring - Fulfilled Quantity was staying 0).
+sap_site_logistics_query_client = SAPSiteLogisticsQueryClient(
+    endpoint=os.environ['SAP_SOAP_QUERY_SITE_LOGISTICS_TASK_ENDPOINT'],
+    username=os.environ['SAP_SOAP_USERNAME'],
+    password=os.environ['SAP_SOAP_PASSWORD'],
+)
+sap_site_logistics_manage_client = SAPSiteLogisticsManageClient(
+    endpoint=os.environ['SAP_SOAP_MANAGE_SITE_LOGISTICS_TASK_ENDPOINT'],
     username=os.environ['SAP_SOAP_USERNAME'],
     password=os.environ['SAP_SOAP_PASSWORD'],
 )
@@ -8690,6 +8706,65 @@ def _start_manual_grn_job(doc_code: str, doc: dict) -> str:
     return job_id
 
 
+async def _auto_finish_full_auto_grn(doc_code: str, po_numbers: list, site_id: str, owner_party_id: str) -> None:
+    """Sep 19 2026 - unified background finisher for "Test Full Automated
+    GRN", replacing 2 earlier attempts that both blocked the user-facing
+    job (see sap_playwright_supplier_pgr_service.create_and_release_
+    inbound_delivery_notifications' own docstring: a real 2-line PO test
+    went from a few seconds to ~60s once Put Away confirmation + Delivery
+    ID lookup were tried inline with their own retry loops). Both SAP-side
+    effects genuinely lag well past what a user should ever wait
+    synchronously for (same reasoning as the pre-existing manual "Fetch
+    from SAP" button, which documents itself as "30-100s+ per PO") - this
+    runs AFTER the job already reports "done" (GRN is genuinely posted by
+    then), retrying every 30s for ~2 minutes:
+      1. Put Away Task confirm (`_confirm_put_away_task`, site P8 EM1 only,
+         see that function's docstring - fixes Fulfilled Quantity staying
+         0 in SAP) - `supplier_shipment_service.mark_put_away_confirmed`
+         patches the result onto the shipment once done.
+      2. Inbound Delivery ID lookup (same as the manual "Fetch from SAP"
+         button, `fetch_inbound_delivery_ids_from_sap` +
+         `manually_confirm_inbound_delivery`) - fills in the GRN Approval
+         screen's "SAP Inbound Delivery #" column automatically.
+    Fire-and-forget (asyncio.create_task) - never raises, never blocks."""
+    pending_put_away = set(po_numbers) if (site_id and sap_site_logistics_query_client and sap_site_logistics_manage_client) else set()
+    for attempt in range(4):
+        await asyncio.sleep(30)
+        try:
+            doc = await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
+        except Exception:
+            return
+        for po_number in list(pending_put_away):
+            events = []
+            try:
+                confirmed = await sap_playwright_supplier_pgr_service._confirm_put_away_task(
+                    site_id, po_number, sap_site_logistics_query_client, sap_site_logistics_manage_client, events,
+                )
+            except Exception as e:
+                confirmed, events = False, [f"Put Away confirm crashed: {e}"]
+            if confirmed:
+                pending_put_away.discard(po_number)
+            await asyncio.to_thread(supplier_shipment_service.mark_put_away_confirmed, db, doc_code, po_number, confirmed, events)
+        missing_delivery_ids = [
+            p["po_number"] for p in (doc.get("sap_gr_result") or {}).get("per_po", [])
+            if p.get("status") == "posted" and not p.get("inbound_delivery_id")
+        ]
+        if missing_delivery_ids:
+            try:
+                match = await asyncio.to_thread(supplier_shipment_service.fetch_inbound_delivery_ids_from_sap, doc, sap_inbound_delivery_report_client)
+                for po_number, inbound_delivery_id in match["found"].items():
+                    await asyncio.to_thread(
+                        supplier_shipment_service.manually_confirm_inbound_delivery, db, doc_code, po_number, inbound_delivery_id,
+                        "Auto-fetch (background)", sap_goods_movement_client, sap_inventory_client, owner_party_id,
+                    )
+                    if po_number in missing_delivery_ids:
+                        missing_delivery_ids.remove(po_number)
+            except Exception as e:
+                logger.warning(f"Auto-fetch inbound delivery ID retry failed for {doc_code} (attempt {attempt + 1}/4): {e}")
+        if not pending_put_away and not missing_delivery_ids:
+            return
+
+
 def _start_full_auto_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> str:
     """Sep 18 2026, EM1 full-automation test path - creates AND releases
     the Inbound Delivery Notification in one SOAP call per PO (see
@@ -8718,6 +8793,9 @@ def _start_full_auto_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> s
             )
             final = await _attach_grn_display_fields(final)
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
+            posted_pos = [p["po_number"] for p in (final.get("sap_gr_result") or {}).get("per_po", []) if p.get("status") == "posted"]
+            if posted_pos:
+                asyncio.create_task(_auto_finish_full_auto_grn(doc_code, posted_pos, doc.get("site_id"), owner_party_id))
         except Exception as e:
             logger.error(f"Full-auto GRN job {job_id} ({doc_code}) failed: {e}")
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": str(e)})

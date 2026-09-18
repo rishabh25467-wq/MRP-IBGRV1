@@ -1506,3 +1506,17 @@ def manually_confirm_inbound_delivery(db, doc_code: str, po_number: str, inbound
         update["sap_movement_result"] = sap_movement_result
     db[SHIPMENTS_COLLECTION].update_one({"_id": doc["_id"]}, {"$set": update})
     return get_shipment_by_code(db, doc_code)
+
+
+def mark_put_away_confirmed(db, doc_code: str, po_number: str, confirmed: bool, events: list) -> None:
+    """Sep 19 2026 - patches just `put_away_confirmed`/`events` onto one
+    PO's own `sap_gr_result.per_po` entry (never touches status or
+    `inbound_delivery_id`) - set by the full-auto GRN's background Put
+    Away confirmation retry (see server.py's `_auto_finish_full_auto_grn`,
+    sap_playwright_supplier_pgr_service._confirm_put_away_task's
+    docstring for the real bug this closes out: Fulfilled Quantity
+    staying 0 in SAP after a "Test Full Automated GRN" run)."""
+    db[SHIPMENTS_COLLECTION].update_one(
+        {"_id": (doc_code or "").strip().upper(), "sap_gr_result.per_po.po_number": po_number},
+        {"$set": {"sap_gr_result.per_po.$.put_away_confirmed": confirmed, "sap_gr_result.per_po.$.events": events}},
+    )

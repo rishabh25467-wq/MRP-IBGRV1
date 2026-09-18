@@ -887,6 +887,69 @@ async def create_inbound_delivery_notifications_only(po_items: dict, notificatio
     return results
 
 
+async def _confirm_put_away_task(site_id: str, po_number: str, query_client, manage_client, events: list) -> bool:
+    """Sep 19 2026 fix - real user bug report + live screenshot showing
+    SAP's own "Inbound Warehouse Request" Execution Details: Planned
+    Quantity was always correct, but "Product Fulfilled Quantity"
+    stayed 0 forever, and the Document Flow showed the Warehouse
+    Order/Inbound Delivery/Warehouse Task ("Put Away") all stuck "Not
+    Started". Root cause: `maintain_bundle(release=True)` above only
+    creates+releases the Inbound Delivery Notification - SAP's EM1
+    "one-step receiving" Logistics Model then auto-generates that whole
+    downstream chain, but nothing in this app ever CONFIRMED the actual
+    Put Away Warehouse Task, which is the one thing that sets Fulfilled
+    Quantity. That confirm is a SEPARATE SAP object/service
+    (`ManageSiteLogisticsTaskIn.MaintainBundle_V1`, sap_site_logistics_
+    client.py) - live-verified this session (real task 69040, PO 29685,
+    site P8: SAP returned SeverityCode "S"/"Saved Successfully" and the
+    task then dropped out of the open-tasks query, confirming success).
+
+    Looks up this PO's own Put Away task (OperationTypeCode="11") on
+    `site_id` and confirms every line's ActualQuantity = PlanQuantity -
+    safe to trust PlanQuantity here (unlike a task nobody has physically
+    checked yet) because this whole function only ever runs AFTER
+    `maintain_bundle(release=True)` has already told SAP the goods were
+    received in this exact quantity. Retries a few times for SAP's own
+    indexing lag between the release call and the task actually
+    appearing in this query (same pattern as the confirmation-report
+    retries elsewhere in this file). Never raises - the Goods Receipt
+    itself already posted by the time this runs, so a failure here is a
+    logged/degraded outcome (caller surfaces it via `events`), not a
+    reason to fail the whole PO."""
+    task = None
+    for attempt in range(4):
+        try:
+            tasks = await asyncio.to_thread(query_client.find_tasks_for_site, site_id)
+            task = next((t for t in tasks if t.get("po_number") == po_number and t.get("operation_type_code") == "11"), None)
+        except Exception as e:
+            events.append(f"Could not query SAP for PO {po_number}'s Put Away task (attempt {attempt + 1}/4): {e}")
+        if task:
+            break
+        await asyncio.sleep(4)
+    if not task:
+        events.append(f"Could not find a Put Away task in SAP for PO {po_number} - Fulfilled Quantity may need to be confirmed manually in SAP")
+        return False
+    task_payload = {
+        "task_id": task["task_id"], "task_uuid": task["task_uuid"],
+        "referenced_object_uuid": task["referenced_object_uuid"], "operation_activity_uuid": task["operation_activity_uuid"],
+        "material_inputs": [
+            {"uuid": mi["uuid"], "product_id": mi["product_id"], "actual_quantity": mi["plan_quantity"], "unit_code": mi["unit_code"]}
+            for mi in task.get("material_inputs", []) if mi.get("plan_quantity") is not None
+        ],
+        "material_outputs": [
+            {"uuid": mo["uuid"], "product_id": mo["product_id"], "actual_quantity": mo["plan_quantity"], "unit_code": mo["unit_code"], "target_area": mo["target_area"]}
+            for mo in task.get("material_outputs", []) if mo.get("plan_quantity") is not None
+        ],
+    }
+    try:
+        await asyncio.to_thread(manage_client.confirm_tasks_bundle, [task_payload])
+        events.append(f"Confirmed Put Away Task {task['task_id']} for PO {po_number} in SAP - Fulfilled Quantity now matches Planned Quantity")
+        return True
+    except Exception as e:
+        events.append(f"Could not confirm Put Away Task {task['task_id']} for PO {po_number} in SAP - Fulfilled Quantity may need to be confirmed manually: {e}")
+        return False
+
+
 async def create_and_release_inbound_delivery_notifications(po_items: dict, notification_client, confirmation_report_client) -> list:
     """Sep 18 2026, user's explicit ask: a SEPARATE "Test Full Automated
     GRN" button/path for the EM1 breakthrough (see /app/memory/
@@ -905,11 +968,36 @@ async def create_and_release_inbound_delivery_notifications(po_items: dict, noti
     for this exact notification_id+PO, skip re-posting rather than risk
     a duplicate receipt on a retry.
 
-    Returns [{"po_number", "notification_id", "status":
-    "posted"|"failed", "error"?}] - "posted" (not "notification_created")
-    since this status feeds straight into
-    `supplier_shipment_service.finalize_goods_receipt`, which expects the
-    same shape Playwright's `post_goods_receipt_via_ui` produces."""
+    Sep 18 2026 correction: briefly required this SAME confirmation
+    report to show a row before ever reporting "posted" (to catch a
+    silently-disabled Release), but reverted it - real incident, shipment
+    S000007/PO 29685: SAP's own UI confirmed the delivery was genuinely
+    Released + Received, yet this analytics report (see sap_inbound_
+    delivery_report_client.py's own docstring re: known field/extraction
+    gaps in this exact report) still showed zero rows for it even much
+    later. That confirmation report lags/gaps too unpredictably to gate
+    success on - trusting maintain_bundle's own error+ID check (like
+    every other path in this file) is the correct signal here.
+
+    Sep 19 2026 - Put Away Task confirmation (`_confirm_put_away_task`)
+    and the Inbound Delivery ID lookup were both tried INLINE here at
+    first, but real user testing showed a fresh 2-line PO went from a
+    few seconds to ~60s: each individual SAP query in this tenant costs
+    4-5s+ on its own (live-measured), and the retry loops needed for
+    SAP's genuine indexing lag (both the Put Away task and the
+    confirmation report can take well over a minute to appear) multiplied
+    that many times over, all BLOCKING the user-facing job. Moved both to
+    server.py's `_auto_finish_full_auto_grn` background task (same
+    "eventually consistent, not blocking" pattern the manual "Fetch from
+    SAP" button already established) - this function now does ONLY the
+    one real SAP write (create+release) and returns as fast as SAP allows.
+
+    Returns [{"po_number", "notification_id", "status": "posted"|"failed",
+    "error"?}] - "posted" (not "notification_created") since this status
+    feeds straight into `supplier_shipment_service.finalize_goods_receipt`,
+    which expects the same shape Playwright's `post_goods_receipt_via_ui`
+    produces. `inbound_delivery_id`/Put Away confirmation are filled in
+    later, in the background, by server.py."""
     results = []
     for po_number, spec in po_items.items():
         item_qtys = dict(spec.get("item_qtys") or {})
@@ -944,41 +1032,15 @@ async def create_and_release_inbound_delivery_notifications(po_items: dict, noti
         ]
         try:
             await asyncio.to_thread(notification_client.maintain_bundle, notification_id, po_number, vendor_code, delivery_date, soap_items, True)
+            results.append({"po_number": po_number, "notification_id": notification_id, "status": "posted"})
         except Exception as e:
             results.append({
                 "po_number": po_number, "notification_id": notification_id, "status": "failed",
                 "error": f"SAP rejected the full automated Goods Receipt for PO {po_number}: {e}",
             })
-            continue
-        # Sep 18 2026 fix - real incident (shipment S000007/PO 29685): SAP
-        # can accept a MaintainBundle call with NO error severity and the
-        # notification ID echoed back, yet still have silently DISABLED
-        # the release action server-side ("Action RELEASE not possible;
-        # action is disabled") - maintain_bundle's own error/UUID checks
-        # don't catch this. The only trustworthy proof a release actually
-        # completed is SAP's own confirmation report, so require that
-        # here too before ever reporting "posted" - same source of truth
-        # "Re-check SAP" already uses. One short retry for normal async
-        # lag; if it's still empty after that, this is a real failure.
-        confirmed = False
-        for attempt in range(2):
-            try:
-                confirmed = bool(await asyncio.to_thread(confirmation_report_client.find_confirmation_rows, po_number, notification_id))
-            except Exception as e:
-                logger.warning(f"Full-auto GRN: post-release confirmation check failed for PO {po_number} (attempt {attempt + 1}): {e}")
-            if confirmed:
-                break
-            await asyncio.sleep(3)
-        if confirmed:
-            results.append({"po_number": po_number, "notification_id": notification_id, "status": "posted"})
-        else:
-            results.append({
-                "po_number": po_number, "notification_id": notification_id, "status": "failed",
-                "error": f"SAP accepted the request for PO {po_number} but never actually confirmed a real Goods Receipt for it "
-                         f"(notification '{notification_id}') - the Release action was likely silently rejected/disabled on SAP's "
-                         f"side. Check this document directly in SAP UI before retrying with a new invoice number.",
-            })
     return results
+
+
 
 
 # Sep 2 2026: the Playwright-based `fetch_open_po_quantities` that used
