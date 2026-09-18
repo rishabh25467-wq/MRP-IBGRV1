@@ -360,6 +360,9 @@ export default function SupplierShipmentsPage() {
               {detailShipment?.status === "approved" && detailShipment?.approved_at && ` · Received ${new Date(detailShipment.approved_at).toLocaleString()}${detailShipment.approved_by ? ` by ${detailShipment.approved_by}` : ""}`}
               {detailShipment?.status === "rejected" && detailShipment?.rejected_at && ` · Rejected ${new Date(detailShipment.rejected_at).toLocaleString()}${detailShipment.rejected_by ? ` by ${detailShipment.rejected_by}` : ""}`}
             </DialogDescription>
+            {detailShipment?.created_on_behalf_by && (
+              <div className="text-xs text-[#B54708]" data-testid="supplier-shipment-detail-created-on-behalf-flag">Created on behalf by {detailShipment.created_on_behalf_by}</div>
+            )}
           </DialogHeader>
 
           {detailShipment?.status === "rejected" && detailShipment?.rejection_reason && (

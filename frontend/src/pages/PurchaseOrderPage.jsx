@@ -102,6 +102,26 @@ export default function PurchaseOrderPage() {
     axios.get(`${API}/purchase-orders/sites`).then((r) => setSites(r.data.sites || [])).catch(() => toast.error("Could not load sites"));
   }, []);
 
+  // Sep 5 2026, user's explicit ask: Purchase Unit auto-fills from the PR's
+  // own site, and Bill-To auto-fills to that same site's Finance unit
+  // ("{site}-FIN") so the buyer never has to fill either manually. Kept
+  // reactive on [prFetched, sites] (Sep 18 2026 fix) rather than a one-shot
+  // check inside fetchPR - `sites` loads async on mount, so a fast PR fetch
+  // used to race it and permanently leave both fields blank even for a
+  // perfectly valid site.
+  useEffect(() => {
+    if (!prFetched) return;
+    const prSite = (prFetched.compcode && sites.includes(prFetched.compcode)) ? prFetched.compcode : "";
+    setPurchaseUnitSite(prSite);
+    if (prSite) {
+      const prCompany = companyForSite(prSite);
+      const billToOpt = `${prSite}-FIN`;
+      setBillToCompany((BILL_TO_OPTIONS_BY_COMPANY[prCompany] || []).includes(billToOpt) ? billToOpt : "");
+    } else {
+      setBillToCompany("");
+    }
+  }, [prFetched, sites]);
+
   useEffect(() => {
     const onClickOutside = (e) => {
       if (supplierWrapperRef.current && !supplierWrapperRef.current.contains(e.target)) setShowSupplierSuggestions(false);
@@ -133,18 +153,14 @@ export default function PurchaseOrderPage() {
       const { data } = await axios.get(`${API}/purchase-orders/pr-lookup/${encodeURIComponent(voc)}`);
       setPrFetched(data);
       setCurrency(data.currency || "INR");
-      // Sep 5 2026, user's explicit ask: Purchase Unit auto-fills from the
-      // PR's own site, and Bill-To auto-fills to that same site's Finance
-      // unit ("{site}-FIN") so the buyer never has to fill either manually.
-      const prSite = (data.compcode && sites.includes(data.compcode)) ? data.compcode : "";
-      setPurchaseUnitSite(prSite);
-      if (prSite) {
-        const prCompany = companyForSite(prSite);
-        const billToOpt = `${prSite}-FIN`;
-        setBillToCompany((BILL_TO_OPTIONS_BY_COMPANY[prCompany] || []).includes(billToOpt) ? billToOpt : "");
-      } else {
-        setBillToCompany("");
-      }
+      // purchaseUnitSite/billToCompany are derived reactively below (see the
+      // `sites`/`prFetched` effect) - NOT set directly here, since `sites`
+      // (loaded on mount) can still be empty at this exact moment if the user
+      // fetches a PR quickly, which used to silently leave Purchase Unit and
+      // Bill-To blank forever even though the PR's own site was perfectly
+      // valid (bug found live Sep 18 2026 - PR showed compcode "P7", a real
+      // site, but sites.includes("P7") on the not-yet-loaded [] evaluated
+      // false and never got re-checked).
       if (data.supplier_code) {
         setSelectedSupplier({
           supplier_code: data.supplier_code,

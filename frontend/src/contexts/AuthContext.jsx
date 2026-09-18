@@ -61,6 +61,9 @@ export const PAGE_LABELS = {
   // without the Approve/Reject actions (still gated behind
   // supplier_portal_admin only).
   supplier_portal_documents: "Supplier Additional Documents",
+  // Sep 18 2026, user's explicit ask: lets staff create a shipment on
+  // behalf of a supplier + reset a supplier's password.
+  act_as_supplier: "Act as Supplier",
 };
 
 const AuthContext = createContext(null);

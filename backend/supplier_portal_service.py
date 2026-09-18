@@ -211,6 +211,30 @@ def _get_account_or_404(db, account_id: str) -> dict:
     return account
 
 
+def get_account(db, account_id: str) -> dict:
+    """Public counterpart of _get_account_or_404 for other backend
+    modules (Sep 18 2026, Act as Supplier feature)."""
+    return _get_account_or_404(db, account_id)
+
+
+def admin_set_password(db, account_id: str, new_password: str) -> dict:
+    """Sep 18 2026, user's explicit ask: internal staff (via the new
+    "Act as Supplier" page) can set a new password for a supplier
+    account, which is then emailed to them (see graph_mail_service.
+    send_supplier_password_reset). Same 8-char minimum + bcrypt hashing
+    as self-service signup. Also clears any existing login lockout
+    (LOGIN_ATTEMPTS_COLLECTION) so the new password works immediately."""
+    account = _get_account_or_404(db, account_id)
+    if not new_password or len(new_password) < 8:
+        raise SupplierPortalValidationError("Password must be at least 8 characters")
+    db[ACCOUNTS_COLLECTION].update_one(
+        {"_id": account_id},
+        {"$set": {"password_hash": _hash_password(new_password), "updated_at": datetime.now(timezone.utc)}},
+    )
+    db[LOGIN_ATTEMPTS_COLLECTION].delete_one({"_id": account["email"]})
+    return db[ACCOUNTS_COLLECTION].find_one({"_id": account_id})
+
+
 def approve_account(db, account_id: str, approved_by: str) -> None:
     _get_account_or_404(db, account_id)
     db[ACCOUNTS_COLLECTION].update_one(

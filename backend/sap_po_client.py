@@ -442,9 +442,20 @@ class SAPPurchaseOrderClient:
         merge_backfill_rows) WITHOUT expiring anything else for that
         vendor - a partial ID-range chunk can never be treated as "the
         vendor's whole PO list" the way a full fetch_recent_window batch
-        can. Once the floor catches up to the live window's own lower
-        bound, `done=True` and there's nothing older left to check until
-        the live window itself advances further."""
+        can.
+
+        Sep 18 2026 fix (real incident - PO 29654 never appeared on
+        vendor S3772's dashboard despite being genuinely open): once the
+        floor first caught up to the ceiling this used to permanently
+        stop (`done=True` forever) - but a PO's status can legitimately
+        flip from filtered-out (e.g. "Not Yet Released") to genuinely
+        open SOMETIME AFTER its own ID range was already consumed by a
+        one-time scan, and nothing ever looked at that range again.
+        Now, once caught up, it simply restarts from
+        `ceiling - BACKFILL_INITIAL_DEPTH_IDS` and keeps re-sweeping that
+        recent history indefinitely - `done` is kept in the return value
+        only to log a friendly "completed a full lap" message, it no
+        longer means "stop calling this"."""
         ceiling_doc = db[WATERMARK_COLLECTION].find_one({"_id": "latest"})
         ceiling = (ceiling_doc or {}).get("max_po_id", 0)
         if not self.endpoint or ceiling <= 0:
@@ -454,6 +465,10 @@ class SAPPurchaseOrderClient:
         if floor is None:
             floor = max(0, ceiling - BACKFILL_INITIAL_DEPTH_IDS)
         if floor >= ceiling:
+            floor = max(0, ceiling - BACKFILL_INITIAL_DEPTH_IDS)
+            db[BACKFILL_WATERMARK_COLLECTION].update_one(
+                {"_id": "latest"}, {"$set": {"floor_id": floor, "updated_at": datetime.now(timezone.utc)}}, upsert=True,
+            )
             return {"rows": [], "done": True}
         upper = min(floor + WINDOW_WIDTH_IDS, ceiling)
         rows, _ = self._fetch_between(floor + 1, upper)

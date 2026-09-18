@@ -59,3 +59,31 @@ async def send_supplier_invite(sender_upn: str, to_email: str, company_name: str
     if resp.status_code != 202:
         logger.error(f"Graph sendMail failed (HTTP {resp.status_code}) for invite to {to_email}: {resp.text[:500]}")
         raise RuntimeError(f"Graph sendMail failed with HTTP {resp.status_code}: {resp.text[:300]}")
+
+
+async def send_supplier_password_reset(sender_upn: str, to_email: str, company_name: str, new_password: str) -> None:
+    """Sep 18 2026, Act as Supplier feature - notifies a supplier of a
+    password an internal staff member just set for their account."""
+    token = _graph_token()
+    payload = {
+        "message": {
+            "subject": "Your Materials Hub Supplier Portal password has been reset",
+            "body": {
+                "contentType": "HTML",
+                "content": f"""
+                    <p>Hello,</p>
+                    <p>Your password for <b>{company_name}</b>'s Materials Hub Supplier Portal account has been reset by our team.</p>
+                    <p><b>Your new password:</b> {new_password}</p>
+                    <p>Please log in and change this password if you'd like to choose your own.</p>
+                """,
+            },
+            "toRecipients": [{"emailAddress": {"address": to_email}}],
+        },
+        "saveToSentItems": True,
+    }
+    url = f"https://graph.microsoft.com/v1.0/users/{sender_upn}/sendMail"
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(url, headers={"Authorization": f"Bearer {token}"}, json=payload)
+    if resp.status_code != 202:
+        logger.error(f"Graph sendMail failed (HTTP {resp.status_code}) for password reset to {to_email}: {resp.text[:500]}")
+        raise RuntimeError(f"Graph sendMail failed with HTTP {resp.status_code}: {resp.text[:300]}")

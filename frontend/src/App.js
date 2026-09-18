@@ -28,6 +28,7 @@ import PendingAccessPage from "@/pages/PendingAccessPage";
 import AccessManagementPage from "@/pages/AccessManagementPage";
 import SupplierPortalApprovalsPage from "@/pages/SupplierPortalApprovalsPage";
 import SupplierPortalInvitePage from "@/pages/SupplierPortalInvitePage";
+import ActAsSupplierPage from "@/pages/ActAsSupplierPage";
 import PlaywrightReliabilityReportPage from "@/pages/PlaywrightReliabilityReportPage";
 import GrnApprovalPage from "@/pages/GrnApprovalPage";
 import ListPriceInstructionsPage from "@/pages/ListPriceInstructionsPage";
@@ -93,6 +94,7 @@ const FIRST_ACCESSIBLE_PAGE_ROUTES = [
   ["purchase_order", "/purchasing-strategy/purchase-order-create"],
   ["stock_transfer", "/inventory/inter-plant-transfer"],
   ["inbound_stock_transfer", "/inventory/inbound-receipts"],
+  ["act_as_supplier", "/admin/act-as-supplier"],
 ];
 
 function HomeRoute() {
@@ -165,6 +167,7 @@ function InternalApp() {
             <Route path="/admin/access-management" element={<ProtectedRoute superAdminOnly><AccessManagementPage /></ProtectedRoute>} />
             <Route path="/admin/supplier-portal-approvals" element={<ProtectedRoute page={["supplier_portal_admin", "supplier_portal_documents"]}><SupplierPortalApprovalsPage /></ProtectedRoute>} />
             <Route path="/admin/supplier-portal-invite" element={<ProtectedRoute page="supplier_portal_invite"><SupplierPortalInvitePage /></ProtectedRoute>} />
+            <Route path="/admin/act-as-supplier" element={<ProtectedRoute page="act_as_supplier"><ActAsSupplierPage /></ProtectedRoute>} />
             <Route path="/playwrightrate" element={<ProtectedRoute superAdminOnly><PlaywrightReliabilityReportPage /></ProtectedRoute>} />
             <Route path="/admin/grn-approval" element={<ProtectedRoute page="vendor_goods_receipt"><GrnApprovalPage /></ProtectedRoute>} />
             <Route path="/storeapproval" element={<ProtectedRoute page="store_approval"><StoreApprovalPage /></ProtectedRoute>} />

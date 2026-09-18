@@ -673,7 +673,7 @@ def allowed_site_ids_for_buyer_code(db, buyer_code: str) -> list:
     return [s for s in all_sites if company_and_set_of_books_for_site(s)[0] == buyer_code]
 
 
-def create_shipment(db, account: dict, requested_items: list, vendor_code: str = None) -> dict:
+def create_shipment(db, account: dict, requested_items: list, vendor_code: str = None, created_on_behalf_by: str = None) -> dict:
     vendor_code = vendor_code or account["vendor_code"]
     resolved_items = _resolve_items(db, vendor_code, requested_items)
     doc_code = _generate_doc_code(db)
@@ -685,6 +685,12 @@ def create_shipment(db, account: dict, requested_items: list, vendor_code: str =
         "company_name": account["company_name"],
         "items": resolved_items,
         "status": "in_transit",
+        # Sep 18 2026, user's explicit ask: shipments created by internal
+        # staff via the "Act as Supplier" page look identical to a
+        # supplier-created one everywhere else, but carry this flag for
+        # traceability (shown on the GRN Approval + Supplier Shipments
+        # screens) - None for real supplier-created shipments.
+        "created_on_behalf_by": created_on_behalf_by,
         "sap_sync_status": "not_applicable",
         "sap_gr_result": None,
         "sap_movement_status": "not_applicable",

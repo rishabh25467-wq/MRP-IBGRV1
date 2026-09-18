@@ -847,6 +847,9 @@ export default function GrnApprovalPage() {
               <div>
                 <div className="text-lg font-data font-bold text-[#004B87]">{shipment._id}</div>
                 <div className="text-sm text-[#475467]">{shipment.company_name} ({shipment.vendor_code}) · {[...new Set(shipment.items.map((it) => it.po_number))].map((p) => `PO ${p}`).join(", ")}</div>
+                {shipment.created_on_behalf_by && (
+                  <div className="text-xs text-[#B54708] mt-0.5" data-testid="grn-created-on-behalf-flag">Created on behalf by {shipment.created_on_behalf_by}</div>
+                )}
               </div>
               <Badge className={resolveStatusBadge(shipment).className} data-testid="grn-status-badge">{resolveStatusBadge(shipment).label}</Badge>
             </div>

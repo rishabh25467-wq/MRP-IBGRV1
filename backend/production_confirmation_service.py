@@ -951,15 +951,29 @@ def _sub_assembly_ids(db, product_ids) -> frozenset:
     return bom_ids - manual_overrides
 
 
-def _resolve_bom_doc(db, main_output_product: str, override_bom_id: str = None, sap_soap_client=None) -> dict:
+def _resolve_bom_doc(db, main_output_product: str, override_bom_id: str = None, sap_soap_client=None, force_live: bool = False) -> dict:
     """Shared by check_component_availability and get_bom_stock_status -
-    see override_bom_id's docstring on check_component_availability."""
+    see override_bom_id's docstring on check_component_availability.
+
+    `force_live` (Sep 18 2026 fix - real incident: a component removed
+    from a BOM in SAP showed up in this app for a full cache-refresh
+    cycle even after the user clicked "Check Live Stock") - that button
+    used to only affect STOCK QUANTITIES for whatever component list was
+    already cached; it never re-verified BOM MEMBERSHIP itself (which
+    components even belong to the BOM), since the live re-fetch below
+    only used to trigger when `override_bom_id` pointed to a genuinely
+    different bom_id than what's cached - removing a line item from an
+    EXISTING BOM doesn't change its ID, so that condition never caught
+    it. Passing `force_live=True` (from the "live" callers below) now
+    always re-pulls the resolved BOM's structure fresh from SAP, so
+    "live" actually means live for membership too, not just quantities."""
     bom_doc = db["bom_node_cache"].find_one({"_id": main_output_product})
-    if override_bom_id and sap_soap_client is not None and override_bom_id != (bom_doc or {}).get("bom_id"):
+    resolved_bom_id = override_bom_id or (bom_doc or {}).get("bom_id")
+    if sap_soap_client is not None and resolved_bom_id and (force_live or resolved_bom_id != (bom_doc or {}).get("bom_id")):
         try:
-            raw = sap_soap_client._fetch_bom_by_id(override_bom_id)
+            raw = sap_soap_client._fetch_bom_by_id(resolved_bom_id)
         except Exception as e:
-            logger.warning(f"Component availability: live fetch of override BOM '{override_bom_id}' failed, falling back to cached default: {e}")
+            logger.warning(f"Component availability: live fetch of BOM '{resolved_bom_id}' failed, falling back to cached default: {e}")
             raw = None
         if raw and raw.get("groups"):
             bom_doc = {"bom_id": raw["bom_id"], "groups": raw["groups"]}
@@ -1035,7 +1049,7 @@ def check_component_availability(
                     override_bom_id = sap_production_model_bom_client.get_bill_of_material_id_for_model(options[0]["production_model_uuid"])
         except Exception as e:
             logger.warning(f"Component availability: site-scoped Production Model auto-resolve failed for '{main_output_product}' at {site_id}, using cached default instead: {e}")
-    bom_doc = _resolve_bom_doc(db, main_output_product, override_bom_id, sap_soap_client)
+    bom_doc = _resolve_bom_doc(db, main_output_product, override_bom_id, sap_soap_client, force_live=sap_inventory_client is not None)
     stock_by_product = None
     if sap_inventory_client is not None:
         try:
@@ -1077,7 +1091,7 @@ def get_bom_stock_status(db, main_output_product: str, override_bom_id: str = No
     (fast - filtered directly on CMATERIAL_UUID, see sap_inventory_client's
     docstring) and silently falls back to the cache if that live pull
     fails, same fallback pattern as check_component_availability."""
-    bom_doc = _resolve_bom_doc(db, main_output_product, override_bom_id, sap_soap_client)
+    bom_doc = _resolve_bom_doc(db, main_output_product, override_bom_id, sap_soap_client, force_live=sap_inventory_client is not None)
     if not bom_doc or not bom_doc.get("groups"):
         return {"checked": False, "reason": "No cached BOM found locally for this product - cannot check component stock status.", "components": [], "source": None, "fetched_at": None}
 

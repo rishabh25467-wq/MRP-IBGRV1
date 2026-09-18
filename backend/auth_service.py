@@ -128,6 +128,13 @@ PAGE_CATALOG = [
     {"key": "supplier_dashboard", "label": "Supplier Dashboard"},
     {"key": "created_purchase_orders", "label": "Created POs"},
     {"key": "open_purchase_orders", "label": "Open Purchase Orders"},
+    # Sep 18 2026, user's explicit ask: lets an internal staff member
+    # create a shipment on behalf of a supplier (and reset a supplier's
+    # password) directly from the internal app - deliberately its OWN
+    # grantable right, separate from "supplier_dashboard" above (which
+    # is just a nav shortcut into the external JWT-authenticated portal
+    # and still requires the supplier's own credentials to log in).
+    {"key": "act_as_supplier", "label": "Act as Supplier"},
 ]
 PAGE_KEYS = {p["key"] for p in PAGE_CATALOG}
 
@@ -228,6 +235,8 @@ PAGE_ROUTE_RULES = [
     # deliberately reuses the SAME "purchase_order" permission per
     # user's choice rather than a new grantable right.
     ("/api/service-purchase-orders", {"purchase_order"}),
+    # Sep 18 2026, user's explicit ask: internal "Act as Supplier" page.
+    ("/api/admin/act-as-supplier", {"act_as_supplier"}),
 ]
 
 # Paths the auth middleware never gates - login must stay reachable while

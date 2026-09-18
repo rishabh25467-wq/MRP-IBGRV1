@@ -7936,12 +7936,10 @@ async def get_supplier_portal_testing_vendor_directory(request: Request, q: str 
     return {"vendors": await asyncio.to_thread(supplier_shipment_service.vendor_directory, db, q)}
 
 
-@api_router.get("/supplier-portal/purchase-orders")
-async def get_supplier_portal_purchase_orders(request: Request, as_vendor: str = Query(None)):
-    account = await asyncio.to_thread(_require_supplier_account, request)
-    if account.get("status") != "approved":
-        raise HTTPException(status_code=403, detail="Your account is pending admin approval")
-    vendor_code = _effective_vendor_code(account, as_vendor)
+async def _load_open_pos_for_vendor(vendor_code: str) -> dict:
+    """Extracted (Sep 18 2026, Act as Supplier feature) so the internal
+    admin PO-listing endpoint below can share the exact same live-refresh
+    logic as the supplier's own dashboard, instead of drifting apart."""
     # Sep 9 2026, user's explicit ask: "can it just [refresh] when
     # supplier refreshes their page" - unlike the FULL PO pull noted
     # above (which really is too slow/unstable to do live), the Open PO
@@ -7973,6 +7971,15 @@ async def get_supplier_portal_purchase_orders(request: Request, as_vendor: str =
         "last_synced_at": watermark["updated_at"].isoformat() if watermark else None,
         "vendor_code": vendor_code,
     }
+
+
+@api_router.get("/supplier-portal/purchase-orders")
+async def get_supplier_portal_purchase_orders(request: Request, as_vendor: str = Query(None)):
+    account = await asyncio.to_thread(_require_supplier_account, request)
+    if account.get("status") != "approved":
+        raise HTTPException(status_code=403, detail="Your account is pending admin approval")
+    vendor_code = _effective_vendor_code(account, as_vendor)
+    return await _load_open_pos_for_vendor(vendor_code)
 
 
 class ShipmentItemRequest(BaseModel):
@@ -8195,6 +8202,70 @@ async def post_admin_supplier_portal_invite(payload: SupplierInviteRequest, requ
         request.state.user.get("name") or staff_email,
     )
     return invite
+
+
+# ---- Act as Supplier (Sep 18 2026, user's explicit ask): lets an
+# internal staff member with the "act_as_supplier" permission create a
+# shipment on behalf of an approved vendor, and reset a vendor's
+# password (emailed to them via graph_mail_service) - separate from the
+# JWT-authenticated supplier session entirely, gated by auth_service's
+# normal Entra ID page-permission middleware (see PAGE_ROUTE_RULES).
+class ActAsSupplierShipmentRequest(BaseModel):
+    items: List[ShipmentItemRequest]
+
+
+class ActAsSupplierResetPasswordRequest(BaseModel):
+    new_password: str
+
+
+@api_router.get("/admin/act-as-supplier/accounts")
+async def get_act_as_supplier_accounts():
+    return {"accounts": await asyncio.to_thread(supplier_portal_service.list_accounts, db, "approved")}
+
+
+@api_router.get("/admin/act-as-supplier/{account_id}/purchase-orders")
+async def get_act_as_supplier_purchase_orders(account_id: str):
+    try:
+        account = await asyncio.to_thread(supplier_portal_service.get_account, db, account_id)
+    except supplier_portal_service.SupplierPortalNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return await _load_open_pos_for_vendor(account["vendor_code"])
+
+
+@api_router.post("/admin/act-as-supplier/{account_id}/shipments")
+async def post_act_as_supplier_shipment(account_id: str, payload: ActAsSupplierShipmentRequest, request: Request):
+    try:
+        account = await asyncio.to_thread(supplier_portal_service.get_account, db, account_id)
+    except supplier_portal_service.SupplierPortalNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    staff_name = (request.state.user.get("name") or request.state.user.get("email") or "Staff").strip()
+    try:
+        shipment = await asyncio.to_thread(
+            supplier_shipment_service.create_shipment, db, account, [i.dict() for i in payload.items],
+            account["vendor_code"], staff_name,
+        )
+    except supplier_shipment_service.ShipmentValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return shipment
+
+
+@api_router.post("/admin/act-as-supplier/{account_id}/reset-password")
+async def post_act_as_supplier_reset_password(account_id: str, payload: ActAsSupplierResetPasswordRequest, request: Request):
+    staff_email = request.state.user.get("email")
+    if not staff_email:
+        raise HTTPException(status_code=400, detail="Your signed-in account has no email to send this from")
+    try:
+        account = await asyncio.to_thread(supplier_portal_service.admin_set_password, db, account_id, payload.new_password)
+    except supplier_portal_service.SupplierPortalValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except supplier_portal_service.SupplierPortalNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    try:
+        await graph_mail_service.send_supplier_password_reset(staff_email, account["email"], account["company_name"], payload.new_password)
+    except Exception as e:
+        logger.error(f"Password reset email failed for {account['email']}: {e}")
+        raise HTTPException(status_code=502, detail="Password was updated, but the notification email could not be sent. Check that Mail.Send (Application) permission is admin-consented in Azure AD.")
+    return {"status": "password_reset", "email": account["email"]}
 
 
 # ---- Phase 4: internal GRN approval -> automated SAP Goods Receipt ----

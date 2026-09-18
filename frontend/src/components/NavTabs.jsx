@@ -75,6 +75,10 @@ const SUPPLIER_MANAGEMENT_SUBTABS = [
   // in and use its vendor-impersonation search to view/act on any
   // vendor's own shipment-creation dashboard.
   { to: "/supplier-portal/login", label: "Supplier Dashboard", testId: "nav-supplier-management-supplier-dashboard", page: "supplier_dashboard" },
+  // Sep 18 2026, user's explicit ask: internal staff can create a
+  // shipment on behalf of a supplier + reset a supplier's password,
+  // without needing the supplier's own portal credentials.
+  { to: "/admin/act-as-supplier", label: "Act as Supplier", testId: "nav-supplier-management-act-as-supplier", page: "act_as_supplier" },
 ];
 
 const INVENTORY_SUBTABS = [
