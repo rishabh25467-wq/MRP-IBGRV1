@@ -1346,7 +1346,7 @@ def reset_erp_portal_sync_for_retry(db, sto_id: str) -> None:
     }})
 
 
-def get_delivery_note_data(db, erp_portal_client, sto_id: str, sap_valuation_client=None) -> dict:
+def get_delivery_note_data(db, erp_portal_client, sto_id: str, sap_valuation_client=None, sap_outbound_delivery_client=None) -> dict:
     """Data for the in-app "Delivery Challan" print view (Aug 27 2026,
     user's explicit ask, referencing SAP's own printed template as the
     layout target), plus the ERP portal's own Sale_No/Sale_Noc as the
@@ -1384,10 +1384,34 @@ def get_delivery_note_data(db, erp_portal_client, sto_id: str, sap_valuation_cli
     right company NAME via the same Site->Company mapping WIP Clearing
     uses, so the letterhead is never wrong even without a full address.
     Serial Number format is the user's explicit spec:
-    "{Ship-from CompCode}-{Sale_Noc}-{session}"."""
+    "{Ship-from CompCode}-{Sale_Noc}-{session}".
+
+    Sep 18 2026, user's explicit ask ("add sap delivery challan number
+    ex: P8D1-240 in the print pdf and excel also"): once SAP has
+    actually turned this order's Outbound Delivery Request into a real
+    Outbound Delivery, looks up + caches that delivery's own
+    human-readable ID (e.g. "P8D1-240" - see sap_outbound_delivery_
+    client.find_outbound_delivery_ids) onto the order as
+    `outbound_delivery_display_ids`, so it only needs one live SAP
+    round-trip ever, same self-healing-cache pattern as `gi_delivery_
+    request_id` above. Blank/None (never blocks the print) until SAP
+    has actually produced a Delivery for this order - there's nothing
+    to show before that."""
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:
         raise StockTransferOrderNotFoundError(f"Stock Transfer Order {sto_id} not found.")
+
+    outbound_delivery_display_ids = doc.get("outbound_delivery_display_ids")
+    if not outbound_delivery_display_ids and sap_outbound_delivery_client is not None and doc.get("sap_order_uuid"):
+        try:
+            delivery_items = sap_outbound_delivery_client.find_delivery_request_items(doc["sap_order_uuid"])
+            item_uuids = [it["uuid"] for it in delivery_items if it.get("uuid")]
+            if item_uuids:
+                outbound_delivery_display_ids = sap_outbound_delivery_client.find_outbound_delivery_ids(item_uuids)
+                if outbound_delivery_display_ids:
+                    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"outbound_delivery_display_ids": outbound_delivery_display_ids}})
+        except Exception as e:
+            logger.warning(f"Delivery note {sto_id}: SAP Outbound Delivery number lookup failed, printing without it: {e}")
 
     live_rates = {}
     missing_price_product_ids = [it["product_id"] for it in doc["items"] if not (it.get("rate") or 0)]
@@ -1473,6 +1497,7 @@ def get_delivery_note_data(db, erp_portal_client, sto_id: str, sap_valuation_cli
         "place_of_supply": doc.get("place_of_supply"),
         "freight_forwarder": doc.get("freight_forwarder"),
         "remark": doc.get("remark"),
+        "sap_outbound_delivery_no": ", ".join(outbound_delivery_display_ids) if outbound_delivery_display_ids else None,
         "items": items,
         "total_amount": round(total_amount, 2),
     }

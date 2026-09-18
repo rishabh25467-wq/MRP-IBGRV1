@@ -126,6 +126,7 @@ function DeliveryNoteDocument({ data, companyName, copyLabel }) {
           <p>Place of Supply: {data.place_of_supply || "—"}</p>
           <p data-testid="delivery-note-freight-forwarder">Freight Forwarder: {data.freight_forwarder || "Self"}</p>
           {data.remark && <p data-testid="delivery-note-remark">Remark: {data.remark}</p>}
+          <p data-testid="delivery-note-sap-outbound-no">Sap outbound no: {data.sap_outbound_delivery_no || "—"}</p>
         </div>
       </div>
 

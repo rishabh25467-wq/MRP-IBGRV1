@@ -175,7 +175,6 @@ on P1 despite its missing "with task" model) - see same file's dedicated section
 - STO-000415 missing price bug (explicitly deferred by user)
 
 ## Testing status
-- Backend testing agent used this session (iteration_182): 10/10 pass on outbound
   generalization fix.
 - Inbound generalization fix self-tested (pytest + direct mocked call-path check across
   P1/P2/P3/P8) - not yet run through testing_agent as a dedicated pass.
@@ -199,3 +198,17 @@ on P1 despite its missing "with task" model) - see same file's dedicated section
   GRN Approval and the supplier's own Shipments page), and (2) set + email a new password to a
   supplier account. testing_agent iteration_183: 14/14 backend tests pass, full frontend flow
   live-verified, no bugs found.
+- Investigated (no code change, per user's request) why an ERP PR line "Not matched in SAP":
+  the ERP's item code for that material genuinely differs from SAP's real code (data entry
+  issue in the ERP, not a matching bug).
+- Investigated (no code change, per user's request) why a shipment's SAP "Actual Delivery
+  Date" showed the approval date instead of the Bill Date: the SOAP service we use
+  (`ManageStandardInboundDeliveryNotificationIn`) has no ActualDeliveryDate field at all -
+  only `ManageSiteLogisticsTasks` (the STO automation the user reverted) has it. User
+  decided how to proceed is still pending (asked, then moved to next task).
+- Added "Sap outbound no" (SAP's human-readable Outbound Delivery ID, e.g. P8D1-172) to the
+  Delivery Challan print PDF and Excel export - `stock_transfer_service.get_delivery_note_data`
+  now looks up + caches it via `sap_outbound_delivery_client.find_outbound_delivery_ids`
+  (previously dead code, unused since Aug 27) onto `outbound_delivery_display_ids`.
+  Live-verified end-to-end for STO-000015 (real SAP call returned P8D1-172), confirmed in both
+  the print page and the Excel file, self-tested via curl/screenshot.

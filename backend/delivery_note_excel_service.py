@@ -97,6 +97,7 @@ def build_delivery_note_excel(data: dict) -> BytesIO:
         [f"Place of Supply: {data.get('place_of_supply') or '—'}"],
         [f"Freight Forwarder: {data.get('freight_forwarder') or 'Self'}"],
         [f"Remark: {data.get('remark') or '—'}"],
+        [f"Sap outbound no: {data.get('sap_outbound_delivery_no') or '—'}"],
         [],
         ["Details of Receiver | Billed to"],
         *_company_lines(data.get("ship_to_company"), data["ship_to_site_id"]),
