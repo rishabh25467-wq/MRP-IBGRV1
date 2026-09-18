@@ -791,7 +791,7 @@ export default function GrnApprovalPage() {
           <Truck size={18} weight="fill" className="text-[#004B87]" />
           <h1 className="font-heading text-xl font-bold text-[#1D2939]">GRN Approval</h1>
         </div>
-        <p className="text-sm text-[#475467]">Enter the 6-character shipment code from the delivery paperwork, physically match the goods and supplier invoice, then approve.</p>
+        <p className="text-sm text-[#475467]">Enter the shipment code from the delivery paperwork, physically match the goods and supplier invoice, then approve.</p>
 
         {/* Sep 17 2026, Manual GRN feature - self-service toggle between
             the Playwright-automated Goods Receipt and posting it manually
@@ -827,12 +827,12 @@ export default function GrnApprovalPage() {
 
         <div className="bg-white border border-[#D0D5DD] rounded-sm p-3 flex items-center gap-3 shadow-[0_1px_2px_0_rgba(16,24,40,0.05)]">
           <Input
-            placeholder="e.g. A3F9K2"
+            placeholder="e.g. S000003"
             value={code}
             onChange={(e) => setCode(e.target.value.toUpperCase())}
             onKeyDown={(e) => e.key === "Enter" && lookup()}
             className="h-8 font-data uppercase w-64 text-[13px] rounded-sm border-[#D0D5DD] focus-visible:border-[#004B87] focus-visible:ring-1 focus-visible:ring-[#004B87]"
-            maxLength={6}
+            maxLength={10}
             data-testid="grn-code-input"
           />
           <Button onClick={() => lookup()} disabled={searching} className="h-8 rounded-sm bg-[#004B87] hover:bg-[#003A6A] active:bg-[#00294D] text-[13px] font-bold transition-colors" data-testid="grn-code-search-button">

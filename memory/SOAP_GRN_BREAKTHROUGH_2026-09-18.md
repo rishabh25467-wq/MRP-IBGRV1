@@ -146,6 +146,29 @@ unrelated avenue from the Inbound Delivery Notification work above - would be fo
 automating STO Goods Issue (currently manual per the Sep 18 architecture decision), not
 GRN receiving.
 
+## CRITICAL STATUS CHANGE - Sep 18 2026: Playwright automation STOPPED
+User clarified (this was a STANDING instruction from an earlier session, not new): all
+Playwright automation is stopped and must NOT be used for any real actions - both
+`sap_playwright_supplier_pgr_service.py` (vendor PO GRN posting) AND
+`sap_playwright_pgr_service.py` (STO inbound receiving) are affected. Staff currently do
+BOTH vendor GRN posting and STO receiving MANUALLY, directly in SAP's own UI, as the
+current stopgap - NOT fully blocked, just non-automated right now. No code-level
+kill-switch exists for this (grepped `.env`/`server.py`/`*.py`, none found) - this is an
+operational/policy stop, not a code flag. Do NOT call into either Playwright service for
+any real action going forward. Building the direct-SOAP replacement is confirmed as the
+next top priority, starting with vendor GRN (already proven working, see above).
+
+IMPORTANT DISTINCTION - the proven SOAP breakthrough above (StandardInboundDeliveryNotification
+BundleCreateRequest_sync) is specifically for VENDOR PO GRNs, where WE create a brand new
+Inbound Delivery Notification from scratch against a Purchase Order (no SAP delivery
+document exists yet). This is technically DIFFERENT from STO receiving: for an STO, SAP
+already auto-creates the Inbound Delivery document itself the moment Goods Issue is
+posted on the shipping side - receiving an STO means POSTING GOODS RECEIPT against that
+EXISTING delivery, not creating a new notification. This likely needs a DIFFERENT SAP
+service/action (something in the "ManageInboundDeliveryIn" family, or similar - NOT yet
+researched). Do not assume the vendor-GRN breakthrough automatically also solves STO
+receiving - that needs its own separate investigation before building anything for it.
+
 ## Does this Logistics Model issue affect STO creation/receiving too? (investigated, answered)
 User asked whether creating a multi-line STO is also restricted by this same "Logistics
 model" gap. Investigated thoroughly by querying the real `stock_transfer_orders` DB
@@ -170,14 +193,135 @@ collection (99 real STOs) - answer is **NO, this is NOT an STO problem**:
   they were unaffected before this session and remain unaffected now. No STO-side action
   needed because of this finding.
 
-`https://my431827.businessbydesign.cloud.sap/sap/bc/srt/scs/sap/ygoodsissuemaintainin`
-(a "Y"-namespace custom service, likely tied to the "Goods Issue Maintain in" row seen in
-a Communication Scenario admin screen). Tried fetching its WSDL via plain GET / `?wsdl` /
-etc - all return `415 Unsupported Media Type` with empty body, so its schema could NOT be
-introspected automatically. STILL NEED: user to pull the real WSDL from SAP's Service
-Explorer (Application and User Management -> Input and Output Management -> Service
-Explorer, search "GoodsIssueMaintain" or similar) before attempting anything here - do
-NOT guess field names for this one either, same lesson as above. This is a SEPARATE,
-unrelated avenue from the Inbound Delivery Notification work above - would be for
-automating STO Goods Issue (currently manual per the Sep 18 architecture decision), not
-GRN receiving.
+## LIVE TEST IN PROGRESS: EM2 (Standard Shipping with tasks) - Site Logistics Task observation
+User created **EM2** for site P8: Type=Standard Shipping, Template="one-step shipping with
+pick lists" (the WITH-TASK shipping variant, mirrors EM1's receiving fix), Release Outbound
+Delivery = **Manually** (intentionally NOT auto-release yet, per the cautious step-by-step
+plan). Saved and Released successfully (status: Consistent). Note: "Automatic Generation
+of Tasks" was UNCHECKED by this template's default (unlike EM1's receiving template which
+had it checked) - this template may expect a manual "Create Pick List" step in SAP UI to
+actually generate the task, not automatic.
+
+Created a REAL test STO to observe: **STO-000109** (P8 -> P1, product 09200726-01,
+qty 1 EA, source_warehouse_id P8-RM) via the app's real `/api/stock-transfer/orders`
+endpoint (using the `grnscreenshot...` super_admin test session cookie - see
+test_credentials.md). Result: created fine in SAP (`sap_order_id`
+00000000000000000000000000000032291, `gi_delivery_request_id: "61095"`), `gi_status:
+"awaiting_manual_gi"`, `outbound_delivery_ids: []` (Outbound Delivery not yet created -
+that only happens once GI is actually processed, which is manual per the Sep 18
+architecture decision - so this STO is currently just sitting at the Delivery
+Proposal/Request stage, not yet a real Outbound Delivery).
+
+BLOCKED on observing whether a Site Logistics Task now exists for this STO: the
+`SAPSiteLogisticsQueryClient.find_tasks_for_site()` (already-existing, from "attempt #8")
+is currently returning a generic SOAP fault ("An exception was raised", SY530 - the same
+uninformative generic fault as elsewhere in this session) for BOTH P8 (new) AND P2 (a
+site we did NOT touch, which per this same file's earlier note used to return 18 real
+tasks successfully in an "attempt #8" session). This strongly suggests either a transient
+SAP-side issue right now, OR something changed on SAP's side affecting this query service
+tenant-wide - NOT something caused by our EM2 change specifically (since an untouched
+site P2 fails identically). AWAITING user to either (a) let it be retried later, or
+(b) check directly in SAP's own UI (Warehousing and Logistics -> Site Logistics Tasks,
+site P8) whether a task exists for STO-000109 / delivery request 61095.
+
+## Hypothesis raised by user: could EM2 fix the "multi-line STO = multiple notifications" bug?
+**CORRECTED (Sep 18 2026) - test did NOT actually prove EM2 helped.** User clarified after
+the test: creating the Outbound Delivery MANUALLY via SAP UI (which is what the
+STO-000110/P8D1-238 test above did) has ALWAYS correctly produced ONE delivery ID for a
+multi-line STO, regardless of EM2 - this was already known-good behavior, not something
+EM2 changed. So the STO-000110 test below did NOT isolate the EM2 variable at all - it
+just confirmed the already-known-good manual-UI path, which doesn't tell us anything new.
+
+The ORIGINAL bug the user described (multi-line STO producing MULTIPLE separate
+notifications) must have happened through some OTHER mechanism - NOT the manual
+"Create Outbound Delivery" UI click. Likely candidate: some AUTOMATIC/background SAP
+process (e.g. a scheduled Delivery Due List / MDRO-type mass run) rather than a manual
+click - but this is NOT YET CONFIRMED. NEED TO ASK USER: what exactly was the original
+scenario/mechanism where multi-line STOs produced multiple separate notifications? Was it
+via an automatic background job, or something our own app's code triggered, or something
+else? Do not assume EM2 fixes this until the actual original mechanism is identified and
+re-tested against it specifically.
+
+Test data below (STO-000110/P8D1-238) is still valid factual data, just doesn't prove the
+EM2 hypothesis - keeping it for reference in case the original bug's mechanism turns out
+to be the same delivery-request-to-delivery conversion step after all.
+
+Test: created a real multi-line test STO **STO-000110** (P8 -> P1, items 09200726-01 +
+092018-PF, both from P8-RM) via the app's real API. SAP order 32293, Delivery Request
+**61097**. User then did the normal "Create Outbound Delivery" (with Release) step in SAP
+UI on this delivery request (Release Outbound Delivery is still set to Manually on EM2,
+so this UI step was still needed). Result: **ONE** Outbound Delivery, **P8D1-238**, was
+created - confirmed via read-only lookup to contain BOTH line items. But per user's
+correction above, this is NOT evidence of an EM2 effect - manual UI creation always did
+this correctly regardless of EM2.
+
+## STO receiving via SOAP - TESTED, CONFIRMED NOT VIABLE (Sep 18 2026)
+User asked to test the full loop: find an STO's real Inbound Delivery Notification ID and
+attempt to release/post it via our new SOAP service (not Playwright, not the already-dead
+OData `InboundDeliveryPGRBackground`).
+
+1. Read-only lookup (via the ALREADY-EXISTING, unused `sap_inbound_delivery_client.py` ->
+   `SAPInboundDeliveryClient.find_delivery_by_id()`, an OData GET, safe): found real
+   candidate **STO-000102** (ship_to=P8, GI posted, never received) -> Outbound Delivery
+   **P1D1-547**, confirmed genuinely un-received in SAP with 4 real items (A34212 2 EA,
+   G12LW 2 EA, G12FW 2 EA, G12NUT 5 EA).
+2. Note found while investigating: `sap_inbound_delivery_client.py` (built Aug 28 2026,
+   NEVER wired into server.py/inbound_receipt_service.py - dead code, comment-only
+   reference) already tried the more obvious OData action `InboundDeliveryPGRBackground`
+   and got it OFFICIALLY CONFIRMED DISABLED by SAP (KBA 3583076: "Inability to Post Goods
+   Receipt with Actual Quantities via OData API in Inbound Delivery Processing") - this is
+   WHY Playwright was built in the first place. Did NOT retry this (would just repeat an
+   already-conclusively-failed test).
+3. Tried our SESSION's SOAP service instead (genuinely different mechanism) with a
+   check-only call: `actionCode="02"` (Change), `DeliveryNotificationID=P1D1-547`,
+   `releaseDocumentIndicator="true"`, no items/vendor (since none should be needed for an
+   update to an existing doc). SAP rejected cleanly: **"Action Change not supported within
+   IDN P1D1-547"** (severity 3, real validation error - not a schema mistake, SAP
+   correctly recognized the ID as a real IDN, just rejects modifying it this way).
+
+**Conclusion: this specific SOAP service (`StandardInboundDeliveryNotificationBundle...`)
+cannot release/post an EXISTING STO-originated Inbound Delivery Notification** - it only
+supports creating brand-new ones from a Purchase Order reference (the vendor-GRN use
+case). STO receiving via direct API remains UNSOLVED - all 3 known avenues are now
+confirmed dead (Playwright=stopped by policy, OData PGRBackground=disabled by SAP,
+SOAP Bundle Create/Change=rejects existing STO IDNs). Would need genuinely new research
+(a different SAP service/BO entirely, or working with SAP support on why PGRBackground
+is disabled) before attempting anything further here. Vendor GRN automation (the original
+breakthrough) is UNAFFECTED by this - remains the viable, provable path forward.
+
+## Automatic Release investigation via "Outbound Delivery Release Run" (Sep 18 2026) - INCONCLUSIVE, PAUSED
+Found the right work center: **"Outbound Logistics" -> Automated Actions -> "Outbound
+Delivery Release Run"** (NOT "Outbound Logistics Control" -> "Confirmation Update Runs",
+which is a different, unrelated ATP-refresh run - ruled out via web research). This is a
+Mass Data Run (MDR) that must be explicitly scheduled - SAP ByDesign automatic outbound
+processing does NOT happen on its own without one; the Logistics Model's "Automatic"
+release setting only controls behavior WHEN a run executes, not whether one ever runs.
+
+Created run "R1ODC" (Ship-from Site=P8, "Shipment/Delivery Date" left blank), Scheduled ->
+Start Immediately. Job finished cleanly (Application Log 1011295, 0 errors), reporting
+"1 outbound deliveries released - outbound delivery P8D1-205 released". BUT this turned
+out to be a red herring: P8D1-205 is tied to **STO-000067**, an OLD STO already fully
+`gi_status: posted` in our DB from before this session - NOT one of the 4 fresh test STOs
+created during this investigation (STO-000109/110/111/112, Delivery Requests 61095/61097
+/61098/61410). Confirmed via a fresh re-check: Delivery Request **61098 is still stuck**
+(no Outbound Delivery), even after this run completed successfully.
+
+**Conclusion: still unresolved/inconclusive.** The run mechanism exists and genuinely
+works (it did release something), but our specific test STOs' Delivery Requests aren't
+being picked up by it for reasons not yet understood (possibly an ATP/availability
+confirmation prerequisite, or the blank "Shipment/Delivery Date" filter excluding them,
+or something else). Also unexplained: why an ALREADY gi_status=posted STO's delivery
+would need releasing again today - possibly our own app's status tracking and the SAP
+document's actual release state can be independent/out of sync from each other.
+
+**STATUS: PAUSED** after extensive back-and-forth (4 real test STOs created, 2 Logistics
+Model config toggles flipped live on EM2, 1 real MDR run created and executed) without a
+clean, conclusive result. Real, confirmed, useful findings from this whole thread remain:
+(1) EM1 unlocks the vendor-GRN SOAP breakthrough (solid, proven, actionable now);
+(2) the Outbound Delivery Release Run mechanism and location are now documented for any
+future attempt; (3) the "multi-line STO = multiple notifications" bug's real mechanism is
+still not identified (ruled out: manual UI creation always worked fine regardless of EM2;
+confirmed: it happens via "an automatic/background process" per user - likely THIS same
+Release Run mechanism, but not proven since our test STOs never got picked up by it).
+NEXT SESSION should decide whether to keep digging here (diminishing returns so far) or
+prioritize the already-proven vendor-GRN build-out instead.

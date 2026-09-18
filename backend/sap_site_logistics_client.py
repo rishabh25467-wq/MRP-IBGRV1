@@ -102,12 +102,15 @@ class SAPSiteLogisticsQueryClient:
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
   <soapenv:Body>
     <n0:SiteLogisticsTaskByElementsQuery_sync xmlns:n0="http://sap.com/xi/SAPGlobal20/Global">
+      <ProcessingConditions>
+        <QueryHitsMaximumNumberValue>500</QueryHitsMaximumNumberValue>
+        <QueryHitsUnlimitedIndicator>false</QueryHitsUnlimitedIndicator>
+      </ProcessingConditions>
       <SiteLogisticsTaskSelectionByElements>
         <SelectionBySiteID>
           <InclusionExclusionCode>I</InclusionExclusionCode>
           <IntervalBoundaryTypeCode>1</IntervalBoundaryTypeCode>
           <LowerBoundarySiteID>{escape(site_id)}</LowerBoundarySiteID>
-          <UpperBoundarySiteID>{escape(site_id)}</UpperBoundarySiteID>
         </SelectionBySiteID>
       </SiteLogisticsTaskSelectionByElements>
     </n0:SiteLogisticsTaskByElementsQuery_sync>

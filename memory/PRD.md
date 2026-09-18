@@ -47,6 +47,50 @@ manual-confirm button (`check_manual_gi_completion`) as fallback. User explicitl
 - Verified via pyflakes (clean), pytest (17/20 pass; 2 failures were transient 502 gateway
   blips confirmed by retry, 1 is a pre-existing stale test from an earlier unrelated commit
   f0b2b06, not caused by this fix), and a direct mocked-call-path check across P1/P2/P3/P8.
+- Fixed real GRN Approval bug (`GrnApprovalPage.jsx`): shipment code input was hard-capped
+  at `maxLength={6}` and the instruction text said "6-character", but codes were changed to
+  the 7-character `S000001`+ sequential format weeks ago - so any real code of that format
+  silently got truncated and always failed lookup. Fixed maxLength (10) + stale text +
+  placeholder. Verified live via screenshot: "S000003" now types in full and looks up
+  correctly.
+
+## STO Outbound automation via Site Logistics Task - INVESTIGATED THEN REVERTED (Sep 18)
+Full investigation, live breakthrough, then a full user-directed revert, all same session -
+see `/app/memory/SITE_LOGISTICS_TASK_BREAKTHROUGH_2026-09-18.md` for the complete technical
+record (kept for future reference only, NOT the current architecture).
+- Proved live: confirming a Site Logistics Pick Task via SOAP (`ManageSiteLogisticsTaskIn.
+  MaintainBundle_V1`, real WSDL schema fixes needed - see that file) fully auto-releases the
+  Outbound Delivery and posts Goods Issue, IF a Pick Task already exists (only possible on
+  site P8, the only site with the EM2 "Standard Shipping with pick lists" Logistics Model).
+- Exhaustively confirmed (2 different SAP mass-runs tested live, both either scoped to
+  Customer Sales Orders only or selecting 0 for STOs): there is NO way to auto-CREATE that
+  Pick Task without a manual "Create Warehouse Task" click in SAP UI - matches 9+ prior
+  documented dead attempts. So this path never actually saved any manual effort vs. the
+  original single-click flow.
+- User's final decision (Sep 18 2026): REVERT ALL OF IT. Deactivating EM2. Back to the
+  original, only-ever-accepted flow: create STO in app -> manually click "Create Outbound
+  Delivery" + Release (single click) in SAP UI. `sap_site_logistics_client.py` restored to
+  its pre-session state; the "extended GI retry" fix in `stock_transfer_service.py`/
+  `server.py` fully undone. DO NOT re-attempt this direction unless the user explicitly
+  reopens it (e.g. by reactivating EM2 themselves).
+- Test STO-000113 (SAP order 32290) created live during this investigation - removed from
+  our app DB; still exists in real SAP, user informed, needs manual cancellation by them in
+  SAP UI (no safe/proven Cancel API action exists for this document type).
+
+## STO Inbound Receiving via API - DEFINITIVELY DEAD, do not re-investigate (Sep 18)
+Re-investigated same day whether the outbound Pick-task SOAP breakthrough above also solves
+Issue 2 below (Playwright replacement for STO receiving). Answer: NO, confirmed dead twice:
+1. Already tested once before (Aug 28 2026, see `sap_playwright_pgr_service.py` docstring).
+2. Re-confirmed live today: the user's actual receiving process is one "Post Goods Receipt
+   As Planned" UI click - no task/warehouse-request involved at all in practice.
+3. The API equivalent of that exact button (`InboundDeliveryPGRBackground`, see
+   `sap_inbound_delivery_client.py`) is permanently disabled by SAP itself for this tenant -
+   confirmed via SAP's own official KBA 3583076. Genuine platform limitation, not fixable
+   from our side.
+Decision: accept manual receiving in SAP UI indefinitely (current reality, matches Playwright
+being stopped). A SAP Support ticket has been drafted (see
+`/app/memory/SAP_SUPPORT_TICKET_DRAFT_InboundPGR.md`) for the user to submit - the only
+remaining path that could unblock this, but depends entirely on SAP's response.
 
 ## BREAKTHROUGH this session - see /app/memory/SOAP_GRN_BREAKTHROUGH_2026-09-18.md
 Direct SOAP GRN posting proven live (no Playwright) via `sap_inbound_delivery_notification_client.py`
@@ -92,6 +136,17 @@ on P1 despite its missing "with task" model) - see same file's dedicated section
 
 ### P0
 - Phase 5: External QMS feed
+- Wire proven direct-SOAP Vendor GRN posting (`sap_inbound_delivery_notification_client.py`,
+  see SOAP_GRN_BREAKTHROUGH doc) into `supplier_shipment_service.py` production code,
+  replacing Playwright - behind a site allowlist (P8 only for now, only site with EM1 set up).
+  NOT YET STARTED this session (got diverted into the STO Outbound/Inbound investigation
+  above, which is now closed/reverted).
+- STO outbound "amber ERP-sync spinner stuck" UI bug (`StockTransferPage.js`, `giPollStopRef`
+  logic around line 1016 stops polling the moment GI finishes, ignoring background
+  `erp_sync` status) - diagnosed in a prior session, NOT YET FIXED.
+- Do NOT restore single-line `PGIInBackground` Goods Issue automation if this comes up again
+  (recurring temptation, count 4+) - see "Goods Issue architecture" decision above, still
+  stands as of Sep 18 2026.
 
 ### P1 (blocked/paused by user)
 - Landed Cost Calculation (Freight & Customs Duty) - see `/app/memory/LANDED_COST_DESIGN.md`
