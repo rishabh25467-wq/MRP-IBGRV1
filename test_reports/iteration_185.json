@@ -1,0 +1,38 @@
+{
+  "summary": "Backend-only review of Sep 19 2026 P0 SAP integration fixes (Test Full Automated GRN async refactor + Supplier PO fetch parallelization). Per review-request instruction, NO real 'Test Full Automated GRN' POST was issued (already live-verified this session). Verified via (a) server startup health + smoke calls (/api/version 200, /api/supplier-portal/me 200), (b) code-level inspection of the 5 files-of-reference, (c) 1 live speed test against the read-only Supplier PO endpoint. All 3 pytest tests PASS. Vendor RAD-P2-S (Radish Technology, 168 POs) came back in 9.65s vs. the previously reported 20-25s - clears the <12s target.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_po_open_qty_speed_iter185.py",
+    "/app/test_reports/pytest/iter185.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "sap_playwright_supplier_pgr_service.create_and_release_inbound_delivery_notifications (lines 953-1041) confirmed non-blocking: per-PO loop is exactly {idempotency pre-check (find_confirmation_rows) -> single maintain_bundle(release=True)}. No asyncio.sleep, no retry loop, no Put Away confirm, no Inbound Delivery ID lookup inline anymore. Docstring explicitly documents the earlier ~60s regression and why both slow steps were moved out.",
+    "server.py _start_full_auto_grn_job (lines 8768-8804) has the correct ordering: (1) create+release notifications, (2) finalize_goods_receipt, (3) job_store.update_job -> status 'done' with the result attached, (4) THEN asyncio.create_task(_auto_finish_full_auto_grn(...)) - the job's 'done' state does not depend on the background task's success. Also only fires the background task if at least one PO is 'posted', which is correct.",
+    "_auto_finish_full_auto_grn (lines 8709-8765) runs 4 attempts x 30s sleep = up to ~2 min lag tolerance for both Put Away confirm and Inbound Delivery ID lookup. Fully wrapped in try/except (returns silently on shipment fetch failure) - fire-and-forget as intended. Correctly reuses the same manually_confirm_inbound_delivery path the manual 'Fetch from SAP' button uses.",
+    "supplier_shipment_service.mark_put_away_confirmed (lines 1511-1522) correctly uses the MongoDB positional operator with the array-element filter in the query ({..., 'sap_gr_result.per_po.po_number': po_number} + $set on 'sap_gr_result.per_po.$.put_away_confirmed' / '.$.events'). Only patches those 2 fields - does NOT touch status, inbound_delivery_id, or any sibling per_po entries. Verified by inspection.",
+    "sap_po_analytics_client.fetch_open_po_quantities (lines 64-115) uses ThreadPoolExecutor(max_workers=SAP_MAX_CONCURRENT_REQUESTS=3), and each worker still enters `with sap_semaphore:` so the global 3-concurrent-SAP-calls cap is honored end-to-end (no chance of blowing past it just because this call parallelizes). Result-merge into `results` dict is safe (dict.setdefault + assignment per PO/item key, no cross-chunk overlap since chunking is by PO number).",
+    "Live speed check: /api/supplier-portal/purchase-orders?as_vendor=RAD-P2-S returned 168 POs in 9.65s (measured post-warmup). Comfortably under the 12s target and a clear improvement over the 20-25s baseline the review request cited.",
+    "Startup: backend restarted cleanly (uptime shown in supervisor), no import errors, /api/version and /api/supplier-portal/me both 200. Nothing in supervisor/backend.err.log indicates a problem with the new SAPSiteLogisticsQueryClient/SAPSiteLogisticsManageClient instantiations at server.py:333-338 or the new _auto_finish_full_auto_grn / _confirm_put_away_task / mark_put_away_confirmed functions.",
+    "Minor (not blocking, not new to this session): SUPPLIER_PORTAL_TESTING_MODE is still 'true' in backend/.env, which enables the ?as_vendor= override on the Supplier Portal endpoints. Review request explicitly flagged this file as safe to test with, and _effective_vendor_code's own comment already says 'REMOVE THIS OVERRIDE ENTIRELY BEFORE LAUNCH' - just calling it out so it isn't forgotten."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_po_open_qty_speed_iter185.py (new pytest file - 3 tests)"
+  ],
+  "success_rate": {"backend": "100% (3/3 pytest tests)", "frontend": "not tested this iteration (per review request scope)"},
+  "test_credentials": "Supplier portal login used for the speed test: vendor1@testco.com / DummyTest123 (from iter183 seed, still valid). Vendor being viewed via ?as_vendor=RAD-P2-S (Radish Technology, 168 active POs) - relies on SUPPLIER_PORTAL_TESTING_MODE=true in backend/.env.",
+  "seed_data_creation": "None - no data written. Speed test is a pure GET.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "iter185 verified the Sep 19 2026 P0 async refactor (Test Full Automated GRN) at the code/startup level ONLY - a real full-auto POST was intentionally NOT re-issued (already live-verified once by main agent on task 69040 / shipment S000008/S000009, and the endpoint is a real irreversible SAP write restricted to site P8). If a next iteration wants to prove the timing improvement of the full-auto POST itself live, the review request notes that path is safe ONLY under an explicit user re-approval. Speed test uses vendor RAD-P2-S which currently has 168 POs; if you re-run, expect similar 8-12s range (worst-case one cold SAP session refresh adds ~5s to the first hit - the test already warms once, then measures). SUPPLIER_PORTAL_TESTING_MODE must remain 'true' for as_vendor= override to work.",
+  "verified_scenarios": {
+    "server_startup_clean": "PASS - backend supervisor RUNNING, no import errors from new sap_site_logistics_client / _auto_finish_full_auto_grn / _confirm_put_away_task / mark_put_away_confirmed",
+    "api_smoke": "PASS - /api/version 200, /api/supplier-portal/me 200 (testing_mode=true confirmed)",
+    "code_review_non_blocking_pgr_service": "PASS - create_and_release_inbound_delivery_notifications: no asyncio.sleep, no retry loop in main per-PO loop, only pre-check + one maintain_bundle call",
+    "code_review_job_done_ordering": "PASS - _start_full_auto_grn_job marks job 'done' BEFORE asyncio.create_task(_auto_finish_full_auto_grn), so the job's own success is independent of the background task",
+    "code_review_mark_put_away_confirmed_scoped_update": "PASS - uses positional $ operator with array-element filter, only sets put_away_confirmed + events on the one matching per_po entry",
+    "live_speed_supplier_po_fetch": "PASS - RAD-P2-S 168 POs in 9.65s (target <12s, baseline was 20-25s pre-parallelization)"
+  },
+  "rca of the issue": "N/A - this is a regression/verification pass on a fix session, no new bugs found. All 3 fixes (Put Away Task confirm, Inbound Delivery ID auto-capture, request-time regression from moving retries out of the request path) are structurally correct per code inspection, and the parallelized Supplier PO endpoint is measurably ~2x-2.5x faster."
+}

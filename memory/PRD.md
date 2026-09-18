@@ -238,3 +238,47 @@ on P1 despite its missing "with task" model) - see same file's dedicated section
   button AND the existing normal "Create SAP Notification" button. testing_agent iteration_184:
   100% pass, no bugs - real SAP post was deliberately never triggered during testing (Cancel
   only) to avoid an irreversible production write; user will trigger it themselves.
+
+## Sep 19 2026 session - 3 real bugs found via live user testing of "Test Full Automated GRN", all FIXED + verified
+- **Bug 1 (P0, user-reported via screenshot): SAP Put Away Task fulfilled qty stayed 0.**
+  Root cause: `maintain_bundle(release=True)` only creates+releases the Inbound Delivery
+  Notification - SAP's EM1 "one-step receiving" model then auto-generates a whole downstream
+  chain (Warehouse Request -> Warehouse Order -> Inbound Delivery -> "Put Away" Warehouse Task),
+  but nothing ever CONFIRMED that Put Away task, so "Fulfilled Quantity" stayed 0 forever
+  (Planned Quantity was always correct). Fix: revived the previously-dormant
+  `sap_site_logistics_client.py` (`ManageSiteLogisticsTaskIn.MaintainBundle_V1`) - a DIFFERENT
+  use case than the outbound-STO one it was originally built+abandoned for. Rewrote
+  `find_tasks_for_site` to parse full MaterialInput/MaterialOutput line detail, and rewrote
+  `confirm_tasks_bundle`'s payload against SAP's real schema (2 bugs found only by live-testing,
+  since SAP gives zero detail on a generic "Web service processing error": (1) `SiteLogisticTaskID`
+  is mandatory alongside the UUID, was missing; (2) an empty `SourceLogisticsAreaID` tag on
+  MaterialInput must be OMITTED, not sent blank; (3) `<BasicMessageHeader/>` must be present even
+  though docs call it optional). LIVE-VERIFIED: real stuck Put Away Task 69040 (PO 29685, site P8)
+  confirmed successfully - SAP returned SeverityCode "S"/"Saved Successfully", task then dropped
+  out of the open-tasks query.
+- **Bug 2 (user-reported: "still no delivery ID"): full-auto path never captured SAP Inbound
+  Delivery #.** `create_and_release_inbound_delivery_notifications` never extracted
+  `inbound_delivery_id` at all (unlike the older Playwright path). Fixed with the same
+  confirmation-report "latest wins" extraction already used elsewhere.
+- **Bug 3 (self-inflicted regression from fixing 1+2, user-reported: "60 seconds for 2 line items,
+  can we speed it up"): both fixes were first tried INLINE with blocking retry loops** (SAP
+  queries in this tenant cost 4-5s+ EACH, live-measured, and the retries multiplied that several
+  times over). Fixed properly: `create_and_release_inbound_delivery_notifications` now does ONLY
+  the one real SAP write and returns immediately (back to ~5-10s baseline). Put Away confirm +
+  Delivery ID lookup both moved to `server.py`'s new `_auto_finish_full_auto_grn` background task
+  (fire-and-forget after the job already reports "done", retries every 30s for ~2 min) - same
+  "eventually consistent" pattern the pre-existing manual "Fetch from SAP" button already used
+  (which itself documents SAP as taking 30-100s+ per PO - genuine SAP-side lag, not fixable from
+  our side, just no longer blocks the user).
+- **Separate P1 fix (approved by user, "1a"): Supplier PO fetch was 20-25s.**
+  `sap_po_analytics_client.fetch_open_po_quantities` chunked PO fetches in batches of 15 but ran
+  them SEQUENTIALLY. Parallelized via `ThreadPoolExecutor(max_workers=SAP_MAX_CONCURRENT_REQUESTS)`
+  (still honors the shared `sap_semaphore` 3-concurrent-SAP-calls cap). Live-verified: vendor
+  RAD-P2-S (168 POs) went from ~20-25s to 9.65s.
+- testing_agent iteration_185: 100% pass (3/3 pytest), no critical/minor issues. Verified via
+  code review (non-blocking refactor correctness, job "done" ordering independent of the
+  background task, scoped Mongo update in `mark_put_away_confirmed`) + one live speed check on
+  the read-only PO endpoint. Did NOT re-trigger a real "Test Full Automated GRN" POST (already
+  live-verified by main agent this session, irreversible SAP write).
+- New: `supplier_shipment_service.mark_put_away_confirmed(db, doc_code, po_number, confirmed,
+  events)` - scoped per-PO Mongo update for the background Put Away confirmation result.
