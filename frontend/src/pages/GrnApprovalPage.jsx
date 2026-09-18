@@ -610,7 +610,7 @@ export default function GrnApprovalPage() {
     throw new Error("This is taking longer than expected - check back shortly, it may still complete in the background.");
   };
 
-  const approve = async () => {
+  const approve = async (mode = "normal") => {
     if (!siteId || !warehouseId) {
       toast.error("Select a Site and Warehouse before approving");
       return;
@@ -626,14 +626,15 @@ export default function GrnApprovalPage() {
         po_number: it.po_number, item_number: it.item_number,
         actual_qty: Number(actualQtys[`${it.po_number}::${it.item_number}`] ?? it.ship_qty),
       }));
-      const { data } = await axios.post(`${API}/admin/grn/${shipment._id}/approve`, {
+      const endpoint = mode === "full_auto" ? "approve-full-auto" : "approve";
+      const { data } = await axios.post(`${API}/admin/grn/${shipment._id}/${endpoint}`, {
         supplier_doc_num: supplierDocNum, bill_date: billDate, site_id: siteId, warehouse_id: warehouseId, item_actual_qtys,
       });
       setShipment(data.shipment);
       const result = await pollGrnJob(data.job_id);
       setShipment(result);
       if (result.sap_sync_status === "posted" && result.sap_movement_status === "posted") {
-        toast.success(`Goods Receipt posted + stock moved to ${result.site_id}/${result.warehouse_id}`);
+        toast.success(mode === "full_auto" ? `Full Automated GRN posted + stock moved to ${result.site_id}/${result.warehouse_id} - no manual SAP step needed` : `Goods Receipt posted + stock moved to ${result.site_id}/${result.warehouse_id}`);
       } else if (result.sap_sync_status === "posted") {
         toast.warning("Goods Receipt posted - warehouse movement still pending", { description: summarizeMovementResult(result.sap_movement_result), duration: 8000 });
       } else if (result.sap_sync_status === "awaiting_manual_gr") {
@@ -651,6 +652,28 @@ export default function GrnApprovalPage() {
       setBusy(false);
       setJobProgress(null);
     }
+  };
+
+  // Sep 18 2026, user's explicit ask: BOTH the existing GRN process and
+  // the new "Test Full Automated GRN" button now require one extra
+  // confirmation step - a popup showing exactly the Invoice Number and
+  // Bill Date about to be sent to SAP, before actually posting.
+  const [confirmMode, setConfirmMode] = useState(null); // "normal" | "full_auto" | null
+  const openApprovalConfirm = (mode) => {
+    if (!siteId || !warehouseId) {
+      toast.error("Select a Site and Warehouse before approving");
+      return;
+    }
+    if (!supplierDocNum.trim() || !billDate) {
+      toast.error("Supplier Invoice Number and Bill Date are required before approving");
+      return;
+    }
+    setConfirmMode(mode);
+  };
+  const confirmApproval = () => {
+    const mode = confirmMode;
+    setConfirmMode(null);
+    approve(mode);
   };
 
   const retryGoodsReceipt = async () => {
@@ -1086,15 +1109,24 @@ export default function GrnApprovalPage() {
                   </div>
                 </div>
 
-                <div className="flex gap-2">
+                <div className="flex gap-2 flex-wrap">
                   <Button
-                    onClick={approve}
+                    onClick={() => openApprovalConfirm("normal")}
                     disabled={busy || siteAccessBlocked || !!user?.grn_blocked_shipment || !supplierDocNum.trim() || !billDate}
                     title={user?.grn_blocked_shipment ? "Blocked - resolve your open GRN quantity mismatch first" : (!supplierDocNum.trim() || !billDate) ? "Enter the Supplier Invoice Number and Bill Date first" : undefined}
                     className="h-8 rounded-sm bg-[#027A48] hover:bg-[#02623A] text-white px-4 text-[13px] font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     data-testid="grn-approve-button"
                   >
                     <CheckCircle size={14} className="mr-1" /> {busy ? "Creating..." : "Create SAP Notification"}
+                  </Button>
+                  <Button
+                    onClick={() => openApprovalConfirm("full_auto")}
+                    disabled={busy || siteAccessBlocked || !!user?.grn_blocked_shipment || !supplierDocNum.trim() || !billDate || siteId !== "P8"}
+                    title={siteId !== "P8" ? "Test Full Automated GRN is only set up for site P8 right now" : (!supplierDocNum.trim() || !billDate) ? "Enter the Supplier Invoice Number and Bill Date first" : undefined}
+                    className="h-8 rounded-sm bg-[#6941C6] hover:bg-[#53389E] text-white px-4 text-[13px] font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    data-testid="grn-approve-full-auto-button"
+                  >
+                    <ArrowsClockwise size={14} className="mr-1" /> {busy ? "Posting..." : "Test Full Automated GRN"}
                   </Button>
                   <Button onClick={() => setRejectOpen(true)} disabled={busy} className="h-8 rounded-sm bg-[#B42318] hover:bg-[#912018] text-white px-4 text-[13px] font-bold transition-colors" data-testid="grn-reject-button">
                     <XCircle size={14} className="mr-1" /> Reject
@@ -1107,6 +1139,37 @@ export default function GrnApprovalPage() {
                 </div>
               </div>
             )}
+
+            <Dialog open={!!confirmMode} onOpenChange={(o) => !o && setConfirmMode(null)}>
+              <DialogContent className="rounded-sm" data-testid="grn-approval-confirm-dialog">
+                <DialogHeader>
+                  <DialogTitle className="font-heading">
+                    {confirmMode === "full_auto" ? "Confirm Test Full Automated GRN" : "Confirm SAP Notification"}
+                  </DialogTitle>
+                  <DialogDescription>
+                    {confirmMode === "full_auto"
+                      ? "This posts a REAL, irreversible Goods Receipt directly to SAP - no manual SAP step afterward. Please confirm the details below."
+                      : "Please confirm the details below before creating the SAP Notification."}
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="bg-[#F9FAFB] border border-[#E5E7EB] rounded-sm p-3 text-sm space-y-1">
+                  <div className="flex justify-between"><span className="text-[#475467]">Supplier Invoice Number</span><span className="font-data font-semibold" data-testid="grn-confirm-invoice-number">{supplierDocNum}</span></div>
+                  <div className="flex justify-between"><span className="text-[#475467]">Bill Date</span><span className="font-data font-semibold" data-testid="grn-confirm-bill-date">{billDate ? format(parseISO(billDate), "dd-MM-yyyy") : "\u2014"}</span></div>
+                  <div className="flex justify-between"><span className="text-[#475467]">Site / Warehouse</span><span className="font-data font-semibold">{siteId} / {warehouseId}</span></div>
+                </div>
+                <div className="flex justify-end gap-2 mt-2">
+                  <Button variant="outline" className="rounded-sm" onClick={() => setConfirmMode(null)} data-testid="grn-approval-confirm-cancel-button">Cancel</Button>
+                  <Button
+                    onClick={confirmApproval}
+                    className={`rounded-sm text-white transition-colors ${confirmMode === "full_auto" ? "bg-[#6941C6] hover:bg-[#53389E]" : "bg-[#027A48] hover:bg-[#02623A]"}`}
+                    data-testid="grn-approval-confirm-button"
+                  >
+                    {confirmMode === "full_auto" ? "Yes, Post to SAP Now" : "Yes, Create Notification"}
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+
 
             {shipment.status === "approved" && !busy && (
               <div className="mt-4 space-y-2">

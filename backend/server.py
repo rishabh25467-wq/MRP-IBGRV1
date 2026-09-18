@@ -8488,6 +8488,51 @@ async def post_admin_grn_approve(doc_code: str, payload: GrnApproveRequest, requ
     return {"job_id": job_id, "shipment": doc}
 
 
+# Sep 18 2026, user's explicit ask: a SEPARATE test button for the new
+# direct-SOAP EM1 breakthrough (create+release=True in one shot, no
+# Playwright, no manual "Post Goods Receipt" SAP UI step) - deliberately
+# isolated from the existing Manual GRN button above so today's real GRN
+# process (grn_mode="manual") is never touched by this. Only usable on
+# sites with the required EM1 Logistics Model set up in SAP - see
+# /app/memory/SOAP_GRN_BREAKTHROUGH_2026-09-18.md. Frontend also disables
+# the button outside this allowlist, this is the server-side enforcement.
+FULL_AUTO_GRN_SITE_ALLOWLIST = {"P8"}
+
+
+@api_router.post("/admin/grn/{doc_code}/approve-full-auto")
+async def post_admin_grn_approve_full_auto(doc_code: str, payload: GrnApproveRequest, request: Request):
+    approver = (request.state.user.get("name") or request.state.user.get("email") or "Unknown").strip()
+    if not _has_site_access(request.state.user, payload.site_id):
+        raise HTTPException(status_code=403, detail="You are not bound to this site")
+    if payload.site_id not in FULL_AUTO_GRN_SITE_ALLOWLIST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Test Full Automated GRN is only set up for site(s) {', '.join(sorted(FULL_AUTO_GRN_SITE_ALLOWLIST))} right now - that site needs an EM1 Logistics Model configured in SAP first.",
+        )
+    if not payload.supplier_doc_num.strip() or not payload.bill_date.strip():
+        raise HTTPException(status_code=400, detail="Supplier Invoice Number and Bill Date are required before posting")
+    if request.state.user.get("grn_blocked_shipment"):
+        raise HTTPException(
+            status_code=403,
+            detail=f"You are blocked from approving new GRNs - shipment {request.state.user['grn_blocked_shipment']} "
+                   f"has an unresolved SAP quantity mismatch. Use 'Re-check SAP' on that shipment to clear it, or ask an admin to override.",
+        )
+    owner_party_id, _ = company_and_set_of_books_for_site(payload.site_id)
+    item_actual_qtys = {(i.po_number, i.item_number): i.actual_qty for i in payload.item_actual_qtys}
+    try:
+        doc = await asyncio.to_thread(
+            supplier_shipment_service.prepare_approval, db, doc_code, approver, request.state.user["_id"], payload.supplier_doc_num,
+            payload.bill_date, payload.site_id, payload.warehouse_id, item_actual_qtys, "full_auto",
+        )
+    except supplier_shipment_service.ShipmentNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except supplier_shipment_service.ShipmentValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    job_id = _start_full_auto_grn_job(doc_code, doc, owner_party_id)
+    doc = await _attach_grn_display_fields(doc)
+    return {"job_id": job_id, "shipment": doc}
+
+
 async def _run_playwright_job_with_retries(job_id: str, fn, max_attempts: int = 3):
     """Sep 2 2026, user's explicit ask ("success rate of about 85%...
     make sure you don't break anything else") - retries a WHOLE
@@ -8639,6 +8684,42 @@ def _start_manual_grn_job(doc_code: str, doc: dict) -> str:
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
         except Exception as e:
             logger.error(f"Manual GRN notification job {job_id} ({doc_code}) failed: {e}")
+            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": str(e)})
+
+    asyncio.create_task(run())
+    return job_id
+
+
+def _start_full_auto_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> str:
+    """Sep 18 2026, EM1 full-automation test path - creates AND releases
+    the Inbound Delivery Notification in one SOAP call per PO (see
+    sap_playwright_supplier_pgr_service.create_and_release_inbound_
+    delivery_notifications - no Playwright, no manual SAP step), then
+    runs the SAME local Goods Movement step (finalize_goods_receipt)
+    a normal completed GRN already runs, so a successful test leaves
+    the shipment fully "posted" exactly like today's flow - matching
+    the user's explicit ask that a successful test also marks the
+    shipment Approved/Posted."""
+    job_id = str(uuid.uuid4())
+    po_items = supplier_shipment_service.group_items_by_po_for_gr(doc)
+    job_store.create_job(db, job_id, {
+        "doc_code": doc_code, "kind": "full_auto_grn", "status": "running", "phase": "posting_goods_receipt",
+        "progress_current": 0, "progress_total": 1, "result": None, "error": None,
+    })
+
+    async def run():
+        try:
+            gr_results = await sap_playwright_supplier_pgr_service.create_and_release_inbound_delivery_notifications(
+                po_items, sap_inbound_delivery_notification_client, sap_inbound_delivery_report_client,
+            )
+            final = await asyncio.to_thread(
+                supplier_shipment_service.finalize_goods_receipt, db, doc_code, gr_results,
+                sap_goods_movement_client, sap_inventory_client, owner_party_id,
+            )
+            final = await _attach_grn_display_fields(final)
+            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
+        except Exception as e:
+            logger.error(f"Full-auto GRN job {job_id} ({doc_code}) failed: {e}")
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": str(e)})
 
     asyncio.create_task(run())

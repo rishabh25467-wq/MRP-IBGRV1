@@ -887,6 +887,72 @@ async def create_inbound_delivery_notifications_only(po_items: dict, notificatio
     return results
 
 
+async def create_and_release_inbound_delivery_notifications(po_items: dict, notification_client, confirmation_report_client) -> list:
+    """Sep 18 2026, user's explicit ask: a SEPARATE "Test Full Automated
+    GRN" button/path for the EM1 breakthrough (see /app/memory/
+    SOAP_GRN_BREAKTHROUGH_2026-09-18.md) - identical to
+    `create_inbound_delivery_notifications_only` above EXCEPT
+    `release=True`, so SAP creates AND posts the real Goods Receipt with
+    the ACTUAL quantities in the SAME call - no manual "Post Goods
+    Receipt" SAP UI step needed at all, no Playwright anywhere. Only
+    works on sites with the required EM1 Logistics Model set up in SAP
+    (P8 only as of this date - server.py enforces the site allowlist
+    before this is ever called).
+
+    Same idempotency safety as `_post_one_po`'s pre-check above (this IS
+    a real, irreversible SAP write, unlike the notification-only path) -
+    if SAP's own confirmation report already shows a real Goods Receipt
+    for this exact notification_id+PO, skip re-posting rather than risk
+    a duplicate receipt on a retry.
+
+    Returns [{"po_number", "notification_id", "status":
+    "posted"|"failed", "error"?}] - "posted" (not "notification_created")
+    since this status feeds straight into
+    `supplier_shipment_service.finalize_goods_receipt`, which expects the
+    same shape Playwright's `post_goods_receipt_via_ui` produces."""
+    results = []
+    for po_number, spec in po_items.items():
+        item_qtys = dict(spec.get("item_qtys") or {})
+        item_products = spec.get("item_products") or {}
+        item_uoms = spec.get("item_uoms") or {}
+        doc_code = spec.get("doc_code")
+        supplier_doc_num = spec.get("supplier_doc_num")
+        bill_date = spec.get("bill_date")
+        vendor_code = spec.get("vendor_code")
+        delivery_date = (bill_date or datetime.now(timezone.utc).strftime("%Y-%m-%d"))[:10]
+        notification_id = _build_notification_id(supplier_doc_num, doc_code, po_number)
+        try:
+            already_confirmed = await asyncio.to_thread(confirmation_report_client.find_confirmation_rows, po_number, notification_id)
+        except Exception as e:
+            already_confirmed = []
+            logger.warning(f"Full-auto GRN: could not pre-check SAP for an existing confirmation on PO {po_number} (continuing): {e}")
+        if already_confirmed:
+            results.append({"po_number": po_number, "notification_id": notification_id, "status": "posted"})
+            continue
+        missing_products = [n for n in item_qtys if not item_products.get(n)]
+        if missing_products:
+            item_qtys = {k: v for k, v in item_qtys.items() if k not in missing_products}
+        if not item_qtys:
+            results.append({
+                "po_number": po_number, "notification_id": notification_id, "status": "failed",
+                "error": f"Cannot post Goods Receipt for PO {po_number} - Product ID missing in cached PO data for item(s) {', '.join(missing_products)}",
+            })
+            continue
+        soap_items = [
+            {"item_number": n, "quantity": q, "unit_of_measure": item_uoms.get(n) or "EA", "product_id": item_products.get(n)}
+            for n, q in item_qtys.items()
+        ]
+        try:
+            await asyncio.to_thread(notification_client.maintain_bundle, notification_id, po_number, vendor_code, delivery_date, soap_items, True)
+            results.append({"po_number": po_number, "notification_id": notification_id, "status": "posted"})
+        except Exception as e:
+            results.append({
+                "po_number": po_number, "notification_id": notification_id, "status": "failed",
+                "error": f"SAP rejected the full automated Goods Receipt for PO {po_number}: {e}",
+            })
+    return results
+
+
 # Sep 2 2026: the Playwright-based `fetch_open_po_quantities` that used
 # to live here was CANCELLED per user's explicit ask ("we cannot go with
 # playwright for this") - it was live-hammering SAP's UI sequentially
