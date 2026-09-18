@@ -290,7 +290,24 @@ class SAPPurchaseOrderClient:
         current max PurchaseOrderID. `start_lo` lets `fetch_recent_window`
         below resume the search from its last known watermark instead of
         0 every cycle - typically only a few new POs exist since the last
-        cycle, so this stays cheap (a handful of probes, not ~15)."""
+        cycle, so this stays cheap (a handful of probes, not ~15).
+
+        Sep 19 2026 off-by-one bug fix (real user report: PO 29724 -
+        SAP's actual current highest PO ID at the time - never appeared
+        on the Supplier Dashboard at all, no matter how long the
+        background refresh loop ran). Root cause, live-reproduced:
+        `_has_po_id_greater_than(N)` means "a PO with ID > N exists", so
+        this binary search's own invariant converges `lo` to `true_max -
+        1` (the boundary where "greater exists" is still True) and `hi`
+        to `true_max` itself (the boundary where it first turns False) -
+        this used to `return lo`, i.e. ALWAYS one PO number short of the
+        real current max. That single most-recent PO would only ever
+        surface retroactively once a LATER PO was created (which is what
+        finally pushes the discovered max/watermark past it) - on a slow
+        day for new POs, whichever PO happens to be the highest right now
+        can stay invisible indefinitely. Returning `hi` (confirmed
+        correct: `_has_po_id_greater_than(hi)` is False, i.e. `hi` really
+        is the current true max) fixes it."""
         lo, hi = start_lo, start_lo + 1000
         while self._has_po_id_greater_than(hi):
             lo, hi = hi, hi * 2 if hi > 0 else 1000
@@ -300,7 +317,7 @@ class SAPPurchaseOrderClient:
                 lo = mid
             else:
                 hi = mid
-        return lo
+        return hi
 
     def _fetch_between(self, lower_bound: int, upper_bound: int) -> tuple:
         """Single reliable, bounded fetch - see the Sep 14 2026 fix note

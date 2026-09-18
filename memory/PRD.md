@@ -280,5 +280,14 @@ on P1 despite its missing "with task" model) - see same file's dedicated section
   background task, scoped Mongo update in `mark_put_away_confirmed`) + one live speed check on
   the read-only PO endpoint. Did NOT re-trigger a real "Test Full Automated GRN" POST (already
   live-verified by main agent this session, irreversible SAP write).
-- New: `supplier_shipment_service.mark_put_away_confirmed(db, doc_code, po_number, confirmed,
-  events)` - scoped per-PO Mongo update for the background Put Away confirmation result.
+- **Separate bug fix (real user report: "why is PO 29724 not visible to the supplier dashboard"):
+  off-by-one in `sap_po_client._discover_current_max_po_id`.** `_has_po_id_greater_than(N)` means
+  "a PO with ID > N exists" - the binary search's own invariant converges `lo` to `true_max - 1`
+  and `hi` to `true_max` itself, but the function used to `return lo`. Effect: whichever PO
+  happens to be the CURRENT highest ID in the whole SAP tenant was always exactly one PO short of
+  the discovered "current max", so it only ever appeared retroactively once ANOTHER, even newer PO
+  was created afterward (which is what finally pushed the watermark past it) - on a slow day for
+  new POs, the single latest one could stay invisible indefinitely, with no error anywhere. Fixed
+  to `return hi`. Live-verified: PO 29724 (today's actual highest PO ID, vendor RAD-P2-S, 5 line
+  items, genuinely open/"Sent") went from watermark stuck at 29723/0 rows found to fetched and
+  cached correctly (5/5 line items) immediately after the fix.
