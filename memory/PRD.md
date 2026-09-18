@@ -198,6 +198,18 @@ on P1 despite its missing "with task" model) - see same file's dedicated section
   GRN Approval and the supplier's own Shipments page), and (2) set + email a new password to a
   supplier account. testing_agent iteration_183: 14/14 backend tests pass, full frontend flow
   live-verified, no bugs found.
+- Sep 18 2026 bug fix (real user report, first live use of "Test Full Automated GRN" -
+  shipment S000007/PO 29685, vendor RAD-P2-S): SAP accepted the MaintainBundle(release=True)
+  call with no error severity and echoed the notification ID back, but had SILENTLY DISABLED
+  the Release action server-side ("Action RELEASE not possible; action is disabled") - the app
+  wrongly marked it "posted" anyway since maintain_bundle's own checks never required a real
+  UUID/confirmed delivery. Fixed: `create_and_release_inbound_delivery_notifications` now
+  requires SAP's own confirmation report to actually show the release (same source of truth
+  "Re-check SAP" uses) before ever reporting "posted", with one short retry for async lag.
+  Root cause of WHY release was disabled for this specific PO/vendor is still unknown (not a
+  site/entity mismatch - PO 29346 that worked yesterday and this failing PO 29685 are both
+  site P8, buyer entity RI) - needs the user to check the stray draft document directly in SAP
+  UI. User chose not to revert shipment S000007 (will create a new test shipment instead).
 - Investigated (no code change, per user's request) why an ERP PR line "Not matched in SAP":
   the ERP's item code for that material genuinely differs from SAP's real code (data entry
   issue in the ERP, not a matching bug).

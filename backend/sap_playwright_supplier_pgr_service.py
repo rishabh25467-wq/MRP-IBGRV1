@@ -944,11 +944,39 @@ async def create_and_release_inbound_delivery_notifications(po_items: dict, noti
         ]
         try:
             await asyncio.to_thread(notification_client.maintain_bundle, notification_id, po_number, vendor_code, delivery_date, soap_items, True)
-            results.append({"po_number": po_number, "notification_id": notification_id, "status": "posted"})
         except Exception as e:
             results.append({
                 "po_number": po_number, "notification_id": notification_id, "status": "failed",
                 "error": f"SAP rejected the full automated Goods Receipt for PO {po_number}: {e}",
+            })
+            continue
+        # Sep 18 2026 fix - real incident (shipment S000007/PO 29685): SAP
+        # can accept a MaintainBundle call with NO error severity and the
+        # notification ID echoed back, yet still have silently DISABLED
+        # the release action server-side ("Action RELEASE not possible;
+        # action is disabled") - maintain_bundle's own error/UUID checks
+        # don't catch this. The only trustworthy proof a release actually
+        # completed is SAP's own confirmation report, so require that
+        # here too before ever reporting "posted" - same source of truth
+        # "Re-check SAP" already uses. One short retry for normal async
+        # lag; if it's still empty after that, this is a real failure.
+        confirmed = False
+        for attempt in range(2):
+            try:
+                confirmed = bool(await asyncio.to_thread(confirmation_report_client.find_confirmation_rows, po_number, notification_id))
+            except Exception as e:
+                logger.warning(f"Full-auto GRN: post-release confirmation check failed for PO {po_number} (attempt {attempt + 1}): {e}")
+            if confirmed:
+                break
+            await asyncio.sleep(3)
+        if confirmed:
+            results.append({"po_number": po_number, "notification_id": notification_id, "status": "posted"})
+        else:
+            results.append({
+                "po_number": po_number, "notification_id": notification_id, "status": "failed",
+                "error": f"SAP accepted the request for PO {po_number} but never actually confirmed a real Goods Receipt for it "
+                         f"(notification '{notification_id}') - the Release action was likely silently rejected/disabled on SAP's "
+                         f"side. Check this document directly in SAP UI before retrying with a new invoice number.",
             })
     return results
 
