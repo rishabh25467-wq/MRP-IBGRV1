@@ -212,3 +212,7 @@ on P1 despite its missing "with task" model) - see same file's dedicated section
   (previously dead code, unused since Aug 27) onto `outbound_delivery_display_ids`.
   Live-verified end-to-end for STO-000015 (real SAP call returned P8D1-172), confirmed in both
   the print page and the Excel file, self-tested via curl/screenshot.
+- Sep 18 2026: GRN Approval fixes - (1) Bill Date now shows dd-mm-yyyy always (custom
+  Popover+Calendar picker replacing the native `<input type="date">`, whose display format was
+  silently locale-dependent, e.g. mm/dd/yyyy in the user's browser); (2) added missing "Item
+  Code" column (product_id) to the shipment lookup table. Screenshot-verified end-to-end.

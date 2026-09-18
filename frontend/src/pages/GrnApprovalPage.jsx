@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import "@/App.css";
 import axios from "axios";
-import { MagnifyingGlass, CheckCircle, XCircle, Truck, PlugsConnected, Shield, WarningCircle, ArrowsClockwise, LockKey } from "@phosphor-icons/react";
+import { MagnifyingGlass, CheckCircle, XCircle, Truck, PlugsConnected, Shield, WarningCircle, ArrowsClockwise, LockKey, CalendarBlank } from "@phosphor-icons/react";
+import { format, parseISO } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -10,6 +11,7 @@ import { Switch } from "@/components/ui/switch";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import { Calendar } from "@/components/ui/calendar";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
@@ -28,6 +30,40 @@ const STATUS_BADGE = {
   approved: { label: "Received", className: "bg-[#ECFDF3] text-[#027A48] border border-[#ABEFC6] rounded-sm" },
   rejected: { label: "Rejected", className: "bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA] rounded-sm" },
 };
+
+// Sep 18 2026, user's explicit ask ("date format for the user readable
+// dd-mm-yyyy currently mm/dd/yyyy") - a native <input type="date">'s
+// displayed format is controlled entirely by the browser/OS locale, not
+// by this app, so it silently showed mm/dd/yyyy in the user's browser.
+// Swapped to this Popover+Calendar combo (react-day-picker, already used
+// elsewhere in the app) so the display format is always explicitly
+// dd-mm-yyyy regardless of the user's browser locale - the underlying
+// value stays the same yyyy-mm-dd ISO string the rest of the app/API
+// already expects, only how it's shown changes.
+function DateField({ value, onChange, testId }) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          className="w-full h-9 justify-start rounded-sm border-[#D0D5DD] mt-1 font-normal text-[13px]"
+          data-testid={testId}
+        >
+          <CalendarBlank size={14} className="mr-2 text-[#475467]" />
+          {value ? format(parseISO(value), "dd-MM-yyyy") : <span className="text-[#98A2B3]">dd-mm-yyyy</span>}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-auto p-0" align="start">
+        <Calendar
+          mode="single"
+          selected={value ? parseISO(value) : undefined}
+          onSelect={(d) => d && onChange(format(d, "yyyy-MM-dd"))}
+          initialFocus
+        />
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 // Warehouse-move item/movement-ID breakdown popover (user's explicit
 // ask, Sep 2026) - same pattern already used on the STO pages, applied
@@ -884,6 +920,7 @@ export default function GrnApprovalPage() {
                 <tr>
                   <th className="border border-[#D0D5DD] p-1.5 text-left">PO Number</th>
                   <th className="border border-[#D0D5DD] p-1.5 text-left">Item</th>
+                  <th className="border border-[#D0D5DD] p-1.5 text-left">Item Code</th>
                   <th className="border border-[#D0D5DD] p-1.5 text-left">Description</th>
                   <th className="border border-[#D0D5DD] p-1.5 text-right">Ship Qty</th>
                   <th className="border border-[#D0D5DD] p-1.5 text-right">Open PO Qty</th>
@@ -919,6 +956,7 @@ export default function GrnApprovalPage() {
                         )}
                       </td>
                       <td className="border border-[#D0D5DD] px-2 py-1 font-data">{it.item_number}</td>
+                      <td className="border border-[#D0D5DD] px-2 py-1 font-data font-semibold" data-testid={`grn-item-code-${i}`}>{it.product_id || "\u2014"}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1">{it.description}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data font-semibold">{it.ship_qty} {it.unit_of_measure}</td>
                       <td className="border border-[#D0D5DD] px-2 py-1 text-right font-data text-[#475467]" data-testid={`grn-item-open-po-qty-${i}`}>{it.open_po_qty ?? it.po_qty}</td>
@@ -968,7 +1006,7 @@ export default function GrnApprovalPage() {
                   );
                 })}
                 {isActionable && (
-                  <tr><td colSpan={shipment.sap_gr_result?.per_po ? 10 : 8} className="border border-[#D0D5DD] px-2 py-1 text-xs text-[#475467]">Actual Qty defaults to Ship Qty - adjust only if the physical count differs. PO Price/Line Value are for reference only, from SAP's last cached rate.</td></tr>
+                  <tr><td colSpan={shipment.sap_gr_result?.per_po ? 11 : 9} className="border border-[#D0D5DD] px-2 py-1 text-xs text-[#475467]">Actual Qty defaults to Ship Qty - adjust only if the physical count differs. PO Price/Line Value are for reference only, from SAP's last cached rate.</td></tr>
                 )}
               </tbody>
             </table>
@@ -1018,13 +1056,7 @@ export default function GrnApprovalPage() {
                   </div>
                   <div>
                     <Label className="text-xs text-[#475467]">Bill Date <span className="text-[#B42318]">*</span></Label>
-                    <Input
-                      type="date"
-                      value={billDate}
-                      onChange={(e) => setBillDate(e.target.value)}
-                      className="rounded-sm border-[#D0D5DD] mt-1"
-                      data-testid="grn-bill-date-input"
-                    />
+                    <DateField value={billDate} onChange={setBillDate} testId="grn-bill-date-input" />
                   </div>
                   <div>
                     <Label className="text-xs text-[#475467]">Site</Label>
