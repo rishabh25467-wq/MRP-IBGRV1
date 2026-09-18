@@ -186,6 +186,7 @@ on P1 despite its missing "with task" model) - see same file's dedicated section
 - Fixed: PO form auto-derive (reactive useEffect on `sites`), missing PO 29654 in supplier
   dashboard (backfill loop infinite-stop bug), deleted BOM component CAR136.510 still showing
   in live stock checks (`force_live` now refetches true SAP BOM structure).
+- Sep 18 2026 follow-up fix: the earlier `force_live` fix only corrected the ONE live-check response, never the stored `bom_node_cache` doc itself - so a removed component kept reappearing on the panel's DEFAULT/cached view even after a live check proved it gone, until that collection's separate scheduled refresh cycle reached it (user reported this still live in production after deploying the first fix). Now a successful live fetch also self-heals the cache immediately (`bom_cache_service.persist_live_fetch`). Reproduced with an injected stale fake component and confirmed fixed via curl (cache showed it -> live excluded it -> cache re-check no longer showed it).
 - Root-caused (NOT a code bug, per user's explicit "no change needed" then "resolved for
   now") the Manual GR mismatch for shipment PY8AL8/PO 29482/product WAS8PZ: SAP's own
   Inbound Delivery analytics consistently report 9 ea confirmed vs 8 ea recorded in the

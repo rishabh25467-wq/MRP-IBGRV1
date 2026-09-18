@@ -219,6 +219,20 @@ def _upsert(collection, product_id, raw_bom, changed):
     collection.update_one({"_id": product_id}, {"$set": update}, upsert=True)
 
 
+def persist_live_fetch(db, product_id: str, raw_bom: dict) -> None:
+    """Sep 18 2026 fix - real incident: production_confirmation_service's
+    "Check Live Stock" live BOM re-fetch (see its _resolve_bom_doc) used
+    to only correct that ONE response, never the stored `bom_node_cache`
+    doc itself - so a component removed from a BOM in SAP kept showing
+    up in the DEFAULT (cache) view of the BOM Component Stock panel even
+    after a live check had already proven it gone, until this collection's
+    own scheduled refresh cycle happened to reach that product. Any
+    caller that does a one-off live SAP re-fetch of a BOM should call
+    this immediately after, so the cache self-heals right away instead of
+    waiting on the schedule."""
+    _upsert(db[COLLECTION_NAME], product_id, raw_bom, changed=True)
+
+
 def is_cached(root_id: str, db) -> bool:
     """Sep 8 2026 (BOM Explorer speed fix): true if `root_id` has EVER been
     resolved before (found or confirmed-no-BOM, doesn't matter which) -

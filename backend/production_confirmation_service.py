@@ -966,7 +966,15 @@ def _resolve_bom_doc(db, main_output_product: str, override_bom_id: str = None, 
     EXISTING BOM doesn't change its ID, so that condition never caught
     it. Passing `force_live=True` (from the "live" callers below) now
     always re-pulls the resolved BOM's structure fresh from SAP, so
-    "live" actually means live for membership too, not just quantities."""
+    "live" actually means live for membership too, not just quantities.
+
+    Sep 18 2026 follow-up (real incident - same removed component kept
+    showing again on the panel's DEFAULT/cached view even after a live
+    check had already proven it gone): a successful live fetch here now
+    also writes straight back into `bom_node_cache` (see bom_cache_
+    service.persist_live_fetch) instead of only correcting this one
+    in-memory response, so the cache self-heals immediately rather than
+    waiting on that collection's own separate scheduled refresh cycle."""
     bom_doc = db["bom_node_cache"].find_one({"_id": main_output_product})
     resolved_bom_id = override_bom_id or (bom_doc or {}).get("bom_id")
     if sap_soap_client is not None and resolved_bom_id and (force_live or resolved_bom_id != (bom_doc or {}).get("bom_id")):
@@ -977,6 +985,12 @@ def _resolve_bom_doc(db, main_output_product: str, override_bom_id: str = None, 
             raw = None
         if raw and raw.get("groups"):
             bom_doc = {"bom_id": raw["bom_id"], "groups": raw["groups"]}
+            if not override_bom_id:
+                try:
+                    import bom_cache_service
+                    bom_cache_service.persist_live_fetch(db, main_output_product, raw)
+                except Exception as e:
+                    logger.warning(f"Component availability: failed to persist live BOM refresh for '{main_output_product}' back into cache: {e}")
     return bom_doc
 
 
