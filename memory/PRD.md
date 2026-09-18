@@ -179,3 +179,22 @@ on P1 despite its missing "with task" model) - see same file's dedicated section
   generalization fix.
 - Inbound generalization fix self-tested (pytest + direct mocked call-path check across
   P1/P2/P3/P8) - not yet run through testing_agent as a dedicated pass.
+
+## Sep 18 2026 session
+- STO Site Logistics automation (SOAP EM2) was built then EXPLICITLY REVERTED per user
+  choice - manual "Create Outbound Delivery with release" SAP UI step is kept intentionally.
+- Fixed: PO form auto-derive (reactive useEffect on `sites`), missing PO 29654 in supplier
+  dashboard (backfill loop infinite-stop bug), deleted BOM component CAR136.510 still showing
+  in live stock checks (`force_live` now refetches true SAP BOM structure).
+- Root-caused (NOT a code bug, per user's explicit "no change needed" then "resolved for
+  now") the Manual GR mismatch for shipment PY8AL8/PO 29482/product WAS8PZ: SAP's own
+  Inbound Delivery analytics consistently report 9 ea confirmed vs 8 ea recorded in the
+  portal - a genuine physical discrepancy, not a parsing bug. User resolved manually via the
+  existing admin unblock panel.
+- Built "Act as Supplier" feature: new `act_as_supplier` permission (IT Access Management,
+  Supplier Management group). Lets internal staff (1) pick any approved supplier and create a
+  shipment on their behalf via the same PO-based flow (`ActAsSupplierPage.jsx`, endpoints
+  under `/api/admin/act-as-supplier/...`), tagged `created_on_behalf_by` (flag visible on both
+  GRN Approval and the supplier's own Shipments page), and (2) set + email a new password to a
+  supplier account. testing_agent iteration_183: 14/14 backend tests pass, full frontend flow
+  live-verified, no bugs found.

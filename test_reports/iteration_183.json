@@ -1,0 +1,23 @@
+{
+  "summary": "First test pass for the new 'Act as Supplier' feature (Sep 18 2026). Wrote 14 pytest tests covering auth gating (401/403), read endpoints (accounts list only-approved + no password_hash leak, PO listing for vendor S9999, invalid account 404), reset-password (short pw 400, invalid account 404, real hash update + fresh supplier login), and shipment creation (created_on_behalf_by stamped on both response and Mongo doc, empty items 400). All 14 backend tests PASS. Frontend UI live-verified: page loads under a permission-carrying synthetic Entra session; Access Denied shown when the permission is absent; 'Act as Supplier' nav entry appears under the Supplier Management dropdown; supplier search + selection + reset-password card render correctly; client-side password validation (length < 8 and mismatch) fires the correct toasts WITHOUT calling the backend. created_on_behalf_by flag JSX + data-testids on GrnApprovalPage and SupplierShipmentsPage were confirmed by code inspection.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_act_as_supplier_iter183.py",
+    "/app/backend/tests/_seed_iter183_act_as_supplier.py",
+    "/app/test_reports/pytest/iter183.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "reset-password endpoint updates the password_hash BEFORE calling Graph mail. If Graph fails, endpoint returns 502 but the password is silently changed - user gets 'could not reset' error while the vendor's actual password is now what staff typed. Consider (a) sending mail first (dry preflight) then persisting on success, or (b) making the 502 error copy explicit that the password WAS updated even though the email failed. The current server.py:8267 wording does say 'Password was updated, but the notification email could not be sent' which is honest - fine as-is, worth calling out.",
+    "supplier_shipment_service.create_shipment signature is (db, account, requested_items, vendor_code=None, created_on_behalf_by=None). The 'Act as Supplier' server route passes account['vendor_code'] and staff_name positionally as 4th/5th args - works, but a keyword call would be safer against future signature changes."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100% of interactive elements exercised"},
+  "test_credentials": "Synthetic Entra sessions seeded (both valid 7 days from Sep 18 2026): POS vms_session='iter183actassupplierpos000000000000000000000000' (allowed_pages includes act_as_supplier, supplier_dashboard, vendor_goods_receipt, supplier_portal_admin); NEG vms_session='iter183actassupplierneg000000000000000000000000' (no act_as_supplier). Supplier portal login: vendor1@testco.com / DummyTest123 (re-set to the documented value at end of reset-password test).",
+  "seed_data_creation": "2 auth_users + 2 auth_sessions inserted via /app/backend/tests/_seed_iter183_act_as_supplier.py. No changes to production data. The one shipment created during shipment-stamp test was deleted at end of that test (see test file). Vendor S9999's password was rotated twice by the reset-password test but finally restored to the documented 'DummyTest123' value.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The 2 synthetic sessions above (POS/NEG) are still in the DB - reuse them for any Act-as-Supplier retest instead of re-seeding. S9999 supplier_portal_po_cache has 3 fixture PO lines (TESTGRN1 items 1+2, TESTGRN2 item 1, all buyer_code=RT so they pass the single-entity check). remaining_qty is (po_qty - already_shipped) computed live. The backend test file already deletes any shipment it creates; safe to run repeatedly. For live UI verification of the created_on_behalf_by flag on the GRN Approval / Supplier Shipments pages, use the code paths already confirmed present at GrnApprovalPage.jsx:851 (data-testid=grn-created-on-behalf-flag) and SupplierShipmentsPage.jsx:364 (data-testid=supplier-shipment-detail-created-on-behalf-flag).",
+  "rca of the issue": "N/A - new feature test pass, no bugs found."
+}
