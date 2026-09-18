@@ -216,3 +216,13 @@ on P1 despite its missing "with task" model) - see same file's dedicated section
   Popover+Calendar picker replacing the native `<input type="date">`, whose display format was
   silently locale-dependent, e.g. mm/dd/yyyy in the user's browser); (2) added missing "Item
   Code" column (product_id) to the shipment lookup table. Screenshot-verified end-to-end.
+- Sep 18 2026: added a SEPARATE "Test Full Automated GRN" button (purple, POST
+  /admin/grn/{doc}/approve-full-auto) on the GRN Approval page for the EM1 SOAP breakthrough -
+  does a REAL, irreversible create+release=True SAP post in one click, no manual SAP step,
+  same local Goods Movement completion as the normal flow. Server-side site allowlist
+  (`FULL_AUTO_GRN_SITE_ALLOWLIST={'P8'}`) - only enabled/usable for site P8 (only site with EM1
+  Logistics Model configured), disabled elsewhere with a clear tooltip/400 error. Also added a
+  shared confirmation dialog (showing Invoice Number + Bill Date) now gating BOTH this new
+  button AND the existing normal "Create SAP Notification" button. testing_agent iteration_184:
+  100% pass, no bugs - real SAP post was deliberately never triggered during testing (Cancel
+  only) to avoid an irreversible production write; user will trigger it themselves.

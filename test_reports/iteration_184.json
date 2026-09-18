@@ -1,0 +1,39 @@
+{
+  "summary": "First dedicated test pass for the new purple 'Test Full Automated GRN' button (approve-full-auto endpoint, EM1 SOAP breakthrough, site P8 only) and the NEW shared confirmation dialog that now gates BOTH the existing green 'Create SAP Notification' button and the new purple full-auto button on the GRN Approval page. Backend rejection paths, frontend enable/disable logic, and both dialog variants (wording + confirm button color/text) all live-verified. Per the review-request safety instruction, the actual 'Yes, Post to SAP Now' confirm was NEVER clicked - only Cancel was clicked - to avoid a real irreversible SAP post.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_grn_full_auto_iter184.py",
+    "/app/test_reports/pytest/iter184_full_auto.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Server-side allowlist is enforced correctly (server.py:8507) - frontend disable is only a UX guard, not a security guard, and the backend independently rejects any non-P8 request with a clear 400 message.",
+    "Both dialog paths correctly reuse the SAME confirmation dialog component (data-testid grn-approval-confirm-dialog) with confirmMode ('normal' vs 'full_auto') branching only the title/description/confirm-button copy - clean, no duplication.",
+    "approve() (GrnApprovalPage.jsx:613) still validates supplier_doc_num + billDate before firing even though openApprovalConfirm already does - defensive double-check, good.",
+    "Minor: DialogDescription for the full_auto path says 'REAL, irreversible Goods Receipt directly to SAP' which matches the review-request spec; normal-path description says 'confirm the details below before creating the SAP Notification' - both wordings are visibly distinct and align with the two confirm-button labels ('Yes, Post to SAP Now' purple vs 'Yes, Create Notification' green)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (4/4 negative-path tests)", "frontend": "100% of dialog + enable/disable scenarios verified"},
+  "test_credentials": "Seeded synthetic super_admin session for iter184: vms_session=iter184grnfullauto0000000000000000000000000000, user _id=test-tid:iter184-oid, email iter184.grn.test@rampgroup.co.in, role super_admin, allowed_pages=['vendor_goods_receipt'], bound_sites=[] (all sites). Valid 7 days from Sep 18 2026.",
+  "seed_data_creation": "1 auth_users doc + 1 auth_sessions doc inserted (idempotent upsert). No production data modified. No shipments/GRNs actually posted - all real-SAP-write buttons were opened only to inspect the confirmation dialog then Cancel'd.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The iter184 synthetic session cookie above is still in the DB (all-sites super_admin with vendor_goods_receipt access) - reuse it for any GRN Approval page test. Shipment Q7YA7Z (H1330, PO 28792, item 2, in_transit) was used only for lookup + dialog-open + Cancel - it was NOT approved and remains in_transit. Backend rejection contract for POST /admin/grn/{doc}/approve-full-auto: any site_id not in FULL_AUTO_GRN_SITE_ALLOWLIST={'P8'} returns 400 with detail containing 'only set up for' and 'P8'. The confirmation dialog data-testids to key off in future tests: grn-approval-confirm-dialog (root), grn-confirm-invoice-number, grn-confirm-bill-date (dd-MM-yyyy format), grn-approval-confirm-button (branches purple/green by confirmMode), grn-approval-confirm-cancel-button. Bill Date custom dd-mm-yyyy calendar picker (Sep 18 2026) and Item Code column (grn-item-code-<i>) both confirmed present and working on this page.",
+  "verified_scenarios": {
+    "backend_p1_rejection": "PASS (HTTP 400, correct message)",
+    "backend_p3_rejection": "PASS (HTTP 400, correct message)",
+    "backend_missing_invoice_billdate_on_p8": "PASS (HTTP 400 'Supplier Invoice Number and Bill Date are required before posting')",
+    "backend_auth_required": "PASS (HTTP 401 without cookie)",
+    "ui_full_auto_disabled_on_P1": "PASS - disabled=True, tooltip='Test Full Automated GRN is only set up for site P8 right now'",
+    "ui_normal_approve_enabled_on_P1": "PASS (unchanged pre-existing behavior)",
+    "ui_full_auto_enabled_on_P8": "PASS - disabled=False after site P8 + warehouse auto-selected to P8-RM",
+    "ui_full_auto_dialog_content": "PASS - shows 'This posts a REAL, irreversible Goods Receipt directly to SAP - no manual SAP step afterward.', Invoice=TEST-INV-999, Bill Date=09-09-2026 (dd-MM-yyyy), Site/Warehouse=P8/P8-RM, purple 'Yes, Post to SAP Now' + Cancel",
+    "ui_full_auto_cancel_closes_without_posting": "PASS - dialog count 0 after Cancel, NO backend post fired (verified: no navigation, still on GRN page)",
+    "ui_normal_button_now_opens_same_dialog": "PASS - clicking green 'Create SAP Notification' opens grn-approval-confirm-dialog with 'Please confirm the details below before creating the SAP Notification.' wording, green 'Yes, Create Notification' button (NOT the irreversible-SAP-write warning). Confirmed the normal path Cancel also works.",
+    "ui_bill_date_ddmmyyyy_picker": "PASS - displays '09-09-2026' format in both the field and the confirmation dialog",
+    "ui_item_code_column": "PASS - data-testid grn-item-code-0 present, shows P-42152 for the test line"
+  },
+  "safety_compliance": "Per review-request instruction, the actual 'Yes, Post to SAP Now' confirm on the full-auto dialog was NEVER clicked - Cancel was clicked in both dialog exercises. No real SAP Goods Receipt was created by this test pass. The normal 'Yes, Create Notification' path was also NOT confirmed to keep this run zero-side-effect (main agent had already smoke-tested up through dialog opening in the previous session).",
+  "rca of the issue": "N/A - new feature test pass, no bugs found. Feature works exactly as specified in the review request."
+}
