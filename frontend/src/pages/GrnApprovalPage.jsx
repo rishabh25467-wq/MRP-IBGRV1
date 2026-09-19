@@ -848,6 +848,12 @@ export default function GrnApprovalPage() {
 
   const isActionable = shipment && (shipment.status === "in_transit" || shipment.status === "discrepancy");
 
+  const hasQtyDiscrepancy = isActionable && (shipment.items || []).some((it) => {
+    const key = `${it.po_number}::${it.item_number}`;
+    const effectiveQty = Number(actualQtys[key] ?? it.actual_qty ?? it.ship_qty ?? 0);
+    return Math.abs(effectiveQty - Number(it.ship_qty)) > 1e-6;
+  });
+
   return (
     <div className="min-h-screen bg-[#F2F4F7] font-sans" data-testid="grn-approval-page">
       <Toaster position="top-right" richColors />
@@ -1120,8 +1126,8 @@ export default function GrnApprovalPage() {
                 <div className="flex gap-2 flex-wrap">
                   <Button
                     onClick={() => openApprovalConfirm("full_auto")}
-                    disabled={busy || siteAccessBlocked || !!user?.grn_blocked_shipment || !supplierDocNum.trim() || !billDate}
-                    title={(!supplierDocNum.trim() || !billDate) ? "Enter the Supplier Invoice Number and Bill Date first" : undefined}
+                    disabled={busy || siteAccessBlocked || hasQtyDiscrepancy || !!user?.grn_blocked_shipment || !supplierDocNum.trim() || !billDate}
+                    title={hasQtyDiscrepancy ? "Actual qty does not match shipped qty - click 'Mark Discrepancy' instead" : ((!supplierDocNum.trim() || !billDate) ? "Enter the Supplier Invoice Number and Bill Date first" : undefined)}
                     className="h-8 rounded-sm bg-[#6941C6] hover:bg-[#53389E] text-white px-4 text-[13px] font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     data-testid="grn-approve-full-auto-button"
                   >
@@ -1136,6 +1142,11 @@ export default function GrnApprovalPage() {
                     </Button>
                   )}
                 </div>
+                {hasQtyDiscrepancy && (
+                  <div className="text-xs text-[#B54708] bg-[#FFFAEB] border border-[#FEDF89] rounded-sm px-3 py-2 flex items-center gap-1.5" data-testid="grn-qty-mismatch-warning">
+                    <WarningCircle size={14} /> Quantity mismatch detected: Actual Qty differs from Ship Qty on one or more items. Posting is disabled - please click "Mark Discrepancy" instead to record it.
+                  </div>
+                )}
               </div>
             )}
 
