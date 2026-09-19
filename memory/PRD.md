@@ -33,6 +33,20 @@ auto-detection (`try_post_goods_issue`) as a background poll, and a "Complete ST
 manual-confirm button (`check_manual_gi_completion`) as fallback. User explicitly confirmed
 (this session) to leave this as-is - do not restore old single-line automation.
 
+## Bug fix - PO missing "even after pulling" (Sep 20 2026, same-day follow-up)
+Real user report: PO 29735 didn't show up even after clicking "Pull Latest POs". Root cause:
+`fetch_recent_window` only scans strictly ABOVE the stored watermark, assuming SAP hands out
+PurchaseOrderIDs in the same order POs become genuinely visible - not always true. PO 29735 was
+only fully released well AFTER higher-numbered POs (29736+) had already been scanned and the
+watermark moved past it, so it permanently fell below every future `fetch_recent_window` call.
+The slow, incremental `fetch_backfill_chunk` (background-loop-only, one ~400-ID chunk per 10-min
+cycle) would eventually re-visit that range, but not fast enough for a manual "pull now".
+- Fix: `_run_manual_po_refresh` now also re-sweeps a 450-ID safety margin just below the
+  watermark on every manual pull (`sap_po_client._scan_between` + non-destructive
+  `merge_backfill_rows`), so recently-released-but-lower-numbered POs get caught immediately
+  instead of waiting on the slow background backfill. Verified live: PO 29735 (vendor RAD-P2-S,
+  5 line items) now appears via the Act-as-Supplier PO API after a manual pull.
+
 ## Feature added - manual "Pull Latest POs" (Sep 20 2026, same session)
 User's ask ("add option to pull") - on-demand refresh so a supplier doesn't have to wait out the
 ~10 min background PO cache cycle explained above.
