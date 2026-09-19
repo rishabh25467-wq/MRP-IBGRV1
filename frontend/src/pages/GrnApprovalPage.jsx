@@ -287,11 +287,17 @@ export default function GrnApprovalPage() {
   };
 
   const [sites, setSites] = useState([]);
-  const [warehouses, setWarehouses] = useState([]);
   const [supplierDocNum, setSupplierDocNum] = useState("");
   const [siteId, setSiteId] = useState("");
-  const [warehouseId, setWarehouseId] = useState("");
-  const [warehousesLoading, setWarehousesLoading] = useState(false);
+  // Sep 20 2026, same-day follow-up: `warehouseId` is permanently "" now -
+  // the Warehouse dropdown + its auto-fetch/auto-default-to-RM effect were
+  // both removed (user's explicit ask: no warehouse concept in this flow
+  // at all). Kept as a literal empty-string constant, NOT state, purely so
+  // the existing `warehouse_id: warehouseId` field on the approve payload
+  // below doesn't need touching - sending "" keeps the backend's goods-
+  // movement gate (`if ... doc.get("warehouse_id")`) permanently falsy,
+  // same as skip_movement already does for the Goods Receipt itself.
+  const warehouseId = "";
   const [billDate, setBillDate] = useState("");
   const [actualQtys, setActualQtys] = useState({});
   const [jobProgress, setJobProgress] = useState(null);
@@ -538,32 +544,16 @@ export default function GrnApprovalPage() {
     return () => clearInterval(poll);
   }, [confirmed]);
 
-  useEffect(() => {
-    if (!siteId) {
-      setWarehouses([]);
-      setWarehouseId("");
-      return;
-    }
-    setWarehousesLoading(true);
-    setWarehouseId("");
-    axios.get(`${API}/admin/grn/warehouses/${siteId}`)
-      .then(({ data }) => {
-        const whs = data.warehouses || [];
-        setWarehouses(whs);
-        // Sep 11 2026, user's explicit ask: default Warehouse should be the
-        // site's RM (Raw Material) location, not QC - matched by warehouse_id
-        // suffix "RM" for most sites (P1-RM, P2-RM, P4-RM...). P3 has no
-        // "-RM" id at all (its RM location is zone-coded, "P3-Z1-01-A" named
-        // "P3-RM-Zone-1-01-A") - falls back to matching "RM" in the name so
-        // this rule generalizes to any site without a hardcoded site check.
-        const rmById = whs.find((w) => (w.warehouse_id || "").split("-").pop() === "RM");
-        const rmByName = whs.find((w) => /(^|[-\s])RM([-\s]|$)/i.test(w.warehouse_name || ""));
-        const rm = rmById || rmByName;
-        if (rm) setWarehouseId(rm.warehouse_id);
-      })
-      .catch((err) => toast.error("Could not load warehouses", { description: err?.response?.data?.detail || err.message }))
-      .finally(() => setWarehousesLoading(false));
-  }, [siteId]);
+  // Sep 20 2026, same-day follow-up (real user report: "why movement
+  // message exists now") - this used to auto-fetch this site's warehouses
+  // and silently default `warehouseId` to its RM location EVEN AFTER the
+  // Warehouse dropdown itself was removed from the UI. That non-empty
+  // `warehouseId` was then sent on every approve payload, which re-armed
+  // the backend's goods-movement check (`manually_confirm_inbound_
+  // delivery`'s own `if ... doc.get("warehouse_id")` gate) - surfacing an
+  // unwanted "Moved to P8-RM" note on shipments the user explicitly wants
+  // to stay GRN-only, no warehouse concept at all. Removed entirely -
+  // `warehouseId` is now a permanent "" (see its declaration above).
 
   // "RI and RT Site should be non-editable and pre-fixed based on shipment
   // code" (Sep 2026): the Site dropdown only ever offers sites that belong
@@ -594,7 +584,6 @@ export default function GrnApprovalPage() {
 
   const resetApprovalForm = () => {
     setSupplierDocNum("");
-    setWarehouseId("");
     setBillDate("");
   };
 

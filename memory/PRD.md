@@ -33,6 +33,23 @@ auto-detection (`try_post_goods_issue`) as a background poll, and a "Complete ST
 manual-confirm button (`check_manual_gi_completion`) as fallback. User explicitly confirmed
 (this session) to leave this as-is - do not restore old single-line automation.
 
+## Root cause fix - stray "Moved to P8-RM" note (Sep 20 2026, same-day follow-up)
+Real user report: Confirmed GRNs list started showing a "Moved to P8-RM" badge again on
+S000020/S000021 after the Put Away Task fix above, even though "no warehouse movement" was the
+explicit design. Root cause: the Warehouse dropdown UI was removed earlier, but its underlying
+`useEffect` (auto-fetch `/admin/grn/warehouses/{siteId}` + auto-default to the site's RM
+warehouse) was left running - `warehouseId` state kept getting silently populated (e.g. "P8-RM")
+and sent on the approve payload. That non-empty `warehouse_id` re-armed
+`manually_confirm_inbound_delivery`'s own goods-movement gate (called from the restored
+background finisher's Delivery ID auto-fetch step) - it found stock "already in P8-RM" (a
+harmless no-op) but still set `sap_movement_status: "posted"` + a `per_item` note, which the
+Confirmed GRNs list renders as "Moved to {warehouse}".
+- Fix: removed the entire warehouse auto-fetch `useEffect` + `warehouses`/`warehousesLoading`
+  state from `GrnApprovalPage.jsx` - `warehouseId` is now a permanent `""` constant. With it
+  always empty, `manually_confirm_inbound_delivery`'s movement gate stays permanently false, so
+  no future GRN can show this badge again. S000020/S000021's existing "Moved to P8-RM" badges are
+  harmless historical data (no real move happened, item was already in place) - left as-is.
+
 ## CRITICAL FIX - Put Away Task confirmation restored (Sep 20 2026, same session)
 Real production bug found via user's own SAP UI screenshot: shipment S000016/PO 29724 was
 marked "posted" by this app, but SAP's real Inbound Warehouse Request stayed "Released" with
