@@ -8026,9 +8026,10 @@ async def _run_manual_po_refresh(job_id: str) -> None:
         await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "error", "error": str(e)})
 
 
-@api_router.post("/supplier-portal/purchase-orders/refresh")
-async def post_supplier_portal_purchase_orders_refresh(request: Request):
-    await asyncio.to_thread(_require_supplier_account, request)
+async def _trigger_manual_po_refresh() -> dict:
+    """Shared by both the supplier-facing and admin "Act as Supplier"
+    Pull Latest POs buttons - see PO_MANUAL_REFRESH_COOLDOWN_SECONDS'
+    docstring above."""
     state = await asyncio.to_thread(db[PO_MANUAL_REFRESH_COLLECTION].find_one, {"_id": "latest"})
     now = datetime.now(timezone.utc)
     if state and state.get("job_id"):
@@ -8045,6 +8046,12 @@ async def post_supplier_portal_purchase_orders_refresh(request: Request):
     )
     asyncio.create_task(_run_manual_po_refresh(job_id))
     return {"job_id": job_id, "status": "running"}
+
+
+@api_router.post("/supplier-portal/purchase-orders/refresh")
+async def post_supplier_portal_purchase_orders_refresh(request: Request):
+    await asyncio.to_thread(_require_supplier_account, request)
+    return await _trigger_manual_po_refresh()
 
 
 @api_router.get("/supplier-portal/purchase-orders/refresh/{job_id}")
@@ -8304,6 +8311,24 @@ async def get_act_as_supplier_purchase_orders(account_id: str):
     except supplier_portal_service.SupplierPortalNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return await _load_open_pos_for_vendor(account["vendor_code"])
+
+
+# Sep 20 2026, user's explicit ask ("add the same button on act as
+# supplier page") - shares the exact same job runner + cooldown state
+# as the supplier-facing /supplier-portal/purchase-orders/refresh above
+# (a manual pull is a global, all-vendor SAP scan either way, so there's
+# nothing account-specific to separate).
+@api_router.post("/admin/act-as-supplier/purchase-orders/refresh")
+async def post_act_as_supplier_purchase_orders_refresh():
+    return await _trigger_manual_po_refresh()
+
+
+@api_router.get("/admin/act-as-supplier/purchase-orders/refresh/{job_id}")
+async def get_act_as_supplier_purchase_orders_refresh(job_id: str):
+    job = await asyncio.to_thread(job_store.get_job, db, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Refresh job not found")
+    return {"status": job.get("status"), "error": job.get("error")}
 
 
 @api_router.post("/admin/act-as-supplier/{account_id}/shipments")

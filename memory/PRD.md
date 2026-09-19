@@ -44,8 +44,11 @@ User's ask ("add option to pull") - on-demand refresh so a supplier doesn't have
 - `GET /api/supplier-portal/purchase-orders/refresh/{job_id}` - status poll.
 - Frontend: "Pull Latest POs" button on `SupplierDashboardPage.jsx` (next to the Open/All filter
   toggle) - polls every 5s, shows a spinner while running, toasts on success/failure, then
-  reloads the PO table. Verified live end-to-end (real fetch against HAMIDI EXPORTS/H1330 vendor
-  data, cooldown dedup confirmed, UI screenshot confirmed).
+- Also added to the ADMIN "Act as Supplier" page (`ActAsSupplierPage.jsx`) - same button next to
+  the PO search box, shares the exact same backend job/cooldown via
+  `POST/GET /api/admin/act-as-supplier/purchase-orders/refresh[/{job_id}]` (both endpoints now
+  call a shared `_trigger_manual_po_refresh()` helper). Verified live with the `act_as_supplier`
+  permission (positive/negative synthetic test sessions from iteration_183) and via screenshot.
 
 ## Root cause fix - stray "Moved to P8-RM" note (Sep 20 2026, same-day follow-up)
 Real user report: Confirmed GRNs list started showing a "Moved to P8-RM" badge again on

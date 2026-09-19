@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import "@/App.css";
 import axios from "axios";
-import { Buildings, Shield, MagnifyingGlass, Truck, X, Key, UserSwitch } from "@phosphor-icons/react";
+import { Buildings, Shield, MagnifyingGlass, Truck, X, Key, UserSwitch, ArrowsClockwise, CircleNotch } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -35,6 +35,7 @@ export default function ActAsSupplierPage() {
 
   const [pos, setPos] = useState([]);
   const [posLoading, setPosLoading] = useState(false);
+  const [pulling, setPulling] = useState(false);
   const [search, setSearch] = useState("");
   const [cart, setCart] = useState({});
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -82,6 +83,30 @@ export default function ActAsSupplierPage() {
     setNewPassword("");
     setConfirmPassword("");
     loadPos(account._id);
+  };
+
+  const pullLatestPos = async () => {
+    setPulling(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/act-as-supplier/purchase-orders/refresh`);
+      let jobId = data.job_id;
+      let status = data.status;
+      for (let i = 0; i < 40 && status === "running"; i++) {
+        await new Promise((r) => setTimeout(r, 5000));
+        const poll = await axios.get(`${API}/admin/act-as-supplier/purchase-orders/refresh/${jobId}`);
+        status = poll.data.status;
+      }
+      if (status === "error") {
+        toast.error("Could not pull the latest POs from SAP - showing what we already had.");
+      } else {
+        toast.success("Pulled the latest Purchase Orders from SAP.");
+      }
+      if (selectedAccount) await loadPos(selectedAccount._id);
+    } catch (err) {
+      toast.error("Could not pull the latest POs from SAP", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setPulling(false);
+    }
   };
 
   const filteredPos = useMemo(() => {
@@ -217,15 +242,28 @@ export default function ActAsSupplierPage() {
               <h2 className="font-heading text-lg font-bold text-[#0F172A]">
                 {selectedAccount.company_name}'s Open Purchase Orders
               </h2>
-              <div className="relative">
-                <MagnifyingGlass size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#475569]" />
-                <Input
-                  placeholder="Search PO #, Item #, or description..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="h-8 pl-8 pr-2 w-72 text-[13px] rounded-sm border-[#E2E8F0]"
-                  data-testid="act-as-supplier-po-search-input"
-                />
+              <div className="flex items-center gap-3 flex-wrap">
+                <Button
+                  variant="outline"
+                  onClick={pullLatestPos}
+                  disabled={pulling}
+                  className="h-8 rounded-sm border-[#E2E8F0] text-xs"
+                  title="Don't want to wait? Pull the newest Purchase Orders from SAP right now."
+                  data-testid="act-as-supplier-pull-latest-pos-button"
+                >
+                  {pulling ? <CircleNotch size={13} className="mr-1.5 animate-spin" /> : <ArrowsClockwise size={13} className="mr-1.5" />}
+                  {pulling ? "Pulling from SAP..." : "Pull Latest POs"}
+                </Button>
+                <div className="relative">
+                  <MagnifyingGlass size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#475569]" />
+                  <Input
+                    placeholder="Search PO #, Item #, or description..."
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    className="h-8 pl-8 pr-2 w-72 text-[13px] rounded-sm border-[#E2E8F0]"
+                    data-testid="act-as-supplier-po-search-input"
+                  />
+                </div>
               </div>
             </div>
 
