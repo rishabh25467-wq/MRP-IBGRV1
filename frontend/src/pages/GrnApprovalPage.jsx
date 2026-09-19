@@ -649,6 +649,15 @@ export default function GrnApprovalPage() {
       setShipment(result);
       if (result.sap_sync_status === "posted" && result.sap_movement_status === "posted") {
         toast.success(mode === "full_auto" ? `Full Automated GRN posted + stock moved to ${result.site_id}/${result.warehouse_id} - no manual SAP step needed` : `Goods Receipt posted + stock moved to ${result.site_id}/${result.warehouse_id}`);
+      } else if (result.sap_sync_status === "posted" && result.sap_movement_status === "not_applicable") {
+        // Sep 20 2026, user's explicit ask ("we aren't moving any stock
+        // now so we do not need this") - "not_applicable" is the
+        // PERMANENT, EXPECTED state for every GRN now (skip_movement is
+        // always on) - it must never fall into the "still pending"
+        // warning branch below, which was designed for the OLD flow
+        // where movement genuinely ran right after the GR and could
+        // fail/lag.
+        toast.success(mode === "full_auto" ? "Full Automated GRN posted in SAP" : "Goods Receipt posted in SAP");
       } else if (result.sap_sync_status === "posted") {
         toast.warning("Goods Receipt posted - warehouse movement still pending", { description: summarizeMovementResult(result.sap_movement_result), duration: 8000 });
       } else if (result.sap_sync_status === "awaiting_manual_gr") {
