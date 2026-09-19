@@ -33,7 +33,27 @@ auto-detection (`try_post_goods_issue`) as a background poll, and a "Complete ST
 manual-confirm button (`check_manual_gi_completion`) as fallback. User explicitly confirmed
 (this session) to leave this as-is - do not restore old single-line automation.
 
-## Completed this session (Sep 2026 fork)
+## Completed this session (Sep 20 2026 fork continuation)
+- Fixed GRN Approval frontend bug: form validation still required `warehouseId`
+  after the Warehouse dropdown was removed from the UI - blocked ALL GRN
+  submissions ("Select a Site and Warehouse before approving"). Removed the
+  `warehouseId` check from both `approve()` and `openApprovalConfirm()` in
+  `GrnApprovalPage.jsx` - only Site is required now. Verified live: confirm
+  dialog now opens correctly with just Site set.
+- Verified (user asked to confirm): Site ID on GRN IS derived from the
+  shipment's own PO data (`derive_ship_to_site_id`, exact `ship_to_site_id`
+  per PO line in `supplier_portal_po_cache`), NOT from entity-level locking -
+  entity-wide list (`allowed_site_ids_for_buyer_code`) is only a fallback for
+  legacy shipments where the exact site isn't cached. Confirmed via live DB
+  query on 2 real shipments.
+- Removed the "Warehouse movement skipped - Goods Receipt has not posted to
+  SAP yet" banner + its Retry button from the GRN lookup detail view -
+  `sap_movement_status` is now PERMANENTLY "not_applicable" for every GRN
+  (skip_movement=True is always on), so this banner was always stale/
+  confusing. Now hidden whenever `sap_movement_status === "not_applicable"`
+  (same pattern the Confirmed GRN dialog already used).
+
+## Completed earlier this session (Sep 2026 fork)
 - Fixed blocking lint error in `stock_transfer_service.py` (stale `RELOCATION_SITE_ID` /
   `_relocate_items_to_p8_source_warehouse` refs from an incomplete prior refactor).
 - Generalized OUTBOUND pre-STO relocation to run for any `ship_from_site_id`, not just P8

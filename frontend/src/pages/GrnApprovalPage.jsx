@@ -1297,22 +1297,31 @@ export default function GrnApprovalPage() {
                     </button>
                   </div>
                 )}
-                <div className="text-sm px-3 py-2 rounded-sm flex items-center justify-between gap-2 border" data-testid="grn-sap-movement-status"
-                     style={shipment.sap_movement_status === "posted" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : { color: "#B45309", background: "rgba(227,160,8,0.1)", borderColor: "rgba(227,160,8,0.3)" }}>
-                  <span className="flex items-center gap-2">
-                    {shipment.sap_movement_status === "posted" ? <CheckCircle size={16} /> : <PlugsConnected size={16} />}
-                    {shipment.sap_movement_status === "posted"
-                      ? `Stock moved to ${shipment.site_id}/${shipment.warehouse_id}`
-                      : shipment.sap_movement_status === "not_applicable"
-                      ? "Warehouse movement skipped - Goods Receipt has not posted to SAP yet"
-                      : `Warehouse movement pending${shipment.warehouse_id ? ` (target ${shipment.site_id}/${shipment.warehouse_id})` : ""}`}
-                  </span>
-                  {shipment.sap_movement_status !== "posted" && shipment.sap_sync_status === "posted" && (
-                    <Button size="sm" variant="outline" onClick={retryMovement} disabled={busy} className="rounded-sm h-7 text-xs" data-testid="grn-retry-movement-button">
-                      <ArrowsClockwise size={12} className="mr-1" /> Retry
-                    </Button>
-                  )}
-                </div>
+                {/* Sep 20 2026, user's explicit ask ("this is not needed as
+                    warehouse is not necessary") - Goods Movement is
+                    permanently skipped for every GRN now (skip_movement=True,
+                    see finalize_goods_receipt), so `sap_movement_status` is
+                    always "not_applicable" going forward. Hiding this whole
+                    block in that case (same pattern the Confirmed GRN detail
+                    dialog below already uses) instead of showing a stale/
+                    confusing "movement skipped" banner + a Retry button that
+                    has nothing to retry. */}
+                {shipment.sap_movement_status !== "not_applicable" && (
+                  <div className="text-sm px-3 py-2 rounded-sm flex items-center justify-between gap-2 border" data-testid="grn-sap-movement-status"
+                       style={shipment.sap_movement_status === "posted" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : { color: "#B45309", background: "rgba(227,160,8,0.1)", borderColor: "rgba(227,160,8,0.3)" }}>
+                    <span className="flex items-center gap-2">
+                      {shipment.sap_movement_status === "posted" ? <CheckCircle size={16} /> : <PlugsConnected size={16} />}
+                      {shipment.sap_movement_status === "posted"
+                        ? `Stock moved to ${shipment.site_id}/${shipment.warehouse_id}`
+                        : `Warehouse movement pending${shipment.warehouse_id ? ` (target ${shipment.site_id}/${shipment.warehouse_id})` : ""}`}
+                    </span>
+                    {shipment.sap_movement_status !== "posted" && shipment.sap_sync_status === "posted" && (
+                      <Button size="sm" variant="outline" onClick={retryMovement} disabled={busy} className="rounded-sm h-7 text-xs" data-testid="grn-retry-movement-button">
+                        <ArrowsClockwise size={12} className="mr-1" /> Retry
+                      </Button>
+                    )}
+                  </div>
+                )}
                 {/* Sep 12 2026, user's explicit ask ("after success grn
                     why an error occurred") - the badge above only ever
                     said "pending", never WHY. The real SAP error per
@@ -1330,7 +1339,7 @@ export default function GrnApprovalPage() {
                     a line has genuinely escalated (`needs_manual_check`,
                     after repeated real failures) - otherwise show a calm
                     "in progress" message instead. */}
-                {shipment.sap_movement_status !== "posted" && shipment.sap_movement_result?.per_item?.some((p) => p.error) && (
+                {shipment.sap_movement_status !== "not_applicable" && shipment.sap_movement_status !== "posted" && shipment.sap_movement_result?.per_item?.some((p) => p.error) && (
                   <div className={`text-xs rounded-sm px-3 py-2 space-y-1 ${shipment.sap_movement_result.per_item.some((p) => p.needs_manual_check) ? "text-[#B54708] bg-[#FFFAEB] border border-[#FEDF89]" : "text-[#175CD3] bg-[#EFF8FF] border border-[#B2DDFF]"}`} data-testid="grn-movement-error-detail">
                     {shipment.sap_movement_result.per_item.filter((p) => p.error).map((p, i) => (
                       <div key={i} data-testid={`grn-movement-error-${i}`}>
