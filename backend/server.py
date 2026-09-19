@@ -41,7 +41,7 @@ from sap_material_physical_client import (
     SAPMaterialPhysicalClient, SAPMaterialPhysicalError, PHYSICAL_FIELD_TO_SAP_PROPERTY, bulk_push_physical_to_sap,
 )
 from sap_supplier_client import SAPSupplierClient, SAPSupplierError, SAPSupplierAuthError, SAPSupplierNotConfiguredError
-from sap_po_client import SAPPurchaseOrderClient, SAPPurchaseOrderError, SAPPurchaseOrderNotConfiguredError, WATERMARK_COLLECTION as SAP_PO_WATERMARK_COLLECTION, NOT_YET_RELEASED_APPROVAL_STATUS_CODE, LOOKBACK_IDS as SAP_PO_MANUAL_PULL_LOOKBACK_IDS
+from sap_po_client import SAPPurchaseOrderClient, SAPPurchaseOrderError, SAPPurchaseOrderNotConfiguredError, WATERMARK_COLLECTION as SAP_PO_WATERMARK_COLLECTION, NOT_YET_RELEASED_APPROVAL_STATUS_CODE
 from sap_po_analytics_client import SAPPOAnalyticsClient
 from sap_outbound_delivery_analytics_client import SAPOutboundDeliveryAnalyticsClient
 from sap_gsa_write_client import SAPGSAWriteClient
@@ -8020,26 +8020,6 @@ async def _run_manual_po_refresh(job_id: str) -> None:
         stats = await asyncio.to_thread(
             supplier_shipment_service.refresh_all_vendor_caches, db, fetch_result["rows"], fetch_result["lower_bound"],
         )
-        # Sep 20 2026 fix (real user report: PO 29735 missing "even after
-        # pulling") - `fetch_recent_window` only scans strictly ABOVE the
-        # stored watermark's lower_bound, on the assumption SAP hands out
-        # PurchaseOrderIDs in the same order POs become genuinely visible/
-        # released. Confirmed live that's not always true: PO 29735 was
-        # only fully released well AFTER the watermark had already moved
-        # past it (higher-numbered POs 29736+ were scanned and confirmed
-        # first), so it fell permanently below every future
-        # fetch_recent_window call - the slow, incremental
-        # fetch_backfill_chunk (a background-loop-only, one-chunk-per-10-
-        # min-cycle sweep) would eventually re-visit that range, but not
-        # fast enough for someone who just clicked "pull now". This extra
-        # chunk directly re-sweeps just below the watermark on every
-        # manual pull - non-destructive (merge_backfill_rows only upserts,
-        # never expires), so it's safe even if it finds nothing new.
-        safety_floor = max(0, fetch_result["lower_bound"] - SAP_PO_MANUAL_PULL_LOOKBACK_IDS)
-        if safety_floor < fetch_result["lower_bound"]:
-            extra_rows = await asyncio.to_thread(sap_po_client._scan_between, safety_floor, fetch_result["lower_bound"])
-            if extra_rows:
-                await asyncio.to_thread(supplier_shipment_service.merge_backfill_rows, db, extra_rows)
         await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "result": stats, "error": None})
     except Exception as e:
         logger.error(f"Manual Supplier Portal PO cache refresh failed: {e}")

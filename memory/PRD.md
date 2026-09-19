@@ -34,18 +34,24 @@ manual-confirm button (`check_manual_gi_completion`) as fallback. User explicitl
 (this session) to leave this as-is - do not restore old single-line automation.
 
 ## Bug fix - PO missing "even after pulling" (Sep 20 2026, same-day follow-up)
-Real user report: PO 29735 didn't show up even after clicking "Pull Latest POs". Root cause:
-`fetch_recent_window` only scans strictly ABOVE the stored watermark, assuming SAP hands out
-PurchaseOrderIDs in the same order POs become genuinely visible - not always true. PO 29735 was
-only fully released well AFTER higher-numbered POs (29736+) had already been scanned and the
-watermark moved past it, so it permanently fell below every future `fetch_recent_window` call.
-The slow, incremental `fetch_backfill_chunk` (background-loop-only, one ~400-ID chunk per 10-min
-cycle) would eventually re-visit that range, but not fast enough for a manual "pull now".
-- Fix: `_run_manual_po_refresh` now also re-sweeps a 450-ID safety margin just below the
-  watermark on every manual pull (`sap_po_client._scan_between` + non-destructive
-  `merge_backfill_rows`), so recently-released-but-lower-numbered POs get caught immediately
-  instead of waiting on the slow background backfill. Verified live: PO 29735 (vendor RAD-P2-S,
-  5 line items) now appears via the Act-as-Supplier PO API after a manual pull.
+Real user report: PO 29735 didn't show up even after clicking "Pull Latest POs". User confirmed
+29735 IS the tenant's actual highest real PO. Root cause: `_has_po_id_greater_than` (used by the
+binary-search max-ID discovery) checks raw SAP ID existence with NO status/lifecycle filtering,
+unlike the real fetch (`_parse_pos`, which filters out cancelled/not-yet-released/etc). Some OTHER
+document sharing this ID range (not a real usable PO) had already pushed the stored watermark up
+to 29802 in an earlier cycle, at a point when PO 29735 wasn't released yet - once it later WAS
+released, every future `(lower_bound, current_max]` scan sat permanently above it (lower_bound
+already at 29802), so it could never be found again by a normal cycle.
+- Fix (in `sap_po_client.fetch_recent_window` itself, not just the manual-pull path - so BOTH the
+  automatic 10-min loop and every manual pull self-heal from this class of gap going forward):
+  every cycle now re-sweeps a 450-ID safety margin below the stored watermark
+  (`RECENT_WINDOW_SAFETY_MARGIN_IDS`) in addition to the normal range. Cheap (~1 extra chunk) and
+  safe (goes through the same real, filtered fetch path - a phantom ID won't come back either).
+  The function's returned `lower_bound` (used for cache-expiry decisions) is unchanged, so this
+  can't cause any cached PO to be wrongly expired.
+- Verified live end-to-end: manual pull completed (`vendors_updated: 63, total_line_items: 571`,
+  no errors) with the refactored code; PO 29735 (5 line items, vendor RAD-P2-S) already confirmed
+  visible via the Act-as-Supplier PO API from the earlier (pre-refactor) fix attempt.
 
 ## Feature added - manual "Pull Latest POs" (Sep 20 2026, same session)
 User's ask ("add option to pull") - on-demand refresh so a supplier doesn't have to wait out the

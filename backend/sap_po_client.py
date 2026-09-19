@@ -150,6 +150,11 @@ WATERMARK_COLLECTION = "sap_po_watermark"
 # first-ever discovery has a sane initial lower bound before any
 # watermark exists yet.
 LOOKBACK_IDS = 450
+# Sep 20 2026 fix - see fetch_recent_window's own docstring. Re-swept
+# every cycle below the watermark so a PO that gets released AFTER a
+# higher, non-PO/phantom ID already pushed the watermark past it can
+# still be found.
+RECENT_WINDOW_SAFETY_MARGIN_IDS = 450
 
 # Sep 14 2026 CRITICAL bug fix (real incident, user report: vendor P3267
 # had 5 genuinely "In Process" POs in SAP - 27601/28255/28467/29027/
@@ -425,6 +430,26 @@ class SAPPurchaseOrderClient:
         probes since only a handful of new POs exist since the last
         10-minute cycle.
 
+        Sep 20 2026 fix (real user report: PO 29735 - confirmed the
+        tenant's actual highest real PO - never showed up "even after
+        pulling"). Root cause, live-reproduced: `_has_po_id_greater_than`
+        (used by `_discover_current_max_po_id`'s binary search) checks
+        raw ID existence with NO status/lifecycle filtering, unlike the
+        real fetch below (`_parse_pos` filters out cancelled/not-yet-
+        released/etc via NOT_YET_RELEASED_APPROVAL_STATUS_CODE and
+        friends). Some OTHER document sharing this ID range (cancelled PO,
+        draft, whatever) had already pushed `current_max`/the stored
+        watermark up to 29802 in an earlier cycle, at a point when PO
+        29735 wasn't released yet - once it later WAS released, every
+        future cycle's `lower_bound` (29802) sat permanently above it,
+        so it could never be found again by a normal `(lower_bound,
+        current_max]` scan. Re-sweeping a small safety margin just below
+        the watermark every cycle self-heals this class of gap - cheap
+        (one extra WINDOW_WIDTH_IDS-ish chunk) and safe (still goes
+        through the same real, filtered fetch/merge path as everything
+        else - a phantom ID like 29802 simply won't come back on this
+        re-sweep either).
+
         Also returns the `lower_bound` used for this fetch - callers
         need this to avoid wrongly expiring a cached PO that's merely
         OLDER than this window rather than genuinely gone from SAP (see
@@ -438,10 +463,12 @@ class SAPPurchaseOrderClient:
         if state:
             lower_bound = state["max_po_id"]
             current_max = self._discover_current_max_po_id(start_lo=lower_bound)
+            safety_floor = max(0, lower_bound - RECENT_WINDOW_SAFETY_MARGIN_IDS)
+            rows = self._scan_between(safety_floor, current_max)
         else:
             current_max = self._discover_current_max_po_id()
             lower_bound = max(0, current_max - LOOKBACK_IDS)
-        rows = self._scan_between(lower_bound, current_max)
+            rows = self._scan_between(lower_bound, current_max)
         db[WATERMARK_COLLECTION].update_one(
             {"_id": "latest"},
             {"$set": {"max_po_id": current_max, "updated_at": datetime.now(timezone.utc)}},
