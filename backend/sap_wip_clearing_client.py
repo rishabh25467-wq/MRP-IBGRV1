@@ -40,6 +40,24 @@ def company_and_set_of_books_for_site(site_id: str):
     return SITE_TO_COMPANY.get((site_id or "").strip().upper(), DEFAULT_COMPANY)
 
 
+# Sep 20 2026, user's explicit ask ("we changed logistic model in P8
+# Destination set: P8-RM (Target Area) so you need moved stock from the
+# RM warehouse") - SAP's own Goods Receipt/Put Away routing for a site is
+# tenant-specific business config too (same class as SITE_TO_COMPANY
+# above), and P8's was just changed: incoming stock (GRN receipt or STO
+# receipt) now lands directly in "{site}-RM" instead of staging through
+# "{site}-HOLD" - so any code relocating received stock OUT of the
+# staging area must use THIS as the real source, not blindly assume
+# "-HOLD" for every site. Other sites not listed here still default to
+# "-HOLD" (unchanged, no confirmed config change for them yet).
+SITE_INBOUND_STAGING_AREA_OVERRIDE = {"P8": "P8-RM"}
+
+
+def inbound_staging_area_for_site(site_id: str) -> str:
+    site_id = (site_id or "").strip().upper()
+    return SITE_INBOUND_STAGING_AREA_OVERRIDE.get(site_id) or f"{site_id}-HOLD"
+
+
 def current_fiscal_period_and_year(today: date = None):
     """Fiscal year Apr 1 - Mar 31, labeled by its starting calendar year.
     Period 1 = April ... Period 12 = March."""

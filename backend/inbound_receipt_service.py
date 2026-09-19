@@ -53,7 +53,7 @@ import re
 from datetime import datetime, timezone
 
 import job_store
-from sap_wip_clearing_client import company_and_set_of_books_for_site
+from sap_wip_clearing_client import company_and_set_of_books_for_site, inbound_staging_area_for_site
 from store_approval_service import _trigger_goods_movement
 
 logger = logging.getLogger(__name__)
@@ -73,13 +73,15 @@ _PENDING_QUERY = {
 # "Receive" button above, this moves the received quantity from
 # "{SITE}-HOLD" to that real target warehouse (`ship_to_location_id`).
 #
-# Sep 17 2026, user's explicit ask - generalized from P8-only to every
-# site, mirroring the same fix already made on the outbound side
-# (stock_transfer_service._relocation_hold_warehouse_id): user confirmed
-# live every site now has its own "{SITE}-HOLD" staging warehouse, so
-# this no longer needs a hardcoded site check.
+# Sep 20 2026, user's explicit ask ("we changed logistic model in P8
+# Destination set: P8-RM (Target Area) so you need moved stock from the
+# RM warehouse") - P8 no longer stages through "P8-HOLD" at all; SAP now
+# routes its Goods Receipts straight into "P8-RM". Delegates to the
+# shared per-site override in sap_wip_clearing_client (also used by
+# supplier_shipment_service's GRN flow) instead of blindly assuming
+# "-HOLD" for every site.
 def _receipt_hold_warehouse_id(site_id: str) -> str:
-    return f"{(site_id or '').strip().upper()}-HOLD"
+    return inbound_staging_area_for_site(site_id)
 
 
 def _relocate_receipt_from_hold(db, sap_goods_movement_client, doc: dict) -> dict:

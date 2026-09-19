@@ -636,8 +636,8 @@ export default function GrnApprovalPage() {
   };
 
   const approve = async (mode = "normal") => {
-    if (!siteId || !warehouseId) {
-      toast.error("Select a Site and Warehouse before approving");
+    if (!siteId) {
+      toast.error("Select a Site before approving");
       return;
     }
     if (!supplierDocNum.trim() || !billDate) {
@@ -685,8 +685,8 @@ export default function GrnApprovalPage() {
   // Bill Date about to be sent to SAP, before actually posting.
   const [confirmMode, setConfirmMode] = useState(null); // "normal" | "full_auto" | null
   const openApprovalConfirm = (mode) => {
-    if (!siteId || !warehouseId) {
-      toast.error("Select a Site and Warehouse before approving");
+    if (!siteId) {
+      toast.error("Select a Site before approving");
       return;
     }
     if (!supplierDocNum.trim() || !billDate) {

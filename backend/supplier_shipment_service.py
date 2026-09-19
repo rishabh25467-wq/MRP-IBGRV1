@@ -62,7 +62,7 @@ import inventory_service
 import sap_po_client
 import time
 from sap_playwright_supplier_pgr_service import _build_notification_id
-from sap_wip_clearing_client import company_and_set_of_books_for_site
+from sap_wip_clearing_client import company_and_set_of_books_for_site, inbound_staging_area_for_site
 
 # Sep 17 2026, Manual GRN feature - the auth_users collection name is
 # duplicated here as a plain string (NOT `import auth_service`) because
@@ -1073,7 +1073,12 @@ def _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_cli
         # above) - the hint IS correct, live-confirmed via SAP's own
         # Warehouse Confirmation Overview screen. The real fix is the
         # retry-on-lag loop below, not doubting this hint.
-        source_area = put_away_target_areas_by_po.get(it["po_number"], {}).get(it["product_id"]) or f"{site_id}-HOLD"
+        # Sep 20 2026: fallback default now respects the shared per-site
+        # override too (see inbound_staging_area_for_site) - matters if
+        # no Put Away hint is available at all (e.g. the older
+        # Playwright-based flow), same fix as inbound_receipt_service's
+        # STO receiving flow.
+        source_area = put_away_target_areas_by_po.get(it["po_number"], {}).get(it["product_id"]) or inbound_staging_area_for_site(site_id)
         # Sep 12 2026 bug fix (real incident, shipment LFG29A/PO 29482 -
         # user's explicit report "after success grn why an error
         # occurred": "SAP rejected the movement: Source and target
