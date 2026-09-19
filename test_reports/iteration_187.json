@@ -1,0 +1,34 @@
+{
+  "summary": "Frontend-only verification of GRN Approval qty-discrepancy gating on the Post GRN in SAP button. All 5 scenarios from the review request pass. Used shipment 39LDDQ (in_transit, P2, HAMIDI EXPORTS, 1 line item ship_qty=1.0) because the requested TESTGRN fixture in local mongo is NOT reachable from the deployed backend behind the preview URL (see agent notes).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_matrix": {
+    "state1_defaults_qty_equal_shipqty_all_required_fields_filled": {"post_disabled": false, "warning_shown": false, "title": null, "expected": "ENABLED, no warning", "pass": true},
+    "state2_shortage_actual<ship": {"post_disabled": true, "warning_shown": true, "title": "Actual qty does not match shipped qty - click 'Mark Discrepancy' instead", "warning_text": "Quantity mismatch detected: Actual Qty differs from Ship Qty on one or more items. Posting is disabled - please click \"Mark Discrepancy\" instead to record it.", "mark_disabled": false, "pass": true},
+    "state3_overage_actual>ship": {"post_disabled": true, "warning_shown": true, "title": "Actual qty does not match shipped qty - click 'Mark Discrepancy' instead", "pass": true},
+    "state4_restored_qty_matches_again": {"post_disabled": false, "warning_shown": false, "title": null, "pass": true},
+    "state5_mark_discrepancy_stays_clickable_under_mismatch": {"mark_disabled": false, "dialog_opened": true, "pass": true}
+  },
+  "action_items": [
+    "None for this feature. The gating logic (hasQtyDiscrepancy) works correctly for shortage, overage, restoration, and preserves Mark Discrepancy as the escape hatch. Tooltip and warning banner content match the requested wording.",
+    "Advisory (not a bug in this change): The main agent's seeded fixture shipment `_id='TESTGRN'` in local mongo `test_database.supplier_shipments` (in_transit, H1330) is NOT visible from the deployed backend behind `REACT_APP_BACKEND_URL=https://sap-data-sync.preview.emergentagent.com`. A direct curl to `/api/admin/grn/lookup/TESTGRN` returns 404 (with a valid session), and `/api/admin/grn/shipments?status=in_transit` returns 9 shipments that are NOT the two present in local mongo. i.e., the preview URL is served by a different backend/mongo than the container's local one - the local backend on :8001 has TESTGRN but the ingress does not route to it. Recommend seeding directly via API or confirming which mongo backs the preview URL if future testing needs TESTGRN specifically."
+  ],
+  "critical_code_review_comments": [
+    "hasQtyDiscrepancy in GrnApprovalPage.jsx (line 851-855) correctly uses 1e-6 float tolerance and falls back through actualQtys[key] -> it.actual_qty -> it.ship_qty, so an unedited row (actualQtys unset, actual_qty null) is treated as equal to ship_qty and does NOT trigger a false-positive mismatch. Verified in STATE 1.",
+    "The title prop (line 1130) correctly prioritizes the qty-mismatch message over the invoice/bill-date message. Consider that the plain `title` HTML attribute is fine but not screen-reader-accessible; if a11y is a concern, upgrade to a shadcn Tooltip. Not blocking for this change.",
+    "hasQtyDiscrepancy is gated on isActionable (in_transit OR discrepancy) - correct; the warning won't render on approved/rejected shipments."
+  ],
+  "test_report_links": [],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (frontend only)", "frontend": "100% (5/5 scenarios)"},
+  "test_credentials": "vms_session=XAlQkzY5hG8PB3MdokeHOlLvQVFkAQuFFqwSgDD6Dpk (supplier.approver.test@rampgroup.co.in, bound_sites=[P1,P2])",
+  "seed_data_creation": "None. Used existing pending shipment 39LDDQ from the actual deployed backend.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The `sap-data-sync.preview.emergentagent.com` origin is served by a backend that is NOT the local supervisor uvicorn on :8001 in this sandbox - direct mongo seeding on localhost:27017/test_database will NOT be visible in the UI. Seed via API or use pre-existing pending shipments from `/api/admin/grn/shipments?status=in_transit` (e.g. 39LDDQ, C4UHHC, etc.). Playwright cookie attach via `context.add_cookies` with `url` field works fine.",
+  "rca of the issue": "No bug - feature is working as specified."
+}

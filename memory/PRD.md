@@ -763,3 +763,26 @@ selected yet - not fixed, low priority, left as-is.
   skipped by design now. It would need to be explicitly re-wired (remove `skip_movement=True`,
   restore the `_auto_finish_full_auto_grn` scheduling) if/when warehouse automation is turned
   back on for this flow in a future session.
+
+## GRN qty-discrepancy gating (Aug 2026 fork continuation, DONE, live-tested via testing_agent iteration_187, 5/5 pass)
+
+**User's explicit ask**: disable "Post GRN in SAP" if entered Actual Qty != Ship Qty; user confirmed
+ANY mismatch (over OR under) should block posting, not just shortages.
+
+**Changes**:
+- `GrnApprovalPage.jsx`: new `hasQtyDiscrepancy` boolean (right after `isActionable`) - iterates
+  `shipment.items`, compares each item's effective Actual Qty (`actualQtys[key] ?? it.actual_qty ??
+  it.ship_qty`) against `ship_qty` with a `1e-6` float tolerance. Passed to the Post GRN button's
+  `disabled` + `title` props, plus a new warning banner (`data-testid="grn-qty-mismatch-warning"`)
+  rendered below the button row telling the user to click "Mark Discrepancy" instead. "Mark
+  Discrepancy" button itself is untouched/still always enabled (the intended escape hatch).
+
+**Tested via `testing_agent`** (iteration 187, 5/5 scenarios pass): default state (qty matches) ->
+enabled; shortage -> disabled + warning + tooltip; overage -> disabled + warning + tooltip; restoring
+qty -> re-enabled; Mark Discrepancy stays clickable throughout. No backend changes needed (purely
+frontend gating - server-side posting endpoint itself was not touched).
+
+**Env note found by testing_agent**: the live preview URL's backend/mongo is a DIFFERENT deployment
+than this container's local `:8001`/mongo - local mongo seeding is NOT visible from the deployed
+preview UI. Use `GET /api/admin/grn/shipments?status=in_transit` against the real preview URL to find
+real pending shipments for any future UI testing, instead of seeding local mongo fixtures.
