@@ -759,45 +759,21 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_outbound_delivery
     SAP's own "Consistency Status" is ready) before ever pausing for
     actual manual work. No field write of any kind is attempted, ever.
 
-    Aug 2026 fix (real incident, multi-line STOs): a multi-line order
-    ended up with one Outbound Delivery PER LINE instead of SAP's own
-    natural single combined delivery. Root cause, confirmed live by the
-    user themselves: SAP's due-list background job builds the Delivery
-    document(s) from our already-combined Outbound Delivery Request
-    (`CompleteDeliveryRequestedIndicator=true`, sap_sto_client.py)
-    INCREMENTALLY - sometimes a delivery covering only ONE line shows up
-    in Analytics before the rest are ready. The old code here released
-    whatever partial delivery it found on the very first poll, which
-    locks that document in and forces SAP to spawn a SEPARATE delivery
-    for the remaining lines later. Leaving everything untouched (no
-    Release call at all) lets SAP finish combining into ONE delivery on
-    its own - confirmed live, then a manual Release in SAP's UI posted
-    clean. So: only ever attempt Release once whatever delivery
-    document(s) Analytics shows so far ALREADY cover the FULL requested
-    quantity for every STO line (see _match_analytics_quantities, sums
-    across every row found regardless of "finished" state) - whether
-    that's the ideal single combined delivery, or (rarer, aggregation
-    fallback) several that together add up. Until then, this just waits
-    for the next poll (bounded by GOODS_ISSUE_MAX_WAIT_SECONDS in
-    server.py) instead of touching anything.
-
     Returns "posted" (every line Finished in SAP, quantities matched
     within MANUAL_GI_QTY_TOLERANCE - see _match_analytics_quantities) or
-    "waiting" (SAP hasn't finished producing delivery document(s) that
-    cover the full requested quantity yet, or Release was just attempted
-    but Analytics hasn't flipped to Finished yet - keep polling). Never
-    raises (a genuine SAP-side Release rejection is logged and treated as
-    "keep polling", since it's almost always SAP's Consistency Status not
-    being ready yet, not a hard failure)."""
+    "awaiting_manual_gi" (nothing Finished/matched yet, and/or the
+    automatic Release attempt failed - pause, staff complete it
+    themselves in SAP, then use "Complete STO Process", see
+    check_manual_gi_completion). Never raises."""
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:
         raise StockTransferValidationError(f"Stock Transfer Order {sto_id} not found.")
     if doc.get("gi_status") == "posted":
         return "posted"
     if not doc.get("gi_delivery_request_id"):
-        # Best-effort, purely informational (shown on the progress
-        # banner so staff know what to search for in SAP) - a failure
-        # here must never block the analytics check below.
+        # Best-effort, purely informational (shown on the "awaiting
+        # manual" banner so staff know what to search for in SAP) - a
+        # failure here must never block the analytics check below.
         try:
             delivery_items = sap_outbound_delivery_client.find_delivery_request_items(doc["sap_order_uuid"])
             if delivery_items:
@@ -813,49 +789,32 @@ def try_post_goods_issue(db, sap_outbound_delivery_client, sap_outbound_delivery
         analytics_rows = []
     found_ids = sorted({r["delivery_id"] for r in analytics_rows if r.get("delivery_id")})
     all_finished = bool(analytics_rows) and all(r.get("finished") for r in analytics_rows)
-    fully_covered = bool(found_ids) and not _match_analytics_quantities(doc, analytics_rows)
-    if found_ids and all_finished and fully_covered:
+    if found_ids and all_finished and not _match_analytics_quantities(doc, analytics_rows):
         _finalize_gi_posted(db, sto_id, doc, found_ids)
         return "posted"
 
-    if fully_covered and not all_finished:
-        # SAP has produced enough delivery document(s) to cover every
-        # line's full requested quantity - safe to release now (won't
-        # ever leave a line stranded, unlike releasing a partial one).
-        finished_ids = {r["delivery_id"] for r in analytics_rows if r.get("finished")}
-        pending_ids = [d for d in found_ids if d not in finished_ids]
+    if found_ids and not all_finished:
         try:
-            for delivery_id in pending_ids:
+            for delivery_id in found_ids:
                 object_id = sap_outbound_delivery_client.get_delivery_object_id_by_id(delivery_id)
                 sap_outbound_delivery_client.release_outbound_delivery(object_id)
-            if pending_ids:
-                logger.info(f"Stock Transfer Order {sto_id}: full quantity covered by {found_ids}, released {pending_ids}, re-checking Analytics.")
+            logger.info(f"Stock Transfer Order {sto_id}: automatic Release of {found_ids} succeeded, re-checking Analytics.")
             try:
                 analytics_rows = sap_outbound_delivery_analytics_client.find_deliveries_for_sto(doc.get("sap_order_id") or "")
             except Exception as e:
                 logger.warning(f"Stock Transfer Order {sto_id}: post-Release Analytics re-check failed, will confirm on next attempt: {e}")
                 analytics_rows = []
-            found_ids = sorted({r["delivery_id"] for r in analytics_rows if r.get("delivery_id")}) or found_ids
             if analytics_rows and all(r.get("finished") for r in analytics_rows) and not _match_analytics_quantities(doc, analytics_rows):
                 _finalize_gi_posted(db, sto_id, doc, found_ids)
                 return "posted"
         except SAPOutboundDeliveryError as e:
-            logger.warning(f"Stock Transfer Order {sto_id}: automatic Release of {pending_ids} failed (SAP's Consistency Status likely not ready yet), will retry next poll: {e}")
+            logger.warning(f"Stock Transfer Order {sto_id}: automatic Release of {found_ids} failed (SAP's Consistency Status likely not ready yet), pausing for manual completion: {e}")
 
-    # Still waiting on SAP - either no delivery exists yet, or it/they
-    # don't cover the full requested quantity yet (SAP still combining
-    # the rest of the lines), or Release/finish just posted but hasn't
-    # flipped to "Finished" in Analytics yet. Persist what's known for
-    # visibility but stay in a non-terminal state so the caller's own
-    # polling loop (bounded by GOODS_ISSUE_MAX_WAIT_SECONDS) keeps
-    # checking - the frontend already shows a generic "Auto-checking
-    # every 20s" progress message for any status other than the terminal
-    # ones, no UI change needed.
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
-        "gi_status": "awaiting_delivery", "gi_error": None,
+        "gi_status": "awaiting_manual_gi", "gi_error": None, "gi_job_running": False,
         "outbound_delivery_ids": found_ids,
     }})
-    return "waiting"
+    return "awaiting_manual_gi"
 
 MANUAL_GI_QTY_TOLERANCE = 0.01
 

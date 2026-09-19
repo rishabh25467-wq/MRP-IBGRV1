@@ -764,6 +764,22 @@ selected yet - not fixed, low priority, left as-is.
   restore the `_auto_finish_full_auto_grn` scheduling) if/when warehouse automation is turned
   back on for this flow in a future session.
 
+## Multi-line STO Goods Issue automation investigation (Sep 19 2026, closed - reverted to deployed baseline)
+
+**User's ask**: fix multi-line STOs ending up with one Outbound Delivery PER LINE instead of one combined delivery, using only standard SOAP/OData (no Playwright/ABSL/Cloud Applications Studio), fully automated.
+
+**What was tried, in order**:
+1. Code-only fix in `try_post_goods_issue()` (`stock_transfer_service.py`): wait until the full requested quantity is covered by whatever delivery(ies) Analytics shows before calling Release, instead of releasing the first partial delivery seen. Logically sound, no SAP config dependency - but **could not be verified live** because none of 4 live test STOs (STO-000119/120/121/122, real orders 32482/32503/32489/32497) ever got a delivery from SAP within the 20-min poll window during the parallel Logistics Model experiment below.
+2. SAP-side task-based Logistics Model experiment (site P8): user configured `P8_SHIPEM` (Standard Shipping, Automatic Generation of Tasks: Yes, Release Outbound Delivery: Automatically), found + deleted the old incumbent `SHI_P8` (Without Tasks) since ByD only picks one Standard Shipping model per site. Result: zero Site Logistics Tasks ever generated for any test order (checked live via `QuerySiteLogisticsTaskIn`).
+3. Root cause found: creating/scheduling an **Outbound Delivery Run** (MDRO, doc type 833) failed in SAP UI with "MDRO instance is not active".
+4. Confirmed via API too: found the real BO (`RequestOutboundDeliveryExecutionRun`, MDRO type 833), user published it as a live test Custom OData service (`deliveryrunem`), we called its `Execute` action directly on the existing Run (`RDOCWT1`) - **SAP rejected it: "Action ... not possible; action is disabled"**. Same root cause as #3 via a second independent path - task-based Mass Data Run processing for Outbound Delivery is disabled at the tenant/Business Configuration level, not fixable via any API this app has access to. Needs SAP Basis/implementation partner to scope it in, or an SAP support ticket.
+5. Tried OData `$batch` (one changeset, all 3 lines' PGIInBackground with TaskBasedIndicator=true) as a non-task-based alternative - **also FAILED**: this tenant's custom OData service (`odataoutboundemergent`) rejects `$batch` outright with a generic 400 even for a trivial single-GET batch, meaning `$batch` itself isn't implemented by this service (not a payload bug).
+
+**Outcome, per explicit user instruction ("keep it how it was before we started this adventure")**:
+- The `try_post_goods_issue()` code fix (#1 above) was **reverted** back to the exact deployed baseline (releases the first delivery found, no full-coverage wait) - user wants to stick to the currently-deployed behavior since the fix was never live-verified.
+- SAP-side config (deleted `SHI_P8`, created `P8_SHIPEM`, created Outbound Delivery Run `RDOCWT1`, created test Custom OData service `deliveryrunem`) was **NOT reverted yet** - still pending. **P8 currently has NO no-task Logistics Model** - `SHI_P8` was deleted, only the (non-functional, since MDRO is disabled tenant-wide) `P8_SHIPEM` remains. This needs a no-task replacement model recreated for P8 before any real STO ships through there again with normal (non-task) behavior restored.
+- **P0 for next session**: recreate a `SHI_P8`-equivalent (Standard Shipping, Without Tasks: Yes, Release: Manually) for site P8 to restore normal shipping - or confirm P8_SHIPEM's current (task-based, but non-functional since MDRO disabled) settings don't actually block normal shipping in practice first.
+
 ## GRN qty-discrepancy gating (Aug 2026 fork continuation, DONE, live-tested via testing_agent iteration_187, 5/5 pass)
 
 **User's explicit ask**: disable "Post GRN in SAP" if entered Actual Qty != Ship Qty; user confirmed
