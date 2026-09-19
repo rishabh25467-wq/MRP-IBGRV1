@@ -50,6 +50,28 @@ def _parse_qty(value: str) -> float:
         return 0.0
 
 
+def _parse_odata_date(value):
+    """OData v2 JSON dates are serialized as '/Date(epoch_ms)/'."""
+    if not value or not value.startswith("/Date("):
+        return None
+    from datetime import datetime, timezone
+    epoch_ms = int(value[len("/Date("):-len(")/")])
+    return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).date().isoformat()
+
+
+# Sep 20 2026, user's explicit ask ("filter by supplier first and pull")
+# - this SAME report already used by fetch_open_po_quantities above also
+# exposes CSELLER (the vendor code) as a REAL, working server-side filter
+# (live-verified: $filter=CSELLER eq 'H1330' returned only that vendor's
+# 54 rows in ~3s) - unlike sap_po_client.py's SOAP service, whose vendor
+# filter is silently ignored by this tenant (see that module's own
+# docstring). CITM_LFCYCLE_ST carries the exact same lifecycle codes as
+# sap_po_client.LIFECYCLE_STATUS_TEXT (live-verified: 1/4/8/10 = In
+# Preparation/Rejected/Cancelled/Finished - the same "not open" states
+# sap_po_client._parse_pos excludes via 2 separate SOAP fields).
+EXCLUDED_ITEM_LIFECYCLE_CODES = {"1", "4", "8", "10"}
+
+
 class SAPPOAnalyticsClient:
     def __init__(self, instance_url: str, username: str, password: str):
         self.url = f"{instance_url.rstrip('/')}/{REPORT_PATH}"
@@ -113,3 +135,55 @@ class SAPPOAnalyticsClient:
                         "delivery_completed": (po_qty - delivered_qty) <= 1e-6,
                     }
         return results
+
+    def fetch_pos_for_vendor(self, vendor_code: str) -> list:
+        """Sep 20 2026, user's explicit ask - a single vendor-scoped
+        fetch for the "Pull Latest POs" buttons, in the SAME row shape
+        `sap_po_client._parse_pos` produces (so it merges into the exact
+        same `supplier_portal_po_cache` via
+        supplier_shipment_service.refresh_po_cache) - just via this
+        report's real, working CSELLER filter instead of a whole-tenant
+        SOAP ID-range scan. Typically a few seconds, not 1-3+ minutes."""
+        try:
+            with sap_semaphore:
+                resp = requests.get(
+                    self.url,
+                    auth=self.auth,
+                    timeout=30,
+                    headers={"Accept": "application/json"},
+                    params={"$filter": f"CSELLER eq '{vendor_code}'", "$format": "json", "$top": "2000"},
+                )
+            if resp.status_code != 200:
+                logger.warning(f"Pull Latest POs: analytics query returned HTTP {resp.status_code} for vendor {vendor_code}: {resp.text[:300]}")
+                return None
+            raw_rows = resp.json().get("d", {}).get("results", [])
+        except (requests.exceptions.RequestException, ValueError) as e:
+            logger.warning(f"Pull Latest POs: analytics query failed for vendor {vendor_code}: {e}")
+            return None
+        rows = []
+        for row in raw_rows:
+            if row.get("CITM_LFCYCLE_ST") in EXCLUDED_ITEM_LIFECYCLE_CODES:
+                continue
+            po_number, item_number = row.get("CPO_ID"), row.get("CITM_ID")
+            if not po_number or not item_number:
+                continue
+            rows.append({
+                "po_number": po_number,
+                "item_number": item_number,
+                "vendor_code": row.get("CSELLER"),
+                "vendor_name": row.get("TSELLER"),
+                "product_id": (row.get("CPRD_UUID") or "").strip() or None,
+                "description": row.get("CITM_DESCRIPTION"),
+                "po_qty": _parse_qty(row.get("KCQUANTITY")),
+                "unit_of_measure": row.get("UCQUANTITY"),
+                "due_date": _parse_odata_date(row.get("CITM_DLV_STDT")),
+                "po_date": _parse_odata_date(row.get("CORDERED_DATE")),
+                "buyer_code": row.get("CBUYER"),
+                "currency": row.get("RCNET_PRICE"),
+                "lifecycle_status_code": row.get("CITM_LFCYCLE_ST"),
+                "lifecycle_status_text": row.get("TITM_LFCYCLE_ST"),
+                "unit_price": _parse_qty(row.get("KCNET_PRICE")) or None,
+                "subtotal": _parse_qty(row.get("KCNET_VALUE_LIMIT")) or None,
+                "ship_to_site_id": row.get("CRECEIVING_SITE"),
+            })
+        return rows

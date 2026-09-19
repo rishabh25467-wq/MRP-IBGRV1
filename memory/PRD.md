@@ -33,6 +33,33 @@ auto-detection (`try_post_goods_issue`) as a background poll, and a "Complete ST
 manual-confirm button (`check_manual_gi_completion`) as fallback. User explicitly confirmed
 (this session) to leave this as-is - do not restore old single-line automation.
 
+## Major speedup - vendor-scoped Pull via OData analytics report (Sep 20 2026, same session)
+User's ask: "is there a way we can use an OData report to pull this faster" - investigated and
+found YES. `sap_po_analytics_client`'s existing report (`RPSRMPO_B02_Q0004QueryResults`, already
+used for Open Qty) has a REAL, working server-side vendor filter - live-verified
+`$filter=CSELLER eq 'H1330'` returns ONLY that vendor's rows in ~3s. This is a completely
+different SAP service than `sap_po_client.py`'s SOAP one (whose vendor filter is silently
+ignored by this tenant - that's WHY the whole ID-range-scan architecture existed in the first
+place). This report also exposes item description/product/qty/price/site/lifecycle-status - a
+full 1:1 field match for the existing cache row schema.
+- New `SAPPOAnalyticsClient.fetch_pos_for_vendor(vendor_code)` - single filtered OData GET,
+  excludes the same "not open" states as the SOAP path (`CITM_LFCYCLE_ST` in
+  {1,4,8,10} = In Preparation/Rejected/Cancelled/Finished - verified these are the SAME lifecycle
+  codes `sap_po_client.LIFECYCLE_STATUS_TEXT` already uses).
+- Both "Pull Latest POs" buttons now call this directly and SYNCHRONOUSLY (no more job_store/
+  polling/cooldown machinery - that existed purely to make the old 60-100s+ whole-tenant scan
+  tolerable; this is fast enough to just await). Removed `_trigger_manual_po_refresh`/
+  `_run_manual_po_refresh`/`PO_MANUAL_REFRESH_COLLECTION` entirely.
+- Admin endpoint is now `POST /admin/act-as-supplier/{account_id}/purchase-orders/refresh`
+  (was tenant-wide before - now properly scoped to that account's own vendor_code, matching the
+  sibling GET purchase-orders endpoint's pattern).
+- Verified live end-to-end: H1330 pull took ~14s (202 open cache rows correctly refreshed,
+  matches SAP), RAD-P2-S admin pull took ~21s (30 distinct POs) - both a large improvement over
+  the previous 60-100s+/1-3min whole-tenant scan, and now genuinely vendor-scoped (cost no longer
+  tied to total tenant PO volume). The 10-min delta loop, 4-hour full-refresh loop, and PO 29735
+  safety-margin fix (all still SOAP-based, all still tenant-wide) are UNCHANGED - this only
+  replaced the two manual "Pull" button code paths.
+
 ## Feature added - 4-hour full cache + fast/lightweight Pull (Sep 20 2026, same session)
 User's ask: build a 4-hour background full cache of ALL supplier POs (dashboard/act-as-supplier
 load fast either way, from cache), and make "Pull" only fetch new-or-changed POs, not redo

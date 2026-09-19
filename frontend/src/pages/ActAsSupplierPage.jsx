@@ -86,24 +86,12 @@ export default function ActAsSupplierPage() {
   };
 
   const pullLatestPos = async () => {
+    if (!selectedAccount) return;
     setPulling(true);
     try {
-      const { data } = await axios.post(`${API}/admin/act-as-supplier/purchase-orders/refresh`);
-      let jobId = data.job_id;
-      let status = data.status;
-      for (let i = 0; i < 40 && status === "running"; i++) {
-        await new Promise((r) => setTimeout(r, 5000));
-        const poll = await axios.get(`${API}/admin/act-as-supplier/purchase-orders/refresh/${jobId}`);
-        status = poll.data.status;
-      }
-      if (status === "error") {
-        toast.error("Could not pull the latest POs from SAP - showing what we already had.");
-      } else if (status === "running") {
-        toast.info("Still pulling from SAP - check back in a moment.");
-      } else {
-        toast.success("Pulled the latest Purchase Orders from SAP.");
-      }
-      if (selectedAccount) await loadPos(selectedAccount._id);
+      const { data } = await axios.post(`${API}/admin/act-as-supplier/${selectedAccount._id}/purchase-orders/refresh`);
+      toast.success(`Pulled the latest Purchase Orders from SAP (${data.po_count} open).`);
+      await loadPos(selectedAccount._id);
     } catch (err) {
       toast.error("Could not pull the latest POs from SAP", { description: err?.response?.data?.detail || err.message });
     } finally {

@@ -305,20 +305,7 @@ export default function SupplierDashboardPage() {
     try {
       const params = isImpersonating ? { as_vendor: vendorCode } : {};
       const { data } = await supplierApi.post("/purchase-orders/refresh", {}, { params });
-      let jobId = data.job_id;
-      let status = data.status;
-      for (let i = 0; i < 40 && status === "running"; i++) {
-        await new Promise((r) => setTimeout(r, 5000));
-        const poll = await supplierApi.get(`/purchase-orders/refresh/${jobId}`);
-        status = poll.data.status;
-      }
-      if (status === "error") {
-        toast.error("Could not pull the latest POs from SAP - showing what we already had.");
-      } else if (status === "running") {
-        toast.info("Still pulling from SAP - check back in a moment.");
-      } else {
-        toast.success("Pulled the latest Purchase Orders from SAP.");
-      }
+      toast.success(`Pulled the latest Purchase Orders from SAP (${data.po_count} open).`);
       await load();
     } catch (e) {
       toast.error("Could not pull the latest POs from SAP", { description: e.response?.data?.detail || e.message });
