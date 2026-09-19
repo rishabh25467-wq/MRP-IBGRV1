@@ -1209,7 +1209,7 @@ def prepare_approval(db, doc_code: str, approved_by: str, approved_by_user_id: s
     return get_shipment_by_code(db, doc_code)
 
 
-def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_client, inventory_client, owner_party_id: str, sap_username: str = None) -> dict:
+def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_client, inventory_client, owner_party_id: str, sap_username: str = None, skip_movement: bool = False) -> dict:
     """Called after sap_playwright_supplier_pgr_service.
     post_goods_receipt_via_ui returns - `gr_results` is its
     results list. All POs in the shipment must have posted for step 2
@@ -1251,7 +1251,18 @@ def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_c
 
     sap_movement_status = "not_applicable"
     sap_movement_result = None
-    if sap_sync_status in ("posted", "partial"):
+    # Sep 20 2026, user's explicit ask ("eliminate any warehouse movement
+    # that u do today, only complete GRN") - the "Post GRN in SAP" button
+    # (renamed from "Test Full Automated GRN") now stops right after the
+    # Goods Receipt posts; Put Away confirmation + Goods Movement are
+    # skipped entirely (see _start_full_auto_grn_job in server.py, which
+    # no longer schedules _auto_finish_full_auto_grn either). See
+    # /app/memory/pre_change_grn_buttons_snapshot.md for the pre-change
+    # behavior if this ever needs revisiting.
+    if skip_movement:
+        sap_movement_result = {"ok": True, "reason": "Warehouse movement skipped by design - GRN-only mode"}
+        sap_movement_status = "not_applicable"
+    elif sap_sync_status in ("posted", "partial"):
         skipped_line_items = _skipped_line_items_from_gr_results(doc, gr_results)
         sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id, doc["site_id"], doc["warehouse_id"], skipped_line_items)
         sap_movement_status = "posted" if sap_movement_result.get("ok") else "pending"

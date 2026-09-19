@@ -8508,11 +8508,14 @@ async def post_admin_grn_approve(doc_code: str, payload: GrnApproveRequest, requ
 # direct-SOAP EM1 breakthrough (create+release=True in one shot, no
 # Playwright, no manual "Post Goods Receipt" SAP UI step) - deliberately
 # isolated from the existing Manual GRN button above so today's real GRN
-# process (grn_mode="manual") is never touched by this. Only usable on
-# sites with the required EM1 Logistics Model set up in SAP - see
-# /app/memory/SOAP_GRN_BREAKTHROUGH_2026-09-18.md. Frontend also disables
-# the button outside this allowlist, this is the server-side enforcement.
-FULL_AUTO_GRN_SITE_ALLOWLIST = {"P8"}
+# process (grn_mode="manual") is never touched by this.
+#
+# Sep 20 2026 update, user's explicit ask ("remove red button... keep
+# yellow button but rename it 'Post GRN in SAP'", confirmed "creating
+# new [EM1] models for all sites") - this is now the ONLY GRN action
+# button, for every site (the "Create SAP Notification" button + this
+# button's old P8-only allowlist are both removed). See /app/memory/
+# pre_change_grn_buttons_snapshot.md for the pre-change behavior.
 FULL_AUTO_GRN_PO_COOLDOWN_SECONDS = 60
 
 
@@ -8551,11 +8554,6 @@ async def post_admin_grn_approve_full_auto(doc_code: str, payload: GrnApproveReq
     approver = (request.state.user.get("name") or request.state.user.get("email") or "Unknown").strip()
     if not _has_site_access(request.state.user, payload.site_id):
         raise HTTPException(status_code=403, detail="You are not bound to this site")
-    if payload.site_id not in FULL_AUTO_GRN_SITE_ALLOWLIST:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Test Full Automated GRN is only set up for site(s) {', '.join(sorted(FULL_AUTO_GRN_SITE_ALLOWLIST))} right now - that site needs an EM1 Logistics Model configured in SAP first.",
-        )
     if not payload.supplier_doc_num.strip() or not payload.bill_date.strip():
         raise HTTPException(status_code=400, detail="Supplier Invoice Number and Bill Date are required before posting")
     if request.state.user.get("grn_blocked_shipment"):
@@ -8827,7 +8825,14 @@ async def _auto_finish_full_auto_grn(doc_code: str, po_numbers: list, site_id: s
                 supplier_shipment_service.mark_put_away_confirmed, db, doc_code, po_number, result["confirmed"], events, result["target_areas"],
             )
         if any_confirmed_now:
-            await asyncio.sleep(8)  # live-measured propagation beat, see docstring
+            # Sep 20 2026 fix (user's explicit ask - "delay the goods
+            # movement to ensure the prior process has completed,
+            # because currently it shows a weird looking error to the
+            # user"): was 8s, live-observed too short in some cases
+            # (S000013/14/15/17 all needed the internal retry-on-lag
+            # backoff to actually succeed) - widened so fewer shipments
+            # ever hit that transient failure/banner at all.
+            await asyncio.sleep(30)
             # Sep 19 2026 fix (real incident, shipment S000012/PO 29724):
             # the goods movement step already ran synchronously in
             # finalize_goods_receipt, BEFORE Put Away was confirmed and
@@ -8858,7 +8863,18 @@ def _start_full_auto_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> s
     a normal completed GRN already runs, so a successful test leaves
     the shipment fully "posted" exactly like today's flow - matching
     the user's explicit ask that a successful test also marks the
-    shipment Approved/Posted."""
+    shipment Approved/Posted.
+
+    Sep 20 2026, user's explicit ask ("eliminate any warehouse movement
+    that u do today, only complete GRN" + "remove red button... keep
+    yellow button but rename it 'Post GRN in SAP'") - this is now the
+    ONLY GRN action button, for every site (was P8-only + a separate
+    "Create SAP Notification" button for other sites before). Per that
+    request, this stops at the Goods Receipt post - `skip_movement=True`
+    below, and no `_auto_finish_full_auto_grn` (Put Away confirm + Goods
+    Movement) is scheduled anymore. See /app/memory/pre_change_grn_
+    buttons_snapshot.md for the pre-change behavior/buttons if this ever
+    needs revisiting."""
     job_id = str(uuid.uuid4())
     po_items = supplier_shipment_service.group_items_by_po_for_gr(doc)
     job_store.create_job(db, job_id, {
@@ -8873,13 +8889,10 @@ def _start_full_auto_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> s
             )
             final = await asyncio.to_thread(
                 supplier_shipment_service.finalize_goods_receipt, db, doc_code, gr_results,
-                sap_goods_movement_client, sap_inventory_client, owner_party_id,
+                sap_goods_movement_client, sap_inventory_client, owner_party_id, None, True,
             )
             final = await _attach_grn_display_fields(final)
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
-            posted_pos = [p["po_number"] for p in (final.get("sap_gr_result") or {}).get("per_po", []) if p.get("status") == "posted"]
-            if posted_pos:
-                asyncio.create_task(_auto_finish_full_auto_grn(doc_code, posted_pos, doc.get("site_id"), owner_party_id))
         except Exception as e:
             logger.error(f"Full-auto GRN job {job_id} ({doc_code}) failed: {e}")
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": str(e)})

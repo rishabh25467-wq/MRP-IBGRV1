@@ -90,7 +90,7 @@ const MovementPopover = ({ items, warehouseLabel, docCode, children }) => (
             <tr key={`${it.product_id}-${i}`} className="border-t border-[#EAECF0]">
               <td className="py-1.5 pr-2 font-mono text-[#344054]">{it.product_id}</td>
               <td className="py-1.5 text-right font-mono">
-                {it.ok !== false && it.external_id ? <span className="text-[#027A48]">GM {it.external_id}</span> : it.skipped ? <span className="text-[#667085]">{it.note || "Skipped"}</span> : <span className="text-[#B42318]">{it.error || "Failed"}</span>}
+                {it.ok !== false && it.external_id ? <span className="text-[#027A48]">GM {it.external_id}</span> : it.skipped ? <span className="text-[#667085]">{it.note || "Skipped"}</span> : it.needs_manual_check ? <span className="text-[#B42318]">{it.error || "Failed"}</span> : <span className="text-[#175CD3]">In progress...</span>}
               </td>
             </tr>
           ))}
@@ -1090,7 +1090,7 @@ export default function GrnApprovalPage() {
 
             {isActionable && (
               <div className="mt-5 border-t border-[#D0D5DD] pt-4 space-y-3">
-                <div className="grid sm:grid-cols-4 gap-3">
+                <div className="grid sm:grid-cols-3 gap-3">
                   <div>
                     <Label className="text-xs text-[#475467]">Supplier Invoice Number <span className="text-[#B42318]">*</span></Label>
                     <Input
@@ -1117,41 +1117,17 @@ export default function GrnApprovalPage() {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div>
-                    <Label className="text-xs text-[#475467]">Warehouse</Label>
-                    <Select value={warehouseId} onValueChange={setWarehouseId} disabled={siteAccessBlocked || !siteId || warehousesLoading}>
-                      <SelectTrigger className="rounded-sm border-[#D0D5DD] mt-1" data-testid="grn-warehouse-select">
-                        <SelectValue placeholder={warehousesLoading ? "Loading..." : (siteId ? "Select warehouse" : "Select a site first")} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {warehouses.map((w) => (
-                          <SelectItem key={w.warehouse_id} value={w.warehouse_id} data-testid={`grn-warehouse-option-${w.warehouse_id}`}>
-                            {w.warehouse_name || w.warehouse_id} ({w.warehouse_id})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
                 </div>
 
                 <div className="flex gap-2 flex-wrap">
                   <Button
-                    onClick={() => openApprovalConfirm("normal")}
-                    disabled={busy || siteAccessBlocked || !!user?.grn_blocked_shipment || !supplierDocNum.trim() || !billDate}
-                    title={user?.grn_blocked_shipment ? "Blocked - resolve your open GRN quantity mismatch first" : (!supplierDocNum.trim() || !billDate) ? "Enter the Supplier Invoice Number and Bill Date first" : undefined}
-                    className="h-8 rounded-sm bg-[#027A48] hover:bg-[#02623A] text-white px-4 text-[13px] font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    data-testid="grn-approve-button"
-                  >
-                    <CheckCircle size={14} className="mr-1" /> {busy ? "Creating..." : "Create SAP Notification"}
-                  </Button>
-                  <Button
                     onClick={() => openApprovalConfirm("full_auto")}
-                    disabled={busy || siteAccessBlocked || !!user?.grn_blocked_shipment || !supplierDocNum.trim() || !billDate || siteId !== "P8"}
-                    title={siteId !== "P8" ? "Test Full Automated GRN is only set up for site P8 right now" : (!supplierDocNum.trim() || !billDate) ? "Enter the Supplier Invoice Number and Bill Date first" : undefined}
+                    disabled={busy || siteAccessBlocked || !!user?.grn_blocked_shipment || !supplierDocNum.trim() || !billDate}
+                    title={(!supplierDocNum.trim() || !billDate) ? "Enter the Supplier Invoice Number and Bill Date first" : undefined}
                     className="h-8 rounded-sm bg-[#6941C6] hover:bg-[#53389E] text-white px-4 text-[13px] font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     data-testid="grn-approve-full-auto-button"
                   >
-                    <ArrowsClockwise size={14} className="mr-1" /> {busy ? "Posting..." : "Test Full Automated GRN"}
+                    <ArrowsClockwise size={14} className="mr-1" /> {busy ? "Posting..." : "Post GRN in SAP"}
                   </Button>
                   <Button onClick={() => setRejectOpen(true)} disabled={busy} className="h-8 rounded-sm bg-[#B42318] hover:bg-[#912018] text-white px-4 text-[13px] font-bold transition-colors" data-testid="grn-reject-button">
                     <XCircle size={14} className="mr-1" /> Reject
@@ -1168,28 +1144,24 @@ export default function GrnApprovalPage() {
             <Dialog open={!!confirmMode} onOpenChange={(o) => !o && setConfirmMode(null)}>
               <DialogContent className="rounded-sm" data-testid="grn-approval-confirm-dialog">
                 <DialogHeader>
-                  <DialogTitle className="font-heading">
-                    {confirmMode === "full_auto" ? "Confirm Test Full Automated GRN" : "Confirm SAP Notification"}
-                  </DialogTitle>
+                  <DialogTitle className="font-heading">Confirm Post GRN in SAP</DialogTitle>
                   <DialogDescription>
-                    {confirmMode === "full_auto"
-                      ? "This posts a REAL, irreversible Goods Receipt directly to SAP - no manual SAP step afterward. Please confirm the details below."
-                      : "Please confirm the details below before creating the SAP Notification."}
+                    This posts a REAL, irreversible Goods Receipt directly to SAP - no manual SAP step afterward. Warehouse movement is not performed; only the Goods Receipt is posted. Please confirm the details below.
                   </DialogDescription>
                 </DialogHeader>
                 <div className="bg-[#F9FAFB] border border-[#E5E7EB] rounded-sm p-3 text-sm space-y-1">
                   <div className="flex justify-between"><span className="text-[#475467]">Supplier Invoice Number</span><span className="font-data font-semibold" data-testid="grn-confirm-invoice-number">{supplierDocNum}</span></div>
                   <div className="flex justify-between"><span className="text-[#475467]">Bill Date</span><span className="font-data font-semibold" data-testid="grn-confirm-bill-date">{billDate ? format(parseISO(billDate), "dd-MM-yyyy") : "\u2014"}</span></div>
-                  <div className="flex justify-between"><span className="text-[#475467]">Site / Warehouse</span><span className="font-data font-semibold">{siteId} / {warehouseId}</span></div>
+                  <div className="flex justify-between"><span className="text-[#475467]">Site</span><span className="font-data font-semibold">{siteId}</span></div>
                 </div>
                 <div className="flex justify-end gap-2 mt-2">
                   <Button variant="outline" className="rounded-sm" onClick={() => setConfirmMode(null)} data-testid="grn-approval-confirm-cancel-button">Cancel</Button>
                   <Button
                     onClick={confirmApproval}
-                    className={`rounded-sm text-white transition-colors ${confirmMode === "full_auto" ? "bg-[#6941C6] hover:bg-[#53389E]" : "bg-[#027A48] hover:bg-[#02623A]"}`}
+                    className="rounded-sm text-white transition-colors bg-[#6941C6] hover:bg-[#53389E]"
                     data-testid="grn-approval-confirm-button"
                   >
-                    {confirmMode === "full_auto" ? "Yes, Post to SAP Now" : "Yes, Create Notification"}
+                    Yes, Post to SAP Now
                   </Button>
                 </div>
               </DialogContent>
@@ -1347,16 +1319,29 @@ export default function GrnApprovalPage() {
                     item was already being captured (sap_movement_result.
                     per_item[].error) but only ever surfaced in a toast
                     at the moment Retry was clicked - invisible on a
-                    plain page load/lookup like this screenshot. */}
+                    plain page load/lookup like this screenshot.
+                    Sep 20 2026 fix (user's explicit ask - "shows a weird
+                    looking error to the user"): a raw SAP fault/XML
+                    string here during the NORMAL, expected, self-healing
+                    retry window (see _post_goods_movement_for_items's
+                    retry-on-lag docstring) looked alarming for something
+                    that usually fixes itself within ~2 min with zero
+                    action needed. Only show the real SAP error text once
+                    a line has genuinely escalated (`needs_manual_check`,
+                    after repeated real failures) - otherwise show a calm
+                    "in progress" message instead. */}
                 {shipment.sap_movement_status !== "posted" && shipment.sap_movement_result?.per_item?.some((p) => p.error) && (
-                  <div className="text-xs text-[#B54708] bg-[#FFFAEB] border border-[#FEDF89] rounded-sm px-3 py-2 space-y-1" data-testid="grn-movement-error-detail">
+                  <div className={`text-xs rounded-sm px-3 py-2 space-y-1 ${shipment.sap_movement_result.per_item.some((p) => p.needs_manual_check) ? "text-[#B54708] bg-[#FFFAEB] border border-[#FEDF89]" : "text-[#175CD3] bg-[#EFF8FF] border border-[#B2DDFF]"}`} data-testid="grn-movement-error-detail">
                     {shipment.sap_movement_result.per_item.filter((p) => p.error).map((p, i) => (
-                      <div key={i} data-testid={`grn-movement-error-${i}`}><strong>{p.product_id}:</strong> {p.error}</div>
+                      <div key={i} data-testid={`grn-movement-error-${i}`}>
+                        <strong>{p.product_id}:</strong> {p.needs_manual_check ? p.error : "Warehouse movement in progress - this usually resolves itself within a couple of minutes"}
+                      </div>
                     ))}
                   </div>
                 )}
               </div>
             )}
+
 
             {shipment.status === "rejected" && shipment.rejection_reason && (
               <div className="mt-4 text-sm text-[#B91C1C]" data-testid="grn-rejection-reason">Reason: {shipment.rejection_reason}</div>
@@ -1668,9 +1653,11 @@ export default function GrnApprovalPage() {
                 </div>
               )}
               {confirmedDetail.sap_movement_status && confirmedDetail.sap_movement_status !== "posted" && confirmedDetail.sap_movement_result?.per_item?.some((p) => p.error) && (
-                <div className="text-xs text-[#B54708] bg-[#FFFAEB] border border-[#FEDF89] rounded-sm px-3 py-2 space-y-1" data-testid="grn-confirmed-detail-movement-error-detail">
+                <div className={`text-xs rounded-sm px-3 py-2 space-y-1 ${confirmedDetail.sap_movement_result.per_item.some((p) => p.needs_manual_check) ? "text-[#B54708] bg-[#FFFAEB] border border-[#FEDF89]" : "text-[#175CD3] bg-[#EFF8FF] border border-[#B2DDFF]"}`} data-testid="grn-confirmed-detail-movement-error-detail">
                   {confirmedDetail.sap_movement_result.per_item.filter((p) => p.error).map((p, i) => (
-                    <div key={i} data-testid={`grn-confirmed-detail-movement-error-${i}`}><strong>{p.product_id}:</strong> {p.error}</div>
+                    <div key={i} data-testid={`grn-confirmed-detail-movement-error-${i}`}>
+                      <strong>{p.product_id}:</strong> {p.needs_manual_check ? p.error : "Warehouse movement in progress - this usually resolves itself within a couple of minutes"}
+                    </div>
                   ))}
                 </div>
               )}
