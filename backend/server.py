@@ -8717,7 +8717,8 @@ async def _auto_finish_full_auto_grn(doc_code: str, po_numbers: list, site_id: s
     synchronously for (same reasoning as the pre-existing manual "Fetch
     from SAP" button, which documents itself as "30-100s+ per PO") - this
     runs AFTER the job already reports "done" (GRN is genuinely posted by
-    then), retrying every 30s for ~2 minutes:
+    then), retrying every 30s for ~4 minutes (widened Sep 19 2026, see
+    follow-up note below):
       1. Put Away Task confirm (`_confirm_put_away_task`, site P8 EM1 only,
          see that function's docstring - fixes Fulfilled Quantity staying
          0 in SAP) - `supplier_shipment_service.mark_put_away_confirmed`
@@ -8726,9 +8727,17 @@ async def _auto_finish_full_auto_grn(doc_code: str, po_numbers: list, site_id: s
          button, `fetch_inbound_delivery_ids_from_sap` +
          `manually_confirm_inbound_delivery`) - fills in the GRN Approval
          screen's "SAP Inbound Delivery #" column automatically.
+    Sep 19 2026 follow-up fix (real user report, shipment S000010: Put
+    Away confirmed automatically fine, but Delivery ID still needed a
+    manual "Fetch from SAP" click - it showed up "immediately" when
+    clicked, meaning SAP's confirmation report WAS ready by then, just a
+    little past this function's own 4-attempt/~2-minute window). Widened
+    to 8 attempts/~4 minutes - still fire-and-forget/best-effort (the
+    manual button always remains as an instant fallback if SAP is
+    unusually slow to index a given PO), just a wider net before giving up.
     Fire-and-forget (asyncio.create_task) - never raises, never blocks."""
     pending_put_away = set(po_numbers) if (site_id and sap_site_logistics_query_client and sap_site_logistics_manage_client) else set()
-    for attempt in range(4):
+    for attempt in range(8):
         await asyncio.sleep(30)
         try:
             doc = await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
@@ -8760,7 +8769,7 @@ async def _auto_finish_full_auto_grn(doc_code: str, po_numbers: list, site_id: s
                     if po_number in missing_delivery_ids:
                         missing_delivery_ids.remove(po_number)
             except Exception as e:
-                logger.warning(f"Auto-fetch inbound delivery ID retry failed for {doc_code} (attempt {attempt + 1}/4): {e}")
+                logger.warning(f"Auto-fetch inbound delivery ID retry failed for {doc_code} (attempt {attempt + 1}/8): {e}")
         if not pending_put_away and not missing_delivery_ids:
             return
 
