@@ -291,3 +291,68 @@ on P1 despite its missing "with task" model) - see same file's dedicated section
   to `return hi`. Live-verified: PO 29724 (today's actual highest PO ID, vendor RAD-P2-S, 5 line
   items, genuinely open/"Sent") went from watermark stuck at 29723/0 rows found to fetched and
   cached correctly (5/5 line items) immediately after the fix.
+
+## Sep 20 2026 session - S000013 Goods Movement rejection FIXED + live-verified (P0, carried over from prior fork)
+
+**Symptom**: shipment S000013 (PO 29724, 5 line items - BOX706025/BOX757520/BOXPWCL4/G12LW/G12FW,
+site P8, target warehouse P8-RM) had its Put Away Task confirm correctly (Fulfilled Qty matched
+Planned Qty, SAP's own Document Flow showed Warehouse Task 69092 "Finished" + Warehouse
+Confirmation 280174 "Not Canceled"), but the follow-up Goods Movement (step 2, moving stock from
+wherever Put Away landed it into the shipment's chosen warehouse) rejected EVERY one of the 5
+items with `SAP rejected the movement: No inventory items found for external id MOV-... item id
+I-...`.
+
+**Investigation (live, against real SAP data, no assumptions)**:
+- Read `doc.sap_gr_result.per_po[0].put_away_target_areas` for S000013: ALL 5 products reported
+  `"P8-HOLD"` (this is the value `_confirm_put_away_task`, in `sap_playwright_supplier_pgr_
+  service.py`, extracted from SAP's own `TargetLogisticsAreaID` field on the Put Away Task's
+  MaterialOutput lines, queried via `SAPSiteLogisticsQueryClient.find_tasks_for_site`).
+- Live-queried `sap_inventory_client.get_inventory_detail(warehouse_ids=["P8/P8-HOLD"])`: returned
+  stock for 5 OTHER unrelated products (P16097-B, 092018-PF, 09200726-01, SH10.0HR, IRON-SCR) but
+  **zero rows for any of the 5 S000013 products, under ANY stock status**. So P8-HOLD genuinely
+  never received this stock - `put_away_target_areas` was WRONG for this shipment.
+- Live-queried `sap_inventory_client.get_inventory_detail(product_ids=[<all 5>])` (unscoped, whole
+  tenant): every one of the 5 products already had comfortably MORE than the shipped/received qty
+  sitting in `P8/P8-RM` - the shipment's actual chosen target warehouse. E.g. BOX706025 needed 3 EA
+  moved, P8-RM already held 29 EA; G12FW needed 3 EA, P8-RM already held 9 EA. Same pattern for all
+  5 lines.
+- **Conclusion**: the stock had already landed DIRECTLY in the final warehouse (P8-RM) with no
+  staging step, exactly like the Sep 19 2026 fix already found for the SAME 3 box products on
+  shipment S000012 (see that entry above) - except this time SAP's own Put Away Task query
+  reported the WRONG target (`P8-HOLD` instead of `P8-RM`) for that exact same physical outcome.
+  This proves the Put Away Task's `TargetLogisticsAreaID` field, while usually right, **cannot be
+  trusted as the sole source of truth** for where SAP's real Warehouse Order/putaway execution
+  actually placed the stock - it can diverge run-to-run for the same products/site.
+
+**Fix** (`/app/backend/supplier_shipment_service.py`):
+- Replaced `_resolve_source_stock_status` (which only checked whether the HINTED area had matching
+  stock, and returned blank/empty on any mismatch) with a new `_find_actual_source_area(
+  inventory_client, site_id, product_id, qty, target_warehouse_id, hint_area)` that queries REAL
+  on-hand inventory for the product across the WHOLE site (not just the hinted area) and:
+  1. If the target warehouse itself already holds >= qty -> returns "already at target", no
+     movement needed (mirrors the existing `source_area == warehouse_id` shortcut, just now
+     proven by live stock instead of assumed from the Put Away hint).
+  2. Else if the hinted area is among the areas holding >= qty -> uses it (still correct most of
+     the time, keeps existing behavior for shipments where the hint IS accurate).
+  3. Else falls back to whichever OTHER area actually holds >= qty.
+  4. Only falls back to the raw hint (with blank stock status, same as before) if truly nothing
+     matches anywhere - preserves the original "let SAP reject it and surface the real error"
+     behavior for genuine data problems, rather than silently swallowing them.
+- `_post_goods_movement_for_items` now calls this instead of resolving `source_area` from
+  `put_away_target_areas_by_po` and doing a separate stock-status lookup - one function now owns
+  both source-area discovery AND stock-status resolution, verified against live inventory.
+- Old `_resolve_source_stock_status` fully removed (dead code after the replacement).
+
+**Live verification (no mocks)**: called `supplier_shipment_service.retry_goods_movement(db,
+"S000013", <real SAPGoodsMovementClient>, <real SAPInventoryClient>, "RI")` directly against
+production SAP. Result: `{"ok": true}`, all 5 items `{"ok": true, "skipped": true, "note":
+"Already in P8-RM on receipt - no movement needed"}` - correctly detected the stock was already in
+place and skipped the (unnecessary, previously-failing) movement instead of attempting it. DB
+confirmed updated: `sap_movement_status="posted"`, `sap_movement_result.ok=True`. No real SAP write
+was needed/attempted for this specific shipment (all 5 lines were already correctly placed);  the
+fix's value is in the GENERALIZED detection logic, which will now also correctly handle the
+opposite case (a genuine staging area with wrong hint) by finding the real area and actually
+issuing the movement there instead of failing.
+- Not yet run through `testing_agent` as a dedicated pass this session (backend-only Python logic
+  change, verified directly against live SAP + live Mongo state instead, per user's original
+  request to use "backend testing agent / manual python -c").

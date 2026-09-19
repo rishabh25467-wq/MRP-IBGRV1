@@ -513,6 +513,31 @@ export default function GrnApprovalPage() {
     loadSites();
   }, []);
 
+  // Sep 19 2026, real user report (S000010/S000011/S000012, 3 times in a
+  // row): the backend's own background job (Put Away confirm + SAP
+  // Inbound Delivery # fetch + Goods Movement retry, all fire-and-forget
+  // after a full-auto GRN posts) was actually completing fine within a
+  // couple minutes each time - the user just had this page open from
+  // before it finished, and it never refreshed itself, so it kept
+  // showing "Fetch from SAP"/"Warehouse move pending" long after the
+  // backend had already resolved both. Re-fetches the Confirmed GRNs
+  // list every 30s (never a full page reload) WHILE any shipment
+  // approved in the last 3 minutes is still missing its Delivery ID or
+  // still shows movement pending - stops polling on its own once
+  // nothing is still finalizing. Rows are keyed by `s._id`, so React
+  // only actually re-renders whichever specific row(s) changed, not the
+  // whole table.
+  useEffect(() => {
+    const stillFinalizing = confirmed.some((s) => {
+      const approvedAt = s.approved_at ? new Date(s.approved_at).getTime() : 0;
+      if (Date.now() - approvedAt > 3 * 60 * 1000) return false;
+      return inboundDeliveryIds(s).length === 0 || s.sap_movement_status === "pending";
+    });
+    if (!stillFinalizing) return;
+    const poll = setInterval(loadConfirmed, 30000);
+    return () => clearInterval(poll);
+  }, [confirmed]);
+
   useEffect(() => {
     if (!siteId) {
       setWarehouses([]);

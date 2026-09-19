@@ -887,7 +887,7 @@ async def create_inbound_delivery_notifications_only(po_items: dict, notificatio
     return results
 
 
-async def _confirm_put_away_task(site_id: str, po_number: str, query_client, manage_client, events: list) -> bool:
+async def _confirm_put_away_task(site_id: str, po_number: str, query_client, manage_client, events: list) -> dict:
     """Sep 19 2026 fix - real user bug report + live screenshot showing
     SAP's own "Inbound Warehouse Request" Execution Details: Planned
     Quantity was always correct, but "Product Fulfilled Quantity"
@@ -915,7 +915,27 @@ async def _confirm_put_away_task(site_id: str, po_number: str, query_client, man
     retries elsewhere in this file). Never raises - the Goods Receipt
     itself already posted by the time this runs, so a failure here is a
     logged/degraded outcome (caller surfaces it via `events`), not a
-    reason to fail the whole PO."""
+    reason to fail the whole PO.
+
+    Sep 19 2026 addition (real user report/error, shipment S000012/PO
+    29724, products BOX706025/BOX757520/BOXPWCL4: "No inventory items
+    found for external id..." on the goods movement step) - root cause:
+    `_post_goods_movement_for_items` (supplier_shipment_service.py)
+    ALWAYS assumes Put Away lands stock in the site's "{SITE}-HOLD"
+    staging area (true for raw materials like IRON-SCR/SH10.0HR, per the
+    Sep 17/18 2026 fixes there), but these packaging/box products'
+    Material Flow Destination in SAP routes them straight into the
+    chosen warehouse (P8-RM) with NO staging step at all (live-confirmed:
+    zero stock ever existed in P8-HOLD for these products, real stock
+    already sitting in P8-RM) - so "move FROM P8-HOLD" correctly found
+    nothing there. Now returns the REAL `TargetLogisticsAreaID` per
+    product straight from this Put Away Task's own MaterialOutput data
+    (the authoritative source - no more guessing "{SITE}-HOLD") so the
+    goods movement step can use wherever SAP ACTUALLY put the stock.
+    Returns {"confirmed": bool, "target_areas": {product_id:
+    target_area}} - `target_areas` is best-effort/may be empty even on
+    a confirmed=True (e.g. if the task query never returned material
+    detail), caller falls back to its own guess in that case."""
     task = None
     for attempt in range(4):
         try:
@@ -928,7 +948,8 @@ async def _confirm_put_away_task(site_id: str, po_number: str, query_client, man
         await asyncio.sleep(4)
     if not task:
         events.append(f"Could not find a Put Away task in SAP for PO {po_number} - Fulfilled Quantity may need to be confirmed manually in SAP")
-        return False
+        return {"confirmed": False, "target_areas": {}}
+    target_areas = {mo["product_id"]: mo["target_area"] for mo in task.get("material_outputs", []) if mo.get("product_id") and mo.get("target_area")}
     task_payload = {
         "task_id": task["task_id"], "task_uuid": task["task_uuid"],
         "referenced_object_uuid": task["referenced_object_uuid"], "operation_activity_uuid": task["operation_activity_uuid"],
@@ -944,10 +965,10 @@ async def _confirm_put_away_task(site_id: str, po_number: str, query_client, man
     try:
         await asyncio.to_thread(manage_client.confirm_tasks_bundle, [task_payload])
         events.append(f"Confirmed Put Away Task {task['task_id']} for PO {po_number} in SAP - Fulfilled Quantity now matches Planned Quantity")
-        return True
+        return {"confirmed": True, "target_areas": target_areas}
     except Exception as e:
         events.append(f"Could not confirm Put Away Task {task['task_id']} for PO {po_number} in SAP - Fulfilled Quantity may need to be confirmed manually: {e}")
-        return False
+        return {"confirmed": False, "target_areas": {}}
 
 
 async def create_and_release_inbound_delivery_notifications(po_items: dict, notification_client, confirmation_report_client) -> list:

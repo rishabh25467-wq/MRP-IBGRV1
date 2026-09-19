@@ -762,8 +762,16 @@ def _with_display_notification_ids(doc: dict) -> dict:
 
 
 def list_shipments(db, status: str = None) -> list:
+    """Sep 19 2026 fix (real user report: S000010 showed above S000011 in
+    the Confirmed GRNs table despite being approved earlier) - S000010
+    and S000011 happened to share the exact same `created_at` (created
+    in the same batch), so sorting this list by `created_at` left their
+    relative order arbitrary/tied. For the Confirmed GRNs view
+    (status="approved") sort by `approved_at` instead - that's the
+    actual "when did this get confirmed" moment this list should reflect."""
     query = {"status": status} if status else {}
-    return [_with_display_notification_ids(doc) for doc in db[SHIPMENTS_COLLECTION].find(query).sort("created_at", -1)]
+    sort_field = "approved_at" if status == "approved" else "created_at"
+    return [_with_display_notification_ids(doc) for doc in db[SHIPMENTS_COLLECTION].find(query).sort(sort_field, -1)]
 
 
 def get_shipment_by_code(db, doc_code: str) -> dict:
@@ -824,29 +832,54 @@ def mark_discrepancy(db, doc_code: str, marked_by: str, reason: str, items: list
 STOCK_STATUS_LABEL_TO_CODE = {"Inspection": "1", "Not Assigned": ""}
 
 
-def _resolve_source_stock_status(inventory_client, site_id: str, source_area_id: str, product_id: str, qty: float) -> str:
-    """Sep 2 2026 fix (real root cause of "Negative stock not permitted
-    in logistics area P1-RM" / "No inventory items found" on shipment
-    MU7DE2): the Goods Movement call below used to always leave
-    InventoryStockStatusCode blank (assuming "Not Assigned"/plain
-    stock), but a live check of this material's actual on-hand
-    inventory found it sits under "Inspection" status instead (SAP's
-    own QM/Inspection Plan routing for this material on PO receipt) -
-    the blank-status bucket usually has little to no matching balance,
-    so the move was rejected outright. This looks up which status the
-    source area's balance for this exact material/qty ACTUALLY sits
-    under right now and targets that (a plain relocation keeps the
-    same status on both ends - this is not a status-change posting,
-    see `_post_goods_movement_for_items`'s docstring). Falls back to
-    blank if nothing matches, same as the original behavior."""
+def _find_actual_source_area(inventory_client, site_id: str, product_id: str, qty: float, target_warehouse_id: str, hint_area: str = None) -> tuple:
+    """Sep 20 2026 fix (real incident, shipment S000013/PO 29724, ALL 5
+    line items - BOX706025/BOX757520/BOXPWCL4/G12LW/G12FW - rejected
+    with "No inventory items found for external id..."): the Put Away
+    Task's own TargetLogisticsAreaID (`hint_area`, from
+    put_away_target_areas/mark_put_away_confirmed) is SAP's PLANNED
+    staging destination captured when the task was queried, and used to
+    be trusted outright as "the REAL area" (Sep 19 2026 fix, worked for
+    shipment S000012's identical 3 box products - that time the task
+    correctly reported "P8-RM" and no movement was even needed). Live
+    root-caused this failure: for S000013, the SAME task query reported
+    "P8-HOLD" for every product, but a live on-hand inventory check
+    found ZERO stock in P8-HOLD for any of them, under ANY stock status
+    - while all 5 already had comfortably more than the received qty
+    sitting in P8-RM (the shipment's actual chosen warehouse). So the
+    task's reported target is not reliably "where SAP actually put the
+    stock" - it can diverge from the real, final Warehouse
+    Order/putaway execution result on a per-product, per-run basis.
+    This function is now the single source of truth for BOTH source
+    area and stock status: it queries this product's REAL on-hand rows
+    at this site and looks for whichever logistics area actually holds
+    >= qty. If the destination warehouse itself already qualifies,
+    there's nothing to move (same "already landed at target" outcome as
+    before, just now proven by live stock instead of assumed from the
+    hint). Otherwise prefers `hint_area` if it's genuinely among the
+    candidates (still correct most of the time), else falls back to any
+    other qualifying area. Returns (source_area_or_None, stock_status,
+    already_at_target: bool) - `source_area_or_None` is None only when
+    `already_at_target` is True."""
     try:
         rows = inventory_client.get_inventory_detail(site_id=site_id, product_ids=[product_id])
     except Exception:
-        return ""
+        return (hint_area, "", False)
+    candidates = {}
     for row in rows:
-        if row.get("logistics_area_id", "").rsplit("/", 1)[-1] == source_area_id and row.get("qty", 0) >= qty:
-            return STOCK_STATUS_LABEL_TO_CODE.get(row.get("stock_status"), "")
-    return ""
+        area = row.get("logistics_area_id", "").rsplit("/", 1)[-1]
+        if not area or row.get("qty", 0) < qty:
+            continue
+        candidates.setdefault(area, row)
+    if target_warehouse_id in candidates:
+        return (None, "", True)
+    if hint_area in candidates:
+        row = candidates[hint_area]
+        return (hint_area, STOCK_STATUS_LABEL_TO_CODE.get(row.get("stock_status"), ""), False)
+    if candidates:
+        area, row = next(iter(candidates.items()))
+        return (area, STOCK_STATUS_LABEL_TO_CODE.get(row.get("stock_status"), ""), False)
+    return (hint_area, "", False)
 
 
 def _skipped_line_items_from_gr_results(doc: dict, per_po: list) -> set:
@@ -910,6 +943,7 @@ def _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_cli
     per_item = []
     all_ok = True
     skipped_line_items = skipped_line_items or set()
+    put_away_target_areas_by_po = {p["po_number"]: (p.get("put_away_target_areas") or {}) for p in (doc.get("sap_gr_result") or {}).get("per_po", [])}
     for it in doc["items"]:
         if (it["po_number"], it["item_number"]) in skipped_line_items:
             per_item.append({"po_number": it["po_number"], "item_number": it["item_number"], "product_id": it["product_id"], "ok": True, "skipped": True, "note": "Goods Receipt for this line was skipped in SAP (missing Product ID) - no stock to move"})
@@ -938,7 +972,30 @@ def _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_cli
         # User confirmed live every site now has its own "{SITE}-HOLD"
         # staging warehouse for this same reason - no hardcoded site
         # check needed anymore.
-        source_area = f"{site_id}-HOLD"
+        #
+        # Sep 19 2026 correction (real incident, shipment S000012/PO
+        # 29724, BOX706025/BOX757520/BOXPWCL4: "No inventory items
+        # found" again) - the "{SITE}-HOLD" assumption above is only
+        # true for SOME products (e.g. raw materials); these packaging
+        # products' own Material Flow Destination in SAP routes them
+        # straight into the final warehouse with NO staging step at all
+        # (live-confirmed: zero stock ever existed in P8-HOLD for these
+        # products). Prefer the REAL area the full-auto EM1 flow's own
+        # Put Away Task confirmation discovered (see
+        # sap_playwright_supplier_pgr_service._confirm_put_away_task,
+        # mark_put_away_confirmed above) as a HINT - only fall back to
+        # guessing "{SITE}-HOLD" when that data isn't available (e.g.
+        # the older Playwright-based flow, which doesn't have a Put
+        # Away Task at all in the first place).
+        #
+        # Sep 20 2026 fix (real incident, shipment S000013/PO 29724, ALL
+        # 5 line items: "No inventory items found" again, even WITH the
+        # Put Away hint in place) - the hint alone is no longer trusted
+        # blindly; see `_find_actual_source_area`'s docstring for why
+        # (live-verified this exact task query can report a target area
+        # that doesn't match where the stock really ended up).
+        hint_area = put_away_target_areas_by_po.get(it["po_number"], {}).get(it["product_id"]) or f"{site_id}-HOLD"
+        source_area, stock_status, already_at_target = _find_actual_source_area(inventory_client, site_id, it["product_id"], qty, warehouse_id, hint_area=hint_area)
         # Sep 12 2026 bug fix (real incident, shipment LFG29A/PO 29482 -
         # user's explicit report "after success grn why an error
         # occurred": "SAP rejected the movement: Source and target
@@ -950,10 +1007,9 @@ def _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_cli
         # default, source == target and SAP correctly rejects the
         # movement as a no-op. There's genuinely nothing to move in that
         # case - the stock is already exactly where it needs to be.
-        if source_area == warehouse_id:
+        if already_at_target or source_area == warehouse_id:
             per_item.append({"po_number": it["po_number"], "item_number": it["item_number"], "product_id": it["product_id"], "ok": True, "skipped": True, "note": f"Already in {warehouse_id} on receipt - no movement needed"})
             continue
-        stock_status = _resolve_source_stock_status(inventory_client, site_id, source_area, it["product_id"], qty)
         try:
             result = goods_movement_client.goods_movement(
                 owner_party_id=owner_party_id, product_id=it["product_id"],
@@ -1508,15 +1564,26 @@ def manually_confirm_inbound_delivery(db, doc_code: str, po_number: str, inbound
     return get_shipment_by_code(db, doc_code)
 
 
-def mark_put_away_confirmed(db, doc_code: str, po_number: str, confirmed: bool, events: list) -> None:
-    """Sep 19 2026 - patches just `put_away_confirmed`/`events` onto one
-    PO's own `sap_gr_result.per_po` entry (never touches status or
-    `inbound_delivery_id`) - set by the full-auto GRN's background Put
-    Away confirmation retry (see server.py's `_auto_finish_full_auto_grn`,
+def mark_put_away_confirmed(db, doc_code: str, po_number: str, confirmed: bool, events: list, target_areas: dict = None) -> None:
+    """Sep 19 2026 - patches `put_away_confirmed`/`events`/
+    `put_away_target_areas` onto one PO's own `sap_gr_result.per_po`
+    entry (never touches status or `inbound_delivery_id`) - set by the
+    full-auto GRN's background Put Away confirmation retry (see
+    server.py's `_auto_finish_full_auto_grn`,
     sap_playwright_supplier_pgr_service._confirm_put_away_task's
     docstring for the real bug this closes out: Fulfilled Quantity
-    staying 0 in SAP after a "Test Full Automated GRN" run)."""
+    staying 0 in SAP after a "Test Full Automated GRN" run).
+
+    `target_areas` ({product_id: TargetLogisticsAreaID}, from that same
+    Put Away Task's own MaterialOutput data) lets `_post_goods_movement_
+    for_items` below move stock from wherever SAP ACTUALLY put it,
+    instead of always guessing "{SITE}-HOLD" (real bug fix, shipment
+    S000012/PO 29724 - see `_post_goods_movement_for_items`'s own
+    docstring)."""
+    update = {"sap_gr_result.per_po.$.put_away_confirmed": confirmed, "sap_gr_result.per_po.$.events": events}
+    if target_areas:
+        update["sap_gr_result.per_po.$.put_away_target_areas"] = target_areas
     db[SHIPMENTS_COLLECTION].update_one(
         {"_id": (doc_code or "").strip().upper(), "sap_gr_result.per_po.po_number": po_number},
-        {"$set": {"sap_gr_result.per_po.$.put_away_confirmed": confirmed, "sap_gr_result.per_po.$.events": events}},
+        {"$set": update},
     )

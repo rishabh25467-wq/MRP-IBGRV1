@@ -8513,6 +8513,37 @@ async def post_admin_grn_approve(doc_code: str, payload: GrnApproveRequest, requ
 # /app/memory/SOAP_GRN_BREAKTHROUGH_2026-09-18.md. Frontend also disables
 # the button outside this allowlist, this is the server-side enforcement.
 FULL_AUTO_GRN_SITE_ALLOWLIST = {"P8"}
+FULL_AUTO_GRN_PO_COOLDOWN_SECONDS = 60
+
+
+def _recent_po_grn_conflict(doc_code: str, po_numbers: set) -> str:
+    """Sep 19 2026, user's explicit ask after live-confirming SAP's own
+    confirmation report can't reliably tell 2 back-to-back deliveries
+    for the SAME PO apart by reference (see sap_inbound_delivery_report_
+    client.py's docstring + _auto_finish_full_auto_grn's own docstring:
+    CREF_ID/CTA_DATE are rolling/coarse fields, not real per-delivery
+    data) - if a full-auto GRN was posted against one of these PO
+    numbers within the last minute (any OTHER shipment), block a second
+    one from starting, so the earlier one's background Delivery ID
+    lookup has time to resolve before a second delivery for the same PO
+    could show up and get mixed up with it."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=FULL_AUTO_GRN_PO_COOLDOWN_SECONDS)).replace(tzinfo=None)
+    conflict = db[supplier_shipment_service.SHIPMENTS_COLLECTION].find_one({
+        "_id": {"$ne": doc_code},
+        "approved_at": {"$gte": cutoff},
+        "sap_gr_result.per_po": {"$elemMatch": {"po_number": {"$in": sorted(po_numbers)}, "status": "posted"}},
+    })
+    if not conflict:
+        return None
+    matched_po = next(
+        (p["po_number"] for p in (conflict.get("sap_gr_result") or {}).get("per_po", []) if p.get("po_number") in po_numbers and p.get("status") == "posted"),
+        None,
+    )
+    return (
+        f"PO {matched_po} just had a Goods Receipt posted (shipment {conflict['_id']}) less than a minute ago - "
+        f"please wait about a minute before posting another automated GRN against the same PO, so SAP has time to "
+        f"finish assigning that Delivery ID without ambiguity."
+    )
 
 
 @api_router.post("/admin/grn/{doc_code}/approve-full-auto")
@@ -8544,6 +8575,10 @@ async def post_admin_grn_approve_full_auto(doc_code: str, payload: GrnApproveReq
         raise HTTPException(status_code=404, detail=str(e))
     except supplier_shipment_service.ShipmentValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    po_numbers = {it["po_number"] for it in doc["items"]}
+    conflict_msg = _recent_po_grn_conflict(doc_code, po_numbers)
+    if conflict_msg:
+        raise HTTPException(status_code=409, detail=conflict_msg)
     job_id = _start_full_auto_grn_job(doc_code, doc, owner_party_id)
     doc = await _attach_grn_display_fields(doc)
     return {"job_id": job_id, "shipment": doc}
@@ -8712,13 +8747,8 @@ async def _auto_finish_full_auto_grn(doc_code: str, po_numbers: list, site_id: s
     job (see sap_playwright_supplier_pgr_service.create_and_release_
     inbound_delivery_notifications' own docstring: a real 2-line PO test
     went from a few seconds to ~60s once Put Away confirmation + Delivery
-    ID lookup were tried inline with their own retry loops). Both SAP-side
-    effects genuinely lag well past what a user should ever wait
-    synchronously for (same reasoning as the pre-existing manual "Fetch
-    from SAP" button, which documents itself as "30-100s+ per PO") - this
-    runs AFTER the job already reports "done" (GRN is genuinely posted by
-    then), retrying every 30s for ~4 minutes (widened Sep 19 2026, see
-    follow-up note below):
+    ID lookup were tried inline with their own retry loops). Runs AFTER
+    the job already reports "done" (GRN is genuinely posted by then):
       1. Put Away Task confirm (`_confirm_put_away_task`, site P8 EM1 only,
          see that function's docstring - fixes Fulfilled Quantity staying
          0 in SAP) - `supplier_shipment_service.mark_put_away_confirmed`
@@ -8727,50 +8757,95 @@ async def _auto_finish_full_auto_grn(doc_code: str, po_numbers: list, site_id: s
          button, `fetch_inbound_delivery_ids_from_sap` +
          `manually_confirm_inbound_delivery`) - fills in the GRN Approval
          screen's "SAP Inbound Delivery #" column automatically.
-    Sep 19 2026 follow-up fix (real user report, shipment S000010: Put
-    Away confirmed automatically fine, but Delivery ID still needed a
-    manual "Fetch from SAP" click - it showed up "immediately" when
-    clicked, meaning SAP's confirmation report WAS ready by then, just a
-    little past this function's own 4-attempt/~2-minute window). Widened
-    to 8 attempts/~4 minutes - still fire-and-forget/best-effort (the
-    manual button always remains as an instant fallback if SAP is
-    unusually slow to index a given PO), just a wider net before giving up.
+
+    Sep 19 2026 root-cause fix, real user question ("if SAP really
+    doesn't assign it, how are the manual button and the older Playwright
+    flow able to get it right away?") - live-reproduced the ACTUAL
+    mechanism with a real test PO: queried SAP's confirmation report
+    right after `maintain_bundle(release=True)` -> 0 rows, even after the
+    Put Away Task itself already existed in SAP; confirmed that same Put
+    Away Task -> the Delivery row appeared within ~5s. So this was never
+    "SAP takes 30-100s to index" - the numbered Delivery genuinely isn't
+    finalized by SAP AT ALL until the Put Away Task is confirmed (that's
+    the step this app is the one doing!). The older Playwright flow got
+    it "immediately" because manually clicking "Post Goods Receipt" in
+    SAP's UI *is* that same finalizing action, done synchronously in one
+    click; the manual "Fetch from SAP" button "worked immediately" for
+    S000010 purely because THIS function's own Put Away confirm had
+    already completed moments earlier.
+
+    Fix: stop polling both concerns on the same blind 30s cadence - the
+    instant Put Away confirms, wait only a short beat (SAP's own
+    propagation from Put Away -> numbered Delivery, live-measured ~5s)
+    and check the Delivery ID right then, instead of waiting for the next
+    30s tick. Typical total time is now ~20-40s (however long SAP takes
+    to first materialize the Put Away Task itself, which this function
+    still has to poll for - that part alone isn't ours to speed up).
+
+    Sep 19 2026 addition: also re-runs the Goods Movement step
+    (`retry_goods_movement`) right after Put Away confirms, using the
+    real target area Put Away just discovered - fixes shipment
+    S000012/PO 29724's "No inventory items found" error, caused by
+    `finalize_goods_receipt`'s goods movement running synchronously
+    BEFORE Put Away (which now only confirms in the background) had even
+    happened yet.
     Fire-and-forget (asyncio.create_task) - never raises, never blocks."""
     pending_put_away = set(po_numbers) if (site_id and sap_site_logistics_query_client and sap_site_logistics_manage_client) else set()
-    for attempt in range(8):
-        await asyncio.sleep(30)
+    pending_delivery_id = set(po_numbers)
+
+    async def _check_delivery_ids() -> None:
+        if not pending_delivery_id:
+            return
         try:
             doc = await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
-        except Exception:
+            match = await asyncio.to_thread(supplier_shipment_service.fetch_inbound_delivery_ids_from_sap, doc, sap_inbound_delivery_report_client)
+        except Exception as e:
+            logger.warning(f"Auto-fetch inbound delivery ID check failed for {doc_code}: {e}")
             return
+        for po_number, inbound_delivery_id in match["found"].items():
+            await asyncio.to_thread(
+                supplier_shipment_service.manually_confirm_inbound_delivery, db, doc_code, po_number, inbound_delivery_id,
+                "Auto-fetch (background)", sap_goods_movement_client, sap_inventory_client, owner_party_id,
+            )
+            pending_delivery_id.discard(po_number)
+
+    for attempt in range(8):
+        await asyncio.sleep(10 if attempt < 4 else 30)
+        any_confirmed_now = False
         for po_number in list(pending_put_away):
             events = []
             try:
-                confirmed = await sap_playwright_supplier_pgr_service._confirm_put_away_task(
+                result = await sap_playwright_supplier_pgr_service._confirm_put_away_task(
                     site_id, po_number, sap_site_logistics_query_client, sap_site_logistics_manage_client, events,
                 )
             except Exception as e:
-                confirmed, events = False, [f"Put Away confirm crashed: {e}"]
-            if confirmed:
+                result, events = {"confirmed": False, "target_areas": {}}, [f"Put Away confirm crashed: {e}"]
+            if result["confirmed"]:
                 pending_put_away.discard(po_number)
-            await asyncio.to_thread(supplier_shipment_service.mark_put_away_confirmed, db, doc_code, po_number, confirmed, events)
-        missing_delivery_ids = [
-            p["po_number"] for p in (doc.get("sap_gr_result") or {}).get("per_po", [])
-            if p.get("status") == "posted" and not p.get("inbound_delivery_id")
-        ]
-        if missing_delivery_ids:
+                any_confirmed_now = True
+            await asyncio.to_thread(
+                supplier_shipment_service.mark_put_away_confirmed, db, doc_code, po_number, result["confirmed"], events, result["target_areas"],
+            )
+        if any_confirmed_now:
+            await asyncio.sleep(8)  # live-measured propagation beat, see docstring
+            # Sep 19 2026 fix (real incident, shipment S000012/PO 29724):
+            # the goods movement step already ran synchronously in
+            # finalize_goods_receipt, BEFORE Put Away was confirmed and
+            # BEFORE its real target area was known - re-run it now with
+            # that now-known area (see supplier_shipment_service.
+            # _post_goods_movement_for_items's own docstring; this
+            # retry_goods_movement call is a no-op if it already
+            # succeeded the first time).
             try:
-                match = await asyncio.to_thread(supplier_shipment_service.fetch_inbound_delivery_ids_from_sap, doc, sap_inbound_delivery_report_client)
-                for po_number, inbound_delivery_id in match["found"].items():
+                doc = await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
+                if doc.get("sap_movement_status") != "posted":
                     await asyncio.to_thread(
-                        supplier_shipment_service.manually_confirm_inbound_delivery, db, doc_code, po_number, inbound_delivery_id,
-                        "Auto-fetch (background)", sap_goods_movement_client, sap_inventory_client, owner_party_id,
+                        supplier_shipment_service.retry_goods_movement, db, doc_code, sap_goods_movement_client, sap_inventory_client, owner_party_id,
                     )
-                    if po_number in missing_delivery_ids:
-                        missing_delivery_ids.remove(po_number)
             except Exception as e:
-                logger.warning(f"Auto-fetch inbound delivery ID retry failed for {doc_code} (attempt {attempt + 1}/8): {e}")
-        if not pending_put_away and not missing_delivery_ids:
+                logger.warning(f"Auto-retry goods movement failed for {doc_code} after Put Away confirm: {e}")
+        await _check_delivery_ids()
+        if not pending_put_away and not pending_delivery_id:
             return
 
 
