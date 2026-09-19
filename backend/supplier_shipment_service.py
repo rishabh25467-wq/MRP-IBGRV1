@@ -56,9 +56,11 @@ if they decide to override rather than wait for an edit.
 from datetime import datetime, timedelta, timezone
 
 from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 import inventory_service
 import sap_po_client
+import time
 from sap_playwright_supplier_pgr_service import _build_notification_id
 from sap_wip_clearing_client import company_and_set_of_books_for_site
 
@@ -96,10 +98,48 @@ class ShipmentNotFoundError(ShipmentError):
     pass
 
 
+MOVEMENT_LOCK_COLLECTION = "supplier_portal_movement_locks"
+MOVEMENT_LOCK_TTL_SECONDS = 180
+MAX_MOVEMENT_RETRIES_BEFORE_ESCALATION = 3
+
+
 def ensure_indexes(db) -> None:
     db[SHIPMENTS_COLLECTION].create_index("vendor_code")
     db[SHIPMENTS_COLLECTION].create_index("items.po_number")
     db[PO_CACHE_COLLECTION].create_index("vendor_code")
+    # Sep 20 2026: TTL index so a crashed process can NEVER permanently
+    # hold a (site, area, product) movement lock - see
+    # _acquire_movement_lock's docstring.
+    db[MOVEMENT_LOCK_COLLECTION].create_index("locked_at", expireAfterSeconds=MOVEMENT_LOCK_TTL_SECONDS)
+
+
+def _acquire_movement_lock(db, site_id: str, area: str, product_id: str, max_wait_seconds: float):
+    """Sep 20 2026 fix (real incident: shipments S000012-S000015, same
+    reused test PO 29724, racing on the exact same fungible P8-HOLD
+    stock for the same materials) - without this, two shipments'
+    Goods Movement attempts for the SAME (site, area, product) could
+    interleave and produce confusing, order-dependent results. This is
+    a simple "try-insert" mutex keyed on that triple: whoever inserts
+    the doc first holds the lock, everyone else polls until it's freed
+    or `max_wait_seconds` elapses (returns None on timeout - callers
+    must treat that as "temporarily busy", not a hard failure). The
+    TTL index above guarantees this can never deadlock permanently even
+    if a process crashes mid-movement."""
+    key = f"{site_id}|{area}|{product_id}"
+    deadline = time.time() + max_wait_seconds
+    while True:
+        try:
+            db[MOVEMENT_LOCK_COLLECTION].insert_one({"_id": key, "locked_at": datetime.now(timezone.utc)})
+            return key
+        except DuplicateKeyError:
+            if time.time() >= deadline:
+                return None
+            time.sleep(2)
+
+
+def _release_movement_lock(db, lock_key: str) -> None:
+    if lock_key:
+        db[MOVEMENT_LOCK_COLLECTION].delete_one({"_id": lock_key})
 
 
 def expire_po_cache(db, po_number: str, item_number: str = None) -> int:
@@ -832,54 +872,47 @@ def mark_discrepancy(db, doc_code: str, marked_by: str, reason: str, items: list
 STOCK_STATUS_LABEL_TO_CODE = {"Inspection": "1", "Not Assigned": ""}
 
 
-def _find_actual_source_area(inventory_client, site_id: str, product_id: str, qty: float, target_warehouse_id: str, hint_area: str = None) -> tuple:
-    """Sep 20 2026 fix (real incident, shipment S000013/PO 29724, ALL 5
-    line items - BOX706025/BOX757520/BOXPWCL4/G12LW/G12FW - rejected
-    with "No inventory items found for external id..."): the Put Away
-    Task's own TargetLogisticsAreaID (`hint_area`, from
-    put_away_target_areas/mark_put_away_confirmed) is SAP's PLANNED
-    staging destination captured when the task was queried, and used to
-    be trusted outright as "the REAL area" (Sep 19 2026 fix, worked for
-    shipment S000012's identical 3 box products - that time the task
-    correctly reported "P8-RM" and no movement was even needed). Live
-    root-caused this failure: for S000013, the SAME task query reported
-    "P8-HOLD" for every product, but a live on-hand inventory check
-    found ZERO stock in P8-HOLD for any of them, under ANY stock status
-    - while all 5 already had comfortably more than the received qty
-    sitting in P8-RM (the shipment's actual chosen warehouse). So the
-    task's reported target is not reliably "where SAP actually put the
-    stock" - it can diverge from the real, final Warehouse
-    Order/putaway execution result on a per-product, per-run basis.
-    This function is now the single source of truth for BOTH source
-    area and stock status: it queries this product's REAL on-hand rows
-    at this site and looks for whichever logistics area actually holds
-    >= qty. If the destination warehouse itself already qualifies,
-    there's nothing to move (same "already landed at target" outcome as
-    before, just now proven by live stock instead of assumed from the
-    hint). Otherwise prefers `hint_area` if it's genuinely among the
-    candidates (still correct most of the time), else falls back to any
-    other qualifying area. Returns (source_area_or_None, stock_status,
-    already_at_target: bool) - `source_area_or_None` is None only when
-    `already_at_target` is True."""
+def _resolve_source_stock_status(inventory_client, site_id: str, source_area_id: str, product_id: str, qty: float) -> str:
+    """Sep 2 2026 fix (real root cause of "Negative stock not permitted
+    in logistics area P1-RM" / "No inventory items found" on shipment
+    MU7DE2): the Goods Movement call below used to always leave
+    InventoryStockStatusCode blank (assuming "Not Assigned"/plain
+    stock), but a live check of this material's actual on-hand
+    inventory found it sits under "Inspection" status instead (SAP's
+    own QM/Inspection Plan routing for this material on PO receipt) -
+    the blank-status bucket usually has little to no matching balance,
+    so the move was rejected outright. This looks up which status the
+    source area's balance for this exact material/qty ACTUALLY sits
+    under right now and targets that (a plain relocation keeps the
+    same status on both ends - this is not a status-change posting,
+    see `_post_goods_movement_for_items`'s docstring). Falls back to
+    blank if nothing matches, same as the original behavior.
+
+    Sep 20 2026 correction: a brief same-day attempt replaced this with
+    a function that trusted the analytics On-Hand Inventory report's
+    AGGREGATE quantity at the destination warehouse to decide "already
+    there, skip the move" - reverted after the user showed a real SAP
+    "Warehouse Confirmation Overview" screen (280188) proving stock
+    from the SAME PO/products genuinely posts into the Put Away Task's
+    reported target area (P8-HOLD, matching the hint exactly). The
+    aggregate report can't tell THIS delivery's specific units apart
+    from unrelated pre-existing stock already sitting in the
+    destination warehouse for other reasons (no batch/serial tracking
+    on this material), so "target already has enough qty" is not
+    reliable proof this shipment's stock is actually there - it was
+    giving false positives. The real problem (see
+    `_post_goods_movement_for_items`'s Sep 20 2026 retry fix below) is
+    a SAP-side ledger propagation lag between the Warehouse Confirmation
+    posting and the Goods Movement service being able to see that same
+    stock, not a wrong target area."""
     try:
         rows = inventory_client.get_inventory_detail(site_id=site_id, product_ids=[product_id])
     except Exception:
-        return (hint_area, "", False)
-    candidates = {}
+        return ""
     for row in rows:
-        area = row.get("logistics_area_id", "").rsplit("/", 1)[-1]
-        if not area or row.get("qty", 0) < qty:
-            continue
-        candidates.setdefault(area, row)
-    if target_warehouse_id in candidates:
-        return (None, "", True)
-    if hint_area in candidates:
-        row = candidates[hint_area]
-        return (hint_area, STOCK_STATUS_LABEL_TO_CODE.get(row.get("stock_status"), ""), False)
-    if candidates:
-        area, row = next(iter(candidates.items()))
-        return (area, STOCK_STATUS_LABEL_TO_CODE.get(row.get("stock_status"), ""), False)
-    return (hint_area, "", False)
+        if row.get("logistics_area_id", "").rsplit("/", 1)[-1] == source_area_id and row.get("qty", 0) >= qty:
+            return STOCK_STATUS_LABEL_TO_CODE.get(row.get("stock_status"), "")
+    return ""
 
 
 def _skipped_line_items_from_gr_results(doc: dict, per_po: list) -> set:
@@ -903,7 +936,7 @@ def _skipped_line_items_from_gr_results(doc: dict, per_po: list) -> set:
     return excluded
 
 
-def _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id: str, site_id: str, warehouse_id: str, skipped_line_items: set = None) -> dict:
+def _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id: str, site_id: str, warehouse_id: str, skipped_line_items: set = None, retry_on_lag: bool = False) -> dict:
     """Step 2 of the live SAP write - moves each shipment line's
     received qty into the receiver's chosen warehouse. Source area
     defaults to this app's own "{site}-RM" convention (same one used
@@ -939,14 +972,58 @@ def _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_cli
     is ALREADY at Inspection status, so the movement's OWN status code
     must match reality (Inspection, "1") on both ends, not be left
     blank/"Not Assigned" (which usually has little to no matching
-    balance there, hence the negative-stock/no-items-found errors)."""
+    balance there, hence the negative-stock/no-items-found errors).
+
+    Sep 20 2026 fix (real incident, shipment S000013/PO 29724, ALL 5
+    line items rejected with "No inventory items found for external
+    id..." even though the Put Away Task's reported target area
+    (P8-HOLD) was CORRECT - confirmed live via SAP's own "Warehouse
+    Confirmation Overview" screen showing the exact Put Away posting
+    into P8-HOLD for these products): root cause is a genuine SAP-side
+    ledger propagation lag, not a wrong target area - the Warehouse
+    Confirmation can post successfully while the separate stock ledger
+    the Goods Movement service reads from hasn't caught up yet, especially
+    when this runs only ~8s after Put Away confirms (see
+    `_auto_finish_full_auto_grn` in server.py). `retry_on_lag=True`
+    (used by the callers that run AFTER Put Away has already been
+    confirmed - `retry_goods_movement`/`manually_confirm_inbound_
+    delivery` - never by the very first, fast synchronous call in
+    `finalize_goods_receipt`, which runs before Put Away even starts and
+    doesn't need this) retries the SAME movement a few times with a
+    delay specifically when SAP rejects it with that exact "No inventory
+    items found" message - once the ledger catches up, the identical
+    call succeeds.
+
+    Sep 20 2026 fix (real bug, found while investigating shipments
+    S000013/14/15 all showing "Negative stock not permitted" on retry):
+    every call to this function used to re-attempt EVERY line item from
+    scratch, with no memory of a previous attempt already having
+    genuinely posted that exact line to SAP. Since `retry_goods_movement`
+    can legitimately be called more than once (the Retry button, PLUS
+    the automated post-Put-Away retry in `_auto_finish_full_auto_grn`),
+    an item that already succeeded on attempt 1 would get RE-SENT to SAP
+    on attempt 2 - a real second movement request for stock that was
+    already moved the first time, which SAP correctly rejects once
+    there's nothing left ("Negative stock not permitted") once
+    re-attempted enough times. This wasn't "test PO exhaustion" - it was
+    this function re-consuming its own already-completed work on every
+    retry. Now skips (carries over unchanged) any line item whose
+    PREVIOUS `sap_movement_result.per_item` entry already came back
+    `ok=True` - only genuinely still-failed/never-attempted lines are
+    sent to SAP again."""
+    _LAG_RETRY_DELAYS_SECONDS = [20, 40]
     per_item = []
     all_ok = True
     skipped_line_items = skipped_line_items or set()
+    previous_by_item = {(p.get("po_number"), p.get("item_number")): p for p in (doc.get("sap_movement_result") or {}).get("per_item", [])}
     put_away_target_areas_by_po = {p["po_number"]: (p.get("put_away_target_areas") or {}) for p in (doc.get("sap_gr_result") or {}).get("per_po", [])}
     for it in doc["items"]:
         if (it["po_number"], it["item_number"]) in skipped_line_items:
             per_item.append({"po_number": it["po_number"], "item_number": it["item_number"], "product_id": it["product_id"], "ok": True, "skipped": True, "note": "Goods Receipt for this line was skipped in SAP (missing Product ID) - no stock to move"})
+            continue
+        prev = previous_by_item.get((it["po_number"], it["item_number"]))
+        if prev and prev.get("ok"):
+            per_item.append(prev)
             continue
         qty = it.get("actual_qty", it["ship_qty"])
         # Sep 17 2026 bug fix (real user report + SAP screenshot proof,
@@ -989,13 +1066,14 @@ def _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_cli
         # Away Task at all in the first place).
         #
         # Sep 20 2026 fix (real incident, shipment S000013/PO 29724, ALL
-        # 5 line items: "No inventory items found" again, even WITH the
-        # Put Away hint in place) - the hint alone is no longer trusted
-        # blindly; see `_find_actual_source_area`'s docstring for why
-        # (live-verified this exact task query can report a target area
-        # that doesn't match where the stock really ended up).
-        hint_area = put_away_target_areas_by_po.get(it["po_number"], {}).get(it["product_id"]) or f"{site_id}-HOLD"
-        source_area, stock_status, already_at_target = _find_actual_source_area(inventory_client, site_id, it["product_id"], qty, warehouse_id, hint_area=hint_area)
+        # 5 line items: "No inventory items found" again) - a same-day
+        # attempt replaced this trusted hint with an aggregate-inventory
+        # "verify" check, but that was WRONG and got reverted (see
+        # `_resolve_source_stock_status`'s Sep 20 2026 correction note
+        # above) - the hint IS correct, live-confirmed via SAP's own
+        # Warehouse Confirmation Overview screen. The real fix is the
+        # retry-on-lag loop below, not doubting this hint.
+        source_area = put_away_target_areas_by_po.get(it["po_number"], {}).get(it["product_id"]) or f"{site_id}-HOLD"
         # Sep 12 2026 bug fix (real incident, shipment LFG29A/PO 29482 -
         # user's explicit report "after success grn why an error
         # occurred": "SAP rejected the movement: Source and target
@@ -1007,20 +1085,53 @@ def _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_cli
         # default, source == target and SAP correctly rejects the
         # movement as a no-op. There's genuinely nothing to move in that
         # case - the stock is already exactly where it needs to be.
-        if already_at_target or source_area == warehouse_id:
+        if source_area == warehouse_id:
             per_item.append({"po_number": it["po_number"], "item_number": it["item_number"], "product_id": it["product_id"], "ok": True, "skipped": True, "note": f"Already in {warehouse_id} on receipt - no movement needed"})
             continue
+        # Sep 20 2026 fix (real incident, shipments S000012-S000015, same
+        # reused test PO 29724 racing on the same fungible P8-HOLD stock
+        # for the same materials) - only one movement for this exact
+        # (site, area, product) may run at a time, everywhere in the app,
+        # so two shipments can never interleave on the same pool. Bounded
+        # wait (never indefinite - see _acquire_movement_lock's docstring)
+        # so a busy lock degrades to "temporarily busy", not a hang.
+        lock_key = _acquire_movement_lock(db, site_id, source_area, it["product_id"], max_wait_seconds=30 if retry_on_lag else 5)
+        if not lock_key:
+            per_item.append({"po_number": it["po_number"], "item_number": it["item_number"], "product_id": it["product_id"], "ok": False, "error": "Another movement for this exact material/area is in progress - try again shortly"})
+            all_ok = False
+            continue
         try:
-            result = goods_movement_client.goods_movement(
-                owner_party_id=owner_party_id, product_id=it["product_id"],
-                source_logistics_area_id=source_area, target_logistics_area_id=warehouse_id,
-                quantity=qty, quantity_uom=it.get("unit_of_measure") or "EA", site_id=site_id,
-                dry_run=False, target_stock_status_code=stock_status,
-            )
-        except Exception as e:
-            result = {"ok": False, "error": str(e)}
+            attempts = len(_LAG_RETRY_DELAYS_SECONDS) + 1 if retry_on_lag else 1
+            result = {"ok": False}
+            for attempt in range(attempts):
+                stock_status = _resolve_source_stock_status(inventory_client, site_id, source_area, it["product_id"], qty)
+                try:
+                    result = goods_movement_client.goods_movement(
+                        owner_party_id=owner_party_id, product_id=it["product_id"],
+                        source_logistics_area_id=source_area, target_logistics_area_id=warehouse_id,
+                        quantity=qty, quantity_uom=it.get("unit_of_measure") or "EA", site_id=site_id,
+                        dry_run=False, target_stock_status_code=stock_status,
+                    )
+                except Exception as e:
+                    result = {"ok": False, "error": str(e)}
+                if result.get("ok") or "no inventory items found" not in (result.get("error") or "").lower():
+                    break
+                if attempt < attempts - 1:
+                    time.sleep(_LAG_RETRY_DELAYS_SECONDS[attempt])
+        finally:
+            _release_movement_lock(db, lock_key)
         if not result.get("ok"):
             all_ok = False
+            # Sep 20 2026: escalate to a clear "needs manual check" note
+            # after repeated genuine failures on the SAME line, instead
+            # of looping forever as an unremarkable "pending" - mirrors
+            # the existing sap_gr_retry_count escalation pattern used for
+            # Goods Receipt retries.
+            retry_count = (prev.get("retry_count", 0) if prev else 0) + 1
+            result["retry_count"] = retry_count
+            if retry_count >= MAX_MOVEMENT_RETRIES_BEFORE_ESCALATION:
+                result["needs_manual_check"] = True
+                result["note"] = "Repeated failures moving this stock in SAP - needs a manual stock check in SAP (see error above)"
         per_item.append({"po_number": it["po_number"], "item_number": it["item_number"], "product_id": it["product_id"], **result})
     return {"ok": all_ok, "per_item": per_item}
 
@@ -1444,7 +1555,12 @@ def retry_goods_movement(db, doc_code: str, goods_movement_client, inventory_cli
     if not doc.get("site_id") or not doc.get("warehouse_id"):
         raise ShipmentValidationError("This shipment has no warehouse recorded to retry into")
     skipped_line_items = _skipped_line_items_from_gr_results(doc, (doc.get("sap_gr_result") or {}).get("per_po"))
-    sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id, doc["site_id"], doc["warehouse_id"], skipped_line_items)
+    # Sep 20 2026: retry_on_lag=True - by the time a Retry is possible,
+    # the Goods Receipt (and, usually, Put Away) already happened, so a
+    # "No inventory items found" here is the known SAP ledger-propagation
+    # lag (see _post_goods_movement_for_items's docstring), worth a couple
+    # of retries rather than an instant give-up.
+    sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id, doc["site_id"], doc["warehouse_id"], skipped_line_items, retry_on_lag=True)
     sap_movement_status = "posted" if sap_movement_result.get("ok") else "pending"
     db[SHIPMENTS_COLLECTION].update_one(
         {"_id": doc["_id"]},
@@ -1557,7 +1673,10 @@ def manually_confirm_inbound_delivery(db, doc_code: str, po_number: str, inbound
     update = {"sap_gr_result": {"ok": all_ok, "per_po": per_po}, "sap_sync_status": sap_sync_status}
     if all_ok and doc.get("sap_movement_status") != "posted" and goods_movement_client and doc.get("site_id") and doc.get("warehouse_id"):
         skipped_line_items = _skipped_line_items_from_gr_results(doc, per_po)
-        sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id, doc["site_id"], doc["warehouse_id"], skipped_line_items)
+        # Sep 20 2026: retry_on_lag=True - this runs from the background
+        # Delivery ID auto-fetch loop, always after the GR (and usually
+        # Put Away) already happened, same lag risk as retry_goods_movement.
+        sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id, doc["site_id"], doc["warehouse_id"], skipped_line_items, retry_on_lag=True)
         update["sap_movement_status"] = "posted" if sap_movement_result.get("ok") else "pending"
         update["sap_movement_result"] = sap_movement_result
     db[SHIPMENTS_COLLECTION].update_one({"_id": doc["_id"]}, {"$set": update})

@@ -135,6 +135,27 @@ on P1 despite its missing "with task" model) - see same file's dedicated section
 ## Backlog
 
 ### P0
+- **"Query Goods And Activity Confirmations" ABAP dump - needs SAP support, NOT further app-side
+  work** (updated Sep 20 2026, was "Warehouse Order/Confirmation SAP query integration" above).
+  Communication Arrangement WAS enabled by user's Basis team (endpoint:
+  `.../sap/bc/srt/scs/sap/querygoodsandactivityconfirma1`, operation
+  `FindInventoryChangeItemOverviewSimpleByElements`, service `QueryGoodsandActivityConfirmationIn`)
+  and its response schema has EXACTLY the fields needed (`GoodsAndActivityConfirmationID`,
+  `InventoryManagedQuantity`, `InventoryMovementDirectionCode`, logistics area + product + stock
+  status) to get real post-Put-Away ground truth. WSDL obtained and request schema figured out
+  (namespace MUST be `http://sap.com/xi/SAPGlobal20/Global`, NOT the WSDL's own declared
+  `http://sap.com/xi/A1S/Global` - confirmed via provider-side error log "message ... not
+  supported"). **Live-proven root cause of the remaining failure**: querying with NO matching
+  confirmation (e.g. a nonexistent/wrong ID) returns a valid empty 200 response; querying with a
+  REAL, existing `SelectionByConfirmationID` (confirmed via a genuine GACID from our own successful
+  Goods Movement, e.g. `280234`) causes an ABAP dump ("ASSIGN on empty generic box") on SAP's
+  side while trying to serialize the actual matching record. Also confirmed the nested
+  `SelectionByInventoryLocationLogisticsAreaKeySiteID`/`...MaterialKeyProductID` filter paths
+  crash the same way even with zero real matches. **This is a genuine bug/gap in SAP's own
+  implementation for this tenant, not a request-shape problem** - next session (or the user's SAP
+  consultant/support) should open a ticket with these exact repro details (working WSDL/namespace,
+  the crash only on real-data SelectionByConfirmationID lookups) rather than re-attempting request
+  variations from scratch.
 - Phase 5: External QMS feed
 - Wire proven direct-SOAP Vendor GRN posting (`sap_inbound_delivery_notification_client.py`,
   see SOAP_GRN_BREAKTHROUGH doc) into `supplier_shipment_service.py` production code,
@@ -356,3 +377,201 @@ issuing the movement there instead of failing.
 - Not yet run through `testing_agent` as a dedicated pass this session (backend-only Python logic
   change, verified directly against live SAP + live Mongo state instead, per user's original
   request to use "backend testing agent / manual python -c").
+
+## Sep 20 2026 SAME-DAY CORRECTION - the fix above was WRONG, reverted + replaced with the real fix
+
+User pushed back with a real SAP screenshot (`Warehouse Confirmation Overview: 280188`, referencing
+PO 29724 / Warehouse Order 101571 / Inbound Request 86431) showing SAP's own double-entry Put Away
+posting: `+` lines into Logistics Area **P8-HOLD** for BOXPWCL4/G12LW/G12FW (3/2/2 EA), `-` lines out
+of the generic receiving "Location" for the same qty/materials. This is DIRECT, document-level proof
+that the Put Away Task's reported target area (`P8-HOLD`) was CORRECT all along for these products -
+contradicting the conclusion above.
+
+**Root cause of the WRONG conclusion**: the "live inventory check" used above
+(`sap_inventory_client.get_inventory_detail`) reads SAP's On-Hand Inventory **analytics report** (an
+OLAP cube on data source SCMINVV02), not a live transactional query. Two problems with trusting its
+aggregate quantity to decide "stock is already at the target, skip the move":
+1. **It can't distinguish THIS delivery's specific units from unrelated pre-existing stock.** These
+   materials have no batch/serial tracking, so P8-RM already showing "more than enough" qty could
+   simply be older, unrelated stock that has nothing to do with this shipment - not proof this
+   delivery's units ever moved there. This is a structural flaw, not just a timing issue.
+2. It may also lag behind SAP's real-time stock ledger (same class of indexing delay already
+   documented elsewhere in this codebase for other SAP analytics reports).
+Net effect: the Sep 20 "fix" was giving **false positives** ("already at target, skip") for
+shipments where the stock was genuinely still sitting in the correct staging area (P8-HOLD) and had
+simply not been moved yet - masking a real problem instead of fixing it.
+
+**What was ACTUALLY happening with S000013**: the Put Away Task hint (`P8-HOLD`) was right the whole
+time. The Goods Movement call rejecting it with "No inventory items found" was a genuine SAP-side
+**ledger propagation lag** - `_auto_finish_full_auto_grn` (server.py) only waits ~8s after Put Away
+confirms before firing the one-shot `retry_goods_movement` call; SAP's Warehouse Confirmation can
+post successfully (as line 280188 proves) while the separate stock ledger the Goods Movement SOAP
+service reads from hasn't caught up yet within that short window. There was never a wrong target
+area to find - the movement just needed to be retried a bit later.
+
+**Actual fix** (`/app/backend/supplier_shipment_service.py`):
+- Reverted `_find_actual_source_area` back to the original `_resolve_source_stock_status` (trusts
+  the Put Away Task's hint area directly, only resolves stock status against it - no more aggregate
+  "already there" guessing).
+- `_post_goods_movement_for_items` restored to resolving `source_area` from
+  `put_away_target_areas_by_po` (the hint) with the plain `source_area == warehouse_id` string-match
+  skip (unchanged, pre-existing, still valid - that's a literal identity check, not an aggregate
+  quantity guess).
+- **New**: added `retry_on_lag: bool = False` parameter. When `True`, if SAP rejects the movement
+  with "No inventory items found" specifically, retries the SAME call up to 2 more times with a
+  20s/40s backoff before giving up (real ledger-propagation lag, not a data problem - matches the
+  same "eventually consistent, just needs a beat" pattern already used elsewhere in this codebase,
+  e.g. the Put Away Task / Delivery ID lookups). Any OTHER error (wrong ID, auth, etc.) still fails
+  immediately on the first attempt, unchanged.
+  - `retry_on_lag=True` passed from `retry_goods_movement` (the Retry button, and
+    `_auto_finish_full_auto_grn`'s post-Put-Away auto-retry) and `manually_confirm_inbound_delivery`
+    (the background Delivery ID auto-fetch path) - both only ever run AFTER the Goods Receipt (and
+    usually Put Away) already happened, so the lag is the realistic failure mode there.
+  - Left at the default `False` (no retry, fails fast) for the very FIRST synchronous call inside
+    `finalize_goods_receipt`, which runs BEFORE Put Away has even started - failing there is normal/
+    expected (the real target isn't known yet), no reason to add delay to the fast synchronous path.
+
+**Live verification (no mocks)**: re-ran `retry_goods_movement` for S000013 the same way as before -
+this time with the corrected code, using the (correct) `P8-HOLD` hint directly rather than any
+aggregate-inventory guess. Result: **4 of 5 items succeeded for real** (BOX757520 -> GACID 280233,
+BOXPWCL4 -> 280234, G12LW -> 280242, G12FW -> 280235, all genuine SAP-assigned document numbers,
+confirmed the ledger-propagation-lag theory was correct - `P8-HOLD` DID have the stock, it just
+wasn't visible to the Goods Movement service on the very first attempt right after Put Away). DB
+correctly reflects the honest partial state: `sap_movement_status="pending"`, `sap_movement_result.
+ok=False` (NOT falsely "posted" like the earlier wrong fix claimed).
+
+**Remaining genuine issue, item 1 (BOX706025) only**: SAP rejected with a DIFFERENT, more specific
+fault this time - `HTTP 500: "Negative stock not permitted in logistics area P8-HOLD, material
+BOX706025"` - not the generic "No inventory items found" from before. This is SAP correctly saying
+there is truly zero/insufficient BOX706025 at P8-HOLD right now, most likely because this dummy test
+PO (29724) has been reused across MULTIPLE test shipments (S000012, S000013, S000014, S000015 all
+visible in the GRN Approval table) that all draw from the same underlying, non-batch-tracked P8-HOLD
+stock pool for the same material - an artifact of repeated test-data reuse on a live PO, not a code
+bug. Left as a genuine, correctly-surfaced SAP error (retry button still available) rather than
+silently forced/faked - needs the user to confirm in SAP whether BOX706025 stock still needs a
+manual top-up/correction for this specific line, or whether this line's receipt was already
+consumed by an earlier test shipment's real movement.
+
+**Lesson for future sessions**: SAP's On-Hand Inventory analytics report (`sap_inventory_client.
+get_inventory_detail`) is fine for read-only DISPLAY purposes (Inventory page, BOM component stock
+panel) but must NOT be used to make automated "is the stock already there" decisions for fungible,
+non-batch-tracked materials - it cannot prove a specific delivery's units are in a specific place,
+only that SOME stock (possibly unrelated) currently sits there. Prefer trusting the transactional
+document (Put Away Task's own TargetLogisticsAreaID, Warehouse Confirmation) as the source of truth,
+and handle SAP-side propagation lag with a bounded retry instead of a "verify via aggregate report"
+workaround.
+- Not run through `testing_agent` this session either (same backend-only Python logic scope,
+  verified directly against live SAP + live Mongo state per user's original testing preference).
+
+## Sep 20 2026 SECOND correction (same day) - real idempotency bug found, NOT a multi-inbound-per-PO problem
+
+User pushed back again on the "test-data exhaustion" framing above with a real production concern:
+"in the real entry we received multi inbound for the single PO so the issue needs to be resolved" -
+correctly refusing to accept "it's just test data" as a real answer, since multiple genuine
+inbound deliveries against one PO IS a normal real scenario this app must handle correctly.
+
+**Investigation**: tried to verify via SAP's own "Warehouse Order"/"Warehouse Confirmation" object
+(what the user's screenshot showed, ID 101571/280188) as the authoritative post-execution source -
+confirmed this needs a brand NEW SAP Communication Arrangement (not yet integrated, would need the
+user's SAP Basis team, same as the earlier Site Logistics Task setup). Also confirmed a confirmed
+Put Away Task disappears entirely from `find_tasks_for_site`'s query results (live-tested: queried
+128 open P8 tasks, none of the 3 already-confirmed S000013/14/15 tasks appeared) - so there's no way
+to re-verify a task's real post-execution outcome through that channel either.
+
+**While re-testing to investigate, found the ACTUAL bug**: `_post_goods_movement_for_items` had NO
+per-item memory of a previous attempt. Every call (and `retry_goods_movement`/the Retry button can
+legitimately be called more than once - by a user, AND automatically by
+`_auto_finish_full_auto_grn`) re-attempted EVERY line item from scratch, including ones that had
+ALREADY genuinely posted to SAP on an earlier attempt (real GACID document numbers: 280234, 280235,
+280236, 280204 were all confirmed real successes from earlier retries in this same debugging
+session). Re-sending an already-completed movement to SAP a second time correctly gets rejected
+("Negative stock not permitted" once there's nothing left) - but this app was overwriting the
+ORIGINAL success in `sap_movement_result` with that second, spurious failure, making a fully-
+successful line look permanently broken. **This is what was actually causing most of the "Negative
+stock" failures reported above - not multiple real deliveries genuinely exhausting shared stock.**
+
+**Fix** (`_post_goods_movement_for_items`, `/app/backend/supplier_shipment_service.py`): now builds
+`previous_by_item` from the shipment's OWN existing `sap_movement_result.per_item` (from the doc
+passed in) before processing anything, and skips (carries the prior entry over unchanged) any line
+whose previous attempt already came back `ok=True` - only genuinely still-failed or never-attempted
+lines get sent to SAP again on a retry.
+
+**Data repair**: manually restored the 4 real successes that had been overwritten by the duplicate-
+retry bug before this fix landed (S000013: BOXPWCL4->GACID 280234, G12FW->280235; S000014:
+BOX706025->280236, G12LW->280204) - confirmed these were genuine SAP postings from earlier in this
+same debugging session, not fabricated.
+
+**Re-tested cleanly after the fix** (one retry_goods_movement call per shipment, idempotency
+confirmed working - already-`ok=True` lines were correctly skipped, not re-sent):
+- S000013: 4/5 lines genuinely posted (BOX757520, BOXPWCL4, G12LW, G12FW all real GACIDs).
+  BOX706025 (3 EA) still genuinely fails - "No inventory items found".
+- S000014: 2/4 lines genuinely posted (BOX706025, G12LW, real GACIDs). BOX757520 (6 EA) and G12FW
+  (2 EA) still genuinely fail - "Negative stock not permitted" (confirmed NOT a transient/duplicate
+  issue - retried a 2nd time after the fix, same real rejection both times).
+- S000015: 0/3 lines - all 3 (G12FW, G12LW, BOXPWCL4) still genuinely fail.
+
+**Honest remaining conclusion**: after removing the self-inflicted duplicate-retry noise, there IS
+still a real, smaller shortfall for some lines (e.g. G12LW: 9 EA confirmed across 3 Put Away tasks,
+only 7 EA have ever successfully moved - 2 EA short) - meaning SAP's Site Logistics Task confirm
+reporting "Fulfilled Quantity now matches Planned Quantity" does NOT reliably guarantee the full
+planned quantity always lands as real, movable stock at the reported target area. This IS the
+genuine multi-inbound-per-PO gap the user flagged, and it can only be conclusively resolved by
+querying the real Warehouse Order/Confirmation execution result (the new SAP integration discussed
+above, needs a new Communication Arrangement from the user's Basis team) - not fixable purely in
+app logic without that ground-truth source. Flagged as a carried-over P0/P1 item, not silently
+closed.
+- Not run through `testing_agent` this session (same backend-only Python logic scope, verified
+  directly against live SAP + live Mongo state).
+
+## Sep 20 2026 THIRD fix (same day) - real (site, area, product) race condition + escalation, and the SAP Query Goods/Activity Confirmation dead end
+
+**New Communication Arrangement obtained**: user's Basis team enabled "Query Goods And Activity
+Confirmations" (`QueryGoodsandActivityConfirmationIn`, endpoint `.../querygoodsandactivityconfirma1`)
+specifically to get real post-Put-Away ground truth (see updated P0 backlog entry above for the
+full investigation) - conclusively proven to be a genuine SAP-side ABAP dump bug on THIS tenant for
+any real-data lookup (`ASSIGN on empty generic box`), not something fixable from our app. Logged
+in detail in the backlog for a future SAP support ticket; not pursued further this session.
+
+**Real bug found while stress-testing the retry fix**: `_post_goods_movement_for_items` had no
+protection against two shipments' movements for the EXACT same (site, logistics area, product)
+running concurrently - a real risk given multiple deliveries can legitimately land in the same
+staging area for the same material (as confirmed happened with S000012-S000015 all sharing PO
+29724's P8-HOLD stock). User explicitly asked for a "foolproof fix" after the idempotency fix alone
+still left this race condition unaddressed.
+
+**Fix** (`/app/backend/supplier_shipment_service.py`):
+- New `supplier_portal_movement_locks` Mongo collection with a TTL index (`expireAfterSeconds=180`)
+  - a crashed process can never permanently hold a lock.
+- `_acquire_movement_lock(db, site_id, area, product_id, max_wait_seconds)` / `_release_movement_
+  lock`: simple try-insert mutex keyed on `"{site}|{area}|{product}"`. Bounded wait, never
+  indefinite - callers get `None` (treated as "temporarily busy, try again shortly") if the wait
+  expires, never hang forever.
+- Wired into `_post_goods_movement_for_items`'s per-item loop: lock held only around that ONE
+  item's actual SAP call (+ its internal lag-retries), released immediately after (success or
+  failure) via `finally`. Wait budget: 5s for the fast synchronous first attempt (`finalize_goods_
+  receipt`, `retry_on_lag=False`), 30s for the already-tolerant-of-lag retry paths (`retry_on_lag=
+  True`) - keeps worst-case total time in the same order as before (~2 min for a genuinely stuck
+  item), just slightly larger, never unbounded.
+- **Escalation**: each per-item result now carries a `retry_count` (carried over and incremented
+  from the previous attempt's stored count). After `MAX_MOVEMENT_RETRIES_BEFORE_ESCALATION = 3`
+  genuine failures on the same line, it gets `needs_manual_check: True` + a clear note instead of
+  silently staying "pending" forever - mirrors the existing `sap_gr_retry_count` pattern already
+  used for Goods Receipt retries.
+- `ensure_indexes(db)` updated to create the new TTL index at startup (same place all this app's
+  other indexes are created).
+
+**Live-verified** (no mocks): tested the lock directly (acquire -> second attempt correctly
+returns busy -> release -> re-acquire succeeds). Re-ran `retry_goods_movement` for S000013 with the
+lock/escalation code live: the 4 already-successful lines stayed correctly untouched (idempotency
+still solid alongside the new lock), BOX706025 got a real, lock-protected retry attempt and is now
+showing `retry_count=1` (will escalate to `needs_manual_check=True` after 2 more genuine failures
+instead of looping forever unremarked). Backend restarted clean, no errors.
+
+**Current honest end state of the 3 test shipments** (S000013/14/15, all sharing test PO 29724):
+mix of genuinely-succeeded lines (real SAP GACIDs) and genuinely-still-failing lines (real SAP
+"Negative stock"/"No inventory items found" - now correctly retried, locked, and will escalate
+after 3 tries instead of hanging silently). Not artificially forced to "success" - this is real
+SAP state, limited only by the still-open P0 backlog item above (SAP-side query bug) for full
+ground-truth verification.
+- Not run through `testing_agent` this session (same backend-only Python/Mongo logic scope,
+  verified directly with live lock tests + live SAP retries).
