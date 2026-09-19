@@ -774,6 +774,14 @@ Everything below is confirmed intact/current EXCEPT the STO Goods Issue code, wh
 - "Act as Supplier" only shows 4 accounts (2 real vendor codes RAD-P2-S/H1330 + 1 duplicate H1330 signup + 1 dummy S9999) - CONFIRMED NOT A BUG, this is real data (Supplier Portal signup+approval flow only, separate from full SAP vendor master, no display limit found in code - frontend caps at 8 when unsearched, backend has no limit at all).
 - **STO**: `try_post_goods_issue()` in `stock_transfer_service.py` is back to EXACTLY the deployed baseline (releases first delivery found immediately, no full-coverage wait) - the investigation below's code fix was tried live then explicitly reverted per user's ask. Do not re-apply that fix without the user's explicit go-ahead.
 
+## STO Inbound Receiving re-investigation (Sep 19 2026, re-confirmed DEAD via KBA 2691388 hypothesis)
+User challenged the "definitively dead" conclusion with SAP KBA 2691388 (direct PGR needs receiving site's "Standard Receiving, Without Tasks" Logistics Model to be active+Consistent). Re-tested live and specifically:
+- Confirmed P8 already has BOTH `EM1` (task-based, created 18-Sep-2026, used for vendor GRN Site Logistics Task automation - don't touch) AND `REC_P8` (Standard Receiving, Without Tasks: Yes, Consistent, since 26-Apr-2023) - exactly the config KBA 2691388 says should support direct PGR.
+- Created a brand-new STO (STO-000123, order 32514, P1->P8, IRON-SCR 5 KGM), posted real GI (Outbound Delivery P1D1-560), then called `InboundDeliveryRelease` then `InboundDeliveryPGRBackground` directly on the fresh Inbound Delivery Notification (same ID, 1:1 mapping re-confirmed) before any UI touch.
+- Result: **identical "action is disabled" on BOTH calls**, even with the correct no-task model present and "Check Consistency" reporting clean. Rules out "missing/wrong Logistics Model" as the cause.
+- Conclusion still DEAD, but now with a fuller, evidence-backed ticket - see `/app/memory/SAP_SUPPORT_TICKET_DRAFT_InboundPGR.md` (rewritten this session with both KBA 3583076 + 2691388 and cross-referencing today's outbound-side MDRO/Execute-disabled finding as likely the same root tenant-level gap).
+- **Leftover real-world state**: STO-000123 has GI posted (P1D1-560) but is NOT yet received at P8 - 5 KGM IRON-SCR sitting un-received (low-value scrap, but flagging so it doesn't get lost - needs a manual PGR in SAP UI, or let the normal Playwright-based `inbound_receipt_service.py` flow pick it up whenever that job next runs for this STO).
+
 ## Multi-line STO Goods Issue automation investigation (Sep 19 2026, closed - reverted to deployed baseline)
 
 **User's ask**: fix multi-line STOs ending up with one Outbound Delivery PER LINE instead of one combined delivery, using only standard SOAP/OData (no Playwright/ABSL/Cloud Applications Studio), fully automated.
