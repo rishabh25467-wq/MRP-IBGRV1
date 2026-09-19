@@ -575,3 +575,45 @@ SAP state, limited only by the still-open P0 backlog item above (SAP-side query 
 ground-truth verification.
 - Not run through `testing_agent` this session (same backend-only Python/Mongo logic scope,
   verified directly with live lock tests + live SAP retries).
+
+## Sep 20 2026 FOURTH change (same day) - simplified GRN flow: removed movement automation + one action button globally
+
+**User's explicit ask** (after seeing today's SAP goods-movement issues): remove the "Create SAP
+Notification" button entirely (all sites), rename "Test Full Automated GRN" -> "Post GRN in SAP"
+and enable it for ALL sites (was P8-only), strip the Put Away confirmation + Goods Movement
+automation out of that flow entirely (GRN-only, no warehouse relocation), and remove the
+"Warehouse" dropdown from the UI. User confirmed they are creating the required EM1-equivalent
+SAP logistics models for all sites, so lifting the P8-only restriction is safe.
+
+**Pre-change snapshot**: `/app/memory/pre_change_grn_buttons_snapshot.md` documents exactly what
+existed before, for revert reference (use platform Rollback for an actual code revert).
+
+**Changes**:
+- `supplier_shipment_service.finalize_goods_receipt`: new `skip_movement: bool = False` param -
+  when True, sets `sap_movement_status="not_applicable"` + a clear `sap_movement_result` reason,
+  skips `_post_goods_movement_for_items` entirely.
+- `server.py` `_start_full_auto_grn_job`: now calls `finalize_goods_receipt(..., skip_movement=True)`
+  and no longer schedules `_auto_finish_full_auto_grn` (no Put Away confirm, no Goods Movement,
+  no lock/retry/escalation machinery from earlier today runs at all for NEW approvals going
+  forward - that machinery still exists in the code for if/when movement is re-enabled later).
+  `FULL_AUTO_GRN_SITE_ALLOWLIST` removed entirely from the `/approve-full-auto` endpoint.
+- `GrnApprovalPage.jsx`: removed "Create SAP Notification" button + its endpoint path entirely
+  from the UI, removed the "Warehouse" Select (kept the underlying auto-fetch/auto-select state
+  logic running invisibly so the API payload still gets a sensible `warehouse_id` value), renamed
+  remaining button "Post GRN in SAP", removed its `siteId !== "P8"` disabled condition, updated
+  the confirm dialog title/description/summary to match (Site only, no Warehouse row, explicit
+  "warehouse movement is not performed" text).
+
+**Tested via `testing_agent`** (iteration 186, 100%/100%): confirmed "Create SAP Notification"
+button fully removed from DOM, "Post GRN in SAP" label correct, Warehouse select fully removed,
+`/approve-full-auto` no longer 400s for non-P8 sites (now reaches the shipment-lookup 404 instead,
+proving the allowlist check is gone), `finalize_goods_receipt` code-reviewed and confirmed to skip
+movement correctly when `skip_movement=True`. No regressions to Reject/Mark Discrepancy/other
+buttons. Minor non-blocking cosmetic note: confirm dialog's Site row could show blank if no site
+selected yet - not fixed, low priority, left as-is.
+- The Goods Movement lock/idempotency/escalation code from earlier today (see prior 3 session
+  entries above) is UNCHANGED and still fully in place in `supplier_shipment_service.py` - it's
+  just not currently being triggered by new GRN approvals anymore, since Put Away/movement is
+  skipped by design now. It would need to be explicitly re-wired (remove `skip_movement=True`,
+  restore the `_auto_finish_full_auto_grn` scheduling) if/when warehouse automation is turned
+  back on for this flow in a future session.
