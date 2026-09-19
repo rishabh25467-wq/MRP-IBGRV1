@@ -52,6 +52,11 @@ are two DIFFERENT things, only the latter was meant to be skipped.
   S000016 was affected (every full-auto GRN before/after this incident window already had
   `put_away_confirmed: True`).
 
+- Confirmed (Sep 20 2026, same-day follow-up): the S000021/Delivery 53751 "Fulfilled Quantity: 0"
+  screenshot was SAP propagation lag, not a broken fix - re-queried the confirmation report
+  minutes later and CONF_QUAN/INV_QUAN now show the real confirmed quantities matching planned
+  qty for all 4 products. The Put Away Task confirmation fix above is genuinely working end-to-end.
+
 ## Completed this session (Sep 20 2026 fork continuation)
 - Fixed GRN Approval frontend bug: form validation still required `warehouseId`
   after the Warehouse dropdown was removed from the UI - blocked ALL GRN
