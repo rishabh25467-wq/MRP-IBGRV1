@@ -155,6 +155,12 @@ LOOKBACK_IDS = 450
 # higher, non-PO/phantom ID already pushed the watermark past it can
 # still be found.
 RECENT_WINDOW_SAFETY_MARGIN_IDS = 450
+# Sep 20 2026, user's explicit ask - see fetch_full_window's own
+# docstring. Generous headroom above the largest "still open" PO age
+# range actually observed live on this tenant (~5500 IDs) - wide enough
+# to comfortably cover every genuinely open PO without re-scanning this
+# tenant's ENTIRE multi-year PO history every 4 hours.
+FULL_REFRESH_LOOKBACK_IDS = 8000
 
 # Sep 14 2026 CRITICAL bug fix (real incident, user report: vendor P3267
 # had 5 genuinely "In Process" POs in SAP - 27601/28255/28467/29027/
@@ -474,6 +480,29 @@ class SAPPurchaseOrderClient:
             {"$set": {"max_po_id": current_max, "updated_at": datetime.now(timezone.utc)}},
             upsert=True,
         )
+        return {"rows": rows, "lower_bound": lower_bound}
+
+    def fetch_full_window(self) -> dict:
+        """Sep 20 2026, user's explicit ask ("build a cache that is made
+        every four hours... for ALL purchase orders") - unlike
+        fetch_recent_window (ID-range delta only, fast, 10-min cadence)
+        this does one comprehensive sweep over the whole realistic "still
+        open" PO age range, so it also catches CHANGES to an already-
+        cached PO (qty/price/status edits) - fetch_recent_window's own
+        ID-range approach can never see those, only brand new PO numbers.
+        Independent of WATERMARK_COLLECTION on purpose - this must never
+        perturb the fast loop's own cadence/state. Used by both the 4-
+        hour full-refresh background loop AND the "Pull Latest POs"
+        button (a manual pull is exactly an on-demand version of this
+        same full sweep - see server.py's _run_manual_po_refresh)."""
+        if not self.endpoint:
+            raise SAPPurchaseOrderNotConfiguredError(
+                "SAP Purchase Order lookup isn't wired up yet - waiting on the SAP SOAP/OData "
+                "endpoint (SAP_SOAP_PO_ENDPOINT) to be activated and shared for this tenant."
+            )
+        current_max = self._discover_current_max_po_id()
+        lower_bound = max(0, current_max - FULL_REFRESH_LOOKBACK_IDS)
+        rows = self._scan_between(lower_bound, current_max)
         return {"rows": rows, "lower_bound": lower_bound}
 
     def fetch_backfill_chunk(self, db) -> dict:

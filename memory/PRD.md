@@ -33,6 +33,27 @@ auto-detection (`try_post_goods_issue`) as a background poll, and a "Complete ST
 manual-confirm button (`check_manual_gi_completion`) as fallback. User explicitly confirmed
 (this session) to leave this as-is - do not restore old single-line automation.
 
+## Feature added - 4-hour full cache + fast/lightweight Pull (Sep 20 2026, same session)
+User's ask: build a 4-hour background full cache of ALL supplier POs (dashboard/act-as-supplier
+load fast either way, from cache), and make "Pull" only fetch new-or-changed POs, not redo
+everything.
+- New `sap_po_client.fetch_full_window()` - comprehensive sweep of the last
+  `FULL_REFRESH_LOOKBACK_IDS` (8000) PO IDs (vs the existing `fetch_recent_window`'s ID-delta-only
+  approach, which can find NEW POs fast but can never see a CHANGE - qty/price/status edit - to
+  an already-cached one, since it only looks at IDs above the watermark). Independent of
+  `sap_po_watermark` so it never perturbs the fast loop's own state.
+- New background loop `start_supplier_po_full_refresh_loop` (`server.py`) - runs
+  `fetch_full_window` + `refresh_all_vendor_caches` every 4 hours, catching both new POs and
+  edits to existing ones as a comprehensive safety net alongside the fast 10-min loop.
+- Decision: kept BOTH "Pull Latest POs" buttons (supplier dashboard + admin Act-as-Supplier) on
+  the FAST `fetch_recent_window` path (~75s-3min observed), not the new heavy `fetch_full_window`
+  (~5+ min observed under SAP load) - a live test of wiring Pull to the full window made the
+  button noticeably slower, contradicting the original "speed things up" ask. Catching "changes
+  to existing POs" is handled by the new 4-hour background job instead, not the on-demand button.
+- Also fixed a latent frontend bug while here: if a pull job is still "running" when the 40x5s
+  polling loop gives up, both buttons now correctly toast "still pulling, check back" instead of
+  wrongly claiming success.
+
 ## Bug fix - PO missing "even after pulling" (Sep 20 2026, same-day follow-up)
 Real user report: PO 29735 didn't show up even after clicking "Pull Latest POs". User confirmed
 29735 IS the tenant's actual highest real PO. Root cause: `_has_po_id_greater_than` (used by the

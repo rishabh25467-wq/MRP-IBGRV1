@@ -8016,6 +8016,14 @@ PO_MANUAL_REFRESH_COOLDOWN_SECONDS = 45
 
 async def _run_manual_po_refresh(job_id: str) -> None:
     try:
+        # Sep 20 2026, user's explicit ask ("when we click pull, it
+        # should only pull orders not already in the list") - stays on
+        # the FAST delta-only fetch_recent_window (not the heavy,
+        # multi-minute fetch_full_window below) so the button itself
+        # stays snappy. Catching "orders that have changes" (the other
+        # half of that ask) needs a comprehensive sweep no matter what -
+        # that's what the new 4-hour SUPPLIER_PO_FULL_REFRESH_INTERVAL_
+        # SECONDS background loop is for, not this on-demand button.
         fetch_result = await asyncio.to_thread(sap_po_client.fetch_recent_window, db)
         stats = await asyncio.to_thread(
             supplier_shipment_service.refresh_all_vendor_caches, db, fetch_result["rows"], fetch_result["lower_bound"],
@@ -9430,6 +9438,41 @@ async def start_supplier_po_cache_refresh_loop():
                 consecutive_failures += 1
                 logger.error(f"Supplier Portal PO cache background refresh failed: {e}")
             await asyncio.sleep(_next_loop_sleep(exc, SUPPLIER_PO_CACHE_REFRESH_INTERVAL_SECONDS, consecutive_failures, "Supplier Portal PO cache refresh loop"))
+
+    asyncio.create_task(loop())
+
+
+# Sep 20 2026, user's explicit ask ("build a cache that is made every
+# four hours in background for ALL purchase orders for suppliers") -
+# complements the 10-min fetch_recent_window loop above. That loop only
+# ever looks at NEW PurchaseOrderIDs (a delta), so it can never see a
+# CHANGE (qty/price/status edit) made to an already-cached PO.
+# fetch_full_window's comprehensive sweep catches both - see its own
+# docstring in sap_po_client.py.
+SUPPLIER_PO_FULL_REFRESH_INTERVAL_SECONDS = 4 * 60 * 60
+
+
+@app.on_event("startup")
+async def start_supplier_po_full_refresh_loop():
+    async def loop():
+        await asyncio.sleep(90)
+        consecutive_failures = 0
+        while True:
+            exc = None
+            try:
+                fetch_result = await asyncio.to_thread(sap_po_client.fetch_full_window)
+                stats = await asyncio.to_thread(
+                    supplier_shipment_service.refresh_all_vendor_caches, db, fetch_result["rows"], fetch_result["lower_bound"],
+                )
+                logger.info(f"Supplier Portal PO cache FULL background refresh complete: {stats}")
+                consecutive_failures = 0
+            except SAPPurchaseOrderNotConfiguredError:
+                pass
+            except Exception as e:
+                exc = e
+                consecutive_failures += 1
+                logger.error(f"Supplier Portal PO cache FULL background refresh failed: {e}")
+            await asyncio.sleep(_next_loop_sleep(exc, SUPPLIER_PO_FULL_REFRESH_INTERVAL_SECONDS, consecutive_failures, "Supplier Portal PO cache FULL refresh loop"))
 
     asyncio.create_task(loop())
 

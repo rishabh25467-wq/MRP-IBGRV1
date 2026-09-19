@@ -98,6 +98,8 @@ export default function ActAsSupplierPage() {
       }
       if (status === "error") {
         toast.error("Could not pull the latest POs from SAP - showing what we already had.");
+      } else if (status === "running") {
+        toast.info("Still pulling from SAP - check back in a moment.");
       } else {
         toast.success("Pulled the latest Purchase Orders from SAP.");
       }
