@@ -7998,6 +7998,64 @@ async def get_supplier_portal_purchase_orders(request: Request, as_vendor: str =
     return await _load_open_pos_for_vendor(vendor_code)
 
 
+# Sep 20 2026, user's explicit ask ("add option to pull") - a manual,
+# on-demand version of start_supplier_po_cache_refresh_loop's own fetch,
+# for a supplier who doesn't want to wait out the ~10 min background
+# cycle (see that loop's own docstring for why it's not simply always-
+# live: a single fetch is a global, all-vendor SAP scan that can take
+# 60-100s+, too slow to run inline in a page-load request). Runs as a
+# background job (job_store, same pattern as the full-auto GRN jobs)
+# so the request returns instantly and the frontend polls for it - a
+# short cooldown (PO_MANUAL_REFRESH_COOLDOWN_SECONDS) stops a page full
+# of impatient double-clicks from queuing up several redundant global
+# SAP scans at once (they'd all just serialize behind sap_semaphore's
+# shared cap of 3 concurrent SAP calls anyway - see sap_rate_limiter.py).
+PO_MANUAL_REFRESH_COLLECTION = "po_manual_refresh_state"
+PO_MANUAL_REFRESH_COOLDOWN_SECONDS = 45
+
+
+async def _run_manual_po_refresh(job_id: str) -> None:
+    try:
+        fetch_result = await asyncio.to_thread(sap_po_client.fetch_recent_window, db)
+        stats = await asyncio.to_thread(
+            supplier_shipment_service.refresh_all_vendor_caches, db, fetch_result["rows"], fetch_result["lower_bound"],
+        )
+        await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "result": stats, "error": None})
+    except Exception as e:
+        logger.error(f"Manual Supplier Portal PO cache refresh failed: {e}")
+        await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "error", "error": str(e)})
+
+
+@api_router.post("/supplier-portal/purchase-orders/refresh")
+async def post_supplier_portal_purchase_orders_refresh(request: Request):
+    await asyncio.to_thread(_require_supplier_account, request)
+    state = await asyncio.to_thread(db[PO_MANUAL_REFRESH_COLLECTION].find_one, {"_id": "latest"})
+    now = datetime.now(timezone.utc)
+    if state and state.get("job_id"):
+        job = await asyncio.to_thread(job_store.get_job, db, state["job_id"])
+        if job and job.get("status") == "running":
+            return {"job_id": state["job_id"], "status": "running"}
+        seconds_since = (now - state["triggered_at"]).total_seconds()
+        if job and job.get("status") != "error" and seconds_since < PO_MANUAL_REFRESH_COOLDOWN_SECONDS:
+            return {"job_id": state["job_id"], "status": job.get("status", "done"), "result": job.get("result")}
+    job_id = str(uuid.uuid4())
+    await asyncio.to_thread(job_store.create_job, db, job_id, {"status": "running", "kind": "manual_po_refresh"})
+    await asyncio.to_thread(
+        db[PO_MANUAL_REFRESH_COLLECTION].update_one, {"_id": "latest"}, {"$set": {"job_id": job_id, "triggered_at": now}}, True,
+    )
+    asyncio.create_task(_run_manual_po_refresh(job_id))
+    return {"job_id": job_id, "status": "running"}
+
+
+@api_router.get("/supplier-portal/purchase-orders/refresh/{job_id}")
+async def get_supplier_portal_purchase_orders_refresh(job_id: str, request: Request):
+    await asyncio.to_thread(_require_supplier_account, request)
+    job = await asyncio.to_thread(job_store.get_job, db, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Refresh job not found")
+    return {"status": job.get("status"), "error": job.get("error")}
+
+
 class ShipmentItemRequest(BaseModel):
     po_number: str
     item_number: str

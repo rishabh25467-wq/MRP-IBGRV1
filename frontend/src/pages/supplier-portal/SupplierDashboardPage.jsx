@@ -2,12 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Buildings, Package, PlugsConnected, Truck, MagnifyingGlass,
-  X, Eye, Flask, CheckCircle, CaretUp, CaretDown, CircleNotch,
+  X, Eye, Flask, CheckCircle, CaretUp, CaretDown, CircleNotch, ArrowsClockwise,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { toast } from "@/components/ui/sonner";
 import { supplierApi } from "@/lib/supplierPortalApi";
 import { useSupplierAuth } from "@/contexts/SupplierAuthContext";
 import { getMockQmsData } from "@/lib/qmsMockData";
@@ -78,6 +79,13 @@ export default function SupplierDashboardPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [successCode, setSuccessCode] = useState(null);
+
+  // Sep 20 2026, user's explicit ask ("add option to pull") - manual,
+  // on-demand PO refresh instead of waiting out the ~10 min background
+  // cache cycle. Polls the job status every 5s (real fetches take
+  // 60-100s+ - see POST /supplier-portal/purchase-orders/refresh's own
+  // docstring) and re-loads the PO list the moment it finishes.
+  const [pulling, setPulling] = useState(false);
 
   // Entity restriction ("mrp vendor side changes.docx", Sep 2026): a
   // vendor with POs from more than one buyer entity (RI/RT) must pick ONE
@@ -292,6 +300,31 @@ export default function SupplierDashboardPage() {
 
   const cartItems = Object.entries(cart).map(([key, v]) => ({ key, ...v }));
 
+  const pullLatestPos = async () => {
+    setPulling(true);
+    try {
+      const params = isImpersonating ? { as_vendor: vendorCode } : {};
+      const { data } = await supplierApi.post("/purchase-orders/refresh", {}, { params });
+      let jobId = data.job_id;
+      let status = data.status;
+      for (let i = 0; i < 40 && status === "running"; i++) {
+        await new Promise((r) => setTimeout(r, 5000));
+        const poll = await supplierApi.get(`/purchase-orders/refresh/${jobId}`);
+        status = poll.data.status;
+      }
+      if (status === "error") {
+        toast.error("Could not pull the latest POs from SAP - showing what we already had.");
+      } else {
+        toast.success("Pulled the latest Purchase Orders from SAP.");
+      }
+      await load();
+    } catch (e) {
+      toast.error("Could not pull the latest POs from SAP", { description: e.response?.data?.detail || e.message });
+    } finally {
+      setPulling(false);
+    }
+  };
+
   const submitShipment = async () => {
     setSubmitting(true);
     setSubmitError("");
@@ -373,6 +406,17 @@ export default function SupplierDashboardPage() {
         <div className="mt-6 flex items-center justify-between flex-wrap gap-3">
           <h2 className="font-heading text-lg font-bold text-[#0F172A]">Your {showAllPos ? "" : "Open "}Purchase Orders</h2>
           <div className="flex items-center gap-3 flex-wrap">
+            <Button
+              variant="outline"
+              onClick={pullLatestPos}
+              disabled={pulling}
+              className="h-8 rounded-sm border-[#E2E8F0] text-xs"
+              title="Don't want to wait? Pull the newest Purchase Orders from SAP right now."
+              data-testid="supplier-pull-latest-pos-button"
+            >
+              {pulling ? <CircleNotch size={13} className="mr-1.5 animate-spin" /> : <ArrowsClockwise size={13} className="mr-1.5" />}
+              {pulling ? "Pulling from SAP..." : "Pull Latest POs"}
+            </Button>
             <div className="flex items-center rounded-sm border border-[#E2E8F0] bg-white p-0.5" data-testid="supplier-po-filter-toggle">
               <button
                 type="button"

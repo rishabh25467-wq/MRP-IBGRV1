@@ -33,6 +33,20 @@ auto-detection (`try_post_goods_issue`) as a background poll, and a "Complete ST
 manual-confirm button (`check_manual_gi_completion`) as fallback. User explicitly confirmed
 (this session) to leave this as-is - do not restore old single-line automation.
 
+## Feature added - manual "Pull Latest POs" (Sep 20 2026, same session)
+User's ask ("add option to pull") - on-demand refresh so a supplier doesn't have to wait out the
+~10 min background PO cache cycle explained above.
+- `POST /api/supplier-portal/purchase-orders/refresh` - kicks off the SAME `fetch_recent_window` +
+  `refresh_all_vendor_caches` the background loop uses, as a `job_store`-tracked background task
+  (returns instantly, never blocks the request - a full fetch is a global all-vendor SAP scan,
+  60-100s+). A 45s cooldown (`po_manual_refresh_state` singleton doc) makes repeat clicks reuse
+  the same in-flight/just-finished job instead of queuing redundant global SAP scans.
+- `GET /api/supplier-portal/purchase-orders/refresh/{job_id}` - status poll.
+- Frontend: "Pull Latest POs" button on `SupplierDashboardPage.jsx` (next to the Open/All filter
+  toggle) - polls every 5s, shows a spinner while running, toasts on success/failure, then
+  reloads the PO table. Verified live end-to-end (real fetch against HAMIDI EXPORTS/H1330 vendor
+  data, cooldown dedup confirmed, UI screenshot confirmed).
+
 ## Root cause fix - stray "Moved to P8-RM" note (Sep 20 2026, same-day follow-up)
 Real user report: Confirmed GRNs list started showing a "Moved to P8-RM" badge again on
 S000020/S000021 after the Put Away Task fix above, even though "no warehouse movement" was the
