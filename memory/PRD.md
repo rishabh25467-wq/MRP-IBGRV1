@@ -764,6 +764,16 @@ selected yet - not fixed, low priority, left as-is.
   restore the `_auto_finish_full_auto_grn` scheduling) if/when warehouse automation is turned
   back on for this flow in a future session.
 
+## Stable checkpoint (Sep 19 2026, user's explicit instruction: "remember this state of the app throughout except STO as per last deployed version")
+Everything below is confirmed intact/current EXCEPT the STO Goods Issue code, which must stay exactly as last deployed (see investigation below - the `try_post_goods_issue()` experiment was reverted, not kept):
+- GRN qty-discrepancy gating (`GrnApprovalPage.jsx` `hasQtyDiscrepancy`, `grn-qty-mismatch-warning` banner) - live-tested, KEEP.
+- "Pull Latest POs" manual refresh buttons on Supplier Dashboard + Admin Act-as-Supplier page - KEEP.
+- 4-hour background full PO refresh loop (`start_supplier_po_full_refresh_loop`, `server.py`) - KEEP.
+- Fast delta-pull PO refresh endpoints (`/supplier-portal/purchase-orders/refresh`, `/admin/act-as-supplier/{account_id}/purchase-orders/refresh`) - KEEP.
+- PO 29735 out-of-order watermark safety margin fix (`RECENT_WINDOW_SAFETY_MARGIN_IDS`, `sap_po_client.py`) - KEEP.
+- "Act as Supplier" only shows 4 accounts (2 real vendor codes RAD-P2-S/H1330 + 1 duplicate H1330 signup + 1 dummy S9999) - CONFIRMED NOT A BUG, this is real data (Supplier Portal signup+approval flow only, separate from full SAP vendor master, no display limit found in code - frontend caps at 8 when unsearched, backend has no limit at all).
+- **STO**: `try_post_goods_issue()` in `stock_transfer_service.py` is back to EXACTLY the deployed baseline (releases first delivery found immediately, no full-coverage wait) - the investigation below's code fix was tried live then explicitly reverted per user's ask. Do not re-apply that fix without the user's explicit go-ahead.
+
 ## Multi-line STO Goods Issue automation investigation (Sep 19 2026, closed - reverted to deployed baseline)
 
 **User's ask**: fix multi-line STOs ending up with one Outbound Delivery PER LINE instead of one combined delivery, using only standard SOAP/OData (no Playwright/ABSL/Cloud Applications Studio), fully automated.
