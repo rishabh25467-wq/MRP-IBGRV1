@@ -8780,13 +8780,21 @@ async def _auto_finish_full_auto_grn(doc_code: str, po_numbers: list, site_id: s
     to first materialize the Put Away Task itself, which this function
     still has to poll for - that part alone isn't ours to speed up).
 
-    Sep 19 2026 addition: also re-runs the Goods Movement step
-    (`retry_goods_movement`) right after Put Away confirms, using the
-    real target area Put Away just discovered - fixes shipment
-    S000012/PO 29724's "No inventory items found" error, caused by
-    `finalize_goods_receipt`'s goods movement running synchronously
-    BEFORE Put Away (which now only confirms in the background) had even
-    happened yet.
+    Sep 20 2026, user's explicit ask ("eliminate any warehouse movement...
+    only complete GRN") REMOVED this whole function's scheduling for a
+    while - but that broke something this function's OWN docstring above
+    already explained: Put Away Task confirmation isn't "warehouse
+    movement" (moving received stock into a specific target warehouse,
+    `_post_goods_movement_for_items` below) - it's the SAP-side action
+    that actually finalizes the Goods Receipt at all (Fulfilled Quantity
+    stays 0 forever on the real Inbound Warehouse Request otherwise, live-
+    confirmed via SAP UI screenshot on shipment S000016/PO 29724 - status
+    stuck "Released", Delivery ID assigned but nothing ever received).
+    Re-added Sep 20 2026 (same day, user confirmed the distinction) -
+    Put Away Task confirmation always runs again now, but the goods
+    movement re-run block that used to follow it (`retry_goods_movement`)
+    is permanently REMOVED per the user's actual intent - only the
+    finalizing step, never the extra stock relocation into a warehouse.
     Fire-and-forget (asyncio.create_task) - never raises, never blocks."""
     pending_put_away = set(po_numbers) if (site_id and sap_site_logistics_query_client and sap_site_logistics_manage_client) else set()
     pending_delivery_id = set(po_numbers)
@@ -8809,7 +8817,6 @@ async def _auto_finish_full_auto_grn(doc_code: str, po_numbers: list, site_id: s
 
     for attempt in range(8):
         await asyncio.sleep(10 if attempt < 4 else 30)
-        any_confirmed_now = False
         for po_number in list(pending_put_away):
             events = []
             try:
@@ -8820,35 +8827,9 @@ async def _auto_finish_full_auto_grn(doc_code: str, po_numbers: list, site_id: s
                 result, events = {"confirmed": False, "target_areas": {}}, [f"Put Away confirm crashed: {e}"]
             if result["confirmed"]:
                 pending_put_away.discard(po_number)
-                any_confirmed_now = True
             await asyncio.to_thread(
                 supplier_shipment_service.mark_put_away_confirmed, db, doc_code, po_number, result["confirmed"], events, result["target_areas"],
             )
-        if any_confirmed_now:
-            # Sep 20 2026 fix (user's explicit ask - "delay the goods
-            # movement to ensure the prior process has completed,
-            # because currently it shows a weird looking error to the
-            # user"): was 8s, live-observed too short in some cases
-            # (S000013/14/15/17 all needed the internal retry-on-lag
-            # backoff to actually succeed) - widened so fewer shipments
-            # ever hit that transient failure/banner at all.
-            await asyncio.sleep(30)
-            # Sep 19 2026 fix (real incident, shipment S000012/PO 29724):
-            # the goods movement step already ran synchronously in
-            # finalize_goods_receipt, BEFORE Put Away was confirmed and
-            # BEFORE its real target area was known - re-run it now with
-            # that now-known area (see supplier_shipment_service.
-            # _post_goods_movement_for_items's own docstring; this
-            # retry_goods_movement call is a no-op if it already
-            # succeeded the first time).
-            try:
-                doc = await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
-                if doc.get("sap_movement_status") != "posted":
-                    await asyncio.to_thread(
-                        supplier_shipment_service.retry_goods_movement, db, doc_code, sap_goods_movement_client, sap_inventory_client, owner_party_id,
-                    )
-            except Exception as e:
-                logger.warning(f"Auto-retry goods movement failed for {doc_code} after Put Away confirm: {e}")
         await _check_delivery_ids()
         if not pending_put_away and not pending_delivery_id:
             return
@@ -8867,14 +8848,24 @@ def _start_full_auto_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> s
 
     Sep 20 2026, user's explicit ask ("eliminate any warehouse movement
     that u do today, only complete GRN" + "remove red button... keep
-    yellow button but rename it 'Post GRN in SAP'") - this is now the
-    ONLY GRN action button, for every site (was P8-only + a separate
-    "Create SAP Notification" button for other sites before). Per that
-    request, this stops at the Goods Receipt post - `skip_movement=True`
-    below, and no `_auto_finish_full_auto_grn` (Put Away confirm + Goods
-    Movement) is scheduled anymore. See /app/memory/pre_change_grn_
-    buttons_snapshot.md for the pre-change behavior/buttons if this ever
-    needs revisiting."""
+    yellow button but rename it 'Post GRN in SAP'") - `skip_movement=True`
+    below permanently skips step 2 (moving received stock into a specific
+    target warehouse, `_post_goods_movement_for_items`).
+
+    Sep 20 2026 CORRECTION (same day, real bug found live via SAP UI
+    screenshot on shipment S000016/PO 29724): the background Put Away
+    Task confirmation (`_auto_finish_full_auto_grn`) was ALSO removed
+    together with the above, on the wrong assumption that it was part of
+    "warehouse movement" - it is not. In this EM1 logistics model, Put
+    Away Task confirmation is what finalizes the Goods Receipt AT ALL
+    (SAP's own Inbound Warehouse Request stays "Released" with Fulfilled
+    Quantity permanently 0 until it's confirmed, real GR never actually
+    happens even though this app already reported "posted"). Re-scheduled
+    below - `_auto_finish_full_auto_grn` no longer touches Goods Movement
+    at all (that block was deleted from it), only Put Away confirm + the
+    existing Inbound Delivery ID auto-fetch. See /app/memory/pre_change_
+    grn_buttons_snapshot.md for the pre-change (pre-Sep-20) button
+    behavior if this ever needs revisiting."""
     job_id = str(uuid.uuid4())
     po_items = supplier_shipment_service.group_items_by_po_for_gr(doc)
     job_store.create_job(db, job_id, {
@@ -8893,6 +8884,9 @@ def _start_full_auto_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> s
             )
             final = await _attach_grn_display_fields(final)
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
+            posted_po_numbers = [r["po_number"] for r in gr_results if r.get("status") == "posted"]
+            if posted_po_numbers:
+                asyncio.create_task(_auto_finish_full_auto_grn(doc_code, posted_po_numbers, doc.get("site_id"), owner_party_id))
         except Exception as e:
             logger.error(f"Full-auto GRN job {job_id} ({doc_code}) failed: {e}")
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": str(e)})

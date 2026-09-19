@@ -33,6 +33,25 @@ auto-detection (`try_post_goods_issue`) as a background poll, and a "Complete ST
 manual-confirm button (`check_manual_gi_completion`) as fallback. User explicitly confirmed
 (this session) to leave this as-is - do not restore old single-line automation.
 
+## CRITICAL FIX - Put Away Task confirmation restored (Sep 20 2026, same session)
+Real production bug found via user's own SAP UI screenshot: shipment S000016/PO 29724 was
+marked "posted" by this app, but SAP's real Inbound Warehouse Request stayed "Released" with
+Fulfilled Quantity 0 for all 4 lines - the Goods Receipt never actually completed in SAP. Root
+cause: `_auto_finish_full_auto_grn` (Put Away Task confirmation, the SAP action that finalizes
+ANY Goods Receipt in this EM1 logistics model) was wrongly removed together with the separate
+"goods movement into a target warehouse" step when `skip_movement=True` was introduced - these
+are two DIFFERENT things, only the latter was meant to be skipped.
+- Fix: `_start_full_auto_grn_job` now re-schedules `_auto_finish_full_auto_grn` after a successful
+  post (only Put Away confirm + existing "Fetch from SAP" Inbound Delivery ID auto-fetch - the
+  Goods Movement retry block was permanently DELETED from that function, not just skipped).
+- `manually_confirm_inbound_delivery`'s own goods-movement block only fires if `warehouse_id` is
+  set on the shipment - it's now always empty string for full-auto GRNs (Warehouse dropdown
+  removed from UI), so no extra flag was needed to keep it a no-op.
+- Retroactively fixed S000016 live in SAP: confirmed its real Put Away Task (69222, PO 29724) -
+  Fulfilled Quantity now matches Planned Quantity, Delivery ID 53685 recorded. Verified only
+  S000016 was affected (every full-auto GRN before/after this incident window already had
+  `put_away_confirmed: True`).
+
 ## Completed this session (Sep 20 2026 fork continuation)
 - Fixed GRN Approval frontend bug: form validation still required `warehouseId`
   after the Warehouse dropdown was removed from the UI - blocked ALL GRN
