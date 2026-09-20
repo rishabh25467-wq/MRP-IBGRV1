@@ -50,7 +50,12 @@ def company_and_set_of_books_for_site(site_id: str):
 # staging area must use THIS as the real source, not blindly assume
 # "-HOLD" for every site. Other sites not listed here still default to
 # "-HOLD" (unchanged, no confirmed config change for them yet).
-SITE_INBOUND_STAGING_AREA_OVERRIDE = {"P8": "P8-RM"}
+# Sep 20 2026, real incident (STO-000127, site P2, products
+# SCR755WM/SCR512WM: "No inventory items found for external id...") -
+# live-confirmed via SAP's own inventory report that P2's Goods Receipt
+# ALSO lands straight into "P2-RM", same as P8's Sep 20 change above -
+# no stock ever sits in "P2-HOLD" for this site either.
+SITE_INBOUND_STAGING_AREA_OVERRIDE = {"P8": "P8-RM", "P2": "P2-RM"}
 
 
 def inbound_staging_area_for_site(site_id: str) -> str:
