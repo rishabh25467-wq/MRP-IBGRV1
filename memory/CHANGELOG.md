@@ -1725,3 +1725,13 @@ See git history / prior PRD versions for the full session-by-session log predati
   mistake). Shipment S000032 (PO 29744) now correctly shows "posted" with
   Inbound Delivery 53802, Put Away still pending/possibly stuck.
 
+6. User correction: P3 doesn't use a flat "P3-RM" source area like other
+   sites - it uses a granular bin-level location "P3-Z1-01-A" within RM.
+   `inbound_staging_area_for_site` now keeps a small
+   `SITE_INBOUND_STAGING_AREA_OVERRIDE` dict for this one exception,
+   defaulting to "{site}-RM" for every other site. Noticed twice during
+   this session: editing `sap_wip_clearing_client.py` specifically makes
+   uvicorn's `--reload` watcher hang after "Finished server process" (no
+   new worker starts) - `sudo supervisorctl restart backend` reliably
+   recovers it. Worth a look if this keeps happening on this file.
+

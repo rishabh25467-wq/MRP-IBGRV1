@@ -53,12 +53,18 @@ def company_and_set_of_books_for_site(site_id: str):
 # live-confirmed via SAP's own inventory report that P2's Goods Receipt
 # ALSO lands straight into "P2-RM" now. User confirmed live: every site
 # has now had the same EM-style logistics model rollout as P8, so this
-# is a blanket change, not a per-site exception list anymore - default
-# is now "{site}-RM" for every site. Old "{site}-HOLD" balances still
-# sitting in SAP from before each site's own rollout date are pre-
-# existing stock, not evidence that new receipts still land there.
+# is a blanket change, default is "{site}-RM" for every site.
+#
+# Sep 20 2026, user's explicit correction: P3 specifically uses a more
+# granular bin-level location within its RM warehouse, not the flat
+# "P3-RM" area itself - SITE_INBOUND_STAGING_AREA_OVERRIDE holds any
+# site whose real source area doesn't match the "{site}-RM" default.
+SITE_INBOUND_STAGING_AREA_OVERRIDE = {"P3": "P3-Z1-01-A"}
+
+
 def inbound_staging_area_for_site(site_id: str) -> str:
-    return f"{(site_id or '').strip().upper()}-RM"
+    site_id = (site_id or "").strip().upper()
+    return SITE_INBOUND_STAGING_AREA_OVERRIDE.get(site_id) or f"{site_id}-RM"
 
 
 def current_fiscal_period_and_year(today: date = None):
