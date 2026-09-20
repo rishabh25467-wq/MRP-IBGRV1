@@ -1,0 +1,18 @@
+{
+  "summary": "Verified the Put-Away Task failure fix on the GRN Approval page. Tested S000030 (PO 29742, site P2, material G12FW) and S000031 (PO 29743, site P7, material G12LW) end-to-end. Backend lookup returns sap_sync_status='put_away_failed' with a non-empty grn_alert_message containing the real SAP master-data error. Frontend correctly renders the new red 'Receipt Not Completed in SAP' badge (data-testid=grn-sap-put-away-failed-badge) in both the single-shipment banner and the Confirmed GRNs list, auto-opens the dismissible alert Dialog with the real SAP error text, and swaps the normal Retry/Reset-Retry buttons for the new 'Retry Put Away' button in the Confirmed detail dialog. POST /api/admin/grn/S000030/retry-put-away returned HTTP 200 and correctly flipped the shipment back to sap_sync_status='posted' momentarily (re-scheduling the Put Away confirmation loop) - no crash / no 500. Regression check on S000001 (a genuinely successful GRN) still shows the normal green 'Goods Receipt posted to SAP' banner.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "GrnApprovalPage.jsx is 1949 lines - exceeds the 700-line guideline; consider splitting into sub-components (StatusBanner, PutAwayAlertDialog, PendingList, ConfirmedList, ConfirmedDetailDialog) for maintainability. Not a bug, style-only feedback."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Reused synthetic Entra ID session (see /app/memory/test_credentials.md format). Seeded auth_users _id=test-tid:grn-testing-agent with role=super_admin, allowed_pages=[vendor_goods_receipt,supplier_portal_admin,admin], bound_sites=[P2,P7]. vms_session token: grntestingagent2026putawaytestingiter200xx (valid 2 days from Sep 20 2026).",
+  "seed_data_creation": "Only a synthetic auth session (above) was seeded. S000030 was momentarily flipped to sap_sync_status='posted' by the retry-put-away endpoint test, then explicitly reset back to 'put_away_failed' with the original grn_alert_message so the shipment is left exactly as it was before this test iteration. No new business/shipment data was created.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The 2 real put-away-failed shipments S000030 (P2, G12FW) and S000031 (P7, G12LW) remain in supplier_portal_shipments with sap_sync_status='put_away_failed' and grn_alert_message set - reuse them for any further UI regression. If retry-put-away is exercised again, either wait ~1-3 min for the retry loop to exhaust and status to fall back to put_away_failed, or manually reset the doc back the same way this iteration did.",
+  "rca of the issue": "N/A - this was a verification pass for main-agent's fix (not a bug hunt). All expected behavior confirmed on live app."
+}

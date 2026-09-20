@@ -1606,3 +1606,80 @@
 
 ## Earlier history (BOM Explorer, Inventory, Production Confirmation, Store Approval, Access Management, Entra SSO rollout, Purchasing Plan, MRP, etc.)
 See git history / prior PRD versions for the full session-by-session log predating 2026-08-24 continued 6 (STO/GI/GST work) - condensed here to keep this file manageable. Key standing features, all live and tested: Microsoft Entra ID SSO app-wide (roles: super_admin/admin/user, `bound_sites` for Store Approval site restriction), Production Confirmation (order creation, component stock check, SFG-only live refresh, Stop/cancel job handling), Store Approval (RM+QC live refresh, site-scoped), BOM Explorer + BOM Stock modal (search/filter/collapse/xlsx export), Purchasing Plan, L1/L2 Report, Quota Allocation, Supplier Master, Access Management, SAP connection status indicator on every page, Moving-Average-based costing everywhere (not Standard Cost).
+
+
+## Sep 20 2026 (fork continuation)
+
+1. **BOO/multi-step manufacturing feasibility (consultation only)**: confirmed
+   SAP's `ManageProductionBillofOperationsIn` write service is Create-only -
+   no insert/update into an EXISTING BOO via API, needs SAP UI or a Cloud
+   Applications Studio add-on. Live-tested the write endpoint (already
+   reachable on this tenant, same Communication Arrangement used for reads)
+   with a throwaway BOO ID across several schema variants - got only SAP's
+   generic unhelpful SOAP fault every time (same class of gotcha as the
+   earlier ECO 12-character length-limit incident). **BLOCKED**: need either
+   the real downloaded WSDL for "Manage Production Bill of Operations"
+   (Communication Arrangements screen) or a Web Service Error Log lookup for
+   Transaction ID `FA163E4794691FD1AD96F9D79149B8EA` (UTC 20260920055457) to
+   move forward without more blind trial-and-error.
+
+2. **Confirmed automatic GRN now works site-wide, not just P8** (user's
+   direct ask). Live-tested with real throwaway POs:
+   - Site P1 (vendor RAD-P2-S, PO 29741): FULL success incl. Put Away Task
+     confirmation ("Fulfilled Quantity now matches Planned Quantity").
+   - Site P2 (vendor RAD-P2-S, PO 29742) / Site P7 (vendor H1330, PO 29743):
+     GRN itself posted fine, but Put Away failed on a real, unrelated SAP
+     master-data gap (see #3) - not a site/EM-model limitation.
+   - Also reconfirmed (by reading the code) that warehouse movement
+     (`skip_movement=True`) is OFF globally by deliberate design (Sep 20
+     earlier session), not P8-specific. Staying that way - user explicitly
+     doesn't want it re-enabled ("P8 working perfectly, why enable it
+     again").
+
+3. **Real incident + fix - misleading "Posted" status**: user reported 2 real
+   GRNs (S000030/PO 29742/site P2, S000031/PO 29743/site P7) showed "Posted"
+   in the app while SAP's own screen showed Release Status "Not Released"
+   and Fulfilled Quantity 0 for both. Root cause: SAP's Put Away Task
+   confirmation (the step that actually finalizes a Goods Receipt on this
+   tenant) failed permanently on a real business error - "Financials PU for
+   material G12FW/G12LW ... missing or in prep" (i.e. those 2 materials'
+   Purchasing/Financials master data is incomplete at sites P2/P7) - but the
+   background retry loop silently gave up after ~160s without ever updating
+   the shipment's top-level `sap_sync_status`, so the GRN table kept showing
+   a false "Posted" forever.
+   **Fixed** (both parts user asked for):
+   - `supplier_shipment_service.mark_put_away_confirmed` now takes a
+     `final_attempt` flag; when the LAST retry still isn't confirmed, it
+     flips `sap_sync_status` to `"put_away_failed"` and stores a plain-
+     English `grn_alert_message` (the real SAP note).
+   - New `supplier_shipment_service.retry_put_away` + `POST
+     /api/admin/grn/{doc_code}/retry-put-away` endpoint - re-runs ONLY the
+     Put Away confirmation loop (never re-creates the SAP Inbound Delivery
+     Notification, which would risk a genuine duplicate Goods Receipt).
+   - Frontend (`GrnApprovalPage.jsx`): new red "Receipt Not Completed in
+     SAP" badge + status banner branch + "Retry Put Away" button in the
+     single-shipment lookup view; a NEW auto-opening, user-dismissible Dialog
+     (`grn-put-away-failed-alert-dialog`) showing the human-readable message
+     with a Close button; matching badge + Retry Put Away button added to
+     the Confirmed GRNs list and its detail dialog; "View Diagnostics" link
+     condition extended to also trigger on a put-away-only failure.
+   - Backfilled S000030/S000031 in MongoDB to the new state (their original
+     retry loops had already exhausted before this fix existed).
+   - Verified via `testing_agent` (`/app/test_reports/iteration_188.json`) -
+     100% pass, no regressions on genuinely successful GRNs. Only feedback:
+     `GrnApprovalPage.jsx` (now ~1949 lines) exceeds the 700-line style
+     guideline - non-blocking, noted for future refactor.
+
+### Test/debris data created this session (documented, harmless)
+- PO 29740 (SAP, vendor S9999 - NOT a real SAP supplier, app-only dummy) -
+  create succeeded but release failed ("Supplier missing"), stuck "In
+  Preparation" forever in SAP. No app-side record (never cached/shipped).
+- PO 29741 (vendor RAD-P2-S, site P1) - released AND received (2 KGM
+  IRON-SCR + 2 EA BOX706025, real stock at P1-RM). App-side shipment/cache
+  records deleted from MongoDB after the test - nothing visible in-app.
+- PO 29742 (vendor RAD-P2-S, site P2) / PO 29743 (vendor H1330, site P7) -
+  both released; GRN posted, Put Away permanently failed (see #3 above).
+  Shipments S000030/S000031 are intentionally KEPT in the app (state
+  `put_away_failed`) as the live proof case for the new fix - do not delete
+  without asking the user first.
+
