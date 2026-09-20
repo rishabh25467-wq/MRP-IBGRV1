@@ -1683,3 +1683,45 @@ See git history / prior PRD versions for the full session-by-session log predati
   `put_away_failed`) as the live proof case for the new fix - do not delete
   without asking the user first.
 
+
+## Sep 20 2026 (fork continuation, part 2)
+
+4. **Real incident + fix - "No inventory items found" on STO warehouse move
+   (STO-000127, site P2, SCR755WM/SCR512WM)**: the post-receipt "Warehouse
+   Move" step (`inbound_receipt_service._relocate_receipt_from_hold`) tried
+   to move stock FROM "P2-HOLD", but SAP's own inventory report proved the
+   Goods Receipt landed straight into "P2-RM" instead (same pattern already
+   fixed for P8 on Sep 20 earlier). User confirmed ALL sites now have the
+   same EM-style logistics model rollout as P8/P2, so
+   `inbound_staging_area_for_site()` (`sap_wip_clearing_client.py`) was
+   simplified from a per-site override dict to a universal `f"{site}-RM"`
+   default - covers every site, no more growing exception list. This
+   function is shared by both STO inbound-receipt relocation and the
+   supplier GRN goods-movement step. Verified live: retried STO-000127's
+   relocation, both lines moved successfully (P2-RM -> P2-SFG, confirmed via
+   SAP's inventory report). Old stock still sitting in some sites' "-HOLD"
+   areas (P1-HOLD, P8-HOLD) is historical leftover from before each site's
+   own rollout, not evidence new receipts still land there.
+
+5. Root-caused a real "In Process" GRN timeout error (S000032/PO 29744,
+   site P2, SOAP read timeout after 60s): confirmed via SAP's own
+   confirmation report that SAP kept processing past our client's timeout
+   and DID create Inbound Delivery 53802 (1 EA each of SCR755WM/SCR625WM,
+   matching what was actually shipped) - request wasn't lost, client just
+   gave up too early. Manually corrected the shipment record (same
+   mechanism as "Fetch from SAP") - no duplicate created. Bumped
+   `SAPInboundDeliveryNotificationClient`'s default timeout 60s->100s to
+   reduce recurrence. Put Away confirmation for this one PO never found a
+   task in SAP even after several retries (unlike the G12FW case, which had
+   a task that failed a business rule) - flagged to user as possibly a
+   SAP-side stuck document from the original abnormal processing delay,
+   recommended checking Inbound Delivery 53802's Document Flow in SAP UI
+   directly.
+
+### Test/debris data (session part 2)
+- PO 29744 (RAD-P2-S, P2), 29745 (H1330, P7), 29746 (RAD-P2-S, P9) - all
+  released, 2 line items each (SCR755WM/SCR625WM, pre-verified Active at
+  P1/P2/P3/P4/P6/P7/P9 before creating, unlike the earlier G12FW/G12LW
+  mistake). Shipment S000032 (PO 29744) now correctly shows "posted" with
+  Inbound Delivery 53802, Put Away still pending/possibly stuck.
+

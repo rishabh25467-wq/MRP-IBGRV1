@@ -46,21 +46,19 @@ def company_and_set_of_books_for_site(site_id: str):
 # tenant-specific business config too (same class as SITE_TO_COMPANY
 # above), and P8's was just changed: incoming stock (GRN receipt or STO
 # receipt) now lands directly in "{site}-RM" instead of staging through
-# "{site}-HOLD" - so any code relocating received stock OUT of the
-# staging area must use THIS as the real source, not blindly assume
-# "-HOLD" for every site. Other sites not listed here still default to
-# "-HOLD" (unchanged, no confirmed config change for them yet).
+# "{site}-HOLD".
+#
 # Sep 20 2026, real incident (STO-000127, site P2, products
 # SCR755WM/SCR512WM: "No inventory items found for external id...") -
 # live-confirmed via SAP's own inventory report that P2's Goods Receipt
-# ALSO lands straight into "P2-RM", same as P8's Sep 20 change above -
-# no stock ever sits in "P2-HOLD" for this site either.
-SITE_INBOUND_STAGING_AREA_OVERRIDE = {"P8": "P8-RM", "P2": "P2-RM"}
-
-
+# ALSO lands straight into "P2-RM" now. User confirmed live: every site
+# has now had the same EM-style logistics model rollout as P8, so this
+# is a blanket change, not a per-site exception list anymore - default
+# is now "{site}-RM" for every site. Old "{site}-HOLD" balances still
+# sitting in SAP from before each site's own rollout date are pre-
+# existing stock, not evidence that new receipts still land there.
 def inbound_staging_area_for_site(site_id: str) -> str:
-    site_id = (site_id or "").strip().upper()
-    return SITE_INBOUND_STAGING_AREA_OVERRIDE.get(site_id) or f"{site_id}-HOLD"
+    return f"{(site_id or '').strip().upper()}-RM"
 
 
 def current_fiscal_period_and_year(today: date = None):
