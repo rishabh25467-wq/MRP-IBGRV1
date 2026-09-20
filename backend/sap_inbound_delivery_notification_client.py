@@ -115,7 +115,7 @@ def _extract_severity_codes(raw_xml: str) -> list:
 
 
 class SAPInboundDeliveryNotificationClient:
-    def __init__(self, endpoint: str, username: str, password: str, timeout: int = 60):
+    def __init__(self, endpoint: str, username: str, password: str, timeout: int = 100):
         self.endpoint = endpoint or None
         self.auth = HTTPBasicAuth(username, password)
         self.timeout = timeout
