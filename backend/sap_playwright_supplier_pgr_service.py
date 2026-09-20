@@ -887,7 +887,7 @@ async def create_inbound_delivery_notifications_only(po_items: dict, notificatio
     return results
 
 
-async def _confirm_put_away_task(site_id: str, po_number: str, query_client, manage_client, events: list) -> dict:
+async def _confirm_put_away_task(site_id: str, po_number: str, query_client, manage_client, events: list, po_write_client=None) -> dict:
     """Sep 19 2026 fix - real user bug report + live screenshot showing
     SAP's own "Inbound Warehouse Request" Execution Details: Planned
     Quantity was always correct, but "Product Fulfilled Quantity"
@@ -935,7 +935,22 @@ async def _confirm_put_away_task(site_id: str, po_number: str, query_client, man
     Returns {"confirmed": bool, "target_areas": {product_id:
     target_area}} - `target_areas` is best-effort/may be empty even on
     a confirmed=True (e.g. if the task query never returned material
-    detail), caller falls back to its own guess in that case."""
+    detail), caller falls back to its own guess in that case.
+
+    Sep 20 2026 "solid solution" addition (real over-shipment risk,
+    PO 29742/IRON-SCR: 3 separate Delivery Notifications got created
+    against a 2 KGM PO line since "Open PO Qty" doesn't advance until
+    Put Away finalizes - one already fully received via its own task,
+    two more sitting on THIS task, stuck pending on an unrelated item's
+    (G12FW) Put Away failure). Blindly confirming this task's own
+    PlanQuantity (2 KGM IRON-SCR) on top of the 1 KGM already delivered
+    elsewhere would push total delivered to 3 KGM against a 2 KGM PO.
+    `po_write_client`, if passed, is used to cap every line's
+    ActualQuantity to `max(0, ordered_qty - already_delivered_qty)`
+    (SAP's own `TotalDeliveredQuantity` is the authoritative "already
+    landed" signal - see get_po_item_quantities) - never sends more than
+    the PO's own remaining capacity, regardless of what this task was
+    originally planned for."""
     task = None
     for attempt in range(4):
         try:
@@ -950,15 +965,31 @@ async def _confirm_put_away_task(site_id: str, po_number: str, query_client, man
         events.append(f"Could not find a Put Away task in SAP for PO {po_number} - Fulfilled Quantity may need to be confirmed manually in SAP")
         return {"confirmed": False, "target_areas": {}}
     target_areas = {mo["product_id"]: mo["target_area"] for mo in task.get("material_outputs", []) if mo.get("product_id") and mo.get("target_area")}
+    po_item_qty = {}
+    if po_write_client is not None:
+        try:
+            po_item_qty = await asyncio.to_thread(po_write_client.get_po_item_quantities, po_number)
+        except Exception as e:
+            events.append(f"Could not fetch PO {po_number}'s remaining quantity for over-shipment protection (continuing with full task quantity): {e}")
+
+    def _capped_qty(product_id, plan_quantity):
+        info = po_item_qty.get(product_id)
+        if not info:
+            return plan_quantity
+        remaining = max(0.0, info["ordered_qty"] - info["delivered_qty"])
+        if remaining < plan_quantity:
+            events.append(f"Capped {product_id} Put Away quantity from {plan_quantity} to {remaining} - PO {po_number} already has {info['delivered_qty']} delivered against {info['ordered_qty']} ordered")
+        return min(plan_quantity, remaining)
+
     task_payload = {
         "task_id": task["task_id"], "task_uuid": task["task_uuid"],
         "referenced_object_uuid": task["referenced_object_uuid"], "operation_activity_uuid": task["operation_activity_uuid"],
         "material_inputs": [
-            {"uuid": mi["uuid"], "product_id": mi["product_id"], "actual_quantity": mi["plan_quantity"], "unit_code": mi["unit_code"]}
+            {"uuid": mi["uuid"], "product_id": mi["product_id"], "actual_quantity": _capped_qty(mi["product_id"], mi["plan_quantity"]), "unit_code": mi["unit_code"]}
             for mi in task.get("material_inputs", []) if mi.get("plan_quantity") is not None
         ],
         "material_outputs": [
-            {"uuid": mo["uuid"], "product_id": mo["product_id"], "actual_quantity": mo["plan_quantity"], "unit_code": mo["unit_code"], "target_area": mo["target_area"]}
+            {"uuid": mo["uuid"], "product_id": mo["product_id"], "actual_quantity": _capped_qty(mo["product_id"], mo["plan_quantity"]), "unit_code": mo["unit_code"], "target_area": mo["target_area"]}
             for mo in task.get("material_outputs", []) if mo.get("plan_quantity") is not None
         ],
     }

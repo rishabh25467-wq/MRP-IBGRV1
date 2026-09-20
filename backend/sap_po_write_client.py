@@ -612,6 +612,56 @@ class SAPPurchaseOrderWriteClient:
         except Exception:
             return None
 
+    def get_po_item_quantities(self, po_number: str) -> dict:
+        """Sep 20 2026, "solid solution" for a real over-shipment risk
+        found this session (PO 29742/IRON-SCR: 3 separate Delivery
+        Notifications got created against a 2 KGM PO line - one already
+        fully received via its own task, two more stuck pending on an
+        UNRELATED item's Put Away failure on the SAME shared task).
+        Returns {product_id: {"ordered_qty", "delivered_qty",
+        "unit_code"}} straight from this SAME PurchaseOrderByIDQuery_sync
+        query `get_purchase_order_status` already uses - SAP's own
+        `TotalDeliveredQuantity` only advances once a Put Away task
+        genuinely finalizes, so it's the authoritative "how much has
+        REALLY landed so far" signal `_confirm_put_away_task` needs to
+        cap a task's ActualQuantity and never push a PO past what it
+        actually ordered. Best-effort: returns {} on any failure."""
+        if not self.endpoint:
+            return {}
+        body = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">'
+            '<soapenv:Body>'
+            f'<glob:PurchaseOrderByIDQuery_sync xmlns:glob="{NAMESPACE}">'
+            f'<PurchaseOrder><ID>{escape(str(po_number))}</ID></PurchaseOrder>'
+            '</glob:PurchaseOrderByIDQuery_sync>'
+            '</soapenv:Body></soapenv:Envelope>'
+        )
+        try:
+            with sap_semaphore:
+                resp = requests.post(
+                    self.endpoint, data=body.encode("utf-8"),
+                    headers={"Content-Type": "text/xml; charset=utf-8", "SOAPAction": SOAP_ACTION},
+                    auth=self.auth, timeout=self.timeout,
+                )
+            if resp.status_code != 200:
+                return {}
+            result = {}
+            for block in re.findall(r"<Item>.*?</Item>", resp.text, re.DOTALL):
+                product_match = re.search(r"<ProductKey><ProductTypeCode>[^<]*</ProductTypeCode><ProductIdentifierTypeCode>[^<]*</ProductIdentifierTypeCode><ProductID>([^<]*)</ProductID>", block)
+                ordered_match = re.search(r"<Quantity unitCode=\"([^\"]*)\">([^<]*)</Quantity>", block)
+                delivered_match = re.search(r"<TotalDeliveredQuantity unitCode=\"[^\"]*\">([^<]*)</TotalDeliveredQuantity>", block)
+                if not (product_match and ordered_match):
+                    continue
+                result[product_match.group(1)] = {
+                    "ordered_qty": float(ordered_match.group(2)),
+                    "delivered_qty": float(delivered_match.group(1)) if delivered_match else 0.0,
+                    "unit_code": ordered_match.group(1),
+                }
+            return result
+        except Exception:
+            return {}
+
     def get_purchase_order_number(self, po_number: str) -> str:
         """Sep 10 2026, user's explicit ask: read back the tenant's own
         custom "Purchase Order Number" Key User field (e.g.

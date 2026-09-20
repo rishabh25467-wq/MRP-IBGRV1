@@ -8857,7 +8857,7 @@ async def _auto_finish_full_auto_grn(doc_code: str, po_numbers: list, site_id: s
             events = []
             try:
                 result = await sap_playwright_supplier_pgr_service._confirm_put_away_task(
-                    site_id, po_number, sap_site_logistics_query_client, sap_site_logistics_manage_client, events,
+                    site_id, po_number, sap_site_logistics_query_client, sap_site_logistics_manage_client, events, sap_po_write_client,
                 )
             except Exception as e:
                 result, events = {"confirmed": False, "target_areas": {}}, [f"Put Away confirm crashed: {e}"]
