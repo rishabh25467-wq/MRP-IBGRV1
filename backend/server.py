@@ -8852,6 +8852,7 @@ async def _auto_finish_full_auto_grn(doc_code: str, po_numbers: list, site_id: s
 
     for attempt in range(8):
         await asyncio.sleep(10 if attempt < 4 else 30)
+        is_last_attempt = attempt == 7
         for po_number in list(pending_put_away):
             events = []
             try:
@@ -8863,7 +8864,7 @@ async def _auto_finish_full_auto_grn(doc_code: str, po_numbers: list, site_id: s
             if result["confirmed"]:
                 pending_put_away.discard(po_number)
             await asyncio.to_thread(
-                supplier_shipment_service.mark_put_away_confirmed, db, doc_code, po_number, result["confirmed"], events, result["target_areas"],
+                supplier_shipment_service.mark_put_away_confirmed, db, doc_code, po_number, result["confirmed"], events, result["target_areas"], is_last_attempt,
             )
         await _check_delivery_ids()
         if not pending_put_away and not pending_delivery_id:
@@ -8960,6 +8961,29 @@ async def post_admin_grn_retry_movement(doc_code: str, request: Request):
         result = await asyncio.to_thread(
             supplier_shipment_service.retry_goods_movement, db, doc_code, sap_goods_movement_client, sap_inventory_client, owner_party_id,
         )
+        return await _attach_grn_display_fields(result)
+    except supplier_shipment_service.ShipmentNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except supplier_shipment_service.ShipmentValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api_router.post("/admin/grn/{doc_code}/retry-put-away")
+async def post_admin_grn_retry_put_away(doc_code: str, request: Request):
+    """Sep 20 2026, companion to the "put_away_failed" fix - re-runs
+    ONLY the Put Away confirmation retry loop (never re-creates the
+    Inbound Delivery Notification itself) once the SAP admin confirms
+    whatever business error blocked it (see supplier_shipment_service.
+    retry_put_away's docstring) is fixed."""
+    try:
+        doc = await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
+        if doc.get("site_id") and not _has_site_access(request.state.user, doc["site_id"]):
+            raise HTTPException(status_code=403, detail="You are not bound to this site")
+        owner_party_id, _ = company_and_set_of_books_for_site(doc.get("site_id"))
+        result = await asyncio.to_thread(supplier_shipment_service.retry_put_away, db, doc_code)
+        pending_po_numbers = result.pop("_pending_put_away_po_numbers", [])
+        if pending_po_numbers:
+            asyncio.create_task(_auto_finish_full_auto_grn(doc_code, pending_po_numbers, doc.get("site_id"), owner_party_id))
         return await _attach_grn_display_fields(result)
     except supplier_shipment_service.ShipmentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

@@ -116,6 +116,9 @@ const resolveStatusBadge = (shipment) => {
     if (shipment.sap_sync_status === "manual_mismatch") {
       return { label: "Qty Mismatch - Blocked", className: "bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA] rounded-sm" };
     }
+    if (shipment.sap_sync_status === "put_away_failed") {
+      return { label: "Receipt Not Completed in SAP", className: "bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA] rounded-sm" };
+    }
     return shipment.sap_sync_status === "failed"
       ? { label: "SAP Sync Failed", className: "bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA] rounded-sm" }
       : { label: "Pending SAP Sync", className: "bg-[#FFFAEB] text-[#B54708] border border-[#FEDF89] rounded-sm" };
@@ -231,6 +234,14 @@ export default function GrnApprovalPage() {
   const [rejectReason, setRejectReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [screenshotModal, setScreenshotModal] = useState(null);
+  // Sep 20 2026, "put_away_failed" fix - user's explicit ask for "a
+  // human readable message needed that user can click and close on
+  // error" - auto-opens once whenever a looked-up shipment's Put Away
+  // permanently failed in SAP, dismissible via the Dialog's own close.
+  const [putAwayAlertOpen, setPutAwayAlertOpen] = useState(false);
+  useEffect(() => {
+    if (shipment?.sap_sync_status === "put_away_failed") setPutAwayAlertOpen(true);
+  }, [shipment?._id, shipment?.sap_sync_status, shipment?.grn_alert_message]);
 
   // Sep 17 2026, Manual GRN (No-Playwright) feature - user's explicit ask
   // ("keep the choice for users") to self-toggle between the existing
@@ -433,6 +444,23 @@ export default function GrnApprovalPage() {
       setConfirmedRetryBusy(false);
     }
   };
+
+  // Sep 20 2026, "put_away_failed" fix - Confirmed GRNs detail dialog
+  // counterpart to retryPutAway above.
+  const retryConfirmedPutAway = async (doc) => {
+    setConfirmedRetryBusy(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/grn/${doc._id}/retry-put-away`);
+      if (confirmedDetail?._id === doc._id) setConfirmedDetail(data);
+      toast.success("Retrying Put Away confirmation in SAP - this can take up to a couple of minutes");
+      loadConfirmed();
+    } catch (err) {
+      toast.error("Retry failed", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setConfirmedRetryBusy(false);
+    }
+  };
+
 
   const loadPending = async () => {
     try {
@@ -729,6 +757,24 @@ export default function GrnApprovalPage() {
       toast.success("Retry count reset - you can Retry the Goods Receipt again");
     } catch (err) {
       toast.error("Reset failed", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Sep 20 2026, "put_away_failed" fix - only re-runs Put Away
+  // confirmation (never re-creates the SAP Inbound Delivery
+  // Notification, which already exists) once the SAP admin confirms
+  // the underlying business error (e.g. missing Financials/Purchasing
+  // setup for a material) is fixed.
+  const retryPutAway = async () => {
+    setBusy(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/grn/${shipment._id}/retry-put-away`);
+      setShipment(data);
+      toast.success("Retrying Put Away confirmation in SAP - this can take up to a couple of minutes");
+    } catch (err) {
+      toast.error("Retry failed", { description: err?.response?.data?.detail || err.message });
     } finally {
       setBusy(false);
     }
@@ -1176,13 +1222,29 @@ export default function GrnApprovalPage() {
               </DialogContent>
             </Dialog>
 
+            <Dialog open={putAwayAlertOpen && shipment.sap_sync_status === "put_away_failed"} onOpenChange={setPutAwayAlertOpen}>
+              <DialogContent className="rounded-sm" data-testid="grn-put-away-failed-alert-dialog">
+                <DialogHeader>
+                  <DialogTitle className="font-heading flex items-center gap-2 text-[#B42318]">
+                    <WarningCircle size={20} weight="fill" /> Receipt Not Completed in SAP
+                  </DialogTitle>
+                  <DialogDescription data-testid="grn-put-away-failed-alert-message">
+                    {shipment.grn_alert_message || "SAP did not finish receiving this Goods Receipt after repeated attempts - needs SAP Admin attention."}
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="flex justify-end gap-2 mt-2">
+                  <Button variant="outline" className="rounded-sm" onClick={() => setPutAwayAlertOpen(false)} data-testid="grn-put-away-failed-alert-close-button">Close</Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+
 
             {shipment.status === "approved" && !busy && (
               <div className="mt-4 space-y-2">
                 <div className="text-sm px-3 py-2 rounded-sm flex items-center justify-between gap-2 border" data-testid="grn-sap-sync-status"
-                     style={shipment.sap_sync_status === "posted" || shipment.sap_sync_status === "partial" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : shipment.sap_sync_status === "failed" || shipment.sap_sync_status === "manual_mismatch" ? { color: "#B42318", background: "rgba(180,35,24,0.08)", borderColor: "rgba(180,35,24,0.3)" } : shipment.sap_sync_status === "awaiting_manual_gr" ? { color: "#3538CD", background: "rgba(53,56,205,0.08)", borderColor: "rgba(53,56,205,0.3)" } : { color: "#B45309", background: "rgba(227,160,8,0.1)", borderColor: "rgba(227,160,8,0.3)" }}>
+                     style={shipment.sap_sync_status === "posted" || shipment.sap_sync_status === "partial" ? { color: "#0B7A56", background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.3)" } : shipment.sap_sync_status === "failed" || shipment.sap_sync_status === "manual_mismatch" || shipment.sap_sync_status === "put_away_failed" ? { color: "#B42318", background: "rgba(180,35,24,0.08)", borderColor: "rgba(180,35,24,0.3)" } : shipment.sap_sync_status === "awaiting_manual_gr" ? { color: "#3538CD", background: "rgba(53,56,205,0.08)", borderColor: "rgba(53,56,205,0.3)" } : { color: "#B45309", background: "rgba(227,160,8,0.1)", borderColor: "rgba(227,160,8,0.3)" }}>
                   <span className="flex items-center gap-2">
-                    {shipment.sap_sync_status === "posted" || shipment.sap_sync_status === "partial" ? <CheckCircle size={16} /> : shipment.sap_sync_status === "manual_mismatch" ? <WarningCircle size={16} weight="fill" /> : <PlugsConnected size={16} />}
+                    {shipment.sap_sync_status === "posted" || shipment.sap_sync_status === "partial" ? <CheckCircle size={16} /> : shipment.sap_sync_status === "manual_mismatch" || shipment.sap_sync_status === "put_away_failed" ? <WarningCircle size={16} weight="fill" /> : <PlugsConnected size={16} />}
                     {shipment.sap_sync_status === "posted"
                       ? "Goods Receipt posted to SAP"
                       : shipment.sap_sync_status === "partial"
@@ -1206,6 +1268,13 @@ export default function GrnApprovalPage() {
                           {`SAP's confirmed quantity does not match ${(shipment.manual_gr_mismatch_items || []).length} line(s) - correct it in SAP and Re-check`}
                         </span>
                       )
+                      : shipment.sap_sync_status === "put_away_failed"
+                      ? (
+                        <span className="flex items-center gap-2">
+                          <Badge className="bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA]" data-testid="grn-sap-put-away-failed-badge">Receipt Not Completed in SAP</Badge>
+                          {shipment.grn_alert_message || "SAP did not finish receiving this Goods Receipt - needs SAP Admin attention"}
+                        </span>
+                      )
                       : shipment.sap_sync_status === "skipped"
                       ? (shipment.sap_gr_result?.per_po?.[0]?.error || "PO not found in SAP - check it's released")
                       : shipment.sap_sync_status === "failed"
@@ -1225,6 +1294,10 @@ export default function GrnApprovalPage() {
                   {shipment.sap_sync_status === "partial" ? null : shipment.sap_sync_status === "awaiting_manual_gr" || shipment.sap_sync_status === "manual_mismatch" ? (
                     <Button size="sm" variant="outline" onClick={recheckManualGr} disabled={busy} className="rounded-sm h-7 text-xs" data-testid="grn-recheck-manual-gr-button">
                       <ArrowsClockwise size={12} className="mr-1" /> Re-check SAP
+                    </Button>
+                  ) : shipment.sap_sync_status === "put_away_failed" ? (
+                    <Button size="sm" variant="outline" onClick={retryPutAway} disabled={busy} className="rounded-sm h-7 text-xs" data-testid="grn-retry-put-away-button" title="Only use once your SAP Admin confirms the underlying SAP error is fixed">
+                      <ArrowsClockwise size={12} className="mr-1" /> Retry Put Away
                     </Button>
                   ) : shipment.sap_sync_status === "skipped" ? (
                     <Button size="sm" variant="outline" onClick={retryGoodsReceipt} disabled={busy} className="rounded-sm h-7 text-xs" data-testid="grn-retry-goods-receipt-button">
@@ -1294,13 +1367,13 @@ export default function GrnApprovalPage() {
                     </button>
                   </div>
                 )}
-                {shipment.sap_gr_result?.per_po?.some((p) => (p.status !== "posted" && p.status !== "notification_created" && p.events?.length) || p.skipped_items?.length) && (
+                {shipment.sap_gr_result?.per_po?.some((p) => (p.status !== "posted" && p.status !== "notification_created" && p.events?.length) || (p.put_away_confirmed === false && p.events?.length) || p.skipped_items?.length) && (
                   <div className="px-3">
                     <button
                       type="button"
                       className="text-xs text-[#475467] font-bold hover:underline"
                       data-testid="grn-view-diagnostics-button"
-                      onClick={() => setDiagnosticsModal(poDiagnostics(shipment, shipment.sap_gr_result.per_po.find((p) => (p.status !== "posted" && p.status !== "notification_created" && p.events?.length) || p.skipped_items?.length)))}
+                      onClick={() => setDiagnosticsModal(poDiagnostics(shipment, shipment.sap_gr_result.per_po.find((p) => (p.status !== "posted" && p.status !== "notification_created" && p.events?.length) || (p.put_away_confirmed === false && p.events?.length) || p.skipped_items?.length)))}
                     >
                       View Diagnostics
                     </button>
@@ -1488,6 +1561,8 @@ export default function GrnApprovalPage() {
                           <Badge className="bg-[#ECFDF3] text-[#027A48] border border-[#ABEFC6]">Posted</Badge>
                         ) : s.sap_sync_status === "failed" ? (
                           <Badge className="bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA]">Sync Failed</Badge>
+                        ) : s.sap_sync_status === "put_away_failed" ? (
+                          <Badge className="bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA]">Receipt Not Completed</Badge>
                         ) : s.sap_sync_status === "awaiting_manual_gr" ? (
                           <Badge className="bg-[#EFF4FF] text-[#3538CD] border border-[#C7D7FE]">Awaiting Manual GR</Badge>
                         ) : s.sap_sync_status === "manual_mismatch" ? (
@@ -1628,6 +1703,8 @@ export default function GrnApprovalPage() {
                     <span className="inline-flex items-center gap-1.5">
                       {confirmedDetail.sap_sync_status === "failed" ? (
                         <Badge className="bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA]" data-testid="grn-confirmed-detail-failed-badge">Sync Failed</Badge>
+                      ) : confirmedDetail.sap_sync_status === "put_away_failed" ? (
+                        <Badge className="bg-[#FEF3F2] text-[#B42318] border border-[#FECDCA]" data-testid="grn-confirmed-detail-put-away-failed-badge" title={confirmedDetail.grn_alert_message}>Receipt Not Completed</Badge>
                       ) : (
                         <Badge className="bg-[#FFFAEB] text-[#B54708] border border-[#FEDF89]" data-testid="grn-confirmed-detail-in-process-badge">In Process</Badge>
                       )}
@@ -1636,6 +1713,10 @@ export default function GrnApprovalPage() {
                       ) : confirmedDetail.sap_sync_status === "failed" ? (
                         <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={confirmedRetryBusy} onClick={() => resetConfirmedRetry(confirmedDetail)} title="Only use once your SAP Admin confirms the underlying SAP error is fixed" data-testid="grn-confirmed-detail-reset-retry-button">
                           <ArrowsClockwise size={11} className="mr-1" /> Reset Retry
+                        </Button>
+                      ) : confirmedDetail.sap_sync_status === "put_away_failed" ? (
+                        <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={confirmedRetryBusy} onClick={() => retryConfirmedPutAway(confirmedDetail)} title="Only use once your SAP Admin confirms the underlying SAP error is fixed" data-testid="grn-confirmed-detail-retry-put-away-button">
+                          <ArrowsClockwise size={11} className="mr-1" /> Retry Put Away
                         </Button>
                       ) : retryUnlockInMin(confirmedDetail.approved_at) > 0 ? (
                         <span className="text-xs text-[#98A2B3]" data-testid="grn-confirmed-detail-retry-cooldown">Retry available in {retryUnlockInMin(confirmedDetail.approved_at)}m</span>

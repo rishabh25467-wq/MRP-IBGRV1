@@ -1699,7 +1699,7 @@ def manually_confirm_inbound_delivery(db, doc_code: str, po_number: str, inbound
     return get_shipment_by_code(db, doc_code)
 
 
-def mark_put_away_confirmed(db, doc_code: str, po_number: str, confirmed: bool, events: list, target_areas: dict = None) -> None:
+def mark_put_away_confirmed(db, doc_code: str, po_number: str, confirmed: bool, events: list, target_areas: dict = None, final_attempt: bool = False) -> None:
     """Sep 19 2026 - patches `put_away_confirmed`/`events`/
     `put_away_target_areas` onto one PO's own `sap_gr_result.per_po`
     entry (never touches status or `inbound_delivery_id`) - set by the
@@ -1714,11 +1714,56 @@ def mark_put_away_confirmed(db, doc_code: str, po_number: str, confirmed: bool, 
     for_items` below move stock from wherever SAP ACTUALLY put it,
     instead of always guessing "{SITE}-HOLD" (real bug fix, shipment
     S000012/PO 29724 - see `_post_goods_movement_for_items`'s own
-    docstring)."""
+    docstring).
+
+    Sep 20 2026 fix (real user report - shipments S000030/S000031, sites
+    P2/P7): Put Away permanently failed on a real SAP business error
+    ("Financials PU for material G12FW/G12LW ... missing or in prep"),
+    correctly captured in this PO's own `events`, but the shipment's
+    TOP-LEVEL `sap_sync_status` was never touched by this function -
+    the GRN table kept showing "Posted" forever even though SAP's own
+    screen showed Release Status "Not Released" / Fulfilled Quantity 0
+    (Put Away is what finalizes the Goods Receipt at all - see
+    `_confirm_put_away_task`'s docstring). `final_attempt=True` (passed
+    by server.py once the retry loop has truly given up) now flips
+    `sap_sync_status` to "put_away_failed" and stores a plain-English
+    `grn_alert_message` (the real SAP note) so the GRN Approval screen
+    shows a clear, dismissible error instead of a misleading "posted"
+    badge."""
     update = {"sap_gr_result.per_po.$.put_away_confirmed": confirmed, "sap_gr_result.per_po.$.events": events}
     if target_areas:
         update["sap_gr_result.per_po.$.put_away_target_areas"] = target_areas
+    if not confirmed and final_attempt:
+        reason = events[-1] if events else "SAP did not finish receiving this Goods Receipt after repeated attempts."
+        update["sap_sync_status"] = "put_away_failed"
+        update["grn_alert_message"] = f"PO {po_number}: {reason} Ask your SAP admin to resolve this, then use Retry Put Away below."
     db[SHIPMENTS_COLLECTION].update_one(
         {"_id": (doc_code or "").strip().upper(), "sap_gr_result.per_po.po_number": po_number},
         {"$set": update},
     )
+
+
+def retry_put_away(db, doc_code: str) -> dict:
+    """Sep 20 2026 - companion to the `put_away_failed` fix above: once
+    the SAP admin fixes the underlying master-data issue, this clears
+    the escalation (back to "posted") and returns the list of PO
+    numbers that still need Put Away confirmed, so server.py can
+    re-schedule `_auto_finish_full_auto_grn` for just those - never
+    re-creates the Inbound Delivery Notification itself (that already
+    exists in SAP; re-posting it would risk a genuine duplicate Goods
+    Receipt, see create_and_release_inbound_delivery_notifications's
+    own docstring on duplicate DeliveryNotificationIDs)."""
+    doc = get_shipment_by_code(db, doc_code)
+    if doc.get("sap_sync_status") != "put_away_failed":
+        raise ShipmentValidationError("Only a shipment currently marked 'Receipt Not Completed in SAP' can retry Put Away")
+    pending_po_numbers = [
+        p["po_number"] for p in (doc.get("sap_gr_result") or {}).get("per_po", [])
+        if p.get("status") == "posted" and not p.get("put_away_confirmed")
+    ]
+    db[SHIPMENTS_COLLECTION].update_one(
+        {"_id": doc["_id"]},
+        {"$set": {"sap_sync_status": "posted"}, "$unset": {"grn_alert_message": ""}},
+    )
+    result = get_shipment_by_code(db, doc_code)
+    result["_pending_put_away_po_numbers"] = pending_po_numbers
+    return result
