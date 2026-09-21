@@ -1,6 +1,8 @@
 import asyncio
 import json
+import base64
 import logging
+import secrets
 import os
 import glob
 import re
@@ -734,6 +736,61 @@ class PurchasingPlanJobStatus(BaseModel):
 @api_router.get("/")
 async def root():
     return {"message": "SAP BOM Lookup API"}
+
+
+# Sep 22 2026, user's explicit ask ("SAP pushes us the moment Put Away
+# completes, instead of us polling" -> confirmed no risk to current
+# functionality -> "build it") - SAP Business ByDesign's own "Event
+# Notification" framework (Application and User Management work center)
+# can call a custom HTTP endpoint the moment a subscribed Business
+# Object changes. This receiver is deliberately minimal/dormant for now:
+# validate Basic Auth, persist the RAW payload so we can see the real
+# shape SAP actually sends once your SAP Admin activates the subscriber
+# (see /app/memory/sap_event_push_plan.md), and ack with 200. Wiring
+# this into actually short-circuiting `_auto_finish_full_auto_grn`'s
+# poll loop is a deliberate follow-up, once we've seen one real event
+# land here - guessing the payload shape blind risks a webhook that
+# silently never matches. Zero real traffic reaches this today (nothing
+# on SAP's side points at it yet) - purely additive, doesn't touch any
+# existing route/flow.
+SAP_WEBHOOK_EVENTS_COLLECTION = "sap_webhook_events"
+
+
+def _verify_sap_webhook_auth(request: Request) -> bool:
+    expected_user = os.environ.get("SAP_WEBHOOK_USERNAME")
+    expected_pass = os.environ.get("SAP_WEBHOOK_PASSWORD")
+    if not expected_user or not expected_pass:
+        return False
+    header = request.headers.get("authorization", "")
+    if not header.lower().startswith("basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header.split(" ", 1)[1]).decode("utf-8")
+        sent_user, sent_pass = decoded.split(":", 1)
+    except Exception:
+        return False
+    return secrets.compare_digest(sent_user, expected_user) and secrets.compare_digest(sent_pass, expected_pass)
+
+
+@api_router.post("/webhooks/sap-put-away")
+async def sap_put_away_webhook(request: Request):
+    if not _verify_sap_webhook_auth(request):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    raw_body = await request.body()
+    try:
+        parsed_body = await request.json()
+    except Exception:
+        parsed_body = None
+    event_doc = {
+        "_id": str(uuid.uuid4()),
+        "received_at": datetime.now(timezone.utc),
+        "headers": dict(request.headers),
+        "raw_body": raw_body.decode("utf-8", errors="replace"),
+        "parsed_body": parsed_body,
+    }
+    await asyncio.to_thread(db[SAP_WEBHOOK_EVENTS_COLLECTION].insert_one, event_doc)
+    logger.info(f"SAP webhook event received and logged: {event_doc['_id']}")
+    return {"status": "received"}
 
 
 
@@ -8973,8 +9030,16 @@ async def _auto_finish_full_auto_grn(doc_code: str, po_numbers: list, site_id: s
             )
             pending_delivery_id.discard(po_number)
 
+    # Sep 22 2026, user's explicit ask ("any better way to fetch it
+    # instantly" -> "advise" -> "build it") - shorter first checks with
+    # progressive backoff instead of a flat 10s/30s cadence, so the best
+    # case (SAP confirms Put Away quickly) surfaces sooner. Same 8-attempt,
+    # ~160s ceiling as before (5+10+15+20+30*4=170s -> close enough, kept
+    # deliberately not-too-aggressive to avoid re-tripping the shared
+    # "3 concurrent SAP calls" tenant-wide limiter (sap_rate_limiter.py).
+    ATTEMPT_DELAYS_SECONDS = [5, 10, 15, 20, 30, 30, 30, 30]
     for attempt in range(8):
-        await asyncio.sleep(10 if attempt < 4 else 30)
+        await asyncio.sleep(ATTEMPT_DELAYS_SECONDS[attempt])
         is_last_attempt = attempt == 7
         newly_confirmed = False
         for po_number in list(pending_put_away):
@@ -9012,6 +9077,54 @@ async def _auto_finish_full_auto_grn(doc_code: str, po_numbers: list, site_id: s
                 movement_done = False
         if not pending_put_away and not pending_delivery_id and movement_done:
             return
+
+
+@api_router.post("/admin/grn/{doc_code}/check-now")
+async def post_admin_grn_check_now(doc_code: str):
+    """Sep 22 2026, user's explicit ask ("any better way to fetch it
+    instantly") - on-demand version of one cycle of
+    `_auto_finish_full_auto_grn`'s loop body above, for when you don't
+    want to wait for the next scheduled background tick (every step
+    below is already idempotent - skips whatever's already confirmed/
+    posted, safe to call any time while a GRN is still settling)."""
+    doc = await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
+    site_id = doc.get("site_id")
+    owner_party_id, _ = company_and_set_of_books_for_site(site_id) if site_id else (None, None)
+    if site_id and sap_site_logistics_query_client and sap_site_logistics_manage_client:
+        pending_po_numbers = [
+            p["po_number"] for p in (doc.get("sap_gr_result") or {}).get("per_po", [])
+            if p.get("status") == "posted" and not p.get("put_away_confirmed")
+        ]
+        for po_number in pending_po_numbers:
+            events = []
+            try:
+                result = await sap_playwright_supplier_pgr_service._confirm_put_away_task(
+                    site_id, po_number, sap_site_logistics_query_client, sap_site_logistics_manage_client, events, sap_po_write_client,
+                )
+            except Exception as e:
+                result, events = {"confirmed": False, "target_areas": {}}, [f"Put Away confirm crashed: {e}"]
+            await asyncio.to_thread(
+                supplier_shipment_service.mark_put_away_confirmed, db, doc_code, po_number, result["confirmed"], events, result["target_areas"], False, site_id,
+            )
+    try:
+        doc = await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
+        match = await asyncio.to_thread(supplier_shipment_service.fetch_inbound_delivery_ids_from_sap, doc, sap_inbound_delivery_report_client)
+        for po_number, inbound_delivery_id in match["found"].items():
+            await asyncio.to_thread(
+                supplier_shipment_service.manually_confirm_inbound_delivery, db, doc_code, po_number, inbound_delivery_id,
+                "Check Now (manual)", sap_goods_movement_client, sap_inventory_client, owner_party_id,
+            )
+    except Exception as e:
+        logger.warning(f"Check Now: delivery ID check failed for {doc_code}: {e}")
+    if sap_goods_movement_client:
+        try:
+            await asyncio.to_thread(
+                supplier_shipment_service.retry_goods_movement, db, doc_code, sap_goods_movement_client, sap_inventory_client, owner_party_id,
+            )
+        except Exception as e:
+            logger.warning(f"Check Now: movement attempt failed for {doc_code}: {e}")
+    return await asyncio.to_thread(supplier_shipment_service.get_shipment_by_code, db, doc_code)
+
 
 
 def _start_full_auto_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> str:

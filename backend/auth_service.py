@@ -265,6 +265,14 @@ EXTERNAL_PORTAL_PATH_PREFIXES = ("/api/supplier-portal/",)
 # with SAP consultants who have no app account at all.
 PUBLIC_API_PATH_PREFIXES = ("/api/public/",)
 
+# Sep 22 2026, user's explicit ask ("build" the SAP Event Notification
+# webhook receiver) - SAP calls this with its OWN Basic Auth credentials
+# (SAP_WEBHOOK_USERNAME/PASSWORD, checked inside the route itself), not
+# an Entra ID `vms_session` cookie, so it must bypass this middleware
+# the same way the external Supplier Portal does above - otherwise every
+# call from SAP would 401 here before ever reaching the route's own auth.
+EXTERNAL_WEBHOOK_PATH_PREFIXES = ("/api/webhooks/",)
+
 
 def ensure_indexes(db) -> None:
     """TTL indexes so expired sessions/OAuth flow state get cleaned up
@@ -452,6 +460,7 @@ def create_auth_middleware(db):
             or path in PUBLIC_PATHS
             or path.startswith(EXTERNAL_PORTAL_PATH_PREFIXES)
             or path.startswith(PUBLIC_API_PATH_PREFIXES)
+            or path.startswith(EXTERNAL_WEBHOOK_PATH_PREFIXES)
         ):
             return await call_next(request)
 

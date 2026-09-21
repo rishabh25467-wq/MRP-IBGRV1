@@ -580,14 +580,25 @@ export default function GrnApprovalPage() {
   // nothing is still finalizing. Rows are keyed by `s._id`, so React
   // only actually re-renders whichever specific row(s) changed, not the
   // whole table.
+  // Sep 22 2026, user's explicit ask ("any better way to fetch it
+  // instantly") - tightened from 30s to 8s while still finalizing (the
+  // backend's own Put Away/Delivery-ID/Movement retry loop now checks as
+  // often as every 5s - polling our own DB slower than that just adds
+  // pure UI lag on top of SAP's real latency for no reason). Also widened
+  // the window to 4 minutes (matches the backend loop's ~170s ceiling +
+  // a buffer) and now also keeps polling until movement is genuinely
+  // "posted" (not just "pending"), not only while it's missing entirely -
+  // covers the Sep 22 2026 policy reversal where movement starts at
+  // "not_applicable" immediately after GR posts and only flips once the
+  // background loop's first cycle runs.
   useEffect(() => {
     const stillFinalizing = confirmed.some((s) => {
       const approvedAt = s.approved_at ? new Date(s.approved_at).getTime() : 0;
-      if (Date.now() - approvedAt > 3 * 60 * 1000) return false;
-      return inboundDeliveryIds(s).length === 0 || s.sap_movement_status === "pending";
+      if (Date.now() - approvedAt > 4 * 60 * 1000) return false;
+      return inboundDeliveryIds(s).length === 0 || s.sap_movement_status !== "posted";
     });
     if (!stillFinalizing) return;
-    const poll = setInterval(loadConfirmed, 30000);
+    const poll = setInterval(loadConfirmed, 8000);
     return () => clearInterval(poll);
   }, [confirmed]);
 
@@ -796,6 +807,26 @@ export default function GrnApprovalPage() {
       toast.error("Retry failed", { description: err?.response?.data?.detail || err.message });
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Sep 22 2026, user's explicit ask ("any better way to fetch it
+  // instantly") - on-demand version of one cycle of the backend's own
+  // background Put Away/Delivery-ID/Movement retry loop, for checking
+  // right now instead of waiting for the next scheduled tick. Safe to
+  // call any time a GRN is still settling - every step it triggers is
+  // already idempotent.
+  const [checkNowBusy, setCheckNowBusy] = useState(false);
+  const checkNow = async () => {
+    setCheckNowBusy(true);
+    try {
+      const { data } = await axios.post(`${API}/admin/grn/${shipment._id}/check-now`);
+      setShipment(data);
+      toast.success("Checked SAP now", { description: "Put Away, Inbound Delivery #, and Warehouse Move all re-checked" });
+    } catch (err) {
+      toast.error("Check now failed", { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setCheckNowBusy(false);
     }
   };
 
@@ -1425,6 +1456,11 @@ export default function GrnApprovalPage() {
                   {shipment.sap_sync_status === "posted" && (
                     <Button size="sm" variant="outline" onClick={verifySapStatus} disabled={busy} className="rounded-sm h-7 text-xs" data-testid="grn-verify-sap-status-button" title="Double-check with SAP that every PO here was genuinely posted">
                       <ArrowsClockwise size={12} className="mr-1" /> Verify with SAP
+                    </Button>
+                  )}
+                  {shipment.sap_sync_status === "posted" && shipment.sap_movement_status !== "posted" && (
+                    <Button size="sm" variant="outline" onClick={checkNow} disabled={checkNowBusy} className="rounded-sm h-7 text-xs" data-testid="grn-check-now-button" title="Check SAP right now for Put Away confirmation, Inbound Delivery #, and Warehouse Move - instead of waiting for the next automatic check">
+                      <ArrowsClockwise size={12} className={`mr-1 ${checkNowBusy ? "animate-spin" : ""}`} /> Check Now
                     </Button>
                   )}
                 </div>
