@@ -50,7 +50,7 @@ GST_STATE_CODES = {
 
 class ERPPortalClient:
     def __init__(self, primary_host: str, fallback_host: str, port: int, database: str,
-                 username: str, password: str, timeout: int = 20):
+                 username: str, password: str, timeout: int = 5):
         self.hosts = [h for h in (primary_host, fallback_host) if h]
         self.port = port
         self.database = database
