@@ -53,9 +53,24 @@ automating STO Goods Receipt. Full report: `/app/memory/STO_INBOUND_4_ROUTE_FINA
   too, plus break standard stock adjustments/scrapping at that site, and needs new master data
   (Warehouse Provider Business Partner, transport lanes). User's decision: "Not worth the
   disruption."
-- **User's final decision**: accept manual STO receiving in SAP UI as permanent. The
-  already-drafted SAP Support ticket for Route 1 (`SAP_SUPPORT_TICKET_DRAFT_InboundPGR.md`) -
-  user has NOT yet confirmed whether to submit it (last question pending in conversation).
+- **User's final decision**: no PURE-API route exists/is viable - the EXISTING Playwright-driven
+  "Receive" button (`InboundReceiptsPage.js` -> `sap_playwright_pgr_service.py`, see correction
+  below) remains the permanent mechanism. The already-drafted SAP Support ticket for Route 1
+  (`SAP_SUPPORT_TICKET_DRAFT_InboundPGR.md`) - user has NOT yet confirmed whether to submit it.
+
+### CORRECTION (Sep 21 2026, this fork - user caught a misleading report)
+The phrase "accept manual STO receiving in SAP UI as permanent" above (and the identical phrase
+at the older "STO Inbound Receiving via API - DEFINITIVELY DEAD" entry below) is MISLEADING and
+was corrected after the user flagged it. Receiving is **NOT actually manual for the user** - the
+"Receive" button on `InboundReceiptsPage.js` (Pending tab) already fully automates it end-to-end:
+one click -> headless Playwright (`sap_playwright_pgr_service.post_goods_receipts_via_ui`) logs
+into real SAP UI, opens the delivery, clicks "Post Goods Receipt", applies any qty overrides,
+verifies success, then auto-relocates stock out of `{SITE}-HOLD` into the real target warehouse.
+Confirmed LIVE and working via DB check this session: 31 STOs successfully received this way
+(various sites), 9 failed (retriable via the Retry button), 0 stuck pending. What's actually true
+is narrower: there is no *pure API/OData/SOAP* way to do this (all 4 routes above are dead) - the
+UI-automation (Playwright) path was never removed and remains the real, current, working
+mechanism. Do not describe this feature as "manual" again - it is one click in the app.
 
 ## Major speedup - vendor-scoped Pull via OData analytics report (Sep 20 2026, same session)
 User's ask: "is there a way we can use an OData report to pull this faster" - investigated and
