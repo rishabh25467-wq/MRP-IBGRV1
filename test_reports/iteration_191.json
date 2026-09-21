@@ -1,0 +1,38 @@
+{
+  "summary": "Frontend-only testing of the new 2-step GRN flow on /admin/grn-approval (GrnApprovalPage.jsx). Used shipment Q7YA7Z (in_transit, vendor H1330, PO 28792, site P1/P2). All specified assertions passed: Step 1/Step 2 badges render, initial Post button disabled with correct 'Run Validate GRN first' tooltip, Validate button disabled without a Site with tooltip 'Select a Site first', mocked ok:false path opens grn-validation-error-box modal with the seeded issue rendered under grn-validation-issue-0 and OK button closes it (post remains disabled), mocked ok:true path flips button to 'Validated \u2713' with success toast and unlocks Step 2 only AFTER Supplier Invoice Number + Bill Date are also filled, stale-invalidation useEffect correctly resets Validated state on both actualQtys change AND site change (Post re-disabled), Reject and Mark Discrepancy buttons remain visible, confirm dialog (grn-approval-confirm-dialog) opens with correct invoice number + formatted bill date and cancels cleanly (never actually posted to live SAP).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "GrnApprovalPage.jsx is 2025 lines - consider splitting (tabs / detail dialog / validation into subcomponents). Not blocking.",
+    "useEffect deps [shipment?._id, siteId, actualQtys] uses an object identity for actualQtys - works fine because setActualQtys always returns a new object, but has eslint-disable; matches STO pattern shipped in iteration_190.",
+    "runGrnValidation passes warehouse_id (empty string via warehouseId state) - backend must accept empty string; confirmed working in this test."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (skipped per request)", "frontend": "100% (12/12 assertions)"},
+  "test_credentials": "vms_session=HCpJUgXB3WAEGYu5JkAMwjwUQzX8JhpxuqKsJlmvLTY (supplier.approver.test@rampgroup.co.in)",
+  "seed_data_creation": "None - reused existing in_transit shipment Q7YA7Z. NO real SAP post was executed (only opened + cancelled confirm dialog).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Q7YA7Z was still in_transit at end of test (never confirmed the Post GRN dialog). Site options are P1 and P2 (both selectable). Validation POST endpoint was intercepted via page.route in tests - live call was not exercised in the final pass, but the earlier run against real SAP also returned ok:true within ~1.5s. Bill Date is a shadcn Popover Calendar (button, not input) - open it and click a day (`button[name=\"day\"]`) rather than .fill().",
+  "verified_assertions": {
+    "step1_step2_badges_render": true,
+    "step2_disabled_initially_with_run_validate_first_tooltip": true,
+    "validate_disabled_without_site_with_select_site_tooltip": true,
+    "validate_ignores_missing_invoice_and_bill_date": true,
+    "mocked_ok_false_opens_validation_error_box_modal": true,
+    "issue_message_renders_in_grn_validation_issue_0": true,
+    "ok_button_closes_modal_and_post_stays_disabled": true,
+    "mocked_ok_true_shows_validated_check_and_success_toast": true,
+    "post_remains_disabled_until_invoice_and_bill_date_filled": true,
+    "actualQtys_change_resets_validated_and_redisables_post": true,
+    "site_change_resets_validated_and_redisables_post": true,
+    "reject_and_mark_discrepancy_buttons_still_visible": true,
+    "confirm_dialog_opens_with_correct_summary_and_cancels": true
+  }
+}

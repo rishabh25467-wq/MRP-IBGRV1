@@ -602,6 +602,18 @@ the SFG/{SITE}-HOLD area still failed with an insufficient/negative-stock reject
   No live SAP write was needed to prove this (pure wiring bug, logic itself already existed and
   was previously live-verified). Backend restarted clean, no errors.
 
+## FEATURE: 2-step "Validate GRN" then "Post GRN in SAP" (Sep 21 2026, this session - fork continuation)
+- Mirrors the STO 2-step pattern above. Backend (`validate_grn` in `supplier_shipment_service.py`,
+  route `POST /admin/grn/{doc_code}/validate` in `server.py`) already existed from a prior fork -
+  runs 4 concurrent checks via `asyncio.gather` (PO item cancellation, open qty, site activation,
+  valuation), zero side effects. This session added the frontend wiring in `GrnApprovalPage.jsx`:
+  Step 1 "Validate GRN" button -> Step 2 "Post GRN in SAP" button (disabled until validated AND
+  Supplier Invoice Number + Bill Date filled). Editing Actual Qty or Site resets validated state
+  (stale-invalidation useEffect). Validation error modal (`grn-validation-error-box`) lists issues.
+- Tested via testing_agent (iteration_191): 12/12 assertions passed, no bugs found. Live validate
+  call returned in ~1.5s on a real shipment - well under the user's <10s target.
+- Both STO and GRN 2-step Validate/Create flows are now FULLY COMPLETE end to end (backend+frontend).
+
 ## Backlog
 
 ### P0
