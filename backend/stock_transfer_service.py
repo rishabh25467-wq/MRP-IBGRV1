@@ -539,24 +539,30 @@ def _missing_valuation_products(db, sap_valuation_client, doc: dict) -> list:
     ship_to_site_id isn't in SAPValuationClient.SITE_TO_PERMANENT_
     ESTABLISHMENT_UUID yet (has_valuation_level's docstring: fail-open,
     never false-block an order over a site we simply don't have a
-    mapping for)."""
+    mapping for). Also fail-open (log + return []) on any unexpected
+    DB/SAP error here - a transient lookup hiccup should never block a
+    legitimate order from reaching SAP's own Check step."""
     if not sap_valuation_client:
         return []
-    product_ids = [it["product_id"] for it in doc["items"]]
-    uuid_by_id = {
-        c["_id"]: c.get("product_uuid")
-        for c in db["component_master"].find({"_id": {"$in": product_ids}}, {"product_uuid": 1})
-    }
-    product_uuids = [u for u in uuid_by_id.values() if u]
-    if not product_uuids:
+    try:
+        product_ids = [it["product_id"] for it in doc["items"]]
+        uuid_by_id = {
+            c["_id"]: c.get("product_uuid")
+            for c in db["component_master"].find({"_id": {"$in": product_ids}}, {"product_uuid": 1})
+        }
+        product_uuids = [u for u in uuid_by_id.values() if u]
+        if not product_uuids:
+            return []
+        has_level = sap_valuation_client.has_valuation_level(product_uuids, doc["ship_to_site_id"])
+        if has_level is None:
+            return []
+        return [
+            product_id for product_id in product_ids
+            if uuid_by_id.get(product_id) and has_level.get(uuid_by_id[product_id].upper()) is False
+        ]
+    except Exception as e:
+        logger.warning(f"Stock Transfer {doc.get('_id')}: proactive Valuation check failed ({e}) - proceeding without it")
         return []
-    has_level = sap_valuation_client.has_valuation_level(product_uuids, doc["ship_to_site_id"])
-    if has_level is None:
-        return []
-    return [
-        product_id for product_id in product_ids
-        if uuid_by_id.get(product_id) and has_level.get(uuid_by_id[product_id].upper()) is False
-    ]
 
 
 def list_open_admin_notifications(db) -> list:

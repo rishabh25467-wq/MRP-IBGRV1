@@ -61,7 +61,7 @@ class SAPMaterialValuationDataError(Exception):
 _VALUATION_MISSING_PATTERNS = (
     "valuation data missing", "account det. group is missing", "financials pu",
 )
-_MATERIAL_IN_ERROR_RE = re.compile(r"for material (\S+)", re.IGNORECASE)
+_MATERIAL_IN_ERROR_RE = re.compile(r"for material ([\w.\-]+)", re.IGNORECASE)
 
 
 def friendly_valuation_error(raw_message: str, site_id: str) -> str:
