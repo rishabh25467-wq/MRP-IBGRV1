@@ -6066,7 +6066,25 @@ async def po_pr_lookup(voc_no: str):
         )
 
     raw_items = data.get("items", [])
-    icodes = [it.get("icode") for it in raw_items if it.get("icode")]
+    # Sep 21 2026, real bug found + fixed (user report: PR item icode
+    # "POLY5x7LD" showed "Not matched in SAP" even though the material
+    # genuinely exists) - SAP's real InternalID for this material is
+    # "POLY5X7LD" (uppercase). Both matching paths below are exact-string
+    # comparisons: the inventory_cache `$in` filter is case-sensitive
+    # (Mongo default), and the live SAP fallback's SelectionByInternalID
+    # is a ">=" boundary query over SAP's own internal sort order, where
+    # uppercase letters sort BEFORE lowercase ones - so a lowercase 'x' in
+    # the search string sorts AFTER the real uppercase-only record,
+    # silently excluding it from a ">=" search entirely (live-confirmed:
+    # resolve_material_info("POLY5x7LD") -> no match, resolve_material_info
+    # ("POLY5X7LD") -> real match). SAP material InternalIDs in this
+    # tenant are always uppercase (same convention already used
+    # everywhere else in this app, e.g. stock_transfer_service.
+    # get_product_stock_locations' `.strip().upper()`) - normalizing the
+    # PR's icode to uppercase for matching purposes only (never for
+    # display - `icode` below stays exactly as the PR system sent it)
+    # fixes this whole class of case-mismatch false negatives.
+    icodes = [(it.get("icode") or "").strip().upper() for it in raw_items if it.get("icode")]
     matched_map = {}
     if icodes:
         def _match():
@@ -6110,7 +6128,7 @@ async def po_pr_lookup(voc_no: str):
     items = []
     for it in raw_items:
         icode = it.get("icode") or None
-        match = matched_map.get(icode) if icode else None
+        match = matched_map.get(icode.strip().upper()) if icode else None
         sap_uom, uom_confident = _map_pr_unit_to_sap(it.get("unit"))
         items.append(PRLookupLineItem(
             line_no=it.get("line_no"), icode=icode, iname=it.get("iname"),

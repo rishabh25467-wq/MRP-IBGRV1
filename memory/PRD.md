@@ -454,6 +454,28 @@ instead (same page, one flow) - final design below.
   genuine material (permanently changes live SAP financial data) - user should test the real
   write themselves (e.g. Material 368 @ P4/P6/P7 from their screenshot) via this page.
 
+## BUG FIX: PO-from-PR item match fails on case mismatch (Sep 21 2026, this session)
+Real user report: purchase request icode "POLY5x7LD" showed "Not matched in SAP" during PO
+creation from PR, blocking the PO - even though the material genuinely exists and is active.
+- Root cause: SAP's real material InternalID is "POLY5X7LD" (uppercase). Both matching paths in
+  `po_pr_lookup` are exact-string comparisons: the `inventory_cache` `$in` filter is case-sensitive
+  (Mongo default - live-confirmed empty result for the mixed-case icode, non-empty for the
+  uppercase one), and the live SAP fallback (`sap_material_client.resolve_material_info`, a `>=`
+  SelectionByInternalID boundary query) also missed it - uppercase letters sort BEFORE lowercase
+  in SAP's own comparison, so a lowercase 'x' in the search string sorts AFTER the real
+  uppercase-only record, silently excluding it from a ">=" search (live-confirmed:
+  `resolve_material_info("POLY5x7LD")` -> no match, `resolve_material_info("POLY5X7LD")` -> real
+  match, uuid a914bea5-2316-1ede-81ed-f4ba8496d7cd).
+- Fix: `po_pr_lookup` now normalizes every PR `icode` to uppercase (`.strip().upper()`) before
+  BOTH the `inventory_cache` match and the live SAP fallback lookup - matches this app's existing
+  convention elsewhere (e.g. `stock_transfer_service.get_product_stock_locations`). The displayed
+  `icode` field (shown to the user) is untouched - only matching uses the normalized value.
+  `matched_product_id` (what the frontend's `PurchaseOrderPage.jsx` actually sends to
+  `/purchase-orders/create`, confirmed via grep - never the raw icode) now correctly returns
+  SAP's real uppercase code either way.
+- Live-verified: both the cache aggregation and the SOAP call now return the real match for
+  "POLY5X7LD" after normalization. Backend restarted clean, no errors.
+
 ## FEATURE: live PO item-number verification before GRN submission (Sep 21 2026, same session)
 Follow-up to the S000073/PO 29581 investigation above - proactive safety net so the exact same
 "Incorrect purchase order reference Item UUID" failure surfaces with a clear, specific reason
