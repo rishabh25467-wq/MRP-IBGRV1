@@ -7902,39 +7902,23 @@ async def post_inbound_receipt(sto_id: str, payload: InboundReceiptRequest, requ
         "sto_id": sto_id, "kind": "inbound_receipt", "status": "running", "phase": "queued",
         "progress_current": 0, "progress_total": total_deliveries, "result": None, "error": None,
     })
-    line_overrides = await asyncio.to_thread(inbound_receipt_service.build_line_overrides, doc, overrides)
-
     async def run():
-        first_processing_seen = False
-        def on_progress(phase: str, current: int, total: int):
-            nonlocal first_processing_seen
-            update = {"phase": phase, "progress_current": current, "progress_total": total}
-            if phase == "processing" and not first_processing_seen:
-                # Set once, on the very first "processing" signal - backs a
-                # real ticking countdown on the frontend (elapsed-time based,
-                # not just a static "X of Y" snapshot between polls).
-                first_processing_seen = True
-                update["processing_started_at"] = datetime.now(timezone.utc).isoformat()
-            asyncio.create_task(asyncio.to_thread(job_store.update_job, db, job_id, update))
         try:
-            pgr_result = await _run_playwright_job_with_retries(
-                job_id, lambda: sap_playwright_pgr_service.post_goods_receipts_via_ui(
-                    doc.get("outbound_delivery_ids") or [], line_overrides=line_overrides, progress_cb=on_progress,
-                ),
+            await asyncio.to_thread(job_store.update_job, db, job_id, {"phase": "processing", "progress_current": 0, "progress_total": total_deliveries})
+            final = await asyncio.to_thread(
+                inbound_receipt_service.receive_stock_transfer_order, db, sap_goods_movement_client, sto_id, actor, overrides,
             )
-            final = await asyncio.to_thread(inbound_receipt_service.finalize_receipt, db, sto_id, pgr_result["results"], actor, bool(line_overrides), pgr_result.get("sap_username"), sap_goods_movement_client)
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
         except Exception as e:
             logger.error(f"Inbound receipt job {job_id} ({sto_id}) failed: {e}")
-            friendly_error = "Could not reach SAP's receipt screen - please retry" if "Executable doesn't exist" in str(e) or "BrowserType.launch" in str(e) else str(e)
-            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": friendly_error})
+            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": str(e)})
             # Bug fix (Sep 16 2026, user's explicit report - "most STOs
             # show Pending Receipt even after failing"): this used to only
             # set receipt_error, leaving receipt_status untouched (still
             # "pending" or missing) - so the Pending tab's badge showed the
             # same plain yellow "Pending Receipt" for a genuinely-failed
             # attempt as for a never-tried row, hiding the failure entirely.
-            await asyncio.to_thread(db[stock_transfer_service.STO_COLLECTION].update_one, {"_id": sto_id}, {"$set": {"receipt_status": "failed", "receipt_error": friendly_error}})
+            await asyncio.to_thread(db[stock_transfer_service.STO_COLLECTION].update_one, {"_id": sto_id}, {"$set": {"receipt_status": "failed", "receipt_error": str(e)}})
 
     asyncio.create_task(run())
     return {"job_id": job_id}

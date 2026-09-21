@@ -84,7 +84,7 @@ def _receipt_hold_warehouse_id(site_id: str) -> str:
     return inbound_staging_area_for_site(site_id)
 
 
-def _relocate_receipt_from_hold(db, sap_goods_movement_client, doc: dict) -> dict:
+def _relocate_receipt_from_hold(db, sap_goods_movement_client, doc: dict, quantity_overrides: dict = None) -> dict:
     """Called right after a Receive job's finalize_receipt confirms the
     real SAP Goods Receipt posted (received or partial - never for a
     fully failed receipt, nothing landed in hold to move). Attempts
@@ -100,7 +100,13 @@ def _relocate_receipt_from_hold(db, sap_goods_movement_client, doc: dict) -> dic
     actual source of truth) is mapped to the user-facing "Stock does
     not exist in the STO warehouse" instead. Never raises - failure
     here must never undo the already-successful receipt; caller stores
-    the result."""
+    the result.
+
+    Sep 21 2026, user's explicit ask: this is now THE receive action
+    itself (see receive_stock_transfer_order below), not just a
+    post-Playwright cleanup step, so it accepts an optional
+    `quantity_overrides` ({str(line_no): qty}) the same way the old
+    Playwright grid override did."""
     site_id = doc.get("ship_to_site_id")
     hold_warehouse_id = _receipt_hold_warehouse_id(site_id)
     ship_to_location_id = doc.get("ship_to_location_id")
@@ -109,13 +115,15 @@ def _relocate_receipt_from_hold(db, sap_goods_movement_client, doc: dict) -> dic
     items = doc.get("items") or []
     if not items:
         return {"status": "skipped_no_items"}
+    quantity_overrides = quantity_overrides or {}
     owner_party_id, _ = company_and_set_of_books_for_site(site_id)
     line_results = []
     for item in items:
+        qty = quantity_overrides.get(str(item["line_no"]), item["requested_qty"])
         result = _trigger_goods_movement(
             sap_goods_movement_client, owner_party_id, item["product_id"],
             hold_warehouse_id, ship_to_location_id,
-            item["requested_qty"], item.get("unit_of_measure") or "EA", site_id,
+            qty, item.get("unit_of_measure") or "EA", site_id,
         )
         if not result.get("ok"):
             raw = result.get("error_detail") or result.get("error") or ""
@@ -267,7 +275,57 @@ def prepare_receipt(db, sto_id: str) -> dict:
         raise ValueError(f"Stock Transfer Order {sto_id} not found.")
     if doc.get("gi_status") != "posted":
         raise ValueError("This order's Goods Issue hasn't posted in SAP yet - nothing to receive.")
+    # Sep 21 2026, user's explicit ask - Receive only ever posts a real
+    # SAP Goods Movement now (see receive_stock_transfer_order below),
+    # never drives Playwright/logs into SAP UI - this needs a real SAP
+    # delivery reference to exist first (`outbound_delivery_ids`, set
+    # once Goods Issue posts, same gate try_post_goods_issue itself waits
+    # on) so it never fires against a half-created order.
+    if not doc.get("outbound_delivery_ids"):
+        raise ValueError("No SAP delivery reference found yet for this order - please retry in a moment.")
     return doc
+
+
+def receive_stock_transfer_order(db, sap_goods_movement_client, sto_id: str, actor: str, quantity_overrides: dict = None) -> dict:
+    """Sep 21 2026, user's explicit ask - STOP driving Playwright/SAP UI
+    login entirely for STO receiving: too slow (SAP's own UI took
+    40-90s/delivery) and its own "Post Goods Receipt" -> "Save and
+    Close" -> re-search verification proved unreliable on a real
+    2-line order (STO-000131/P1D1-568: "still shows as Not Released"
+    after a clean Save and Close, no visible SAP error). The "Receive"
+    button now ONLY posts a real SAP Goods Movement (`_trigger_goods_
+    movement`, plain OData API call, no login, no browser) moving each
+    line's quantity from wherever Goods Receipt lands ({SITE}-RM/-HOLD
+    - see inbound_staging_area_for_site) to the STO's real destination
+    (`ship_to_location_id`) - see _relocate_receipt_from_hold, now
+    called directly as the receive action itself rather than as a
+    post-Playwright cleanup step. Requires `prepare_receipt`'s SAP
+    delivery reference gate to have already passed."""
+    doc = db[STO_COLLECTION].find_one({"_id": sto_id}) or {}
+    now = datetime.now(timezone.utc)
+    started_at = doc.get("receipt_started_at")
+    if started_at and started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    relocation = _relocate_receipt_from_hold(db, sap_goods_movement_client, doc, quantity_overrides)
+    status_map = {
+        "done": "received", "partial": "partial", "failed": "failed",
+        "skipped_same_warehouse": "received", "skipped_no_items": "received",
+    }
+    overall = status_map.get(relocation.get("status"), "failed")
+    lines = relocation.get("lines") or []
+    error_summary = " | ".join(f"{l['product_id']}: {l['error']}" for l in lines if not l["ok"]) or None
+    update = {
+        "receipt_status": overall,
+        "receipt_results": lines,
+        "receipt_relocation": relocation,
+        "receipt_error": error_summary,
+        "received_at": now if overall in ("received", "partial") else doc.get("received_at"),
+        "received_by": actor,
+        "receipt_completed_at": now,
+        "receipt_duration_seconds": round((now - started_at).total_seconds()) if started_at else None,
+    }
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": update})
+    return {"status": overall, "results": lines, "error": error_summary, "receipt_relocation": relocation}
 
 
 def build_line_overrides(doc: dict, quantity_overrides: dict) -> dict:
