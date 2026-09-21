@@ -7716,6 +7716,35 @@ async def post_activate_material_site(payload: ActivateMaterialSiteRequest, requ
     return result
 
 
+class SetMaterialValuationRequest(BaseModel):
+    product_id: str
+    site_id: str
+    amount: float
+
+
+@api_router.post("/admin/material-valuation/set")
+async def post_set_material_valuation(payload: SetMaterialValuationRequest):
+    """Sep 2026, "Set Valuation" tool on the SAP Write admin page (client-
+    side passcode gate only, same as the page's other actions - see
+    SapWritePage.js). Sets/updates a material's Cost at one Company/Site
+    in SAP in ONE call - activates the Valuation row (In Preparation ->
+    Active) if needed, or adds a new Cost period if already Active (see
+    sap_material_create_client.set_valuation's docstring)."""
+    company_id, set_of_books_id = company_and_set_of_books_for_site(payload.site_id)
+    try:
+        material_info = await asyncio.to_thread(sap_material_client.resolve_material_info, payload.product_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not look up material in SAP: {e}")
+    product_category_id = material_info.get("product_category_id") if material_info else None
+    if not product_category_id:
+        raise HTTPException(status_code=404, detail=f"Material '{payload.product_id}' not found in SAP (or has no Product Category)")
+    result = await asyncio.to_thread(
+        sap_material_create_client.set_valuation, payload.product_id, payload.site_id, company_id, payload.amount,
+        sap_material_valuation_data_client, product_category_id, set_of_books_id,
+    )
+    return result
+
+
 @api_router.post("/stock-transfer/parse-nl")
 async def post_stock_transfer_parse_nl(payload: StockTransferNLParseRequest):
     known_sites = await asyncio.to_thread(list_known_sites, db)

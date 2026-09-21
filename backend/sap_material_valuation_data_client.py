@@ -91,12 +91,23 @@ class SAPMaterialValuationDataClient:
         return xml
 
     def set_account_determination_and_price(self, material_id: str, company_id: str, site_id: str,
-                                              product_category_id: str, set_of_books_id: str) -> None:
+                                              product_category_id: str, set_of_books_id: str,
+                                              amount: float = 0.0, start_date: str = None) -> None:
+        """`amount`/`start_date` (Sep 2026, "Set Valuation" admin tool):
+        lets a caller push a REAL Cost value instead of always bootstrapping
+        at 0 - same ValuationPrice actionCode="01" (create a new price
+        period), so this is also the correct call to update the Cost on a
+        material/site whose Valuation is ALREADY Active (SAP's Moving
+        Average price is period-based history, not an in-place edit - a new
+        period row IS the update). AccountDeterminationSpecification/
+        InventoryValuationSpecification still use actionCode="02" exactly
+        as before regardless of whether they already exist (already
+        confirmed live to work for both bootstrap and idempotent re-affirm)."""
         group_code = ACCOUNT_DETERMINATION_GROUP_BY_CATEGORY.get((product_category_id or "").strip().upper())
         if not group_code:
             raise SAPMaterialValuationDataError(
                 f"No known Account Determination Group for product category '{product_category_id}' - ask your SAP admin for its code")
-        start_date = valuation_price_start_date()
+        start_date = start_date or valuation_price_start_date()
         body = f"""<n0:MaterialValuationDataBundleMaintainRequest_sync>
     <BasicMessageHeader><ID>{uuid.uuid4().hex.upper()}</ID></BasicMessageHeader>
     <MaterialValuationData actionCode="06">
@@ -121,7 +132,7 @@ class SAPMaterialValuationDataClient:
             <PriceTypeCode>1</PriceTypeCode>
             <SetOfBooksID>{set_of_books_id}</SetOfBooksID>
             <LocalCurrencyValuationPrice>
-                <Amount currencyCode="INR">0</Amount>
+                <Amount currencyCode="INR">{amount}</Amount>
                 <BaseQuantity unitCode="EA">1</BaseQuantity>
                 <BaseQuantityTypeCode>EA</BaseQuantityTypeCode>
             </LocalCurrencyValuationPrice>

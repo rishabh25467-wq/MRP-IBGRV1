@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import "@/App.css";
 import axios from "axios";
-import { Database, Shield, LockSimple, CloudArrowUp, WarningCircle, CheckCircle, Stop, PencilSimple } from "@phosphor-icons/react";
+import { Database, Shield, LockSimple, CloudArrowUp, WarningCircle, CheckCircle, Stop, PencilSimple, Coins } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Toaster, toast } from "@/components/ui/sonner";
 import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
@@ -42,6 +43,15 @@ export default function SapWritePage() {
   const [readSpecs, setReadSpecs] = useState(null);
   const [readLoading, setReadLoading] = useState(false);
   const [readError, setReadError] = useState(null);
+
+  const [sites, setSites] = useState([]);
+  const [valuationForm, setValuationForm] = useState({ product_id: "", site_id: "", amount: "" });
+  const [valuationWriting, setValuationWriting] = useState(false);
+  const [valuationResult, setValuationResult] = useState(null);
+
+  useEffect(() => {
+    axios.get(`${API}/purchase-orders/sites`).then(({ data }) => setSites(data.sites || [])).catch(() => {});
+  }, []);
 
   const readFromSap = async (productId) => {
     const pid = productId.trim();
@@ -82,6 +92,33 @@ export default function SapWritePage() {
       toast.error("Write to SAP failed", { description: detail });
     } finally {
       setManualWriting(false);
+    }
+  };
+
+  const writeValuation = async (e) => {
+    e.preventDefault();
+    setValuationWriting(true);
+    setValuationResult(null);
+    try {
+      const { data } = await axios.post(`${API}/admin/material-valuation/set`, {
+        product_id: valuationForm.product_id.trim(),
+        site_id: valuationForm.site_id,
+        amount: parseFloat(valuationForm.amount),
+      });
+      setValuationResult(data);
+      if (data.status === "ok") {
+        toast.success("Valuation set in SAP", {
+          description: `${valuationForm.product_id.trim()} @ ${valuationForm.site_id}: INR ${valuationForm.amount}`,
+        });
+      } else {
+        toast.error("SAP rejected the valuation write", { description: data.status });
+      }
+    } catch (err) {
+      const detail = err?.response?.data?.detail || err.message || "Failed to set valuation";
+      setValuationResult({ status: detail });
+      toast.error("Write to SAP failed", { description: detail });
+    } finally {
+      setValuationWriting(false);
     }
   };
 
@@ -332,6 +369,85 @@ export default function SapWritePage() {
             <div className="mt-3 flex items-start gap-2 bg-[#FEF3F2] border border-[#FECDCA] rounded-sm p-3" data-testid="manual-price-spec-error">
               <WarningCircle size={14} weight="fill" className="text-[#B42318] mt-0.5 shrink-0" />
               <span className="text-[13px] text-[#B42318]">{manualError}</span>
+            </div>
+          )}
+        </section>
+
+        <section className="bg-white border border-[#D0D5DD] rounded-sm p-4" data-testid="set-valuation-section">
+          <div className="flex items-center gap-2 mb-2">
+            <Coins size={16} weight="bold" className="text-[#004B87]" />
+            <h2 className="font-heading text-sm font-bold text-[#1D2939]">Set Material Valuation (Cost)</h2>
+          </div>
+          <p className="text-[13px] text-[#475467] mb-3">
+            Sets a material's real Cost at one Company/Site in SAP - activates that site's Valuation (In
+            Preparation → Active) if it isn't yet, or adds a new Cost period if it's already Active (SAP's Moving
+            Average price is period-based history, so this is how an existing Cost gets updated too).
+          </p>
+          <form onSubmit={writeValuation} className="grid grid-cols-2 sm:grid-cols-4 gap-2 items-end">
+            <div>
+              <label className="text-xs text-[#667085] block mb-1">Product ID</label>
+              <input
+                required
+                value={valuationForm.product_id}
+                onChange={(e) => setValuationForm((f) => ({ ...f, product_id: e.target.value }))}
+                className={inputCls}
+                data-testid="set-valuation-product-id"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[#667085] block mb-1">Site</label>
+              <Select
+                value={valuationForm.site_id}
+                onValueChange={(v) => setValuationForm((f) => ({ ...f, site_id: v }))}
+              >
+                <SelectTrigger className={inputCls} data-testid="set-valuation-site-select-trigger">
+                  <SelectValue placeholder="Select a site" />
+                </SelectTrigger>
+                <SelectContent>
+                  {sites.map((s) => (
+                    <SelectItem key={s} value={s} data-testid={`set-valuation-site-option-${s}`}>
+                      {s}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-xs text-[#667085] block mb-1">Cost (INR)</label>
+              <input
+                required
+                type="number"
+                step="0.01"
+                value={valuationForm.amount}
+                onChange={(e) => setValuationForm((f) => ({ ...f, amount: e.target.value }))}
+                className={inputCls}
+                data-testid="set-valuation-amount"
+              />
+            </div>
+            <Button
+              type="submit"
+              disabled={valuationWriting || !valuationForm.site_id}
+              className="h-9 bg-[#004B87] hover:bg-[#003A6A] text-white text-sm rounded-sm"
+              data-testid="set-valuation-write-button"
+            >
+              {valuationWriting ? "Writing..." : "Set Valuation in SAP"}
+            </Button>
+          </form>
+          {valuationResult && (
+            <div
+              className={`mt-3 flex items-start gap-2 rounded-sm p-3 ${
+                valuationResult.status === "ok" ? "bg-[#ECFDF3] border border-[#ABEFC6]" : "bg-[#FEF3F2] border border-[#FECDCA]"
+              }`}
+              data-testid="set-valuation-result"
+            >
+              {valuationResult.status === "ok" ? (
+                <CheckCircle size={14} weight="fill" className="text-[#027A48] mt-0.5 shrink-0" />
+              ) : (
+                <WarningCircle size={14} weight="fill" className="text-[#B42318] mt-0.5 shrink-0" />
+              )}
+              <span className={`text-[13px] ${valuationResult.status === "ok" ? "text-[#027A48]" : "text-[#B42318]"}`}>
+                {valuationResult.status === "ok" ? "Confirmed active in SAP with the new Cost." : valuationResult.status}
+              </span>
             </div>
           )}
         </section>

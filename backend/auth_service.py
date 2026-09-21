@@ -169,6 +169,7 @@ PAGE_ROUTE_RULES = [
     ("/api/inbound-receipts", {"inbound_stock_transfer"}),
     ("/api/suppliers/bulk-push-erp-to-sap", {"admin_sap_write"}),
     ("/api/suppliers/sap-price-specs", {"quota_allocation", "admin_sap_write"}),
+    ("/api/admin/material-valuation", {"admin_sap_write"}),
     ("/api/suppliers/erp-prices/", {"quota_allocation"}),
     ("/api/suppliers/sap-purchase-history/", {"quota_allocation"}),
     ("/api/suppliers/sap-receipt-dates/", {"quota_allocation"}),

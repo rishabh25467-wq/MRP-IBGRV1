@@ -33,6 +33,30 @@ auto-detection (`try_post_goods_issue`) as a background poll, and a "Complete ST
 manual-confirm button (`check_manual_gi_completion`) as fallback. User explicitly confirmed
 (this session) to leave this as-is - do not restore old single-line automation.
 
+## STO Inbound Goods Receipt - 4-route API automation re-investigation (Sep 21 2026, this session)
+User mandated re-checking 4 precise API routes (no Playwright/ABSL/manual UI) for fully
+automating STO Goods Receipt. Full report: `/app/memory/STO_INBOUND_4_ROUTE_FINAL_REPORT.md`.
+- **Route 1 (PGRBackground)**: DEAD - re-confirmed, SAP disables the action tenant-wide (KBA
+  3583076/2691388), even with the correct Logistics Model present.
+- **Route 2 (Task-Based Receiving)**: DEAD for STO - re-verified LIVE today at P8: of 128 real
+  Site Logistics Tasks, only 3 are Put Away (`OperationTypeCode=11`) and all 3 belong to a
+  vendor-PO-GRN test (PO 29346), zero reference any STO. Task-based receiving only triggers for
+  notifications WE create via SOAP (vendor GRN flow), never for SAP's own auto-created STO
+  delivery notification.
+- **Route 3 (API-triggered Warehouse Request Run)**: DEAD - no standard OData/SOAP API exists
+  for this; only path is custom ABSL (forbidden).
+- **Route 4 (3PL / Externally Managed Receiving)**: genuinely new, untested avenue found
+  (`RequestInboundDeliveryExecution`/`ProcessInboundDeliveryExecutionConfirmation` B2B SOAP
+  messages) - but investigated the IMPACT with the user and it was explicitly DROPPED: marking
+  a site "Externally Managed" disables ALL standard internal warehouse tasks for that ENTIRE
+  site (not just STOs) - would break the already-working vendor-GRN Put Away automation (EM1)
+  too, plus break standard stock adjustments/scrapping at that site, and needs new master data
+  (Warehouse Provider Business Partner, transport lanes). User's decision: "Not worth the
+  disruption."
+- **User's final decision**: accept manual STO receiving in SAP UI as permanent. The
+  already-drafted SAP Support ticket for Route 1 (`SAP_SUPPORT_TICKET_DRAFT_InboundPGR.md`) -
+  user has NOT yet confirmed whether to submit it (last question pending in conversation).
+
 ## Major speedup - vendor-scoped Pull via OData analytics report (Sep 20 2026, same session)
 User's ask: "is there a way we can use an OData report to pull this faster" - investigated and
 found YES. `sap_po_analytics_client`'s existing report (`RPSRMPO_B02_Q0004QueryResults`, already
@@ -277,6 +301,28 @@ on P1 despite its missing "with task" model) - see same file's dedicated section
   pre-check that this test depends on, in favor of trusting SAP's live rejection directly.
   Test asserts SAP is never called for a nonexistent product; that's no longer true by
   design. Needs updating in a future session (not blocking, not in original scope).
+
+## Set Material Valuation (Cost) - new SAP Write admin tool (Sep 21 2026, this session)
+User's ask: set/activate SAP Standard Cost (Valuation) for a material at a Company/Site
+directly from the app instead of the manual SAP UI flow (screenshot showed Material 368 with
+P4/P6/P7 rows stuck "In Preparation").
+- Discovered the write capability mostly ALREADY EXISTED (`sap_material_create_client.
+  activate_site`/`sap_material_valuation_data_client.set_account_determination_and_price`,
+  built Sep 11 2026 for the "Activate Material Site" page) - just hardcoded to a 0 opening
+  price and only reachable as an error-fallback, never as a direct "set this Cost" action.
+- Generalized `set_account_determination_and_price` to accept a real `amount` (was always 0).
+  Added `SAPMaterialCreateClient.set_valuation()` - ONE call that both activates a site's
+  Valuation (In Preparation -> Active) if needed AND pushes the given Cost as a new price
+  period if already Active (SAP's Moving Average price is period-based history, not an
+  in-place edit).
+- New endpoint `POST /api/admin/material-valuation/set` ({product_id, site_id, amount}), new
+  UI section "Set Material Valuation (Cost)" on `/admin/sap-write`. Added
+  `/api/admin/material-valuation` to `PAGE_ROUTE_RULES` (`admin_sap_write` permission, matching
+  the page's other actions).
+- Self-tested (screenshot): UI renders, permission gating works, error path confirmed live
+  end-to-end against real SAP (fake Product ID -> clean "not found in SAP"). Did NOT attempt a
+  real write against a genuine material (permanently changes live SAP financial data) - user
+  should test the real write themselves (e.g. Material 368 @ P4/P6/P7 from their screenshot).
 
 ## Backlog
 

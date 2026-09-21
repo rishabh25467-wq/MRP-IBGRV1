@@ -191,30 +191,15 @@ class SAPMaterialCreateClient:
     </Material>
 </n0:MaterialBundleMaintainRequest_sync_V1>"""
 
-        def _create_then_update_on_conflict(body_fn) -> str:
-            try:
-                self._post(body_fn("01"))
-                return "ok"
-            except SAPMaterialCreateError as e:
-                if "already exists" not in str(e).lower():
-                    return str(e)
-            # Node already exists (possibly still "In Preparation") - retry
-            # as an update so a real 1->2 status flip actually happens.
-            try:
-                self._post(body_fn("02"))
-                return "ok"
-            except SAPMaterialCreateError as e:
-                return str(e)
-
         result = {}
-        result["planning_logistics"] = _create_then_update_on_conflict(_planning_body)
+        result["planning_logistics"] = self._create_then_update_on_conflict(_planning_body)
 
-        valuation_result = _create_then_update_on_conflict(_valuation_body)
+        valuation_result = self._create_then_update_on_conflict(_valuation_body)
         if "account det. group is missing" in valuation_result.lower() and valuation_data_client and product_category_id and set_of_books_id:
             try:
                 valuation_data_client.set_account_determination_and_price(
                     material_id, company_id, site_id, product_category_id, set_of_books_id)
-                valuation_result = _create_then_update_on_conflict(_valuation_body)
+                valuation_result = self._create_then_update_on_conflict(_valuation_body)
             except Exception as e:
                 # Sep 11 2026, real user report on 6700-302359 @ P9 - a site
                 # that NEVER had ANY prior Valuation presence (unlike
@@ -240,3 +225,54 @@ class SAPMaterialCreateClient:
                     valuation_result = str(e)
         result["valuation"] = valuation_result
         return result
+
+    def _create_then_update_on_conflict(self, body_fn) -> str:
+        try:
+            self._post(body_fn("01"))
+            return "ok"
+        except SAPMaterialCreateError as e:
+            if "already exists" not in str(e).lower():
+                return str(e)
+        # Node already exists (possibly still "In Preparation") - retry
+        # as an update so a real 1->2 status flip actually happens.
+        try:
+            self._post(body_fn("02"))
+            return "ok"
+        except SAPMaterialCreateError as e:
+            return str(e)
+
+    def set_valuation(self, material_id: str, site_id: str, company_id: str, amount: float,
+                       valuation_data_client, product_category_id: str, set_of_books_id: str) -> dict:
+        """"Set Valuation" admin tool (Sep 2026) - sets/updates a material's
+        real Cost at one Company/Site, in ONE call, whether that site's
+        Valuation is still "In Preparation" (activates it, per
+        activate_site()'s docstring) OR already Active (adds a new Cost
+        period - SAP's Moving Average price is period-based history, a new
+        period row IS the update, no in-place edit exists). Always pushes
+        the given `amount` first (unlike activate_site(), which only calls
+        this as a 0-amount fallback on "account det. group is missing") so
+        an already-Active row's Cost genuinely changes, not just a re-affirm
+        of whatever price already existed. Returns {"status": "ok"|<error>}."""
+        try:
+            valuation_data_client.set_account_determination_and_price(
+                material_id, company_id, site_id, product_category_id, set_of_books_id, amount=amount)
+        except Exception as e:
+            return {"status": str(e)}
+
+        def _valuation_body(action_code: str) -> str:
+            return f"""<n0:MaterialBundleMaintainRequest_sync_V1>
+    <BasicMessageHeader><ID>{uuid.uuid4().hex.upper()}</ID></BasicMessageHeader>
+    <Material actionCode="02">
+        <InternalID>{material_id}</InternalID>
+        <Valuation actionCode="{action_code}">
+            <LifeCycleStatusCode>2</LifeCycleStatusCode>
+            <CompanyID>{company_id}</CompanyID>
+            <BusinessResidenceID>{site_id}</BusinessResidenceID>
+        </Valuation>
+    </Material>
+</n0:MaterialBundleMaintainRequest_sync_V1>"""
+
+        # No-op (returns "ok" via the "already exists" conflict path) if this
+        # site's Valuation is already Active - only genuinely flips
+        # LifeCycleStatusCode 1 -> 2 when it was still "In Preparation".
+        return {"status": self._create_then_update_on_conflict(_valuation_body)}
