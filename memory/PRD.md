@@ -302,27 +302,42 @@ on P1 despite its missing "with task" model) - see same file's dedicated section
   Test asserts SAP is never called for a nonexistent product; that's no longer true by
   design. Needs updating in a future session (not blocking, not in original scope).
 
-## Set Material Valuation (Cost) - new SAP Write admin tool (Sep 21 2026, this session)
+## Set Material Valuation (Cost) - merged into Activate Material Site page (Sep 21 2026, this session)
 User's ask: set/activate SAP Standard Cost (Valuation) for a material at a Company/Site
 directly from the app instead of the manual SAP UI flow (screenshot showed Material 368 with
-P4/P6/P7 rows stuck "In Preparation").
+P4/P6/P7 rows stuck "In Preparation"). First built as a separate section on the SAP Write
+admin page, then user asked to move it INTO the existing `/admin/activate-material-site` page
+instead (same page, one flow) - final design below.
 - Discovered the write capability mostly ALREADY EXISTED (`sap_material_create_client.
   activate_site`/`sap_material_valuation_data_client.set_account_determination_and_price`,
-  built Sep 11 2026 for the "Activate Material Site" page) - just hardcoded to a 0 opening
-  price and only reachable as an error-fallback, never as a direct "set this Cost" action.
+  built Sep 11 2026) - just hardcoded to a 0 opening price and only reachable as an
+  error-fallback (fires only when a fresh "In Preparation" site hits "account det. group is
+  missing"), never as a direct "set this Cost" action, and never for an ALREADY Active site.
 - Generalized `set_account_determination_and_price` to accept a real `amount` (was always 0).
   Added `SAPMaterialCreateClient.set_valuation()` - ONE call that both activates a site's
   Valuation (In Preparation -> Active) if needed AND pushes the given Cost as a new price
   period if already Active (SAP's Moving Average price is period-based history, not an
   in-place edit).
-- New endpoint `POST /api/admin/material-valuation/set` ({product_id, site_id, amount}), new
-  UI section "Set Material Valuation (Cost)" on `/admin/sap-write`. Added
-  `/api/admin/material-valuation` to `PAGE_ROUTE_RULES` (`admin_sap_write` permission, matching
-  the page's other actions).
-- Self-tested (screenshot): UI renders, permission gating works, error path confirmed live
-  end-to-end against real SAP (fake Product ID -> clean "not found in SAP"). Did NOT attempt a
-  real write against a genuine material (permanently changes live SAP financial data) - user
-  should test the real write themselves (e.g. Material 368 @ P4/P6/P7 from their screenshot).
+- `ActivateMaterialSiteRequest` now has an optional `amount` field. `POST /admin/material-
+  sites/activate` still runs the existing `activate_site` flow unchanged (Planning/Logistics/
+  Availability + 0-amount Valuation fallback) when `amount` is omitted (fully backward
+  compatible) - but when the caller passes an `amount`, it ALSO calls `set_valuation()`
+  afterward and overrides the `valuation` key in the response with that real outcome, so the
+  UI reflects the actual Cost push (works whether the site was just activated OR already
+  Active).
+- `ActivateMaterialSitePage.js` now has an optional "Cost" number input (`data-testid=
+  "activate-material-site-amount-input"`) between the Site select and the Activate button.
+  Leave blank -> old 0-amount-fallback behavior; fill in -> real Cost pushed.
+- No standalone `/admin/material-valuation/set` endpoint or SAP Write page section anymore -
+  removed after the merge (avoid duplicate reachable UI/endpoints for the same action).
+- Synthetic super_admin test session used to verify (bypasses `admin_activate_material_site`
+  permission check): `vms_session` cookie
+  **`ALCdFh6z4UcpCBMnXmOM_vpzIy3-wI8Bg6k_YVIiJ2I`**, user
+  `sapwrite.valuation.test@rampgroup.co.in`, valid 7 days from Sep 21 2026.
+- Self-tested (screenshot): passcode gate -> real lookup against SAP -> clean "No material
+  found" error round-trip confirmed live. Did NOT attempt a real successful write against a
+  genuine material (permanently changes live SAP financial data) - user should test the real
+  write themselves (e.g. Material 368 @ P4/P6/P7 from their screenshot) via this page.
 
 ## Backlog
 

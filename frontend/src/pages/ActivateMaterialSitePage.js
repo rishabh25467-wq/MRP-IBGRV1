@@ -45,6 +45,7 @@ export default function ActivateMaterialSitePage() {
 
   const [sites, setSites] = useState([]);
   const [siteId, setSiteId] = useState("");
+  const [amount, setAmount] = useState("");
   const [activating, setActivating] = useState(false);
   const [result, setResult] = useState(null);
 
@@ -71,6 +72,7 @@ export default function ActivateMaterialSitePage() {
     setMaterial(null);
     setResult(null);
     setSiteId("");
+    setAmount("");
     try {
       const { data } = await axios.get(`${API}/admin/material-sites/lookup/${encodeURIComponent(materialId.trim())}`);
       setMaterial(data);
@@ -91,10 +93,15 @@ export default function ActivateMaterialSitePage() {
       const { data } = await axios.post(`${API}/admin/material-sites/activate`, {
         product_id: materialId.trim(),
         site_id: siteId,
+        amount: amount.trim() === "" ? null : parseFloat(amount),
       });
       setResult(data);
       if (data.planning_logistics === "ok" && data.valuation === "ok") {
-        toast.success(`${materialId.trim()} activated at ${siteId}`, { description: "Planning/Logistics/Availability + Valuation all confirmed in SAP" });
+        toast.success(`${materialId.trim()} activated at ${siteId}`, {
+          description: amount.trim() !== ""
+            ? `Planning/Logistics/Availability confirmed - Valuation set to INR ${amount}`
+            : "Planning/Logistics/Availability + Valuation all confirmed in SAP",
+        });
       } else if (data.planning_logistics === "ok") {
         toast.warning(`${materialId.trim()} partially activated at ${siteId}`, { description: "Planning/Logistics/Availability confirmed - Valuation needs attention (see below)" });
       } else {
@@ -241,6 +248,23 @@ export default function ActivateMaterialSitePage() {
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+
+            <div>
+              <Label className="text-xs font-bold text-[#344054]">Cost (optional)</Label>
+              <input
+                type="number"
+                step="0.01"
+                placeholder="Leave blank to activate Valuation at 0"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                className={inputCls}
+                data-testid="activate-material-site-amount-input"
+              />
+              <p className="text-xs text-[#667085] mt-1">
+                Sets this material's real Cost (Moving Average) at this site - activates Valuation if it's still
+                "In Preparation", or adds a new Cost period if it's already Active.
+              </p>
             </div>
 
             <Button

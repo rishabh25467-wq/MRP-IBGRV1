@@ -7667,6 +7667,7 @@ class ActivateMaterialSiteRequest(BaseModel):
     product_id: str
     site_id: str
     notification_id: str = None
+    amount: Optional[float] = None
 
 
 @api_router.get("/admin/material-sites/lookup/{material_id}")
@@ -7711,37 +7712,24 @@ async def post_activate_material_site(payload: ActivateMaterialSiteRequest, requ
         sap_material_create_client.activate_site, payload.product_id, payload.site_id, company_id, procurement_type_code,
         sap_material_valuation_data_client, product_category_id, set_of_books_id,
     )
+    # Sep 21 2026, "Set Valuation (Cost)" ask - `activate_site`'s own
+    # Valuation fallback only ever pushes a Cost of 0 (bootstrap-only,
+    # never fires again once a site is already Active). If the caller
+    # gave a real `amount`, always ALSO push it via `set_valuation` -
+    # this is the one call that works whether the site was just
+    # activated above OR was already Active (adds a new Cost period -
+    # SAP's Moving Average price is period-based history, not an
+    # in-place edit). Overrides the "valuation" key in the response with
+    # this outcome so the UI reflects the REAL Cost push, not just the
+    # activation-only ok/error from above.
+    if payload.amount is not None and product_category_id:
+        valuation_result = await asyncio.to_thread(
+            sap_material_create_client.set_valuation, payload.product_id, payload.site_id, company_id, payload.amount,
+            sap_material_valuation_data_client, product_category_id, set_of_books_id,
+        )
+        result["valuation"] = valuation_result["status"]
     if payload.notification_id and result.get("planning_logistics") == "ok":
         await asyncio.to_thread(stock_transfer_service.resolve_admin_notification, db, payload.notification_id)
-    return result
-
-
-class SetMaterialValuationRequest(BaseModel):
-    product_id: str
-    site_id: str
-    amount: float
-
-
-@api_router.post("/admin/material-valuation/set")
-async def post_set_material_valuation(payload: SetMaterialValuationRequest):
-    """Sep 2026, "Set Valuation" tool on the SAP Write admin page (client-
-    side passcode gate only, same as the page's other actions - see
-    SapWritePage.js). Sets/updates a material's Cost at one Company/Site
-    in SAP in ONE call - activates the Valuation row (In Preparation ->
-    Active) if needed, or adds a new Cost period if already Active (see
-    sap_material_create_client.set_valuation's docstring)."""
-    company_id, set_of_books_id = company_and_set_of_books_for_site(payload.site_id)
-    try:
-        material_info = await asyncio.to_thread(sap_material_client.resolve_material_info, payload.product_id)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Could not look up material in SAP: {e}")
-    product_category_id = material_info.get("product_category_id") if material_info else None
-    if not product_category_id:
-        raise HTTPException(status_code=404, detail=f"Material '{payload.product_id}' not found in SAP (or has no Product Category)")
-    result = await asyncio.to_thread(
-        sap_material_create_client.set_valuation, payload.product_id, payload.site_id, company_id, payload.amount,
-        sap_material_valuation_data_client, product_category_id, set_of_books_id,
-    )
     return result
 
 
