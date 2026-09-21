@@ -152,6 +152,11 @@ const GRN_PHASE_LABELS = {
   retrying: "A step failed - retrying automatically...",
   moving_stock: "Moving stock into the warehouse...",
   creating_notifications: "Creating SAP Notification...",
+  // Sep 22 2026 fix (user's explicit ask: progress bar showed the raw
+  // internal phase string "posting_goods_receipt" verbatim, with no
+  // friendly label at all - _start_full_auto_grn_job sets exactly this
+  // one static phase for the whole (fast) SOAP create+release call).
+  posting_goods_receipt: "Posting Goods Receipt to SAP...",
   done: "Done",
 };
 function describeGrnPhase(phase) {
@@ -196,6 +201,20 @@ function summarizeGrResult(grResult) {
   if (!notPosted.length) return `All ${posted.length} PO(s) posted to SAP.`;
   const details = notPosted.map((p) => `PO ${p.po_number}: ${p.error || "failed - see Diagnostics"}`).join(" | ");
   return `${posted.length} of ${perPo.length} PO(s) posted. ${details}`;
+}
+
+// Sep 22 2026, user's explicit ask ("Goods Receipt posted to SAP should
+// also tell posted and stock moved to whichever warehouse") - the
+// warehouse move now happens silently in the background (see
+// _auto_finish_full_auto_grn in server.py, after Put Away Task confirms),
+// so the main "posted" banner needs its own suffix instead of relying on
+// the separate, easy-to-miss movement badge elsewhere on this page.
+function movementStatusSuffix(shipment) {
+  if (!shipment.sap_movement_status || shipment.sap_movement_status === "not_applicable") return null;
+  if (shipment.sap_movement_status === "posted") {
+    return ` + stock moved to ${shipment.site_id}/${shipment.warehouse_id}`;
+  }
+  return " - warehouse movement in progress (moves automatically once SAP confirms Put Away)";
 }
 
 function summarizeMovementResult(movementResult) {
@@ -1322,7 +1341,12 @@ export default function GrnApprovalPage() {
                   <span className="flex items-center gap-2">
                     {shipment.sap_sync_status === "posted" || shipment.sap_sync_status === "partial" ? <CheckCircle size={16} /> : shipment.sap_sync_status === "manual_mismatch" || shipment.sap_sync_status === "put_away_failed" ? <WarningCircle size={16} weight="fill" /> : <PlugsConnected size={16} />}
                     {shipment.sap_sync_status === "posted"
-                      ? "Goods Receipt posted to SAP"
+                      ? (
+                        <span data-testid="grn-sap-posted-with-movement">
+                          Goods Receipt posted to SAP
+                          {movementStatusSuffix(shipment)}
+                        </span>
+                      )
                       : shipment.sap_sync_status === "partial"
                       ? (
                         <span className="flex items-center gap-2">
