@@ -775,6 +775,42 @@ against vendor RAD-P2-S (336 cached PO line items) - confirmed 49.4s.
 - Inbound generalization fix self-tested (pytest + direct mocked call-path check across
   P1/P2/P3/P8) - not yet run through testing_agent as a dedicated pass.
 
+## Part 4 (Sep 22 2026, this fork continuation) - GRN warehouse-movement policy REVERSED, ERP
+sync resumed, SAP push (webhook) groundwork. Full detail in `/app/memory/CHANGELOG.md` "Part 4"
+section - this is a pointer + the critical NOT-YET-TESTED list for whoever picks this up next.
+
+- **GRN movement reversed** (user's explicit ask - SAP now routes every Goods Receipt into
+  `{SITE}-HOLD` first, tenant-wide): `finalize_goods_receipt` default `skip_movement` flipped
+  back to `False`; `manually_confirm_inbound_delivery` and `_auto_finish_full_auto_grn`
+  (background Put Away retry loop) both run real movement again. Real bug found + fixed along
+  the way: frontend's `warehouseId` was hardcoded `""` since Sep 20 (old policy's belt-and-
+  suspenders guard) - fixed at the source of truth (`prepare_approval` now defaults blank
+  `warehouse_id` via `_SITE_RM_WAREHOUSE_OVERRIDE.get(site_id, f"{site_id}-RM")`, reusing
+  `store_approval_service.py`'s existing override map). P3 confirmed live: `P3-Z1-01-A` (no flat
+  `P3-RM` exists in SAP). **Verified live end-to-end on ONE already-stuck shipment only**
+  (S000040, manually patched + retried - real GM IDs 281790/281841 posted). **NOT YET verified**:
+  a brand new shipment going through the full automated path (approve -> GR post -> background
+  loop -> Put Away confirm -> movement) with zero manual intervention - do this first before
+  trusting the automated path for real.
+- **STO_ERP_SYNC_PAUSED resumed**: flipped back to `"false"` (user confirmed). The 26 STOs that
+  piled up `erp_portal_status: "paused"` during the pause were deliberately left untouched, NOT
+  synced - user must explicitly decide their fate later if ever revisited.
+- **SAP push (webhook) groundwork built, NOT wired to anything yet**: dormant
+  `POST /api/webhooks/sap-put-away` receiver (Basic Auth, logs raw payload only), new
+  `POST /api/admin/grn/{doc_code}/check-now` (on-demand single-cycle check) + "Check Now" button,
+  faster progressive backoff `[5,10,15,20,30,30,30,30]` in the Put Away retry loop, frontend
+  polling tightened 30s->8s while pending. SAP-side Event Notification subscriber intentionally
+  left **Inactive/unsaved** by user - confirmed correct Business Object is `SiteLogisticsTask`
+  (Updated event) if/when this gets activated. Full rollout plan for SAP Admin/Basis:
+  `/app/memory/sap_event_push_plan.md`.
+- **TESTING GAP, be aware**: none of Part 4's changes went through `testing_agent` or a UI
+  screenshot - only backend curl + one real live SAP write (S000040's manual retry) + code
+  review. The frontend changes (Check Now button, movement banner suffix, progress bar label,
+  tightened polling) have NOT been visually/interactively verified at all yet.
+- Recurring, not-a-real-bug: backend went unresponsive twice more this session after routine
+  file edits - Uvicorn `--reload` watcher hanging (known issue, not this session's code).
+  Fix is always `sudo supervisorctl restart backend` (~5s recovery each time).
+
 ## Sep 18 2026 session
 - STO Site Logistics automation (SOAP EM2) was built then EXPLICITLY REVERTED per user
   choice - manual "Create Outbound Delivery with release" SAP UI step is kept intentionally.

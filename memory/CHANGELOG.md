@@ -1992,16 +1992,136 @@ itself a false positive the whole time.
      proceed.**
 
 ### Outstanding items as of this writing (Sep 21 2026, end of part 3)
-- `STO_ERP_SYNC_PAUSED="true"` in `backend/.env` - still paused, flip back
-  to `"false"` + restart backend once user confirms STO testing is done.
+- ~~`STO_ERP_SYNC_PAUSED="true"` in `backend/.env`~~ - **RESOLVED Sep 22
+  2026**, see part 4 below.
 - STO-000132's SCR755WM 1 EA compensating reversal (`P2-SFG` -> `P2-RM`) -
   still needs a MANUAL correction directly in SAP; the automated API
   reversal was tried 3x and consistently rejected by SAP.
 - Parallelization of the "SAP availability & data check" step - proposed
   only, not implemented, awaiting user's go-ahead given the real-bug
-  history in this exact area this session.
+  history in this exact area this session. **Still not implemented as of
+  Sep 22 2026** - superseded in priority by the GRN warehouse-movement
+  work below.
 - P1W/P5/P6 sites' actual `-HOLD` warehouse status remains unconfirmed
   (zero live inventory data either way) - add to `SITES_WITHOUT_HOLD_
   WAREHOUSE` the same way P4/P2W were if the same failure surfaces.
+
+## Part 4 (Sep 22 2026 fork) - "Act as Supplier" N+1 fix, GRN warehouse-movement policy reversed, ERP sync resumed, SAP push (webhook) groundwork
+
+### 1. "Act as Supplier" / Supplier Dashboard PO page - P0 fix, 49.4s -> 14s
+Real user report: "the act as supplier page - POs loading is taking ages". Reproduced live
+(vendor RAD-P2-S, 336 cached PO line items, account_id `b76125a8-06aa-4894-847a-c67d1010eb0b`):
+confirmed 49.4s.
+- **Root cause**: `get_cached_pos_with_remaining`/`get_cached_po_by_number`
+  (`supplier_shipment_service.py`) called `_compute_qty_state`/`_shipped_qty_so_far` ONCE PER
+  ITEM - each ran its own `SHIPMENTS_COLLECTION` aggregate + a `SAP_OPEN_QTY_COLLECTION` find.
+  Classic N+1 (336 items -> 1000+ sequential Mongo round-trips). Unrelated to the live SAP call
+  (`fetch_open_po_quantities`, already parallelized Sep 19).
+- **Fix**: new `_qty_breakdown_by_status_bulk()` (one grouped aggregate for the whole vendor),
+  `get_sap_open_qty_bulk()` (one `$in` find), `_compute_qty_state_from_maps()` (pure, no DB) -
+  both endpoints fetch these maps ONCE, loop in-memory only. `already_shipped_qty` now derived
+  from the same map instead of a 3rd per-item query.
+- **Verified live**: same endpoint now 14s (down from 49.4s) - 0 mismatches across 336 items x 4
+  fields (in_transit_qty, received_qty, remaining_qty, already_shipped_qty) vs the pre-fix
+  response. Remaining 14s is genuine, already-parallelized live SAP latency (166 distinct POs,
+  capped at the tenant-wide `SAP_MAX_CONCURRENT_REQUESTS=3` limiter - deliberate, shared by every
+  SAP call in the app, not something to raise casually).
+- Separately diagnosed (not this bug): backend went fully unresponsive twice this session -
+  root cause both times was the Uvicorn `--reload` watcher hanging after a file edit (spawns the
+  reloader parent but no working child worker) - a known, recurring issue in this environment,
+  not specific to any file. Fix each time: `sudo supervisorctl restart backend`.
+
+### 2. GRN warehouse-movement policy REVERSED (Sep 20/21's "GRN-only, no movement" policy no
+longer matches how SAP actually behaves)
+User's explicit ask: "Post GRN in SAP button - add an additional step ... to move stock from
+SITE-HOLD warehouse to SITE-RM warehouse as material flow rules now bring everything from anyone
+into HOLD ... show goods movement ID in the table below." SAP's Material Flow Destination rule
+now routes every Goods Receipt into `{SITE}-HOLD` first, tenant-wide - the Sep 20/21 decision to
+skip movement entirely (see part 3 above) no longer applies.
+- `finalize_goods_receipt()` default `skip_movement` flipped back `True` -> `False`.
+- `manually_confirm_inbound_delivery()` - Sep 21's "skip" block reverted back to actually calling
+  `_post_goods_movement_for_items()` (idempotent, safe to call more than once).
+- `_start_full_auto_grn_job()`'s synchronous `finalize_goods_receipt` call KEEPS
+  `skip_movement=True` explicitly - the stock isn't genuinely in `{SITE}-HOLD` on SAP's ledger
+  until Put Away Task confirms, so attempting movement there would just fail every time.
+- `_auto_finish_full_auto_grn()` (background retry loop, up to 8 attempts) - now calls
+  `supplier_shipment_service.retry_goods_movement()` once a PO's Put Away newly confirms (or on
+  the final attempt as a last try) - this is the actual point where movement now happens for the
+  "Post GRN in SAP" (EM1 full-auto) path.
+- **Real incident found + fixed while testing this live** (shipment S000040, PO 29747, site P3):
+  the frontend's Warehouse dropdown had been deliberately removed + hardcoded to `warehouseId =
+  ""` on Sep 20 2026 as a belt-and-suspenders guard for the old "no movement" policy
+  (`GrnApprovalPage.jsx`) - that guard silently blocked every movement attempt post-reversal
+  (`doc.get("warehouse_id")` was falsy). Fixed at the single source of truth instead of touching
+  the frontend: `prepare_approval()` (`supplier_shipment_service.py`) now defaults a blank
+  `warehouse_id` to `_SITE_RM_WAREHOUSE_OVERRIDE.get(site_id, f"{site_id}-RM")` - reusing the
+  SAME override map `store_approval_service.py` already established (`{"P3": "P3-Z1-01-A"}` -
+  P3 has NO flat "P3-RM" area; SAP rejected the first live attempt with "You cannot carry out
+  goods movements involving this logistics area ... must be inventory-managed"). User confirmed
+  live: **"FOR P3 WAREHOUSE WILL BE P3-Z1-01-A"**.
+- **Verified live end-to-end**: manually patched S000040's `warehouse_id` to `P3-Z1-01-A` and ran
+  `retry_goods_movement()` for real - both lines posted successfully, real SAP Goods Movement IDs
+  **281790** (SCR625WM) and **281841** (SCR755WM), `sap_movement_status` -> `"posted"`.
+- Frontend: the "Moved to {warehouse}" badge/popover (SAP STATUS column) and the movement banner
+  in the row-detail modal were ALREADY fully built from before Sep 20's policy change - dormant
+  the whole time (gated on `sap_movement_status !== "not_applicable"`), no new UI needed for
+  those two locations, they just started rendering once the backend started returning real data.
+- **New**: the MAIN single-shipment approval view's "Goods Receipt posted to SAP" banner did NOT
+  have any movement info at all (a third, separate location, screenshot-confirmed) - added
+  `movementStatusSuffix()` helper, banner now reads "Goods Receipt posted to SAP + stock moved to
+  {site}/{warehouse}" once posted, or "... - warehouse movement in progress" while pending.
+- Progress-bar fix (separate ask, same conversation): `GRN_PHASE_LABELS` was missing an entry for
+  `posting_goods_receipt` (the one static phase `_start_full_auto_grn_job` sets) - was rendering
+  the raw snake_case string verbatim. Added `"Posting Goods Receipt to SAP..."`.
+- **Caveat, not yet confirmed for other sites**: only P3 has a confirmed override so far. If
+  another site's target warehouse also isn't a flat `{site}-RM`, same fix pattern (add to
+  `_SITE_RM_WAREHOUSE_OVERRIDE`) once SAP returns the same "not inventory-managed" error live.
+
+### 3. `STO_ERP_SYNC_PAUSED` resumed (user's explicit ask, confirmed via ask_human)
+- 26 STOs were sitting `erp_portal_status: "paused"` in preview (GI posted, accumulated since Aug
+  24, since sync was paused for testing). User confirmed: **leave all 26 as-is, do NOT sync them
+  retroactively** - resume applies to NEW STOs only going forward.
+- `backend/.env`: `STO_ERP_SYNC_PAUSED` flipped `"true"` -> `"false"`, backend restarted. The 26
+  pre-existing paused STOs were NOT touched/synced.
+
+### 4. SAP "instant push" investigation + safe groundwork built (advisory first, then approved)
+User asked (after the GRN Put Away/Delivery-ID/Movement lifecycle discussion): "any better way to
+fetch it instantly ... ADVISE ONLY", then later "LETS BUILD AND DOCUMENT ALL UPTO NOW" (confirmed
+scope via ask_human: safe wins + dormant webhook receiver, NOT wiring it into any other cache yet).
+- Researched SAP ByDesign's real outbound push mechanism: **Event Notification** framework
+  (Application and User Management work center) - user found the correct Business Object live,
+  confirmed via web search: `SiteLogisticsTask` (namespace
+  `http://sap.com/xi/AP/LogisticsExecution/Global`), subscribing to its "Updated" event is the
+  right trigger for "Put Away confirmed". User is deliberately leaving the SAP-side subscriber
+  **Inactive/unsaved** for now - nothing is live on SAP's side yet.
+- **Built (safe, additive, no dependency on SAP activating anything)**:
+  - `_auto_finish_full_auto_grn`'s poll cadence changed from flat 10s x4/30s x4 to a progressive
+    backoff `[5, 10, 15, 20, 30, 30, 30, 30]` - same ~8-attempt/~170s ceiling, faster best case.
+  - New `POST /api/admin/grn/{doc_code}/check-now` - on-demand, single-cycle version of the same
+    Put Away/Delivery-ID/Movement checks the background loop runs, for when you don't want to
+    wait for the next scheduled tick. New "Check Now" button (`grn-check-now-button`) on
+    `GrnApprovalPage.jsx`, shown while `sap_sync_status === "posted"` and movement isn't done yet.
+  - Frontend confirmed-list polling tightened 30s -> 8s while still finalizing, window widened
+    3min -> 4min, and the finalizing check now also covers "movement started but not yet posted"
+    (not just "movement completely missing") - this was the actual reason the S000040 fix above
+    didn't show up on screen immediately (page had already decided nothing was "still finalizing"
+    before the movement retro-fix ran).
+  - Dormant webhook receiver: `POST /api/webhooks/sap-put-away` (`server.py`) - validates Basic
+    Auth (`SAP_WEBHOOK_USERNAME`/`SAP_WEBHOOK_PASSWORD` in `backend/.env`), logs the raw
+    payload+headers into a new `sap_webhook_events` collection, acks 200. New
+    `EXTERNAL_WEBHOOK_PATH_PREFIXES = ("/api/webhooks/",)` added to `auth_service.py`'s middleware
+    bypass list (mirrors how the external Supplier Portal already bypasses the Entra ID session
+    check) - without this the session-auth middleware 401'd every call before it ever reached the
+    route's own Basic Auth check (root-caused live via curl, cost real debugging time - "Login
+    required" was coming from `auth_middleware`, not the new route). Verified live: correct
+    creds -> 200 + row persisted; wrong/missing creds -> 401.
+  - **Deliberately NOT done yet**: actually wiring the webhook into short-circuiting the poll
+    loop, or extending push to Inventory/PO caches (per user's own scoping choice - option (b),
+    not (c), in the ask_human that confirmed this). Full rollout plan for whenever that's picked
+    up: `/app/memory/sap_event_push_plan.md`.
+- **Recurring issue hit again while building this**: backend went unresponsive after a
+  `server.py` edit (same reload-hang as item #1 above) - `sudo supervisorctl restart backend`
+  recovered it in ~5s both times. Worth remembering as a standing "if preview looks dead after an
+  edit, this is probably why" note rather than a deep investigation each time.
 
 
