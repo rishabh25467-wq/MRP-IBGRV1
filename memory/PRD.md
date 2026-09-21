@@ -302,6 +302,23 @@ on P1 despite its missing "with task" model) - see same file's dedicated section
   Test asserts SAP is never called for a nonexistent product; that's no longer true by
   design. Needs updating in a future session (not blocking, not in original scope).
 
+## BUG FIX: "Set Valuation" falsely showed SAP's success as an error (Sep 21 2026, this session)
+Live-tested via the app: set G12NUT's Cost at P7 to match P8 (5.14 INR) - a real, successful
+SAP write (`get_standard_costs` confirmed both sites now read 5.14). But the UI showed it as
+FAILED, with the error text literally being SAP's own success confirmation: "Inventory cost
+change document 2026-09-00001200 created for company RT (RADISH TECHNOLOGIES)".
+- Root cause: `sap_material_valuation_data_client.py::_post` treated ANY non-empty `<Log>
+  <Item>` as a fatal error, never checking `<SeverityCode>`. This specific call path
+  (pushing a real nonzero Cost onto an ALREADY-Active site) is the first time SAP ever
+  returned an INFORMATIONAL Log Item (SeverityCode 1) instead of an empty `<Log/>` - the
+  previous only-ever-amount-0 bootstrap path never triggered this.
+- Fix: only raise `SAPMaterialValuationDataError` when `<SeverityCode>` is 3-9 (real error) -
+  same convention already used by `sap_goods_movement_client.py`/`store_approval_service.py`
+  for this exact SAP Log shape. Re-verified live (same call, now returns `{"valuation":"ok"}`).
+- `sap_material_create_client.py`'s own `_post` (used by `activate_site`/`set_valuation`'s
+  Valuation actionCode call) was NOT touched - confirmed via a live raw-XML test it returns
+  an empty `<Log/>` on success, so no equivalent bug there (yet).
+
 ## Set Material Valuation (Cost) - merged into Activate Material Site page (Sep 21 2026, this session)
 User's ask: set/activate SAP Standard Cost (Valuation) for a material at a Company/Site
 directly from the app instead of the manual SAP UI flow (screenshot showed Material 368 with

@@ -86,7 +86,15 @@ class SAPMaterialValuationDataClient:
         xml = resp.text
         if resp.status_code >= 400 or "<Fault" in xml or ":Fault" in xml:
             raise SAPMaterialValuationDataError(_extract_note(xml) or f"HTTP {resp.status_code}")
-        if "<Log>" in xml and "<Item>" in xml:
+        # Sep 21 2026 fix (real live bug, first surfaced setting a genuine
+        # non-zero Cost on an already-Active site - G12NUT @ P7): a <Log>
+        # <Item> here is NOT always an error - SAP also logs an
+        # INFORMATIONAL confirmation Note ("Inventory cost change document
+        # ... created for company ...") on a real successful price change.
+        # Only SeverityCode 3+ is an actual error - same convention already
+        # used by sap_goods_movement_client.py/store_approval_service.py for
+        # this exact SAP Log shape.
+        if re.search(r"<SeverityCode>\s*[3-9]\s*</SeverityCode>", xml):
             raise SAPMaterialValuationDataError(_extract_note(xml) or "SAP rejected the valuation data")
         return xml
 
