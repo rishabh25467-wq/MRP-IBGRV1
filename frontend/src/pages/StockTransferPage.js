@@ -1074,15 +1074,25 @@ export default function StockTransferPage() {
       try {
         const { data } = await axios.get(`${API}/stock-transfer/orders/${stoId}`);
         setCreatedOrderLive(data);
+        const erpDone = ["synced", "paused", "failed"].includes(data.erp_portal_status);
         setStepStatuses((prev) => ({
           ...prev,
-          erp_sync: ["synced", "paused"].includes(data.erp_portal_status) ? "done" : data.erp_portal_status === "failed" ? "failed" : "active",
+          erp_sync: erpDone ? (data.erp_portal_status === "failed" ? "failed" : "done") : "active",
         }));
         const done = data.gi_status === "posted";
         const failed = data.gi_status === "failed" || data.gi_status === "not_found_timeout";
         const manual = data.gi_status === "awaiting_manual_gi";
         setStepStatuses((prev) => ({ ...prev, post_goods_issue: done ? "done" : failed ? "failed" : manual ? "active" : "active" }));
-        if (done || failed || manual) { loadRecentOrders(); return; }
+        // User's explicit ask (Sep 21 2026) - once EVERYTHING (Goods Issue +
+        // ERP Portal sync) has reached a terminal state, auto-close this
+        // dialog instead of leaving it open showing a finished order.
+        // Previously stopped polling as soon as `done` was true, even if
+        // ERP sync was still mid-retry on that same tick - freezing its
+        // badge on "syncing..." forever since no later tick would ever
+        // update it again. Now waits for BOTH to be terminal before
+        // stopping, and only auto-closes on the genuine full-success path.
+        if (done && erpDone) { loadRecentOrders(); setTimeout(() => { giPollStopRef.current = true; setShowConfirmDialog(false); setSapSubmitPhase(null); setSapSubmitMessage(null); setStepStatuses({}); setCreatedOrderLive(null); }, 1200); return; }
+        if (failed || manual) { loadRecentOrders(); return; }
       } catch { /* keep polling - a transient blip here shouldn't stop the loop */ }
       if (!giPollStopRef.current) setTimeout(tick, 4000);
     };
