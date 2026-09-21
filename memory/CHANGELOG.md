@@ -1735,3 +1735,273 @@ See git history / prior PRD versions for the full session-by-session log predati
    new worker starts) - `sudo supervisorctl restart backend` reliably
    recovers it. Worth a look if this keeps happening on this file.
 
+## Sep 21 2026 (fork continuation, part 3) - detailed log per user's explicit
+request to "document everything carefully in detail up to here"
+
+**0. Starting point**: forked from a session where the 2-step GRN creation
+UI backend (validate + Put Away recovery sweep) was done, frontend pending.
+
+**1. Finished 2-step GRN Creation frontend** (`GrnApprovalPage.jsx`) -
+"Validate GRN" (Step 1, badge "1") -> "Post GRN in SAP" (Step 2, badge "2",
+disabled until Step 1 passes + Supplier Invoice Number/Bill Date filled).
+Mirrors the already-shipped STO 2-step pattern. Calls the pre-existing
+`POST /admin/grn/{doc_code}/validate`. Editing Actual Qty or Site resets
+validated state (stale-invalidation). Tested via testing_agent (iteration_191):
+12/12 passed. Live validate call returned in ~1.5s (well under user's <10s ask).
+
+**2. Q&A: "What does the Inbound STO Receive button do?"** - went through 3
+rounds of correction before landing on the truth:
+   - Round 1 (agent, wrong): claimed it's "fully manual in SAP UI" - based on
+     a stale PRD note conflating a disabled SAP OData action (Route 1,
+     genuinely dead) with the whole flow being manual.
+   - Round 2 (agent, wrong): claimed it's a working one-click Playwright
+     automation with 31 historical DB successes - technically true AT THE
+     TIME, but user challenged "we decided and stopped playwright many days
+     ago" - turned out user was thinking of the OUTBOUND Goods Issue
+     Playwright stop (Sep 16, confirmed via git log/`STO_CONTEXT.md`), which
+     is a DIFFERENT leg from the INBOUND Receive Playwright (which was
+     genuinely still live at the time).
+   - Ground truth confirmed by directly clicking Receive on STO-000130: it
+     DID drive real Playwright (login, find delivery in Advised list, click
+     Post Goods Receipt, propose quantities, save&close, verify), landing
+     stock in `{SITE}-RM` first, then auto-relocating to the STO's real
+     destination (`_relocate_receipt_from_hold`). ~1m1s duration confirmed
+     real UI automation, not a shortcut.
+
+**3. User asked to pause "ERP Portal sync" for STO testing** (a legacy
+Delivery-Challan push to a separate on-prem system, NOT SAP itself,
+NOT the same as the SAP STO/GI write). Re-used an EXISTING kill-switch
+(`STO_ERP_SYNC_PAUSED` env var, built Sep 18 for a different reason) -
+flipped to `"true"` in `backend/.env`. Scope confirmed: only the delivery-
+challan push is skipped (`erp_portal_status: "paused"`), real SAP STO
+creation/GI/receiving are unaffected. **STILL PAUSED as of this writing -
+must be flipped back to `"false"` + backend restart once user confirms
+testing is done.**
+
+**4. Real incident - STO-000129, site P1, product G12LW: "Determination of
+source inventory failed"**. Root cause: `_relocate_items_to_source_hold_
+warehouse` (outbound leg, `stock_transfer_service.py`) called
+`sap_inventory_client.get_inventory_detail(site_id=.., warehouse_ids=[..],
+product_ids=[..])` - but that client's own `_fetch_page` uses an if/elif
+priority chain (`product_ids` always wins, silently DROPPING `site_id`/
+`warehouse_ids`), so it was actually summing the product's ENTIRE
+company-wide stock (~66,934 EA, P1+P8 combined) instead of just
+`P1-HOLD`'s own balance (truly 0) - wrongly concluding HOLD already
+covered the 1 EA needed and skipping the relocation move entirely. Fixed
+by querying product-scoped (holistic, as the client always does when
+`product_ids` is passed) then filtering the returned rows to the exact
+`{site}/{warehouse}` `logistics_area_id` client-side. Verified against
+live SAP data (P1-HOLD for G12LW recomputed correctly as 0, P1-SFG sanity
+check matched 50,750). The SAME exact bug (same 3-params-at-once call) was
+also found and fixed in `validate_stock_transfer_order`'s `_check_stock_
+for_item` (the live stock check inside Validate STO) - it too was silently
+checking company-wide stock instead of the chosen source warehouse.
+
+**5. Site "-HOLD" warehouse audit** (user's explicit ask: "how about P7 and
+P9 and P1W and P2W etc? check all these sites first") - queried live SAP
+inventory per site (`get_inventory_detail(site_id=X)`, listing all
+`logistics_area_id`s that came back) to check which sites genuinely HAVE a
+`{SITE}-HOLD` warehouse, since the Sep 17 claim "every site has one" was
+never actually re-verified:
+   - P1, P2, P3, P7, P8, P9: confirmed have `-HOLD`.
+   - **P4, P2W: confirmed NO `-HOLD` warehouse exists at all** (only
+     `-FG/-RM/-SCR/-SFG`).
+   - P1W, P5, P6, W1, W2: zero inventory rows returned at all - inactive or
+     wrong site-ID format, genuinely unconfirmed either way.
+   User's decision (option 2 of 2 offered): for sites with no `-HOLD`,
+   SKIP the relocation step entirely and source the STO directly from the
+   real warehouse. Implemented `SITES_WITHOUT_HOLD_WAREHOUSE = {"P4", "P2W"}`
+   in `stock_transfer_service.py` - `_relocate_items_to_source_hold_
+   warehouse` returns immediately (no-op) for these. **P1W/P5/P6 remain
+   unconfirmed - add to this set the same way if the same error surfaces
+   for one of them.**
+
+**6. Reverted "-MOV" display rename** (`StockTransferPage.js`'s
+`movDisplayName`) back to showing the real "-HOLD" name, per user's direct
+ask ("MOV should be HOLD as per actual").
+
+**7. Fixed STO create progress dialog's stuck spinner + added auto-close**
+(`StockTransferPage.js`'s `pollGiStatus`) - it used to stop polling as soon
+as Goods Issue posted, even if ERP Portal sync was still mid-retry on that
+exact tick, freezing the "Sync to ERP Portal" badge on "syncing" forever
+since no later poll would ever run to update it. Now waits for BOTH
+Goods Issue AND ERP sync to reach a terminal state (`synced`/`paused`/
+`failed`) before stopping, and auto-closes the dialog ~1.2s after full
+success (never on failure/manual-GI, so the user can still act on those).
+
+**8. "Yellow highlights keep rotating, nothing works" (user report, screenshot)
+- NOT a bug**. Explained: this specific STO had 2 line items; the
+automatic API-only "Release" attempt (no Playwright) falls back to
+requiring the user to manually complete Goods Issue in SAP UI whenever
+SAP's Consistency Status isn't ready yet at that exact moment - this is
+the deliberate, documented Sep 16-18 architecture (`STO_CONTEXT.md`), not
+a broken/stuck app. The 2 spinners correctly represent "waiting on your
+action in SAP", not "frozen".
+
+**9. Real incident - STO-000131, site P1->P8, 2 lines, delivery P1D1-568:
+Playwright receive failed with "Delivery still shows as Not Released after
+Save and Close"** (posted the GR, clicked Save & Close cleanly, but a
+re-search of the Advised Delivery Notifications list still found it there
+afterward). **User's direct, explicit decision: STOP Playwright completely
+for STO Receive.** Full re-architecture implemented same session:
+   - `inbound_receipt_service.prepare_receipt` now also requires
+     `outbound_delivery_ids` non-empty ("SAP delivery reference available"
+     gate) and `items` non-empty (added after testing_agent review),
+     raising a clear 400 otherwise.
+   - New `receive_stock_transfer_order` - the ONLY action is now a real SAP
+     Goods Movement (`_relocate_receipt_from_hold`, plain OData, no login,
+     no browser) moving stock from wherever GR lands to the STO's real
+     destination. No more SAP UI "Post Goods Receipt" screen for STOs at
+     all.
+   - `server.py`'s `/inbound-receipts/{sto_id}/receive` no longer calls
+     `sap_playwright_pgr_service`/`_run_playwright_job_with_retries` -
+     calls the new function directly. Job/polling API shape unchanged
+     (frontend needed zero changes here).
+   - `sap_playwright_pgr_service.py` itself was NOT deleted - still used by
+     an unrelated GRN admin retry endpoint.
+   - Tested via testing_agent (iteration_192): 6/6 backend tests passed,
+     confirmed via logs zero Playwright/browser activity for STO receive
+     jobs. Live-verified directly against real SAP for STO-000131 (~25s,
+     no browser, correct per-line SAP error surfaced for the
+     already-consumed-stock retry case) - restored STO-000131's DB record
+     to its true "received" state afterward since that direct test moved
+     against already-consumed stock.
+
+**10. "Can the SAP availability & data check step in Create STO be
+shortened safely?"** - found and removed ONE genuine, exact duplicate:
+`_missing_valuation_products` (a real, uncached, live SAP call) was being
+called BOTH by `validate_stock_transfer_order`'s `_valuation_issues()`
+AND, moments later, again inside `submit_order_to_sap`'s create flow -
+removed the second (redundant) call, relying on the 2-step UI's own
+enforcement (Create disabled until Validate passes) plus SAP's own
+always-on `Check()` call as the real backstop for the rare race-condition
+case. This does NOT touch the relocation step or SAP's own Check()/
+Maintain() calls - those remain (real writes / SAP's own authoritative
+validation, not safely skippable).
+
+**11. Two "backend appears hung" incidents** (curl to `:8001` timing out
+completely, no "Application startup complete" line after a hot-reload) -
+happened right after edits to `sap_wip_clearing_client.py` specifically.
+Initially (WRONG guess, not proven) attributed to the ERP Portal SQL
+Server being unreachable ("No route to host" seen in logs around the same
+time, `erp_portal_client`'s `pytds` connection retries). **Corrected
+later this session (see CHANGELOG entry #6 above, Sep 20) - this exact
+file is ALREADY documented as having a known, unrelated reload-watcher
+hang quirk from an earlier session.** The ERP Portal timeout was still
+reduced (20s -> 5s default in `ERPPortalClient.__init__`) as a reasonable
+defensive change (that connectivity issue is real, per the logs), but it
+is NOT confirmed to be the actual cause of either hang - `sudo
+supervisorctl restart backend` reliably recovered both times, consistent
+with the known file-specific watcher quirk, not a genuine app-level hang.
+
+**12. Real incident - STO-000132, site P9->P2, 2 lines (SCR755WM,
+SCR525WM): "No inventory items found for external id... item id..."** on
+SCR525WM's receive (SCR755WM's line succeeded). User provided a REAL SAP
+"Warehouse Confirmation Overview: 281778" screenshot showing BOTH lines'
+Put Away landed in Logistics Area **"P2-HOLD"**, not "P2-RM" - directly
+contradicting the Sep 20 "blanket -RM for every site" claim (CHANGELOG
+entry #4 above, based on the STO-000127 incident, same site, same
+SCR755WM product!). Root-caused the CONTRADICTION itself: "-RM" can
+silently "succeed" by pulling ordinary, unrelated, already-existing
+fungible stock from that warehouse instead of the genuinely-just-received
+batch (sitting untouched in `-HOLD`) - it only fails loudly, as it did
+for SCR525WM, when that "-RM" warehouse happens to have zero of a
+particular product. This means the Sep 20 conclusion was very likely
+itself a false positive the whole time.
+   - Fixed `inbound_staging_area_for_site` (`sap_wip_clearing_client.py`):
+     reverted the default back to `-HOLD` for every site (undoing the
+     Sep 20 blanket claim), keeping ONLY `P8: "P8-RM"` (this specific one
+     IS directly, first-hand user-confirmed - "as soon as I did GI it went
+     to P8-RM") and `P3: "P3-Z1-01-A"` (its own known bin) as explicit
+     overrides.
+   - Retried SCR525WM's failed line with the corrected code - succeeded
+     (GM `281803`).
+   - This retry ALSO re-ran SCR755WM's line (the retry button re-runs ALL
+     lines, not just the failed one) - since SCR755WM's real received
+     stock was still sitting untouched in `P2-HOLD` (never touched by the
+     earlier, buggy `-RM`-sourced attempt), it moved successfully a SECOND
+     time (GM `281802`), creating a genuine DOUBLE-COUNT: `P2-SFG` now has
+     1 EA too many of SCR755WM, `P2-RM` is 1 EA short (incorrectly taken by
+     the original buggy movement that should never have touched it).
+   - Attempted an automated compensating reversal (`P2-SFG` -> `P2-RM`, 1
+     EA) 3 times - SAP consistently rejected it with the same generic SOAP
+     500 fault every time (forward movements work fine; only this reverse
+     direction fails) - **not transient, needs a manual correction directly
+     in SAP (still outstanding as of this writing) - user said "DO IT" for
+     the automated retry, which was attempted and failed; user has not yet
+     been asked to do the manual SAP-side correction as a fallback**.
+   - Found + fixed a SEPARATE real bug while investigating: `retry_
+     receipt_relocation` (`inbound_receipt_service.py`) only ever updated
+     `receipt_relocation` on success, never `receipt_status`/
+     `receipt_error` - so STO-000132 stayed stuck showing "Receipt Failed"
+     with the OLD stale error message even after the retry above fully
+     succeeded for both lines. Fixed to properly map the retry's own
+     result to `receipt_status` too. Manually corrected STO-000132's DB
+     record to "received" (both real GM IDs) since the live retry had
+     already genuinely succeeded before the code fix landed.
+   - UI cleanup (user's direct ask, screenshot of the old Playwright-era
+     progress bar: "FIX THIS PROGRESS BAR THAT SHOWS OLD PLAYWRIGHT
+     PROGRESS BAR AND UNCLEAR. WE ARE JUST MOVING STOCK.") - removed
+     `AVG_SECONDS_PER_DELIVERY`/`etaText` (fake ETA countdown), the
+     "Queued" phase/badge (was for Playwright's limited browser-slot
+     concurrency pool, meaningless for a single fast API call now), the
+     ticking `nowMs` countdown effect, and the striped animated progress
+     bar div from `InboundReceiptsPage.js`. Now a single plain "Moving
+     stock…" spinner while running, then Done/Failed.
+   - Tested via testing_agent (iteration_193): 100% pass - warehouse
+     defaults per site, retry status-update fix, and UI cleanup DOM checks
+     all verified. STO-000132 confirmed "Received" in the Completed tab
+     with both real GM IDs visible.
+
+**13. "SAP availability & data check step took >2 min, what's going on?"**
+- went through a correction cycle again:
+   - Agent's first answer (WRONG, unproven, and touched code without
+     approval): blamed the ERP Portal SQL Server connectivity issue found
+     in #11 above, reasoning purely from time-correlation in logs, without
+     verifying the "check" step's own code actually calls anything ERP-
+     Portal-related (it doesn't). User correctly pushed back hard: "ERP
+     sync on the detail modal is the last step so I dont know how erp sync
+     played a part, explain, dont do anything."
+   - Corrected answer (code-verified, no further changes made): the
+     "SAP availability & data check" UI label (`STO_STEPS` in
+     `StockTransferPage.js`) covers everything in `submit_order_to_sap`
+     BEFORE `job_store.update_job(..., {"step": "creating"})` is set (which
+     only happens right before the real `maintain()` write) - i.e. it
+     bundles together (a) the per-item HOLD-warehouse relocation (real SAP
+     writes, sequential per line), (b) the GST note pricing lookup (a real
+     SAP valuation read), AND (c) SAP's own `check()` call itself, all
+     under ONE label. For a multi-line order, several sequential real SAP
+     round-trips genuinely stacking up to 60-120+ seconds is plausible with
+     zero errors/retries at all (confirmed: no error/retry log lines exist
+     in the actual timestamp window for the STO in question) - this is
+     normal sequential network latency, not a hang or an ERP-related issue.
+   - Follow-up: "any parallelisation possible safely?" - proposed (NOT YET
+     IMPLEMENTED, awaiting user go-ahead): (a) parallelize the per-item
+     relocation loop across line items (different products/lines are
+     logically independent), (b) run the GST pricing lookup concurrently
+     with relocation (neither depends on the other). SAP's own `check()`/
+     `maintain()` sequence must stay sequential (`check()` needs both
+     relocation and pricing done first; `maintain()` is deliberately
+     gated behind a successful `check()`, the "always-on safety net"
+     decision from Aug 2026). Flagged risk: concurrent SAP writes to the
+     same `{SITE}-HOLD` warehouse are untested for contention - given how
+     many real, live data bugs this exact code path has produced this
+     session (#4, #12), recommended testing carefully (testing_agent +/or
+     a real STO) before trusting it, rather than implementing and shipping
+     immediately. **STATUS: proposed, awaiting user's decision to
+     proceed.**
+
+### Outstanding items as of this writing (Sep 21 2026, end of part 3)
+- `STO_ERP_SYNC_PAUSED="true"` in `backend/.env` - still paused, flip back
+  to `"false"` + restart backend once user confirms STO testing is done.
+- STO-000132's SCR755WM 1 EA compensating reversal (`P2-SFG` -> `P2-RM`) -
+  still needs a MANUAL correction directly in SAP; the automated API
+  reversal was tried 3x and consistently rejected by SAP.
+- Parallelization of the "SAP availability & data check" step - proposed
+  only, not implemented, awaiting user's go-ahead given the real-bug
+  history in this exact area this session.
+- P1W/P5/P6 sites' actual `-HOLD` warehouse status remains unconfirmed
+  (zero live inventory data either way) - add to `SITES_WITHOUT_HOLD_
+  WAREHOUSE` the same way P4/P2W were if the same failure surfaces.
+
+

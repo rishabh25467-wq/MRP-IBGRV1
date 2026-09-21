@@ -385,6 +385,67 @@ def _compute_qty_state(db, vendor_code: str, po_number: str, item_number: str, p
     }
 
 
+def _qty_breakdown_by_status_bulk(db, vendor_code: str, exclude_doc_code: str = None) -> dict:
+    """Sep 22 2026 fix (real user report - "Act as Supplier" page taking
+    ~49s to load a 336-line-item vendor, P0): `get_cached_pos_with_remaining`
+    used to call `_compute_qty_state`/`_shipped_qty_so_far` ONCE PER ITEM,
+    each running its own `SHIPMENTS_COLLECTION` aggregate - a genuine N+1
+    query pattern that scales linearly with a vendor's open PO line count
+    (336 items -> 672+ sequential Mongo round-trips). This runs the SAME
+    aggregate ONCE for the whole vendor, grouped by po_number+item_number+
+    status, so any caller with many items only pays for 1 query total.
+    Returns {"{po_number}:{item_number}": {"in_transit_qty", "approved_qty"}}."""
+    match = {"vendor_code": vendor_code, "status": {"$in": ["in_transit", "approved"]}}
+    if exclude_doc_code:
+        match["_id"] = {"$ne": exclude_doc_code}
+    pipeline = [
+        {"$match": match},
+        {"$unwind": "$items"},
+        {"$group": {
+            "_id": {"po_number": "$items.po_number", "item_number": "$items.item_number", "status": "$status"},
+            "total": {"$sum": "$items.ship_qty"},
+        }},
+    ]
+    result = {}
+    for row in db[SHIPMENTS_COLLECTION].aggregate(pipeline):
+        key = f"{row['_id']['po_number']}:{row['_id']['item_number']}"
+        entry = result.setdefault(key, {"in_transit_qty": 0.0, "approved_qty": 0.0})
+        status = row["_id"]["status"]
+        entry["in_transit_qty" if status == "in_transit" else "approved_qty"] = row["total"]
+    return result
+
+
+def get_sap_open_qty_bulk(db, keys: list) -> dict:
+    """Bulk counterpart of `get_sap_open_qty` - single `$in` query instead
+    of one `find_one` per item (same Sep 22 2026 fix as above)."""
+    if not keys:
+        return {}
+    return {d["_id"]: d for d in db[SAP_OPEN_QTY_COLLECTION].find({"_id": {"$in": keys}})}
+
+
+def _compute_qty_state_from_maps(breakdown_map: dict, sap_open_qty_map: dict, po_number: str, item_number: str, po_qty: float) -> dict:
+    """Pure, no-DB-access version of `_compute_qty_state` - takes the
+    already-bulk-fetched maps instead of querying per item. Same
+    calculation/contract as `_compute_qty_state`."""
+    key = f"{po_number}:{item_number}"
+    breakdown = breakdown_map.get(key, {"in_transit_qty": 0.0, "approved_qty": 0.0})
+    in_transit_qty = breakdown["in_transit_qty"]
+    sap_cached = sap_open_qty_map.get(key)
+    if sap_cached:
+        received_qty = round((po_qty or 0) - sap_cached["open_qty"], 4)
+        sap_verified_at = sap_cached["fetched_at"]
+    else:
+        received_qty = breakdown["approved_qty"]
+        sap_verified_at = None
+    remaining_qty = round((po_qty or 0) - received_qty - in_transit_qty, 4)
+    return {
+        "in_transit_qty": in_transit_qty,
+        "received_qty": received_qty,
+        "remaining_qty": max(remaining_qty, 0.0),
+        "sap_verified_at": sap_verified_at,
+    }
+
+
 def get_sap_open_qty(db, po_number: str, item_number: str) -> dict:
     """Sep 2 2026, user's explicit ask: "Open PO qty should be fetched
     from SAP, not just maintained locally... to ensure if shipments
@@ -456,9 +517,16 @@ def store_sap_open_qty_cache(db, results: dict) -> dict:
 
 def get_cached_pos_with_remaining(db, vendor_code: str) -> list:
     items = list(db[PO_CACHE_COLLECTION].find({"vendor_code": vendor_code, "expired": {"$ne": True}}, {"_id": 0}).sort("po_number", 1))
+    # Sep 22 2026 fix (P0, real user report - this page took ~49s to load
+    # a 336-line-item vendor) - fetch the qty breakdown + SAP open-qty
+    # cache ONCE for the whole vendor instead of once PER item (see
+    # `_qty_breakdown_by_status_bulk`'s docstring for the full root cause).
+    breakdown_map = _qty_breakdown_by_status_bulk(db, vendor_code)
+    sap_open_qty_map = get_sap_open_qty_bulk(db, [f"{it['po_number']}:{it['item_number']}" for it in items])
     for it in items:
-        state = _compute_qty_state(db, vendor_code, it["po_number"], it["item_number"], it.get("po_qty") or 0)
-        it["already_shipped_qty"] = _shipped_qty_so_far(db, vendor_code, it["po_number"], it["item_number"])
+        state = _compute_qty_state_from_maps(breakdown_map, sap_open_qty_map, it["po_number"], it["item_number"], it.get("po_qty") or 0)
+        breakdown = breakdown_map.get(f"{it['po_number']}:{it['item_number']}", {"in_transit_qty": 0.0, "approved_qty": 0.0})
+        it["already_shipped_qty"] = breakdown["in_transit_qty"] + breakdown["approved_qty"]
         it["in_transit_qty"] = state["in_transit_qty"]
         it["received_qty"] = state["received_qty"]
         it["remaining_qty"] = state["remaining_qty"]
@@ -478,9 +546,17 @@ def get_cached_po_by_number(db, po_number: str) -> list:
     `vendor_code`, used per-item here since a lookup by number spans
     whichever vendor that PO actually belongs to."""
     items = list(db[PO_CACHE_COLLECTION].find({"po_number": po_number, "expired": {"$ne": True}}, {"_id": 0}).sort("item_number", 1))
+    # Same bulk fix as get_cached_pos_with_remaining (Sep 22 2026) - a PO
+    # number almost always belongs to exactly one vendor, so this stays
+    # cheap (1 breakdown query) even though it's grouped defensively.
+    breakdown_map = {}
+    for vc in {it["vendor_code"] for it in items}:
+        breakdown_map.update(_qty_breakdown_by_status_bulk(db, vc))
+    sap_open_qty_map = get_sap_open_qty_bulk(db, [f"{it['po_number']}:{it['item_number']}" for it in items])
     for it in items:
-        state = _compute_qty_state(db, it["vendor_code"], it["po_number"], it["item_number"], it.get("po_qty") or 0)
-        it["already_shipped_qty"] = _shipped_qty_so_far(db, it["vendor_code"], it["po_number"], it["item_number"])
+        state = _compute_qty_state_from_maps(breakdown_map, sap_open_qty_map, it["po_number"], it["item_number"], it.get("po_qty") or 0)
+        breakdown = breakdown_map.get(f"{it['po_number']}:{it['item_number']}", {"in_transit_qty": 0.0, "approved_qty": 0.0})
+        it["already_shipped_qty"] = breakdown["in_transit_qty"] + breakdown["approved_qty"]
         it["in_transit_qty"] = state["in_transit_qty"]
         it["received_qty"] = state["received_qty"]
         it["remaining_qty"] = state["remaining_qty"]

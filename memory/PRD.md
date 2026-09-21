@@ -750,6 +750,26 @@ after the Playwright removal above:
 - Drawing Freshness Badge & Sub-Assembly Rollup
 - STO-000415 missing price bug (explicitly deferred by user)
 
+## BUG FIX (P0): "Act as Supplier" / Supplier Dashboard PO page taking ~49s to load (Sep 22 2026)
+Real user report: "act as supplier page - POs loading is taking ages". Reproduced live via curl
+against vendor RAD-P2-S (336 cached PO line items) - confirmed 49.4s.
+- Root cause: `get_cached_pos_with_remaining`/`get_cached_po_by_number` (`supplier_shipment_service.py`)
+  called `_compute_qty_state`/`_shipped_qty_so_far` ONCE PER ITEM in a Python loop - each call ran its
+  own `SHIPMENTS_COLLECTION` aggregate + a `SAP_OPEN_QTY_COLLECTION` find. A genuine N+1 query pattern
+  that scales with a vendor's open-line count (336 items -> 1000+ sequential Mongo round-trips). This
+  had nothing to do with the live SAP call (`fetch_open_po_quantities`, already parallelized Sep 19).
+- Fix: new `_qty_breakdown_by_status_bulk()` (one grouped aggregate for the WHOLE vendor) +
+  `get_sap_open_qty_bulk()` (one `$in` find) + `_compute_qty_state_from_maps()` (pure, no DB access) -
+  both list endpoints now fetch these maps ONCE, then loop in-memory only. `already_shipped_qty` is now
+  derived from the same breakdown map (`in_transit_qty + approved_qty`) instead of a 3rd per-item query.
+- Verified live: same endpoint (RAD-P2-S, 336 items) now takes **14s** (was 49.4s) - byte-for-byte
+  identical output confirmed (0 mismatches across 336 items x 4 fields: in_transit_qty, received_qty,
+  remaining_qty, already_shipped_qty). Remaining 14s is genuine, already-optimized live SAP latency
+  (166 distinct POs / 15-per-chunk = 12 chunks, capped at `SAP_MAX_CONCURRENT_REQUESTS=3` - a
+  deliberate, documented tenant-wide limiter shared by every SAP call in the app, not something to
+  raise casually). Not yet run through testing_agent - self-verified via direct timing + diff against
+  the pre-fix response.
+
 ## Testing status
   generalization fix.
 - Inbound generalization fix self-tested (pytest + direct mocked call-path check across
