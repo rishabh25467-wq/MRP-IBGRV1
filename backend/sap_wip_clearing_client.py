@@ -44,27 +44,36 @@ def company_and_set_of_books_for_site(site_id: str):
 # Destination set: P8-RM (Target Area) so you need moved stock from the
 # RM warehouse") - SAP's own Goods Receipt/Put Away routing for a site is
 # tenant-specific business config too (same class as SITE_TO_COMPANY
-# above), and P8's was just changed: incoming stock (GRN receipt or STO
-# receipt) now lands directly in "{site}-RM" instead of staging through
-# "{site}-HOLD".
+# above). User directly confirmed P8's own routing lands in "P8-RM" -
+# kept as an explicit override below.
 #
-# Sep 20 2026, real incident (STO-000127, site P2, products
-# SCR755WM/SCR512WM: "No inventory items found for external id...") -
-# live-confirmed via SAP's own inventory report that P2's Goods Receipt
-# ALSO lands straight into "P2-RM" now. User confirmed live: every site
-# has now had the same EM-style logistics model rollout as P8, so this
-# is a blanket change, default is "{site}-RM" for every site.
+# Sep 21 2026 CORRECTION (real live incident, STO-000132, site P2,
+# products SCR755WM/SCR525WM: "No inventory items found for external
+# id...") - the Sep 20 "blanket -RM for every site" claim below was
+# WRONG. Real SAP evidence (Warehouse Confirmation 281778, user's own
+# screenshot) shows BOTH lines' Put Away landed in Logistics Area
+# "P2-HOLD", not "P2-RM" - the exact opposite of what the Sep 20 STO-
+# 000127 incident (same site, same SCR755WM product!) had concluded.
+# That earlier "P2 lands in -RM" conclusion was itself very likely a
+# FALSE POSITIVE: the onward movement from "-RM" can silently succeed
+# by pulling ordinary, unrelated pre-existing fungible stock already
+# sitting in that warehouse instead of the genuinely-just-received
+# batch (which is sitting untouched in -HOLD) - it only fails loudly,
+# as it did here, when that "-RM" warehouse happens to have zero of a
+# particular product. Given this proven unreliability, defaulting back
+# to "-HOLD" (the original Sep 17 assumption) for every site EXCEPT the
+# ones with a real, standalone confirmation - only P8 so far.
 #
 # Sep 20 2026, user's explicit correction: P3 specifically uses a more
 # granular bin-level location within its RM warehouse, not the flat
 # "P3-RM" area itself - SITE_INBOUND_STAGING_AREA_OVERRIDE holds any
-# site whose real source area doesn't match the "{site}-RM" default.
-SITE_INBOUND_STAGING_AREA_OVERRIDE = {"P3": "P3-Z1-01-A"}
+# site whose real target area doesn't match the "{site}-HOLD" default.
+SITE_INBOUND_STAGING_AREA_OVERRIDE = {"P3": "P3-Z1-01-A", "P8": "P8-RM"}
 
 
 def inbound_staging_area_for_site(site_id: str) -> str:
     site_id = (site_id or "").strip().upper()
-    return SITE_INBOUND_STAGING_AREA_OVERRIDE.get(site_id) or f"{site_id}-RM"
+    return SITE_INBOUND_STAGING_AREA_OVERRIDE.get(site_id) or f"{site_id}-HOLD"
 
 
 def current_fiscal_period_and_year(today: date = None):
