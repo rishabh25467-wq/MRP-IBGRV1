@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, Fragment } from "react";
 import "@/App.css";
 import axios from "axios";
-import { Truck, Shield, CircleNotch, CaretDown, CaretUp, CheckCircle, ArrowRight, WarningCircle, Clock } from "@phosphor-icons/react";
+import { Truck, Shield, CircleNotch, CaretDown, CaretUp, CheckCircle, ArrowRight, WarningCircle } from "@phosphor-icons/react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,12 +17,6 @@ import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
-
-// Rough average time SAP's own receipt screen takes per delivery
-// (documented range 40-90s) - purely to render a reassuring, generic
-// countdown; never shown to the user as anything more specific than
-// "processing" - no SAP/browser wording ever reaches this page, by design.
-const AVG_SECONDS_PER_DELIVERY = 65;
 
 const formatQty = (v) => (v == null ? "—" : Number(v).toLocaleString("en-IN", { maximumFractionDigits: 3 }));
 const formatDate = (iso) => (iso ? new Date(iso).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—");
@@ -46,22 +40,7 @@ const STATUS_STYLE = {
   failed: { label: "Receipt Failed", cls: "bg-[#FEE4E2] text-[#B42318]" },
 };
 
-const etaText = (job, nowMs) => {
-  const total = job?.progress_total || 1;
-  const totalEstimateSeconds = total * AVG_SECONDS_PER_DELIVERY;
-  let remaining;
-  if (job?.processing_started_at) {
-    const elapsed = (nowMs - new Date(job.processing_started_at).getTime()) / 1000;
-    remaining = Math.max(0, Math.round(totalEstimateSeconds - elapsed));
-  } else {
-    remaining = Math.max(0, (total - (job?.progress_current || 0)) * AVG_SECONDS_PER_DELIVERY);
-  }
-  if (remaining <= 0) return "finishing up…";
-  if (remaining < 60) return `est. ${remaining}s remaining`;
-  return `est. ${Math.ceil(remaining / 60)} min remaining`;
-};
-
-const jobBadge = (job, nowMs) => {
+const jobBadge = (job) => {
   if (!job) return null;
   // A job can finish executing cleanly (status="done") yet the receipt
   // itself was rejected/partially rejected by SAP (result.status !=
@@ -74,10 +53,15 @@ const jobBadge = (job, nowMs) => {
   if (job.status === "done") {
     return { icon: CheckCircle, cls: "text-[#027A48]", iconCls: "", label: "Done", detail: null };
   }
-  if (job.phase === "queued") {
-    return { icon: Clock, cls: "text-[#92400E]", iconCls: "", label: "Queued", detail: "Waiting for an available processing slot" };
-  }
-  return { icon: CircleNotch, cls: "text-[#0B6B74]", iconCls: "animate-spin", label: "Processing", detail: etaText(job, nowMs) };
+  // Sep 21 2026, user's explicit ask ("FIX THIS PROGRESS BAR THAT SHOWS
+  // OLD PLAYWRIGHT PROGRESS BAR AND UNCLEAR. WE ARE JUST MOVING STOCK.")
+  // - Receive no longer drives Playwright (a real SAP UI browser
+  // automation that took 40-90s/delivery and needed a "Queued" state for
+  // a limited concurrency pool of browser slots). It's now a single,
+  // fast SAP Goods Movement API call - so there's nothing left to queue
+  // or estimate an ETA for. One plain "Moving stock..." spinner covers
+  // the entire (near-instant) action.
+  return { icon: CircleNotch, cls: "text-[#0B6B74]", iconCls: "animate-spin", label: "Moving stock…", detail: null };
 };
 
 // Per-line breakdown popover for the "Warehouse Move" column (user's
@@ -135,7 +119,6 @@ export default function InboundReceiptsPage() {
   const [activeJobs, setActiveJobs] = useState({}); // { sto_id: {job_id, status, phase, progress_current, progress_total, processing_started_at, error} }
   const activeJobsRef = useRef(activeJobs);
   activeJobsRef.current = activeJobs;
-  const [nowMs, setNowMs] = useState(() => Date.now());
   const [activeTab, setActiveTab] = useState("pending"); // "pending" | "completed"
   const [completedOrders, setCompletedOrders] = useState([]);
   const [completedLoading, setCompletedLoading] = useState(false);
@@ -214,16 +197,6 @@ export default function InboundReceiptsPage() {
 
   useEffect(() => { loadOrders(); }, [loadOrders]);
 
-  // Ticks every second while any job is actively processing, purely so
-  // the "est. Xs remaining" countdown visibly counts down instead of
-  // only updating on the 2.5s poll cadence (the "reverse counter" ask).
-  useEffect(() => {
-    const anyRowProcessing = Object.values(activeJobs).some((j) => j.status === "running" && j.phase === "processing");
-    if (!anyRowProcessing) return;
-    const tick = setInterval(() => setNowMs(Date.now()), 1000);
-    return () => clearInterval(tick);
-  }, [activeJobs]);
-
   // Background poller for every batch/single job tracked in activeJobs -
   // keeps running independently of any dialog being open, so closing the
   // batch confirm dialog right after submitting never loses progress.
@@ -282,7 +255,7 @@ export default function InboundReceiptsPage() {
       results.forEach((r) => {
         if (r.alreadyReceived) return;
         next[r.stoId] = r.jobId
-          ? { job_id: r.jobId, status: "running", phase: "queued", progress_current: 0, progress_total: 1 }
+          ? { job_id: r.jobId, status: "running", phase: "processing", progress_current: 0, progress_total: 1 }
           : { status: "failed", error: r.error };
       });
       return next;
@@ -460,7 +433,7 @@ export default function InboundReceiptsPage() {
                   const expanded = expandedId === order.sto_id;
                   const status = STATUS_STYLE[order.receipt_status] || STATUS_STYLE.pending;
                   const job = activeJobs[order.sto_id];
-                  const badge = jobBadge(job, nowMs);
+                  const badge = jobBadge(job);
                   const rowBusy = job && job.status === "running";
                   return (
                     <Fragment key={order.sto_id}>
@@ -507,12 +480,7 @@ export default function InboundReceiptsPage() {
                           {badge && (
                             <div className={`flex items-center gap-1 text-xs font-medium mt-1 whitespace-nowrap ${badge.cls}`} title={badge.detail || ""} data-testid={`inbound-receipt-job-badge-${order.sto_id}`}>
                               <badge.icon size={13} className={`shrink-0 ${badge.iconCls}`} />
-                              <span className="truncate">{badge.label}{badge.label === "Processing" && badge.detail ? ` — ${badge.detail}` : ""}</span>
-                            </div>
-                          )}
-                          {rowBusy && (
-                            <div className="w-32 h-1 bg-[#D6EEF0] rounded-full mt-1.5 overflow-hidden" data-testid={`inbound-receipt-progress-bar-${order.sto_id}`}>
-                              <div className="h-full w-1/3 bg-[#0B6B74] rounded-full animate-[pulse_1.5s_ease-in-out_infinite]" />
+                              <span className="truncate">{badge.label}</span>
                             </div>
                           )}
                         </TableCell>

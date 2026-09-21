@@ -147,10 +147,23 @@ def retry_receipt_relocation(db, sap_goods_movement_client, sto_id: str) -> dict
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:
         raise ValueError(f"Stock Transfer Order {sto_id} not found.")
-    if doc.get("receipt_status") not in ("received", "partial"):
+    if doc.get("receipt_status") not in ("received", "partial", "failed"):
         raise ValueError("This order must be received before retrying the warehouse move.")
     result = _relocate_receipt_from_hold(db, sap_goods_movement_client, doc)
-    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"receipt_relocation": result}})
+    # Sep 21 2026 fix (real live incident, STO-000132) - this used to
+    # ONLY update `receipt_relocation`, leaving `receipt_status`/
+    # `receipt_error` frozen on whatever they were from the ORIGINAL
+    # failed/partial attempt - so a genuinely-fixed order kept showing
+    # up in the Pending tab as "Receipt Failed" with a stale error
+    # message forever, even after this retry fully succeeded.
+    status_map = {"done": "received", "partial": "partial", "failed": "failed"}
+    overall = status_map.get(result.get("status"), doc.get("receipt_status"))
+    lines = result.get("lines") or []
+    error_summary = " | ".join(f"{l['product_id']}: {l['error']}" for l in lines if not l["ok"]) or None
+    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
+        "receipt_relocation": result, "receipt_status": overall, "receipt_error": error_summary,
+        "receipt_results": lines or doc.get("receipt_results"),
+    }})
     return result
 
 
