@@ -523,6 +523,35 @@ Delivery # assigned) - only 2 items (PO 29581) were genuinely never received (pe
 - Backend restarted clean, no errors. Not yet run through `testing_agent` (backend-only default-
   param + one dead-code-path removal, verified by code inspection across every call site via grep).
 
+## BUG FIX: {SITE}-HOLD wrongly offered/picked as an STO's own SOURCE warehouse (Sep 21 2026)
+Real live incident (STO-000526 P1->P8, STO-000527 P3->P2, deployed LIVE app, AFTER today's earlier
+STO relocation fix): both reached "created_in_sap" fine, but SAP's own Delivery Proposal release
+failed for EVERY line item ("Determination of source inventory failed" for P42417, P26724,
+P-42152, P27784, +more; "Inventory in logistics area not available") - live-confirmed via direct
+SAP inventory query that ALL involved products (P42417/P26724/P-42152/P27784/SI-1740-3/SCR4X8SAM/
+WMNB51EBXL-8) have ZERO stock in their site's own {SITE}-HOLD staging warehouse right now - real
+stock sits in P1-QC/P1-RM/P1-SFG/P1-RTV or P3's RM zone instead.
+- Root cause: `get_product_stock_locations` (backs BOTH the "Select Source Warehouse" dropdown via
+  `/stock-transfer/inventory` AND `suggest_source_warehouse`) reads from `inventory_cache`, which
+  only refreshes every couple hours and does NOT exclude {SITE}-HOLD from the candidate list.
+  {SITE}-HOLD genuinely does carry real (but transient) stock sometimes - live-confirmed 48 such
+  rows across sites right now (e.g. P1-HOLD held 48 units of BOX-SHCM-T at last cache refresh) -
+  it's mid-flight stock from ANOTHER in-flight order, about to be Goods-Issued out, not a durable
+  "home". If a NEW STO's source got set to HOLD off a stale cache snapshot, `submit_order_to_sap`'s
+  existing "already in HOLD, skip relocation" check (`source_warehouse_id == hold_warehouse_id`,
+  from today's earlier fix) correctly trusted that as-is - but by the time SAP actually tried to
+  source it, that HOLD stock had already moved on, leaving nothing there.
+- Fix: `get_product_stock_locations` now excludes any location whose warehouse_id resolves to that
+  site's own `{SITE}-HOLD` (same helper, `_relocation_hold_warehouse_id`, already used by the
+  relocation step) - {SITE}-HOLD can never again be offered/suggested/accepted as a NEW STO's
+  source warehouse. Live-verified: BOX-SHCM-T's P1-HOLD row (48 qty) is now correctly filtered out
+  of its location list.
+- These 2 specific stuck STOs need MANUAL resolution in SAP (relocate the real physical stock -
+  P1-QC/RM/SFG for STO-526's items, P3's RM zone for STO-527's - into {SITE}-HOLD directly, or
+  release the Warehouse Request against the real location) - this fix only prevents the same
+  mistake on FUTURE new STOs, it does not retroactively repair these two.
+- Not yet run through `testing_agent` - live-verified via direct DB/SAP query only.
+
 ## BUG FIX: STO "insufficient stock" for already-relocated stock (Sep 21 2026, this session)
 Real user report: creating an STO for an item already activated + already physically moved to
 the SFG/{SITE}-HOLD area still failed with an insufficient/negative-stock rejection.

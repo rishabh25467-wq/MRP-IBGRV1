@@ -143,8 +143,26 @@ def get_product_stock_locations(db, product_id: str, include_non_usable: bool = 
         warehouse_id = _warehouse_id_from_logistics_area_id(loc.get("logistics_area_id"))
         if not warehouse_id:
             continue
+        loc_site_id = _site_id_from_full_site(loc.get("site"))
+        # Sep 21 2026, real live incident (STO-000526/527, P1->P8 and
+        # P3->P2): {SITE}-HOLD is a purely TRANSIENT staging warehouse our
+        # own _relocate_items_to_source_hold_warehouse moves stock into
+        # right before an STO reaches SAP, then out of again via Goods
+        # Issue - never a genuine standing "home" for stock. inventory_cache
+        # only refreshes every couple hours, so it can show a stale
+        # snapshot of HOLD mid-flight (another order's stock, about to be
+        # issued out). If a NEW STO's source gets set to HOLD from that
+        # stale snapshot, submit_order_to_sap's "already in HOLD, skip
+        # relocation" check (source_warehouse_id == hold_warehouse_id)
+        # wrongly trusts it - by the time SAP tries to actually source it,
+        # HOLD is empty ("Determination of source inventory failed" on
+        # every line, live-confirmed for P42417/P26724/P-42152/P27784/etc,
+        # all genuinely sitting in P1-QC/P1-RM/P1-SFG instead). Never offer
+        # {SITE}-HOLD as a selectable/suggested source for a NEW transfer.
+        if warehouse_id == _relocation_hold_warehouse_id(loc_site_id):
+            continue
         locations.append({
-            "site_id": _site_id_from_full_site(loc.get("site")),
+            "site_id": loc_site_id,
             "warehouse_id": warehouse_id,
             "warehouse_name": loc.get("logistics_area"),
             "qty": qty,
