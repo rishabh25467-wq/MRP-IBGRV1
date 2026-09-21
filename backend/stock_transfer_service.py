@@ -895,23 +895,16 @@ def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None, sap
             raise
 
     note_text = _build_gst_note_text(doc, _price_hsn_for_note(db, doc, sap_valuation_client))
-    # Sep 21 2026, user's explicit ask - check the destination site's
-    # Valuation BEFORE ever calling SAP's Check step, so a missing
-    # Valuation surfaces here (clear message, same Action Needed +
-    # Retry flow as a missing-Planning rejection) instead of only much
-    # later at GRN/receiving time.
-    missing_valuation = _missing_valuation_products(db, sap_valuation_client, doc)
-    if missing_valuation:
-        products_text = ", ".join(missing_valuation)
-        plural = len(missing_valuation) > 1
-        message = (
-            f"{products_text} {'have' if plural else 'has'} no Cost/Valuation set up at site {doc['ship_to_site_id']} yet - "
-            f"ask your SAP admin to activate Valuation for {'these materials' if plural else 'this material'} there, then Retry below."
-        )
-        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"status": "sap_failed", "error_message": message}})
-        for product_id in missing_valuation:
-            _upsert_missing_planning_notification(db, sto_id, product_id, doc["ship_to_site_id"], message, notif_type="missing_valuation")
-        raise StockTransferValidationError(message)
+    # Sep 21 2026, user's explicit ask ("can this be shortened safely?") -
+    # REMOVED the proactive `_missing_valuation_products` re-check that
+    # used to run here: it's an exact duplicate of the SAME live SAP call
+    # (`sap_valuation_client.has_valuation_level`, not cached) that
+    # `validate_stock_transfer_order`'s own `_valuation_issues()` already
+    # ran moments ago - the 2-step Validate STO -> Create STO UI enforces
+    # that ordering (Create is disabled until Validate passes, and any
+    # item/site edit re-locks it). SAP's own `check()` call right below
+    # remains the real, always-on backstop for the rare case something
+    # changes in that tiny window - it isn't a silent skip.
     try:
         if job_id:
             job_store.update_job(db, job_id, {"step": "checking"})
