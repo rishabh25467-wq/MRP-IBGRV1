@@ -257,6 +257,20 @@ class SAPMaterialCreateClient:
             valuation_data_client.set_account_determination_and_price(
                 material_id, company_id, site_id, product_category_id, set_of_books_id, amount=amount)
         except Exception as e:
+            # Same dead end activate_site() already documents (Sep 11 2026,
+            # 6700-302359 @ P9): a site that NEVER had ANY prior Valuation
+            # presence can't be bootstrapped by either SOAP service - the
+            # very first Valuation record for a site must be created ONCE,
+            # manually, via SAP UI. Match activate_site()'s friendly message
+            # here too instead of surfacing the bare SAP error (regression
+            # found live testing G12NUT @ P9, Sep 21 2026 - this method used
+            # to just return str(e) raw, losing that guidance).
+            if "valuation data missing" in str(e).lower():
+                return {"status": (
+                    f"{e} - this site has NEVER had a Valuation record for this material; ask your SAP admin "
+                    f"to create it ONCE via Inventory Valuation work center -> Material valuation tab -> "
+                    f"Maintain Product Specification Valuation, then Activate here again"
+                )}
             return {"status": str(e)}
 
         def _valuation_body(action_code: str) -> str:

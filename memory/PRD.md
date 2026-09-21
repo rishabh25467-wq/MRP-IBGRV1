@@ -302,6 +302,23 @@ on P1 despite its missing "with task" model) - see same file's dedicated section
   Test asserts SAP is never called for a nonexistent product; that's no longer true by
   design. Needs updating in a future session (not blocking, not in original scope).
 
+## BUG FIX: "Set Valuation" lost the helpful "ask SAP admin" guidance for brand-new sites (Sep 21 2026, same session)
+User tested G12NUT @ P9 (a site that NEVER had ANY prior Valuation record) via the app -
+Planning/Logistics/Availability activated fine, but Valuation showed the BARE SAP error
+"Valuation data missing for material G12NUT business residence P9 (RADISH TECHNOLOGIES-P9)"
+with none of `activate_site`'s existing friendly guidance ("ask your SAP admin to create it
+ONCE via Inventory Valuation work center...", from the Sep 11 2026 6700-302359 @ P9 incident).
+- Root cause: `set_valuation()` (added this session) has its OWN try/except around
+  `set_account_determination_and_price` that just returned `str(e)` raw - missing the same
+  "valuation data missing" enrichment `activate_site()` already has. Since `server.py`
+  overrides `result["valuation"]` with `set_valuation()`'s outcome whenever an `amount` is
+  given, users lost the helpful message the moment they typed a Cost.
+- Fix: added the identical enrichment to `set_valuation()`. Re-verified live (same G12NUT @
+  P9 call) - now returns the full guidance text again.
+- **This is a genuine, still-unresolved SAP platform limit** (not fixable via API) - P9 needs
+  the SAP admin's one-time manual step before this page's Valuation/Cost push will work there.
+  Planning/Logistics/Availability activation at P9 is done and fine either way.
+
 ## BUG FIX: "Set Valuation" falsely showed SAP's success as an error (Sep 21 2026, this session)
 Live-tested via the app: set G12NUT's Cost at P7 to match P8 (5.14 INR) - a real, successful
 SAP write (`get_standard_costs` confirmed both sites now read 5.14). But the UI showed it as
