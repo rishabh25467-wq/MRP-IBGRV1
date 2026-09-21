@@ -14,6 +14,7 @@ import { NavTabs } from "@/components/NavTabs";
 import { SapConnectionStatus } from "@/components/SapConnectionStatus";
 import { ErpConnectionStatus } from "@/components/ErpConnectionStatus";
 import { Shield } from "@phosphor-icons/react";
+import { useAuth } from "@/contexts/AuthContext";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -32,6 +33,11 @@ const fmtRelative = (iso) => {
 };
 
 export default function OpenPurchaseOrdersPage() {
+  // Sep 21 2026, user's explicit ask (real incident, PO 25271): Cancel PO/
+  // Cancel Item is now its own grantable right, separate from just being
+  // able to view this page.
+  const { hasPageAccess } = useAuth();
+  const canCancel = hasPageAccess("po_cancel");
   const [supplierQuery, setSupplierQuery] = useState("");
   const [supplierSuggestions, setSupplierSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -333,14 +339,16 @@ export default function OpenPurchaseOrdersPage() {
                   >
                     <ArrowsClockwise size={12} className="mr-1" /> {verifyingRelease === poNumber ? "Verifying..." : "Verify Release Status"}
                   </Button>
-                  <Button
-                    size="sm" variant="outline"
-                    className="h-7 rounded-sm text-[11px] border-[#FDA29B] text-[#B42318] hover:bg-[#FEF3F2]"
-                    onClick={() => setCancelTarget({ po_number: poNumber })}
-                    data-testid={`open-pos-cancel-po-button-${poNumber}`}
-                  >
-                    <XCircle size={12} className="mr-1" /> Cancel Whole PO
-                  </Button>
+                  {canCancel && (
+                    <Button
+                      size="sm" variant="outline"
+                      className="h-7 rounded-sm text-[11px] border-[#FDA29B] text-[#B42318] hover:bg-[#FEF3F2]"
+                      onClick={() => setCancelTarget({ po_number: poNumber })}
+                      data-testid={`open-pos-cancel-po-button-${poNumber}`}
+                    >
+                      <XCircle size={12} className="mr-1" /> Cancel Whole PO
+                    </Button>
+                  )}
                 </div>
                 <table className="w-full text-xs border-collapse" data-testid={`open-pos-items-table-${poNumber}`}>
                   <thead>
@@ -372,14 +380,16 @@ export default function OpenPurchaseOrdersPage() {
                           <td className="border border-[#D0D5DD] px-2 py-1.5 whitespace-nowrap">{it.due_date || "-"}</td>
                           <td className="border border-[#D0D5DD] px-2 py-1.5 text-[#98A2B3] whitespace-nowrap">{fmtRelative(it.sap_verified_at)}</td>
                           <td className="border border-[#D0D5DD] px-2 py-1.5 whitespace-nowrap">
-                            <button
-                              type="button"
-                              className="text-[11px] text-[#B42318] hover:underline"
-                              onClick={() => setCancelTarget({ po_number: poNumber, item_id: it.item_number, description: it.description })}
-                              data-testid={`open-pos-cancel-item-button-${poNumber}-${it.item_number}`}
-                            >
-                              Cancel item
-                            </button>
+                            {canCancel && (
+                              <button
+                                type="button"
+                                className="text-[11px] text-[#B42318] hover:underline"
+                                onClick={() => setCancelTarget({ po_number: poNumber, item_id: it.item_number, description: it.description })}
+                                data-testid={`open-pos-cancel-item-button-${poNumber}-${it.item_number}`}
+                              >
+                                Cancel item
+                              </button>
+                            )}
                           </td>
                         </tr>
                       );
@@ -403,7 +413,7 @@ export default function OpenPurchaseOrdersPage() {
                 {cancelTarget?.item_id
                   ? `This cancels only "${cancelTarget?.description || "this line"}" in SAP - the rest of the PO stays active. `
                   : `This cancels the ENTIRE PO in SAP - every line on it. `}
-                This is a real, irreversible write to SAP. SAP only allows cancelling a PO while it's still "Sent" or "Not Yet Acknowledged" - if a delivery/Follow-Up document already exists against it, SAP will reject this with a real error.
+                This is a real, irreversible write to SAP. SAP only allows cancelling a PO while it's still "Sent" or "Not Yet Acknowledged" - but even a PO with a Follow-Up Document already against it CAN still be cancelled (confirmed via a real incident, PO 25271) - check first if a supplier delivery is already in progress against this item.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>

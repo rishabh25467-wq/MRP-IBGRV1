@@ -32,6 +32,7 @@ that state until a Super Admin grants specific pages.
 """
 import logging
 import os
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
@@ -128,6 +129,12 @@ PAGE_CATALOG = [
     {"key": "supplier_dashboard", "label": "Supplier Dashboard"},
     {"key": "created_purchase_orders", "label": "Created POs"},
     {"key": "open_purchase_orders", "label": "Open Purchase Orders"},
+    # Sep 21 2026, user's explicit ask (real incident, PO 25271): Cancel
+    # PO/Cancel Item is now its own grantable right, separate from
+    # "open_purchase_orders" (view-only) - previously ANY user who could
+    # view Open POs could also cancel items with no distinct permission
+    # gate (the endpoints had no permission check at all).
+    {"key": "po_cancel", "label": "Cancel Purchase Order"},
     # Sep 18 2026, user's explicit ask: lets an internal staff member
     # create a shipment on behalf of a supplier (and reset a supplier's
     # password) directly from the internal app - deliberately its OWN
@@ -267,7 +274,20 @@ def ensure_indexes(db) -> None:
     db[OAUTH_STATES_COLLECTION].create_index("expires_at", expireAfterSeconds=0)
 
 
+# Sep 21 2026, user's explicit ask (real incident, PO 25271): Cancel PO/
+# Cancel Item needs its OWN dedicated permission - but its path has the
+# PO number/item ID in the MIDDLE (`/api/purchase-orders/{po}/cancel`,
+# `/api/purchase-orders/{po}/items/{item}/cancel`), which plain prefix
+# matching (PAGE_ROUTE_RULES below) can't isolate from the broader
+# `/api/purchase-orders` catch-all (required for PO creation/lookup,
+# NOT something a "cancel only" user should get for free). Checked
+# BEFORE PAGE_ROUTE_RULES.
+_PO_CANCEL_PATH_RE = re.compile(r"^/api/purchase-orders/[^/]+(?:/items/[^/]+)?/cancel$")
+
+
 def resolve_required_pages(path: str):
+    if _PO_CANCEL_PATH_RE.match(path):
+        return {"po_cancel"}
     for prefix, pages in PAGE_ROUTE_RULES:
         if path.startswith(prefix):
             return pages

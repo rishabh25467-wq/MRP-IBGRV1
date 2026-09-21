@@ -5960,7 +5960,14 @@ async def cancel_purchase_order(po_number: str, request: Request):
 
     Sep 21 2026 - now logs every attempt (who/when/outcome) to
     `po_cancel_audit_log` - see _log_po_cancel_action's docstring for
-    why (real incident, PO 25271)."""
+    why (real incident, PO 25271). Also now requires its OWN "po_cancel"
+    permission, separate from "open_purchase_orders" (view-only) or
+    "purchase_order" (the general catch-all this used to fall under) -
+    same real incident showed anyone who could view/create POs could
+    also cancel them with no distinct gate."""
+    user = request.state.user
+    if not user or not ({"po_cancel"} & set(user.get("allowed_pages", [])) or user.get("role") in ("super_admin", "admin")):
+        raise HTTPException(status_code=403, detail="Cancel Purchase Order permission required - ask your admin to grant it")
     try:
         result = await asyncio.to_thread(sap_po_write_client.cancel_purchase_order, po_number)
     except SAPPurchaseOrderWriteError as e:
@@ -5991,7 +5998,12 @@ async def cancel_purchase_order_item(po_number: str, item_id: str, request: Requ
     an item with a pending/received shipment without checking first.
 
     Sep 21 2026 - now logs every attempt (who/when/outcome) to
-    `po_cancel_audit_log` - see _log_po_cancel_action's docstring."""
+    `po_cancel_audit_log` - see _log_po_cancel_action's docstring. Also
+    now requires its OWN "po_cancel" permission - see
+    cancel_purchase_order's docstring above for why."""
+    user = request.state.user
+    if not user or not ({"po_cancel"} & set(user.get("allowed_pages", [])) or user.get("role") in ("super_admin", "admin")):
+        raise HTTPException(status_code=403, detail="Cancel Purchase Order permission required - ask your admin to grant it")
     try:
         result = await asyncio.to_thread(sap_po_write_client.cancel_purchase_order_item, po_number, item_id)
     except SAPPurchaseOrderWriteError as e:
@@ -6001,6 +6013,7 @@ async def cancel_purchase_order_item(po_number: str, item_id: str, request: Requ
     await _log_po_cancel_action(request, po_number, item_id, "cancelled")
     await asyncio.to_thread(supplier_shipment_service.expire_po_cache, db, po_number, item_id)
     return result
+
 
 
 

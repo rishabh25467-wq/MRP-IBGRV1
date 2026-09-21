@@ -333,9 +333,22 @@ S000032-25271, sender Balaji International) in SAP. Root cause traced:
   human, not just SAP's generic technical user. Historical backend logs were checked for the
   Sep 19 request but had already rotated out (uvicorn access logs have no timestamps and this
   app generates high request volume) - could not recover WHO clicked it this time.
-- **Not yet done** (user deferred): the actual PO fix (new line item or cancel+resubmit
-  Delivery Notification), and a frontend warning popup on Cancel Item ("this item has an
-  active supplier delivery - cancelling may block receiving") - both are open follow-ups.
+- **Follow-up fix (same session, user's explicit ask)**: Cancel PO/Cancel Item now requires its
+  OWN dedicated `po_cancel` permission (added to `PAGE_CATALOG`), separate from
+  `open_purchase_orders` (view-only, previously the ONLY gate on this page) or `purchase_order`
+  (PO creation, the general catch-all these 2 endpoints used to silently fall under with no
+  distinct check at all). Since the cancel routes have the PO number/item ID in the MIDDLE of
+  the path (`/api/purchase-orders/{po}/cancel`), plain prefix matching in `PAGE_ROUTE_RULES`
+  couldn't isolate them - added a small regex-based special case
+  (`_PO_CANCEL_PATH_RE`) checked BEFORE the prefix list in `auth_service.resolve_required_pages`.
+  Frontend (`OpenPurchaseOrdersPage.jsx`) now hides both Cancel buttons behind
+  `hasPageAccess("po_cancel")`. Also corrected the Cancel confirmation dialog's misleading text
+  (it claimed SAP always rejects cancelling an item with a Follow-Up Document - PO 25271 proved
+  that false). Live-verified via curl with 3 synthetic test users: a `po_cancel`-only user
+  passes this gate but is still 403'd on unrelated `/api/purchase-orders/*` endpoints (no
+  over-grant); a no-permission user is 403'd; audit log correctly records the acting user.
+- **Not yet done** (user deferred): the actual PO 25271 fix (new line item or cancel+resubmit
+  Delivery Notification).
 
 ## Proactive "Valuation not active" detection - STO creation + GRN (Sep 21 2026, this session)
 User's ask: 2 distinct root causes ("site/Planning not active" vs "Valuation not active") can
