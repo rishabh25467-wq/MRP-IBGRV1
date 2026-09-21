@@ -56,6 +56,10 @@ export const PAGE_LABELS = {
   supplier_dashboard: "Supplier Dashboard",
   created_purchase_orders: "Created POs",
   open_purchase_orders: "Open Purchase Orders",
+  // Sep 21 2026, user's explicit ask (real incident, PO 25271): Cancel PO/
+  // Cancel Item is now its own grantable right, separate from just being
+  // able to view Open Purchase Orders.
+  po_cancel: "Cancel Purchase Order",
   // Sep 9 2026, user's explicit ask: separate view-only right for the
   // GST/PAN/MSME/Bank documents on the Supplier Portal Approvals page,
   // without the Approve/Reject actions (still gated behind
