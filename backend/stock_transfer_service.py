@@ -623,7 +623,18 @@ def _relocation_hold_warehouse_id(site_id: str) -> str:
     return f"{(site_id or '').strip().upper()}-HOLD"
 
 
-def _relocate_items_to_source_hold_warehouse(db, sto_id: str, sap_goods_movement_client, doc: dict, items: list) -> None:
+def _relocate_items_to_source_hold_warehouse(db, sto_id: str, sap_goods_movement_client, doc: dict, items: list, sap_inventory_client=None) -> None:
+    """Sep 21 2026 fix (real live incident - STO for BOX-P-FMA2/P1):
+    previously this ALWAYS moved the FULL `requested_qty` out of
+    `source_warehouse_id`, even when {SITE}-HOLD already held some or
+    all of that quantity from an earlier relocation/production move -
+    so a genuinely satisfiable order (e.g. 78 already in P1-HOLD + 15
+    more in P1-SFG, for a 90-unit request) failed with "Not enough
+    stock in the source warehouse" because it tried to move all 90 out
+    of P1-SFG (which only ever had 15) instead of just the shortfall.
+    Now checks {SITE}-HOLD's OWN current balance first via
+    `sap_inventory_client` and only moves the shortfall (or skips the
+    move entirely if HOLD alone already covers the requested amount)."""
     from store_approval_service import _trigger_goods_movement
 
     site_id = doc["ship_from_site_id"]
@@ -634,10 +645,24 @@ def _relocate_items_to_source_hold_warehouse(db, sto_id: str, sap_goods_movement
         source_warehouse_id = doc_item.get("source_warehouse_id")
         if not source_warehouse_id or source_warehouse_id == hold_warehouse_id:
             continue
+        move_qty = item["requested_qty"]
+        if sap_inventory_client:
+            try:
+                rows = sap_inventory_client.get_inventory_detail(
+                    site_id=site_id, warehouse_ids=[hold_warehouse_id], product_ids=[item["product_id"]])
+                hold_qty = sum(r.get("qty") or 0 for r in rows)
+            except Exception as e:
+                logger.warning(f"STO {sto_id}: could not check {hold_warehouse_id}'s existing balance for {item['product_id']} ({e}) - moving the full requested qty as before")
+                hold_qty = 0
+            move_qty = max(0, item["requested_qty"] - hold_qty)
+            if move_qty <= 0:
+                doc_item["p8_relocation"] = {"from": source_warehouse_id, "to": hold_warehouse_id, "skipped_already_in_hold": hold_qty}
+                relocated_any = True
+                continue
         result = _trigger_goods_movement(
             sap_goods_movement_client, owner_party_id, item["product_id"],
             source_warehouse_id, hold_warehouse_id,
-            item["requested_qty"], item["unit_code"], site_id,
+            move_qty, item["unit_code"], site_id,
         )
         if not result.get("ok"):
             raise StockTransferValidationError(
@@ -646,14 +671,14 @@ def _relocate_items_to_source_hold_warehouse(db, sto_id: str, sap_goods_movement
             )
         doc_item["p8_relocation"] = {
             "from": source_warehouse_id, "to": hold_warehouse_id,
-            "gac_id": result.get("external_id"),
+            "gac_id": result.get("external_id"), "moved_qty": move_qty,
         }
         relocated_any = True
     if relocated_any:
         db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"items": doc["items"]}})
 
 
-def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None, sap_valuation_client=None, sap_goods_movement_client=None) -> dict:
+def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None, sap_valuation_client=None, sap_goods_movement_client=None, sap_inventory_client=None) -> dict:
     """Runs SAP's Check operation first (always-on safety net, not a
     togglable dry-run - user's explicit ask, Aug 2026), then - only if that
     comes back clean - the real Maintain write. Mutates the STO's Mongo doc
@@ -685,7 +710,7 @@ def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None, sap
 
     if sap_goods_movement_client:
         try:
-            _relocate_items_to_source_hold_warehouse(db, sto_id, sap_goods_movement_client, doc, items)
+            _relocate_items_to_source_hold_warehouse(db, sto_id, sap_goods_movement_client, doc, items, sap_inventory_client=sap_inventory_client)
         except StockTransferValidationError as e:
             db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"status": "sap_failed", "error_message": str(e)}})
             raise

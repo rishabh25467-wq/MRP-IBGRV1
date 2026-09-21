@@ -454,6 +454,27 @@ instead (same page, one flow) - final design below.
   genuine material (permanently changes live SAP financial data) - user should test the real
   write themselves (e.g. Material 368 @ P4/P6/P7 from their screenshot) via this page.
 
+## BUG FIX: STO "insufficient stock" for already-relocated stock (Sep 21 2026, this session)
+Real user report: creating an STO for an item already activated + already physically moved to
+the SFG/{SITE}-HOLD area still failed with an insufficient/negative-stock rejection.
+- Root cause: a PRIOR session had already added shortfall-check logic to
+  `_relocate_items_to_source_hold_warehouse` (checks {SITE}-HOLD's own current balance via
+  `sap_inventory_client` and only moves the shortfall, or skips entirely if HOLD already covers
+  the requested qty) - but BOTH call sites never actually passed `sap_inventory_client` through:
+  `submit_order_to_sap`'s own call to that helper (stock_transfer_service.py) AND server.py's
+  call to `submit_order_to_sap` itself. So the check silently always defaulted to skipped, and
+  the code kept trying to move the FULL requested qty out of the original source warehouse -
+  which SAP correctly rejected since that stock had already been relocated there previously.
+- Fix: wired `sap_inventory_client` through both call sites (server.py's `_run_submit_sto_to_sap_job`
+  -> `submit_order_to_sap` -> `_relocate_items_to_source_hold_warehouse`). Only one call site of
+  `submit_order_to_sap` exists (used by both initial creation and Retry, confirmed via grep), so
+  this single fix covers both paths.
+- Verified via direct Python test (mocked SAP clients): simulated a product already fully
+  relocated to `{SITE}-HOLD` (10/10 qty) - confirmed the goods-movement call is now correctly
+  SKIPPED instead of attempting (and failing) a full-qty move from the now-empty source warehouse.
+  No live SAP write was needed to prove this (pure wiring bug, logic itself already existed and
+  was previously live-verified). Backend restarted clean, no errors.
+
 ## Backlog
 
 ### P0
