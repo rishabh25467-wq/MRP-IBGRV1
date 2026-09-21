@@ -1,0 +1,34 @@
+{
+  "summary": "iter192: Verified the STO Receive endpoint refactor that removes Playwright/SAP-UI-login from the flow. All 6 backend tests pass. The two ValueError -> 400 gates in inbound_receipt_service.prepare_receipt fire correctly: (a) gi_status != 'posted' returns 400 'nothing to receive', (b) gi_status='posted' but empty outbound_delivery_ids returns 400 'No SAP delivery reference found yet'. Unknown STO returns 400 'not found'. The receive endpoint block in server.py no longer references sap_playwright_pgr_service or post_goods_receipts_via_ui and now directly invokes inbound_receipt_service.receive_stock_transfer_order. Backend log tail contains no Playwright/browser-launch lines tied to inbound_receipt jobs during the test window. Per the review_request's safety constraint, did NOT trigger a real Receive against a live receivable STO (would post real SAP Goods Movement); instead relied on prior in-session live test of receive_stock_transfer_order against STO-000131 (~25s, no Playwright, per-line SAP rejection surfaced correctly) as positive-path evidence.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/tests/test_iter192_inbound_receive_no_playwright.py",
+    "/app/test_reports/pytest/iter192_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now ~9810 lines - well past the 700-line guideline; several unrelated endpoints (inbound receipts, GRN, STO create, admin auth, playwright retries) live in one module. Should be split into routers per feature area for maintainability. Not a blocker for this change.",
+    "inbound_receipt_service.receive_stock_transfer_order writes receipt_status/receipt_error to the STO doc directly, while server.py's run() exception handler ALSO does an independent $set of receipt_status='failed'/receipt_error=str(e) on any raised exception. If receive_stock_transfer_order raises AFTER partial DB update, both writes race - low risk today (function is mostly a single _relocate_receipt_from_hold call) but worth noting for future edits.",
+    "build_line_overrides docstring still references Playwright typing into SAP's Actual Quantity grid; that path is dead for STO Receive now. Doc-comment cleanup only.",
+    "The receive endpoint accepts payload.items overrides but the doc gate uses `doc.get('outbound_delivery_ids')`. If SAP delivery ref exists but underlying items list is empty (edge case), the flow will call _relocate_receipt_from_hold with no lines; skipped_no_items -> 'received' which may be misleading. Consider gating on items too."
+  ],
+  "updated_files": [
+    "/app/tests/test_iter192_inbound_receive_no_playwright.py (new)"
+  ],
+  "success_rate": {"backend": "100% (6/6)", "frontend": "not tested (per review_request scope)"},
+  "test_credentials": "Synthetic super_admin session created this iteration: vms_session=iter192superadmin90a7313e8c39fec4e9d02b68 (user iter192@internal.test, role super_admin, expires ~24h from Sep 21 2026 ~16:31 UTC). Previous session FvAj3sbao-hAMKUTSUf1Fo1p4t6OzVlnciXHQ9GxCp4 mentioned in review_request had already expired/been cleaned before this run.",
+  "seed_data_creation": "Test fixture inserts a synthetic STO TEST-STO-ITER192-NODLV (gi_status=posted, outbound_delivery_ids=[]) purely for the 400-'no SAP delivery reference' assertion, then deletes it on teardown. No other DB changes.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The regression test lives at /app/tests/test_iter192_inbound_receive_no_playwright.py (NOT /app/backend/tests/ because that dir is watched by uvicorn --reload and modifying files there caused the backend to enter a shutdown loop during initial run - had to `sudo supervisorctl restart backend` to recover). Run with `pytest /app/tests/test_iter192_inbound_receive_no_playwright.py -v -p no:xdist`. The synthetic session token is embedded in the test file (SESSION_COOKIE constant) - rotate if expired. Positive-path (real SAP Goods Movement) is NOT covered by the automated test to avoid writing to prod SAP; user-owned iter171/172-style live test remains the recommended approach if a receivable STO becomes available.",
+  "rca of the issue": "N/A - no bug found. This iteration was a verification-only run for a completed refactor. The refactor (removing Playwright from STO Receive) is correctly wired: prepare_receipt gates work, the endpoint's run() calls receive_stock_transfer_order directly, and _relocate_receipt_from_hold is the sole SAP action."
+}

@@ -283,6 +283,8 @@ def prepare_receipt(db, sto_id: str) -> dict:
     # on) so it never fires against a half-created order.
     if not doc.get("outbound_delivery_ids"):
         raise ValueError("No SAP delivery reference found yet for this order - please retry in a moment.")
+    if not doc.get("items"):
+        raise ValueError(f"Stock Transfer Order {sto_id} has no line items - nothing to receive.")
     return doc
 
 

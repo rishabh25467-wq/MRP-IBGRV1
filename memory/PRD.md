@@ -629,9 +629,46 @@ the SFG/{SITE}-HOLD area still failed with an insufficient/negative-stock reject
   call returned in ~1.5s on a real shipment - well under the user's <10s target.
 - Both STO and GRN 2-step Validate/Create flows are now FULLY COMPLETE end to end (backend+frontend).
 
-## Backlog
+## STO Receive: Playwright REMOVED entirely (Sep 21 2026, this session, user's explicit direct instruction)
+Real live failure (STO-000131/P1D1-568, 2-line order: "Delivery still shows as Not Released after
+Save and Close") triggered the user's explicit ask to STOP driving Playwright/SAP-UI-login for STO
+receiving completely. Replaced with a pure API-based flow:
+- `inbound_receipt_service.prepare_receipt` now also requires `outbound_delivery_ids` non-empty
+  ("SAP delivery reference available" gate) and `items` non-empty, else 400.
+- New `receive_stock_transfer_order` calls `_relocate_receipt_from_hold` (now accepts optional
+  `quantity_overrides`) as the ONLY action - a real SAP Goods Movement (plain OData, no login, no
+  browser) moving stock from wherever GR lands ({SITE}-RM/-HOLD per `inbound_staging_area_for_site`)
+  to the STO's real destination. No more "Post Goods Receipt" SAP UI screen at all for STOs.
+- `server.py`'s `/inbound-receipts/{sto_id}/receive` no longer calls `sap_playwright_pgr_service`/
+  `_run_playwright_job_with_retries` - calls `receive_stock_transfer_order` directly. Frontend
+  (`InboundReceiptsPage.js`) needed ZERO changes - already rendered `receipt_relocation.lines`
+  (GM ID per line / error) exactly this way as a second step; now it's the first and only step.
+- `sap_playwright_pgr_service.py` itself is NOT deleted (still used by an unrelated GRN admin retry
+  endpoint) - only STO Receive stopped calling it.
+- Tested via testing_agent (iteration_192): 6/6 backend tests passed. 400 gates verified (no GI
+  posted, no delivery reference, unknown STO). Confirmed via logs: zero Playwright/browser lines
+  for inbound_receipt jobs. Live-tested directly this session against STO-000131 (~25s, no
+  Playwright, correct per-line SAP error surfaced). Minor edge case (empty items list) fixed
+  post-review: now 400s instead of silently reporting "received".
 
-### P0
+## Other fixes this session (Sep 21 2026)
+- Fixed `_relocate_items_to_source_hold_warehouse`'s stock-check query bug (STO-000129/G12LW at P1):
+  `get_inventory_detail`'s `product_ids` param silently overrides `site_id`/`warehouse_ids` - was
+  summing company-wide stock instead of just `{SITE}-HOLD`'s own balance, wrongly skipping the
+  relocation move. Fixed by filtering returned rows by `logistics_area_id` client-side. Same fix
+  applied to `validate_stock_transfer_order`'s live stock check (same bug, different call site).
+- Discovered via live SAP query: **P4 and P2W have no `-HOLD` warehouse at all** (P1/P2/P3/P7/P8/P9
+  do). User's decision: `SITES_WITHOUT_HOLD_WAREHOUSE = {"P4", "P2W"}` - relocation is skipped
+  entirely for these, STO sources directly from the real warehouse. P1W/P5/P6 returned zero
+  inventory rows (unconfirmed/inactive) - not yet in this set, add if they surface the same issue.
+- Reverted the "-MOV" display rename (`movDisplayName` in `StockTransferPage.js`) back to showing
+  the real "-HOLD" name, per user's direct ask.
+- Fixed STO create progress dialog auto-close: previously stopped polling as soon as Goods Issue
+  posted even if ERP Portal sync was still mid-retry, freezing its badge forever. Now waits for
+  both to reach a terminal state, then auto-closes ~1.2s after full success (not on failure/manual).
+- Corrected a prior session's misleading PRD claim that STO Inbound Receiving was "manual" - it was
+  actually a working one-click Playwright automation (before being replaced by the API-only fix
+  above this session) - see the "CORRECTION" note further down in this file.
 - **"Query Goods And Activity Confirmations" ABAP dump - needs SAP support, NOT further app-side
   work** (updated Sep 20 2026, was "Warehouse Order/Confirmation SAP query integration" above).
   Communication Arrangement WAS enabled by user's Basis team (endpoint:
