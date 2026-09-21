@@ -302,6 +302,41 @@ on P1 despite its missing "with task" model) - see same file's dedicated section
   Test asserts SAP is never called for a nonexistent product; that's no longer true by
   design. Needs updating in a future session (not blocking, not in original scope).
 
+## INCIDENT: PO 25271 items 2 & 5 cancelled while a supplier delivery was in flight (Sep 21 2026, investigation)
+User reported: unable to receive a GRN (Supplier Delivery Notification BI/2026-27/110-
+S000032-25271, sender Balaji International) in SAP. Root cause traced:
+- Someone using our app's Open Purchase Orders page (`OpenPurchaseOrdersPage.jsx`) clicked
+  "Cancel Item" on PO 25271's item 2 (and separately item 5) on 19.09.2026 - this IS a real,
+  working feature (built Sep 14 2026). SAP's Change History always attributes API writes to
+  our shared technical user "_EMERGENTBOM", never the actual human - so it looked like "the
+  system did it," but it was a genuine human click through our UI. **We have NO audit trail
+  of who clicked it** - this is the gap fixed below.
+- **New finding, contradicts the Sep 14 2026 docstring**: that docstring claimed SAP always
+  rejects item-level cancel with "Deleting data not possible; deletion disabled" (based on a
+  disposable test PO). Real PO 25271 proves this is NOT universal - SAP accepted it and
+  performed a soft-cancel (ItemStatusCode -> Canceled, tax zeroed, CancellationStatusCode ->
+  4) instead of rejecting. The real behavior depends on the item's own state (e.g. whether a
+  Follow-Up Document already exists), not a fixed tenant-wide lockout. Docstrings updated to
+  reflect this + a strong warning about checking for in-flight supplier deliveries first.
+- Same day, the supplier submitted their own Delivery Notification (SAP's native supplier
+  channel, NOT our custom Supplier Portal - confirmed zero matching records in
+  `supplier_portal_shipments`) against that same now-cancelled item. Since the item's open
+  quantity dropped to 0, SAP flagged the notification "Consistency Status: Inconsistent" and
+  stuck it at "Release Status: Not Released" - permanently blocking GRN posting.
+- **Confirmed via SAP's own official support docs**: a cancelled PO item CANNOT be reversed/
+  reopened in ByDesign - no "undo cancel" exists. Fix path (not yet actioned - user said "fix
+  it later"): either cancel the stuck Delivery Notification and have the supplier resubmit, OR
+  add a new replacement PO line item for the same product/qty and redirect the delivery there.
+- **Fix applied this session**: `cancel_purchase_order`/`cancel_purchase_order_item` (server.py)
+  now log every attempt (who/when/po/item/outcome) to a new `po_cancel_audit_log` Mongo
+  collection, using `request.state.user` - so a repeat incident is traceable to the actual
+  human, not just SAP's generic technical user. Historical backend logs were checked for the
+  Sep 19 request but had already rotated out (uvicorn access logs have no timestamps and this
+  app generates high request volume) - could not recover WHO clicked it this time.
+- **Not yet done** (user deferred): the actual PO fix (new line item or cancel+resubmit
+  Delivery Notification), and a frontend warning popup on Cancel Item ("this item has an
+  active supplier delivery - cancelling may block receiving") - both are open follow-ups.
+
 ## Proactive "Valuation not active" detection - STO creation + GRN (Sep 21 2026, this session)
 User's ask: 2 distinct root causes ("site/Planning not active" vs "Valuation not active") can
 block STO creation and GRN receiving - want them told apart with a clear message + Retry, not

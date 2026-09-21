@@ -5927,8 +5927,28 @@ async def post_admin_verify_po_release(po_number: str):
     return {"po_number": po_number, "still_in_preparation": still_in_preparation, "removed_from_supplier_view": still_in_preparation}
 
 
+async def _log_po_cancel_action(request: Request, po_number: str, item_id: str, outcome: str, error: str = None) -> None:
+    """Sep 21 2026, real incident (PO 25271, item 2 + 5 cancelled with no
+    record of WHO in our own app clicked it - SAP's Change History only
+    ever shows our shared technical user "_EMERGENTBOM" for every write,
+    never the actual human). Every Cancel PO/Cancel Item click now logs
+    the real app user + timestamp here, regardless of success/failure,
+    so a repeat incident is traceable without guessing from SAP's log."""
+    user = request.state.user or {}
+    await asyncio.to_thread(db["po_cancel_audit_log"].insert_one, {
+        "_id": str(uuid.uuid4()),
+        "po_number": po_number,
+        "item_id": item_id,
+        "outcome": outcome,
+        "error": error,
+        "user_email": user.get("email"),
+        "user_name": user.get("name"),
+        "at": datetime.now(timezone.utc),
+    })
+
+
 @api_router.post("/purchase-orders/{po_number}/cancel")
-async def cancel_purchase_order(po_number: str):
+async def cancel_purchase_order(po_number: str, request: Request):
     """Sep 14 2026, user's explicit ask ("build cancel PO... for full
     PO and also individual line items... anyone who can see a PO").
     Live-verified against real disposable test POs (29531, 29533) in
@@ -5936,34 +5956,52 @@ async def cancel_purchase_order(po_number: str):
     "8" (Canceled) and every item's own CancellationStatusCode to "4" -
     SAP's own rule (only "Sent"/"Not Yet Acknowledged" POs are
     eligible) surfaces as a real, readable error otherwise, not a
-    silent no-op."""
+    silent no-op.
+
+    Sep 21 2026 - now logs every attempt (who/when/outcome) to
+    `po_cancel_audit_log` - see _log_po_cancel_action's docstring for
+    why (real incident, PO 25271)."""
     try:
         result = await asyncio.to_thread(sap_po_write_client.cancel_purchase_order, po_number)
     except SAPPurchaseOrderWriteError as e:
+        await _log_po_cancel_action(request, po_number, None, "failed", str(e))
         raise HTTPException(status_code=400, detail=str(e))
+    await _log_po_cancel_action(request, po_number, None, "cancelled")
     await asyncio.to_thread(supplier_shipment_service.expire_po_cache, db, po_number)
     return result
 
 
 @api_router.post("/purchase-orders/{po_number}/items/{item_id}/cancel")
-async def cancel_purchase_order_item(po_number: str, item_id: str):
+async def cancel_purchase_order_item(po_number: str, item_id: str, request: Request):
     """Sep 14 2026 - SAP's own OFFICIALLY documented mechanism for this
-    (Item actionCode="03", i.e. delete the line) - live-tested against
-    a real disposable PO (29533) and confirmed the payload shape itself
-    is accepted, but this specific tenant rejects it outright with
-    "Deleting data not possible; deletion disabled" (a real SAP
-    business-config lockout, not a silent no-op) - same class of
-    tenant-config gap as the already-known Custom BO/ABSL Work Center
-    binding issue. Left wired up (SAP's official approach, in case a
-    future SAP Admin config change enables it) - the real error is
-    passed straight through with an actionable hint appended."""
+    (Item actionCode="03", i.e. delete the line). Live-tested against a
+    disposable test PO (29533) at the time and got "Deleting data not
+    possible; deletion disabled" - but that was NOT universal: real
+    incident Sep 21 2026 (PO 25271, items 2 + 5, both genuinely real
+    POs with a Follow-Up Document already existing) shows SAP CAN
+    accept this call and perform a soft-cancel (ItemStatusCode ->
+    Canceled, tax zeroed, CancellationStatusCode -> 4) instead of
+    rejecting - the real behavior depends on the item's own state, not
+    a fixed tenant-wide lockout. WARNING: cancelling an item this way
+    is a REAL, likely IRREVERSIBLE SAP action (no "undo cancel" - SAP's
+    own docs confirm a cancelled PO item cannot be reopened) - if a
+    supplier has an in-flight Delivery Notification against this item,
+    cancelling it will make that delivery permanently "Inconsistent"
+    and unreceivable (see PRD.md Sep 21 2026 entry). Never call this on
+    an item with a pending/received shipment without checking first.
+
+    Sep 21 2026 - now logs every attempt (who/when/outcome) to
+    `po_cancel_audit_log` - see _log_po_cancel_action's docstring."""
     try:
         result = await asyncio.to_thread(sap_po_write_client.cancel_purchase_order_item, po_number, item_id)
     except SAPPurchaseOrderWriteError as e:
         hint = " Ask your SAP Admin to enable line-item deletion for Purchase Orders, or cancel the whole PO instead." if "deletion disabled" in str(e).lower() else ""
+        await _log_po_cancel_action(request, po_number, item_id, "failed", str(e))
         raise HTTPException(status_code=400, detail=f"{e}{hint}")
+    await _log_po_cancel_action(request, po_number, item_id, "cancelled")
     await asyncio.to_thread(supplier_shipment_service.expire_po_cache, db, po_number, item_id)
     return result
+
 
 
 @api_router.get("/purchase-orders/pr-available")
