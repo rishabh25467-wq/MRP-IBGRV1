@@ -8943,11 +8943,16 @@ async def _auto_finish_full_auto_grn(doc_code: str, po_numbers: list, site_id: s
     confirmed via SAP UI screenshot on shipment S000016/PO 29724 - status
     stuck "Released", Delivery ID assigned but nothing ever received).
     Re-added Sep 20 2026 (same day, user confirmed the distinction) -
-    Put Away Task confirmation always runs again now, but the goods
-    movement re-run block that used to follow it (`retry_goods_movement`)
-    is permanently REMOVED per the user's actual intent - only the
-    finalizing step, never the extra stock relocation into a warehouse.
-    Fire-and-forget (asyncio.create_task) - never raises, never blocks."""
+    Put Away Task confirmation always runs again now; the goods movement
+    re-run that used to follow it (`retry_goods_movement`) was removed at
+    the time per that day's "GRN-only" policy.
+
+    Sep 22 2026 REVERSED (user's explicit ask - SAP's Material Flow
+    Destination rule now routes every Goods Receipt into "{SITE}-HOLD"
+    first, tenant-wide) - the `retry_goods_movement` call is back, right
+    after a PO's Put Away genuinely confirms (that's what puts the stock
+    into HOLD on SAP's ledger) - see the loop below. Fire-and-forget
+    (asyncio.create_task) - never raises, never blocks."""
     pending_put_away = set(po_numbers) if (site_id and sap_site_logistics_query_client and sap_site_logistics_manage_client) else set()
     pending_delivery_id = set(po_numbers)
 
@@ -8970,6 +8975,7 @@ async def _auto_finish_full_auto_grn(doc_code: str, po_numbers: list, site_id: s
     for attempt in range(8):
         await asyncio.sleep(10 if attempt < 4 else 30)
         is_last_attempt = attempt == 7
+        newly_confirmed = False
         for po_number in list(pending_put_away):
             events = []
             try:
@@ -8980,11 +8986,30 @@ async def _auto_finish_full_auto_grn(doc_code: str, po_numbers: list, site_id: s
                 result, events = {"confirmed": False, "target_areas": {}}, [f"Put Away confirm crashed: {e}"]
             if result["confirmed"]:
                 pending_put_away.discard(po_number)
+                newly_confirmed = True
             await asyncio.to_thread(
                 supplier_shipment_service.mark_put_away_confirmed, db, doc_code, po_number, result["confirmed"], events, result["target_areas"], is_last_attempt, site_id,
             )
         await _check_delivery_ids()
-        if not pending_put_away and not pending_delivery_id:
+        # Sep 22 2026, user's explicit ask (SAP's Material Flow Destination
+        # rule now routes every Goods Receipt into "{SITE}-HOLD" first) -
+        # only worth attempting once a PO's Put Away has actually confirmed
+        # (that's what genuinely puts the stock into HOLD on SAP's ledger)
+        # or on the final attempt as a last try. `retry_goods_movement` ->
+        # `_post_goods_movement_for_items` already skips any line whose
+        # previous attempt succeeded, so calling this every time something
+        # changes is safe/idempotent - never double-moves stock.
+        movement_done = True
+        if (newly_confirmed or is_last_attempt) and sap_goods_movement_client:
+            try:
+                movement_doc = await asyncio.to_thread(
+                    supplier_shipment_service.retry_goods_movement, db, doc_code, sap_goods_movement_client, sap_inventory_client, owner_party_id,
+                )
+                movement_done = movement_doc.get("sap_movement_status") == "posted"
+            except Exception as e:
+                logger.warning(f"Auto goods movement attempt failed for {doc_code}: {e}")
+                movement_done = False
+        if not pending_put_away and not pending_delivery_id and movement_done:
             return
 
 
@@ -9004,6 +9029,16 @@ def _start_full_auto_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> s
     yellow button but rename it 'Post GRN in SAP'") - `skip_movement=True`
     below permanently skips step 2 (moving received stock into a specific
     target warehouse, `_post_goods_movement_for_items`).
+
+    Sep 22 2026 CORRECTION (user's explicit ask - SAP's Material Flow
+    Destination rule now routes every Goods Receipt into "{SITE}-HOLD"
+    first, tenant-wide) - the movement step is required again, so
+    `skip_movement=True` here now means "not yet" rather than "never":
+    the actual Goods Movement runs later in `_auto_finish_full_auto_grn`
+    below, once Put Away Task confirmation has genuinely put the stock
+    into HOLD on SAP's ledger (attempting it synchronously here, before
+    Put Away confirms, would just fail every time with "No inventory
+    items found").
 
     Sep 20 2026 CORRECTION (same day, real bug found live via SAP UI
     screenshot on shipment S000016/PO 29724): the background Put Away
@@ -9033,7 +9068,10 @@ def _start_full_auto_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> s
             )
             final = await asyncio.to_thread(
                 supplier_shipment_service.finalize_goods_receipt, db, doc_code, gr_results,
-                sap_goods_movement_client, sap_inventory_client, owner_party_id, None, True,
+                sap_goods_movement_client, sap_inventory_client, owner_party_id, None,
+                True,  # skip_movement: stock isn't in {SITE}-HOLD on SAP's ledger yet at
+                       # this point for THIS path (Put Away hasn't confirmed) - see
+                       # _auto_finish_full_auto_grn, which runs the real movement once it has.
             )
             final = await _attach_grn_display_fields(final)
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})

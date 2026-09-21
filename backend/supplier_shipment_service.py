@@ -1469,7 +1469,7 @@ def prepare_approval(db, doc_code: str, approved_by: str, approved_by_user_id: s
     return get_shipment_by_code(db, doc_code)
 
 
-def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_client, inventory_client, owner_party_id: str, sap_username: str = None, skip_movement: bool = True) -> dict:
+def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_client, inventory_client, owner_party_id: str, sap_username: str = None, skip_movement: bool = False) -> dict:
     """Called after sap_playwright_supplier_pgr_service.
     post_goods_receipt_via_ui returns - `gr_results` is its
     results list. All POs in the shipment must have posted for step 2
@@ -1511,25 +1511,32 @@ def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_c
 
     sap_movement_status = "not_applicable"
     sap_movement_result = None
-    # Sep 20 2026, user's explicit ask ("eliminate any warehouse movement
-    # that u do today, only complete GRN") - the "Post GRN in SAP" button
-    # (renamed from "Test Full Automated GRN") now stops right after the
-    # Goods Receipt posts; Put Away confirmation + Goods Movement are
-    # skipped entirely (see _start_full_auto_grn_job in server.py, which
-    # no longer schedules _auto_finish_full_auto_grn either). See
-    # /app/memory/pre_change_grn_buttons_snapshot.md for the pre-change
-    # behavior if this ever needs revisiting.
+    # Sep 22 2026, POLICY REVERSED (user's explicit ask - SAP's Material
+    # Flow Destination rule now routes EVERY inbound Goods Receipt into
+    # the neutral "{SITE}-HOLD" staging warehouse first, tenant-wide, so
+    # a real Goods Movement step is required again to land received stock
+    # into "{SITE}-RM" (or whichever warehouse was chosen at approval) -
+    # the Sep 20/21 2026 "GRN-only, no movement" policy documented below
+    # no longer matches how this SAP tenant actually behaves. Default
+    # flipped back to False (movement runs) for every caller EXCEPT the
+    # "Post GRN in SAP" EM1 full-auto path, which still passes
+    # skip_movement=True explicitly here and instead runs the movement
+    # itself later in server.py's `_auto_finish_full_auto_grn`, once Put
+    # Away Task confirmation has actually put the stock into HOLD on SAP's
+    # ledger (attempting it here, before Put Away confirms, would just
+    # fail every time with "No inventory items found" - see that
+    # function's own docstring). See /app/memory/pre_change_grn_buttons_
+    # snapshot.md for the pre-Sep-20 behavior this restores.
     #
-    # Sep 21 2026 fix - the above was only ever wired into that ONE
-    # button (`skip_movement=True` passed explicitly). Every OTHER GRN
-    # path (normal Playwright multi-PO approval, Manual GRN "Re-check
-    # SAP") kept calling this with the old default (False) and kept
-    # running the movement step, contradicting the "GRN-only" policy.
-    # Default flipped to True so every caller skips movement unless it
-    # explicitly opts back in (nothing does, currently) - real incident,
-    # shipment S000073 (multi-PO), most lines correctly posted the real
-    # SAP Goods Receipt but showed "movement failed" on this now-obsolete
-    # step.
+    # Sep 20/21 2026 (superseded by the above, kept for history): user
+    # asked to eliminate all warehouse movement ("GRN-only" mode) because
+    # at the time SAP was NOT routing receipts through HOLD, so the
+    # movement step was a redundant, error-prone extra hop - shipment
+    # S000073 (multi-PO) showed "movement failed" on lines whose real SAP
+    # Goods Receipt had already posted correctly. That is no longer true
+    # now that HOLD-first is how this tenant's Material Flow Destination
+    # rule actually works, so the movement step is required again, not
+    # redundant.
     if skip_movement:
         sap_movement_result = {"ok": True, "reason": "Warehouse movement skipped by design - GRN-only mode"}
         sap_movement_status = "not_applicable"
@@ -1953,14 +1960,20 @@ def manually_confirm_inbound_delivery(db, doc_code: str, po_number: str, inbound
     all_ok = bool(per_po) and all(p.get("status") == "posted" for p in per_po)
     sap_sync_status = "posted" if all_ok else doc.get("sap_sync_status")
     update = {"sap_gr_result": {"ok": all_ok, "per_po": per_po}, "sap_sync_status": sap_sync_status}
-    # Sep 21 2026, user's explicit ask ("remove movement from all remaining
-    # GRN paths - make it fully consistent") - this background auto-fetch
-    # path used to be the ONE place still calling _post_goods_movement_for_
-    # items automatically, outside finalize_goods_receipt's own now-default
-    # skip_movement=True. Matches the same "GRN-only, no movement" policy.
-    if all_ok and doc.get("sap_movement_status") != "posted":
-        update["sap_movement_status"] = "not_applicable"
-        update["sap_movement_result"] = {"ok": True, "reason": "Warehouse movement skipped by design - GRN-only mode"}
+    # Sep 22 2026, POLICY REVERSED (see finalize_goods_receipt's own Sep
+    # 22 2026 note) - this background auto-fetch path runs the real
+    # Goods Movement again (HOLD -> chosen warehouse) once every PO is
+    # confirmed posted, matching the original Sep 2026 intent documented
+    # above ("if fetching success then move it to the RM warehouse").
+    # Idempotent/safe to call more than once - _post_goods_movement_for_
+    # items skips any line whose previous attempt already succeeded.
+    if all_ok and doc.get("sap_movement_status") != "posted" and goods_movement_client and doc.get("site_id") and doc.get("warehouse_id"):
+        skipped_line_items = _skipped_line_items_from_gr_results(doc, per_po)
+        sap_movement_result = _post_goods_movement_for_items(
+            db, doc, goods_movement_client, inventory_client, owner_party_id, doc["site_id"], doc["warehouse_id"], skipped_line_items, retry_on_lag=True,
+        )
+        update["sap_movement_status"] = "posted" if sap_movement_result.get("ok") else "pending"
+        update["sap_movement_result"] = sap_movement_result
     db[SHIPMENTS_COLLECTION].update_one({"_id": doc["_id"]}, {"$set": update})
     return get_shipment_by_code(db, doc_code)
 
