@@ -30,11 +30,9 @@ const API = `${BACKEND_URL}/api`;
 
 const formatQty = (v) => (v == null ? "—" : Number(v).toLocaleString("en-IN", { maximumFractionDigits: 3 }));
 
-// Display-only rename (user's explicit ask, Sep 2026): the backend
-// warehouse is still literally called "{SITE}-HOLD" in SAP/Mongo - this
-// only renames it to "{SITE}-MOV" wherever it's shown to a user, ahead
-// of the eventual real SAP rename.
-const movDisplayName = (id) => (id ? id.replace(/-HOLD$/, "-MOV") : id);
+// Sep 21 2026, user's explicit ask - reverted the earlier "-MOV" display
+// rename below; show the real "{SITE}-HOLD" warehouse name as-is again.
+const movDisplayName = (id) => id;
 
 // Popover for the pre-STO backend relocation (RAW/actual warehouse ->
 // P8-HOLD) that happens silently while creating an outbound STO from
