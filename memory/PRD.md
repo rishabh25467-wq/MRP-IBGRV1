@@ -454,6 +454,27 @@ instead (same page, one flow) - final design below.
   genuine material (permanently changes live SAP financial data) - user should test the real
   write themselves (e.g. Material 368 @ P4/P6/P7 from their screenshot) via this page.
 
+## FEATURE: live PO item-number verification before GRN submission (Sep 21 2026, same session)
+Follow-up to the S000073/PO 29581 investigation above - proactive safety net so the exact same
+"Incorrect purchase order reference Item UUID" failure surfaces with a clear, specific reason
+BEFORE the SOAP call, instead of a generic SAP rejection after the fact.
+- New `supplier_shipment_service._verify_po_items_live(sap_po_client, po_number, item_products)` -
+  live-queries SAP (`sap_po_client._fetch_between`) for the PO's CURRENT item list right before
+  GRN submission and flags any cached item_number that either no longer exists or now maps to a
+  different product than expected.
+- `group_items_by_po_for_gr(doc, sap_po_client=None)` now runs this check per PO, drops any stale
+  item from `item_products` (reusing the existing "missing product" skip-this-line-only logic
+  every caller already has) and records the real reason in a new `item_skip_reasons` dict.
+- All 3 GRN submission paths in `sap_playwright_supplier_pgr_service.py` (`_post_one_po`/
+  `post_goods_receipt_via_ui`, `create_inbound_delivery_notifications_only`,
+  `create_and_release_inbound_delivery_notifications`) now surface `item_skip_reasons` in their
+  error/skipped_items messages instead of always assuming "Product ID missing".
+- server.py's 3 call sites of `group_items_by_po_for_gr` now pass the existing `sap_po_client`
+  global. Live-verified directly against real PO 29581/items 8+9: correctly returns "Item 8 no
+  longer exists on PO 29581 in SAP..." (matches the real incident exactly). PO 29581's own
+  shipment (S000073) was left as permanently skipped per user's explicit choice - not manually
+  remapped.
+
 ## BUG FIX: "No movement" GRN policy was only applied to ONE button, not all paths (Sep 21 2026)
 Real user report on shipment S000073 (multi-PO): most lines showed "Posted (movement failed)"
 even though the real SAP Goods Receipt succeeded (8/10 items genuinely inbound, SAP Inbound

@@ -8767,7 +8767,7 @@ def _start_supplier_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> st
     it, which would make an already-successful PO look like a fresh
     failure. Skip any PO the last attempt already posted."""
     job_id = str(uuid.uuid4())
-    po_items = supplier_shipment_service.group_items_by_po_for_gr(doc)
+    po_items = supplier_shipment_service.group_items_by_po_for_gr(doc, sap_po_client)
     already_posted = {r["po_number"] for r in (doc.get("sap_gr_result") or {}).get("per_po", []) if r.get("status") == "posted"}
     po_items = {po: spec for po, spec in po_items.items() if po not in already_posted}
     total_steps = sap_playwright_supplier_pgr_service.total_progress_steps(len(po_items) or 1)
@@ -8831,7 +8831,7 @@ def _start_manual_grn_job(doc_code: str, doc: dict) -> str:
     once staff post the real Goods Receipt in SAP themselves and someone
     clicks "Re-check SAP" (see check_manual_gr_quantities)."""
     job_id = str(uuid.uuid4())
-    po_items = supplier_shipment_service.group_items_by_po_for_gr(doc)
+    po_items = supplier_shipment_service.group_items_by_po_for_gr(doc, sap_po_client)
     job_store.create_job(db, job_id, {
         "doc_code": doc_code, "kind": "manual_grn_notification", "status": "running", "phase": "creating_notifications",
         "progress_current": 0, "progress_total": 1, "result": None, "error": None,
@@ -8982,7 +8982,7 @@ def _start_full_auto_grn_job(doc_code: str, doc: dict, owner_party_id: str) -> s
     grn_buttons_snapshot.md for the pre-change (pre-Sep-20) button
     behavior if this ever needs revisiting."""
     job_id = str(uuid.uuid4())
-    po_items = supplier_shipment_service.group_items_by_po_for_gr(doc)
+    po_items = supplier_shipment_service.group_items_by_po_for_gr(doc, sap_po_client)
     job_store.create_job(db, job_id, {
         "doc_code": doc_code, "kind": "full_auto_grn", "status": "running", "phase": "posting_goods_receipt",
         "progress_current": 0, "progress_total": 1, "result": None, "error": None,

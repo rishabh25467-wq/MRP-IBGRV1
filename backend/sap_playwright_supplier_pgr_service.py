@@ -409,7 +409,8 @@ def _build_notification_id(supplier_doc_num: str, doc_code: str, po_number: str)
 
 
 async def _post_one_po(page, po_number: str, doc_code: str, supplier_doc_num: str, bill_date: str, item_qtys: dict, item_products: dict,
-                        item_uoms: dict, vendor_code: str, notification_client, confirmation_report_client, on_step=None, events: list = None) -> dict:
+                        item_uoms: dict, vendor_code: str, notification_client, confirmation_report_client, on_step=None, events: list = None,
+                        item_skip_reasons: dict = None) -> dict:
     # Sep 12 2026, user's explicit ask - a plain-English trail of every
     # milestone actually reached in SAP before a failure (or success),
     # surfaced verbatim in the GRN Approval screen's new "Diagnostics"
@@ -511,13 +512,21 @@ async def _post_one_po(page, po_number: str, doc_code: str, supplier_doc_num: st
         # the Actual Quantity fill ever sees them) - the good lines still
         # go through. Only skip the ENTIRE PO if every single line on it
         # has this problem (nothing valid left to post).
-        skipped_items = [{"item_number": item_number, "reason": "Product ID is missing in the cached PO data (ask SAP Admin to check this PO line's product master link)"} for item_number in missing_products]
-        events.append(f"Skipping item(s) {', '.join(missing_products)} on PO {po_number} - Product ID missing in cached PO data; remaining valid line(s) will still be processed")
+        #
+        # Sep 21 2026: `item_skip_reasons` (from `group_items_by_po_for_gr`'s
+        # live SAP verification) gives the REAL reason when known (e.g. a
+        # stale/renumbered item reference) instead of always assuming a
+        # missing Product ID.
+        skip_reasons = item_skip_reasons or {}
+        default_reason = "Product ID is missing in the cached PO data (ask SAP Admin to check this PO line's product master link)"
+        skipped_items = [{"item_number": item_number, "reason": skip_reasons.get(item_number, default_reason)} for item_number in missing_products]
+        reasons_text = "; ".join(f"item {s['item_number']}: {s['reason']}" for s in skipped_items)
+        events.append(f"Skipping item(s) {', '.join(missing_products)} on PO {po_number} - {reasons_text}; remaining valid line(s) will still be processed")
         item_qtys = {k: v for k, v in item_qtys.items() if k not in missing_products}
         if not item_qtys:
             return {
                 "po_number": po_number, "status": "skipped",
-                "error": f"Cannot receive PO {po_number} via SAP - Product ID is missing in the cached PO data for item(s) {', '.join(missing_products)} (ask SAP Admin to check this PO line's product master link)",
+                "error": f"Cannot receive PO {po_number} via SAP - {reasons_text}",
                 "skipped_items": skipped_items, "events": events,
             }
     soap_items = [
@@ -789,6 +798,7 @@ async def post_goods_receipt_via_ui(po_items: dict, notification_client, confirm
                             page, po_number, spec.get("doc_code"), spec.get("supplier_doc_num"), spec.get("bill_date"),
                             spec.get("item_qtys") or {}, spec.get("item_products") or {}, spec.get("item_uoms") or {},
                             spec.get("vendor_code"), notification_client, confirmation_report_client, on_step=on_step, events=events,
+                            item_skip_reasons=spec.get("item_skip_reasons"),
                         )
                     except Exception as e:
                         logger.error(f"Playwright Supplier GRN failed for PO {po_number}: {e}")
@@ -864,9 +874,11 @@ async def create_inbound_delivery_notifications_only(po_items: dict, notificatio
         if missing_products:
             item_qtys = {k: v for k, v in item_qtys.items() if k not in missing_products}
         if not item_qtys:
+            skip_reasons = spec.get("item_skip_reasons") or {}
+            reasons_text = "; ".join(f"item {n}: {skip_reasons.get(n, 'Product ID missing in cached PO data')}" for n in missing_products)
             results.append({
                 "po_number": po_number, "notification_id": None, "status": "failed",
-                "error": f"Cannot create Inbound Delivery Notification for PO {po_number} - Product ID missing in cached PO data for item(s) {', '.join(missing_products)}",
+                "error": f"Cannot create Inbound Delivery Notification for PO {po_number} - {reasons_text}",
             })
             continue
         soap_items = [
@@ -1073,9 +1085,11 @@ async def create_and_release_inbound_delivery_notifications(po_items: dict, noti
         if missing_products:
             item_qtys = {k: v for k, v in item_qtys.items() if k not in missing_products}
         if not item_qtys:
+            skip_reasons = spec.get("item_skip_reasons") or {}
+            reasons_text = "; ".join(f"item {n}: {skip_reasons.get(n, 'Product ID missing in cached PO data')}" for n in missing_products)
             results.append({
                 "po_number": po_number, "notification_id": notification_id, "status": "failed",
-                "error": f"Cannot post Goods Receipt for PO {po_number} - Product ID missing in cached PO data for item(s) {', '.join(missing_products)}",
+                "error": f"Cannot post Goods Receipt for PO {po_number} - {reasons_text}",
             })
             continue
         soap_items = [

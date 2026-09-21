@@ -53,6 +53,7 @@ discrepancy and puts the shipment back to "in_transit" for re-review.
 Staff can also still directly Approve/Reject straight from "discrepancy"
 if they decide to override rather than wait for an edit.
 """
+import logging
 from datetime import datetime, timedelta, timezone
 
 from pymongo import ReturnDocument
@@ -61,6 +62,8 @@ from pymongo.errors import DuplicateKeyError
 import inventory_service
 import sap_po_client
 import time
+
+logger = logging.getLogger(__name__)
 from sap_playwright_supplier_pgr_service import _build_notification_id
 from sap_wip_clearing_client import company_and_set_of_books_for_site, inbound_staging_area_for_site
 from sap_material_valuation_data_client import friendly_valuation_error
@@ -1142,16 +1145,62 @@ def _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_cli
     return {"ok": all_ok, "per_item": per_item}
 
 
-def group_items_by_po_for_gr(doc: dict) -> dict:
+def _verify_po_items_live(sap_po_client, po_number: str, item_products: dict) -> dict:
+    """Sep 21 2026, real incident (PO 29581, items 8/9 SCR835WM/SCR845WM):
+    SAP rejected the Inbound Delivery Notification create with "Incorrect
+    purchase order reference Item UUID" - our own `supplier_portal_po_cache`
+    had stale item numbers (8/9) for a PO that SAP had since renumbered/
+    revised down to only 5 items (the same 2 products now sit at items
+    4/5). Live-verifies each cached item_number against SAP's CURRENT
+    PurchaseOrderItem list right before ever attempting the SOAP create,
+    so a stale reference is caught with a clear, specific message instead
+    of a generic SAP rejection. Fail-open (returns {} - never blocks a
+    genuinely valid PO) on any SAP/network hiccup or missing client, same
+    convention as every other proactive check in this app (e.g.
+    stock_transfer_service._missing_valuation_products)."""
+    if not sap_po_client or not item_products:
+        return {}
+    try:
+        rows, _ = sap_po_client._fetch_between(int(po_number), int(po_number))
+    except Exception as e:
+        logger.warning(f"PO {po_number}: live item-number verification failed ({e}) - proceeding without it")
+        return {}
+    live_by_item = {r["item_number"]: r.get("product_id") for r in rows if r.get("po_number") == po_number}
+    stale = {}
+    for item_number, product_id in item_products.items():
+        live_product = live_by_item.get(item_number)
+        if live_product is None:
+            stale[item_number] = (
+                f"Item {item_number} no longer exists on PO {po_number} in SAP - the PO's line items "
+                "may have been revised/renumbered. Ask your SAP Admin for the correct current item number."
+            )
+        elif live_product != product_id:
+            stale[item_number] = (
+                f"Item {item_number} on PO {po_number} in SAP now refers to a different product "
+                f"({live_product}) than expected ({product_id}) - the PO's line items may have been revised/renumbered."
+            )
+    return stale
+
+
+def group_items_by_po_for_gr(doc: dict, sap_po_client=None) -> dict:
     """Shapes a shipment's items into the {po_number: {supplier_doc_num,
-    bill_date, vendor_code, item_qtys, item_products, item_uoms}} form
-    sap_playwright_supplier_pgr_service.post_goods_receipt_via_ui
-    expects - one entry per distinct PO, grouping every line item of
-    that PO (user's explicit ask). `item_products`/`item_uoms` let the
-    hybrid flow's SOAP create step (Sep 12 2026) reference each PO line
-    directly and set its real Delivery Quantity, and let the Playwright
-    side match each grid row by Product ID rather than trusting row
-    order (see that module's docstring)."""
+    bill_date, vendor_code, item_qtys, item_products, item_uoms,
+    item_skip_reasons}} form sap_playwright_supplier_pgr_service.
+    post_goods_receipt_via_ui expects - one entry per distinct PO,
+    grouping every line item of that PO (user's explicit ask).
+    `item_products`/`item_uoms` let the hybrid flow's SOAP create step
+    (Sep 12 2026) reference each PO line directly and set its real
+    Delivery Quantity, and let the Playwright side match each grid row
+    by Product ID rather than trusting row order (see that module's
+    docstring).
+
+    `sap_po_client` (Sep 21 2026, optional) - when given, each PO's
+    items are live-verified against SAP first (see
+    `_verify_po_items_live`); any stale item is dropped from
+    `item_products` (so the existing "missing product" skip logic in
+    every caller naturally drops it) with its real reason recorded in
+    `item_skip_reasons`, used by those same callers instead of the
+    generic "Product ID missing" text."""
     grouped = {}
     for it in doc["items"]:
         po = grouped.setdefault(it["po_number"], {
@@ -1162,10 +1211,16 @@ def group_items_by_po_for_gr(doc: dict) -> dict:
             "item_qtys": {},
             "item_products": {},
             "item_uoms": {},
+            "item_skip_reasons": {},
         })
         po["item_qtys"][it["item_number"]] = it.get("actual_qty", it["ship_qty"])
         po["item_products"][it["item_number"]] = it["product_id"]
         po["item_uoms"][it["item_number"]] = it.get("unit_of_measure")
+    for po_number, spec in grouped.items():
+        stale = _verify_po_items_live(sap_po_client, po_number, spec["item_products"])
+        for item_number, reason in stale.items():
+            spec["item_products"].pop(item_number, None)
+            spec["item_skip_reasons"][item_number] = reason
     return grouped
 
 
