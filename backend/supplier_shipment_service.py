@@ -69,6 +69,7 @@ logger = logging.getLogger(__name__)
 from sap_playwright_supplier_pgr_service import _build_notification_id
 from sap_wip_clearing_client import company_and_set_of_books_for_site, inbound_staging_area_for_site
 from sap_material_valuation_data_client import friendly_valuation_error
+from store_approval_service import _SITE_RM_WAREHOUSE_OVERRIDE
 
 # Sep 17 2026, Manual GRN feature - the auth_users collection name is
 # duplicated here as a plain string (NOT `import auth_service`) because
@@ -1451,6 +1452,21 @@ def prepare_approval(db, doc_code: str, approved_by: str, approved_by_user_id: s
         raise ShipmentValidationError(
             f"This shipment's PO belongs to {entity_name} - Site must be one of: {', '.join(allowed_sites)}"
         )
+    # Sep 22 2026 fix (real incident, shipment S000040/PO 29747, site P3:
+    # SAP rejected the movement live - "You cannot carry out goods
+    # movements involving this logistics area... must be inventory-
+    # managed" - because P3 has NO flat "P3-RM" area at all, same fact
+    # store_approval_service.py already discovered and keeps in
+    # `_SITE_RM_WAREHOUSE_OVERRIDE`. Reusing that same override here
+    # instead of a blind "{site}-RM" default) fixes the frontend's
+    # Warehouse dropdown removal (see GrnApprovalPage.jsx's own comment
+    # on `warehouseId`) - that guard is now the actual blocker.
+    # Defaulting a blank warehouse_id here, the single place site_id/
+    # warehouse_id get persisted on approval, fixes every caller (auto/
+    # manual/auto-fetch) at once regardless of what the frontend sends -
+    # no dropdown needed, stays a silent/automatic step as intended.
+    if site_id and not (warehouse_id or "").strip():
+        warehouse_id = _SITE_RM_WAREHOUSE_OVERRIDE.get(site_id, f"{site_id}-RM")
     items = []
     for it in doc["items"]:
         key = (it["po_number"], it["item_number"])
