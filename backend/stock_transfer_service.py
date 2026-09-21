@@ -783,9 +783,27 @@ def _relocate_items_to_source_hold_warehouse(db, sto_id: str, sap_goods_movement
         move_qty = item["requested_qty"]
         if sap_inventory_client:
             try:
-                rows = sap_inventory_client.get_inventory_detail(
-                    site_id=site_id, warehouse_ids=[hold_warehouse_id], product_ids=[item["product_id"]])
-                hold_qty = sum(r.get("qty") or 0 for r in rows)
+                # Sep 21 2026 SAME-DAY FIX (real live incident - STO-000129/
+                # P1, product G12LW): get_inventory_detail's `product_ids`
+                # param SILENTLY overrides/ignores `site_id`/`warehouse_ids`
+                # (see its own docstring - "product_ids takes priority... if
+                # more than one is somehow passed" - confirmed in
+                # sap_inventory_client._fetch_page's if/elif chain). Passing
+                # all three here (as the version shipped earlier today did)
+                # therefore returned this product's HOLISTIC, COMPANY-WIDE
+                # stock (P1 + P8 combined, ~66,934 EA) instead of just
+                # {SITE}-HOLD's own balance (genuinely 0 for this product) -
+                # wrongly concluding HOLD already covered the requested qty
+                # and skipping the relocation move entirely, so SAP's own
+                # Goods Issue later failed with "Determination of source
+                # inventory failed" since nothing was ever actually moved
+                # into HOLD. Fixed by querying product-scoped (holistic) and
+                # filtering the returned rows down to this exact warehouse's
+                # own logistics_area_id client-side, same pattern already
+                # used correctly in supplier_shipment_service.py.
+                rows = sap_inventory_client.get_inventory_detail(product_ids=[item["product_id"]])
+                target_area_id = f"{site_id}/{hold_warehouse_id}"
+                hold_qty = sum(r.get("qty") or 0 for r in rows if r.get("logistics_area_id") == target_area_id)
             except Exception as e:
                 logger.warning(f"STO {sto_id}: could not check {hold_warehouse_id}'s existing balance for {item['product_id']} ({e}) - moving the full requested qty as before")
                 hold_qty = 0
