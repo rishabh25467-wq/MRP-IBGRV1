@@ -370,10 +370,18 @@ async def validate_stock_transfer_order(db, payload: dict, sap_sto_client=None, 
 
     async def _check_stock_for_item(it):
         try:
-            rows = await asyncio.to_thread(
-                sap_inventory_client.get_inventory_detail,
-                site_id=it["ship_from_site_id"], warehouse_ids=[it["source_warehouse_id"]], product_ids=[it["product_id"]])
-            live_qty = sum(r.get("qty") or 0 for r in rows if is_usable_stock_status(r.get("stock_status"), r.get("restricted", False)))
+            # Sep 21 2026 fix - same bug as _relocate_items_to_source_hold_
+            # warehouse below: get_inventory_detail ignores site_id/
+            # warehouse_ids whenever product_ids is also passed, so this
+            # was silently checking company-wide stock instead of just
+            # `it["source_warehouse_id"]`'s own balance. Query product-
+            # scoped (holistic) and filter to this exact warehouse client-side.
+            rows = await asyncio.to_thread(sap_inventory_client.get_inventory_detail, product_ids=[it["product_id"]])
+            target_area_id = f"{it['ship_from_site_id']}/{it['source_warehouse_id']}"
+            live_qty = sum(
+                r.get("qty") or 0 for r in rows
+                if r.get("logistics_area_id") == target_area_id and is_usable_stock_status(r.get("stock_status"), r.get("restricted", False))
+            )
         except Exception as e:
             logger.warning(f"Validate STO: live stock check failed for {it['product_id']}/{it['source_warehouse_id']} ({e}) - skipping this item's live check")
             return None
@@ -754,6 +762,22 @@ def _price_hsn_for_note(db, doc: dict, sap_valuation_client) -> list:
 # every site, specifically so this same workaround applies everywhere,
 # not just P8. No hardcoded site check anymore - runs for any
 # ship_from_site_id as long as sap_goods_movement_client is available.
+# Sep 21 2026, real live check across every site's actual SAP inventory
+# (this session, user's explicit ask "check P7/P9/P1W/P2W etc first") -
+# the Sep 17 2026 claim above ("every site now has -HOLD") is NOT true
+# for these 2: P4 and P2W have no "-HOLD" warehouse in SAP at all (only
+# {SITE}-FG/RM/SCR/SFG). User's explicit decision: for any site without
+# a real "-HOLD" warehouse, skip this relocation step entirely and let
+# the STO source directly from the item's chosen real warehouse - do
+# NOT try to move stock into a bin that doesn't exist. P1W/P5/P6
+# returned zero inventory rows entirely (unconfirmed/inactive sites) -
+# left OUT of this set (still assumed to have -HOLD like the majority)
+# since there's no live evidence either way; if one of them turns out
+# to lack -HOLD too, add it here the same way, same as P3's inbound
+# override was added incrementally in sap_wip_clearing_client.py.
+SITES_WITHOUT_HOLD_WAREHOUSE = {"P4", "P2W"}
+
+
 def _relocation_hold_warehouse_id(site_id: str) -> str:
     return f"{(site_id or '').strip().upper()}-HOLD"
 
@@ -773,6 +797,8 @@ def _relocate_items_to_source_hold_warehouse(db, sto_id: str, sap_goods_movement
     from store_approval_service import _trigger_goods_movement
 
     site_id = doc["ship_from_site_id"]
+    if site_id.strip().upper() in SITES_WITHOUT_HOLD_WAREHOUSE:
+        return
     hold_warehouse_id = _relocation_hold_warehouse_id(site_id)
     owner_party_id, _ = company_and_set_of_books_for_site(site_id)
     relocated_any = False
