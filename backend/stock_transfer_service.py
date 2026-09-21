@@ -319,7 +319,7 @@ def _resolve_and_validate_items(db, items: list, ship_to_site_id: str, sap_hsn_c
     return resolved_items, ship_from_site_id
 
 
-def validate_stock_transfer_order(db, payload: dict, sap_sto_client=None, sap_valuation_client=None, sap_inventory_client=None, sap_hsn_client=None) -> dict:
+async def validate_stock_transfer_order(db, payload: dict, sap_sto_client=None, sap_valuation_client=None, sap_inventory_client=None, sap_hsn_client=None) -> dict:
     """Sep 21 2026, user's explicit ask ("break down the create STO
     process in 2 parts... step 1 before writing anything, confirm stock
     status, activation, valuation SAP") - a dedicated pre-flight check
@@ -336,7 +336,8 @@ def validate_stock_transfer_order(db, payload: dict, sap_sto_client=None, sap_va
     "warning" class yet, kept here for future use if ever needed.
 
     1. Cache-based structural resolution (`_resolve_and_validate_items`,
-       same rules `create_stock_transfer_order` itself enforces).
+       same rules `create_stock_transfer_order` itself enforces) - fast,
+       no SAP calls, runs first since everything else needs its output.
     2. Live stock check - the user's explicit ask was to check ONLY the
        exact warehouse/items entered, nothing broader - queries SAP
        directly (not the cache, which can go stale - see the HOLD
@@ -346,8 +347,15 @@ def validate_stock_transfer_order(db, payload: dict, sap_sto_client=None, sap_va
     4. Activation/Planning check - SAP's own read-only `check()` call
        (same one `submit_order_to_sap` makes later; a pure dry-run, no
        write) against the resolved items, run here with zero side
-       effects instead of only after the order's already been created."""
-    issues = []
+       effects instead of only after the order's already been created.
+
+    Sep 21 2026, user's explicit ask ("shorten this time to less than
+    10 seconds") - steps 2/3/4 are fully independent of each other
+    (none needs another's result), so they now run CONCURRENTLY via
+    asyncio.gather instead of one-after-another - wall-clock time drops
+    to roughly the SLOWEST single SAP call instead of the sum of all of
+    them (live-measured ~22s sequential -> targeting the slowest call's
+    own time, well under 10s for a typical single/few-item order)."""
     ship_to_site_id = (payload.get("ship_to_site_id") or "").strip().upper()
     raw_items = payload.get("items") or []
     if not raw_items:
@@ -360,48 +368,59 @@ def validate_stock_transfer_order(db, payload: dict, sap_sto_client=None, sap_va
     except StockTransferValidationError as e:
         return {"ok": False, "issues": [{"product_id": None, "field": "items", "level": "error", "message": str(e)}]}
 
-    if sap_inventory_client:
-        for it in resolved_items:
-            try:
-                rows = sap_inventory_client.get_inventory_detail(
-                    site_id=it["ship_from_site_id"], warehouse_ids=[it["source_warehouse_id"]], product_ids=[it["product_id"]])
-                live_qty = sum(r.get("qty") or 0 for r in rows if is_usable_stock_status(r.get("stock_status"), r.get("restricted", False)))
-            except Exception as e:
-                logger.warning(f"Validate STO: live stock check failed for {it['product_id']}/{it['source_warehouse_id']} ({e}) - skipping this item's live check")
-                continue
-            if live_qty < it["requested_qty"]:
-                issues.append({
-                    "product_id": it["product_id"], "field": "stock", "level": "error",
-                    "message": f"{it['product_id']}: SAP shows only {live_qty:g} {it['unit_of_measure'] or ''} available right now in {it['source_warehouse_id']}, but {it['requested_qty']:g} was requested.".strip(),
-                })
+    async def _check_stock_for_item(it):
+        try:
+            rows = await asyncio.to_thread(
+                sap_inventory_client.get_inventory_detail,
+                site_id=it["ship_from_site_id"], warehouse_ids=[it["source_warehouse_id"]], product_ids=[it["product_id"]])
+            live_qty = sum(r.get("qty") or 0 for r in rows if is_usable_stock_status(r.get("stock_status"), r.get("restricted", False)))
+        except Exception as e:
+            logger.warning(f"Validate STO: live stock check failed for {it['product_id']}/{it['source_warehouse_id']} ({e}) - skipping this item's live check")
+            return None
+        if live_qty < it["requested_qty"]:
+            return {
+                "product_id": it["product_id"], "field": "stock", "level": "error",
+                "message": f"{it['product_id']}: SAP shows only {live_qty:g} {it['unit_of_measure'] or ''} available right now in {it['source_warehouse_id']}, but {it['requested_qty']:g} was requested.".strip(),
+            }
+        return None
 
-    fake_doc = {"ship_to_site_id": ship_to_site_id, "items": resolved_items}
-    for product_id in _missing_valuation_products(db, sap_valuation_client, fake_doc):
-        issues.append({
+    async def _stock_issues():
+        if not sap_inventory_client:
+            return []
+        results = await asyncio.gather(*[_check_stock_for_item(it) for it in resolved_items])
+        return [r for r in results if r]
+
+    async def _valuation_issues():
+        fake_doc = {"ship_to_site_id": ship_to_site_id, "items": resolved_items}
+        missing = await asyncio.to_thread(_missing_valuation_products, db, sap_valuation_client, fake_doc)
+        return [{
             "product_id": product_id, "field": "valuation", "level": "error",
             "message": f"{product_id} has no Cost/Valuation set up at site {ship_to_site_id} yet - ask your SAP admin to activate Valuation there, then re-validate.",
-        })
+        } for product_id in missing]
 
-    if sap_sto_client:
+    async def _activation_issues():
+        if not sap_sto_client:
+            return []
         check_items = [{
             "product_id": it["product_id"], "requested_qty": it["requested_qty"],
             "unit_code": it.get("unit_of_measure") or "EA", "description": it.get("description"),
             "requested_local_datetime": f"{(payload.get('requested_delivery_date') or datetime.now(timezone.utc).date().isoformat())}T12:00:00.0000000Z",
         } for it in resolved_items]
         try:
-            sap_sto_client.check(ship_from_site_id, ship_to_site_id, ship_to_site_id, check_items, None)
+            await asyncio.to_thread(sap_sto_client.check, ship_from_site_id, ship_to_site_id, ship_to_site_id, check_items, None)
+            return []
         except SAPSTOError as e:
             error_text = str(e)
             m = _MISSING_PLANNING_RE.search(error_text)
             m2 = _MISSING_SUPPLY_PLANNING_RE.search(error_text)
             if m:
-                issues.append({"product_id": m.group(1), "field": "activation", "level": "error", "message": f"{m.group(1)} is not activated (Planning/Logistics/Valuation) at site {m.group(2)} yet - ask your SAP admin to activate this material there, then re-validate."})
+                return [{"product_id": m.group(1), "field": "activation", "level": "error", "message": f"{m.group(1)} is not activated (Planning/Logistics/Valuation) at site {m.group(2)} yet - ask your SAP admin to activate this material there, then re-validate."}]
             elif m2:
-                for it in resolved_items:
-                    issues.append({"product_id": it["product_id"], "field": "activation", "level": "error", "message": f"Site {m2.group(1)}'s Supply Planning setup is missing - ask your SAP admin to check this site's setup, then re-validate."})
-            else:
-                issues.append({"product_id": None, "field": "sap", "level": "error", "message": f"SAP rejected this order: {error_text}"})
+                return [{"product_id": it["product_id"], "field": "activation", "level": "error", "message": f"Site {m2.group(1)}'s Supply Planning setup is missing - ask your SAP admin to check this site's setup, then re-validate."} for it in resolved_items]
+            return [{"product_id": None, "field": "sap", "level": "error", "message": f"SAP rejected this order: {error_text}"}]
 
+    stock_issues, valuation_issues, activation_issues = await asyncio.gather(_stock_issues(), _valuation_issues(), _activation_issues())
+    issues = stock_issues + valuation_issues + activation_issues
     return {"ok": not any(i["level"] == "error" for i in issues), "issues": issues}
 
 

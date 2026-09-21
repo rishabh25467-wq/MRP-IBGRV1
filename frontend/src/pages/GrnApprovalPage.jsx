@@ -900,6 +900,49 @@ export default function GrnApprovalPage() {
     return Math.abs(effectiveQty - Number(it.ship_qty)) > 1e-6;
   });
 
+  // Sep 21 2026, user's explicit ask - split "Post GRN in SAP" into 2
+  // explicit steps ("Validate GRN" -> "Post GRN in SAP"), same pattern
+  // already shipped for STO (StockTransferPage.js). Zero side effects
+  // (see supplier_shipment_service.validate_grn's docstring) - catches
+  // stale PO items, cancelled items, insufficient open qty, missing
+  // site activation/valuation BEFORE the real, irreversible SAP post.
+  const [validatingGrn, setValidatingGrn] = useState(false);
+  const [grnValidated, setGrnValidated] = useState(false);
+  const [grnValidationIssues, setGrnValidationIssues] = useState([]);
+  const [showGrnValidationErrorBox, setShowGrnValidationErrorBox] = useState(false);
+
+  useEffect(() => {
+    setGrnValidated(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shipment?._id, siteId, actualQtys]);
+
+  const runGrnValidation = async () => {
+    setValidatingGrn(true);
+    try {
+      const item_actual_qtys = shipment.items.map((it) => ({
+        po_number: it.po_number, item_number: it.item_number,
+        actual_qty: Number(actualQtys[`${it.po_number}::${it.item_number}`] ?? it.ship_qty),
+      }));
+      const { data } = await axios.post(`${API}/admin/grn/${shipment._id}/validate`, {
+        supplier_doc_num: supplierDocNum, bill_date: billDate, site_id: siteId, warehouse_id: warehouseId, item_actual_qtys,
+      });
+      if (data.ok) {
+        setGrnValidated(true);
+        toast.success("Validation passed - PO items, open quantity, activation and valuation all look good.");
+      } else {
+        setGrnValidated(false);
+        setGrnValidationIssues(data.issues || []);
+        setShowGrnValidationErrorBox(true);
+      }
+    } catch (err) {
+      setGrnValidated(false);
+      setGrnValidationIssues([{ po_number: null, item_number: null, field: "sap", level: "error", message: err?.response?.data?.detail || "Could not validate this GRN." }]);
+      setShowGrnValidationErrorBox(true);
+    } finally {
+      setValidatingGrn(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#F2F4F7] font-sans" data-testid="grn-approval-page">
       <Toaster position="top-right" richColors />
@@ -1169,16 +1212,32 @@ export default function GrnApprovalPage() {
                   </div>
                 </div>
 
-                <div className="flex gap-2 flex-wrap">
-                  <Button
-                    onClick={() => openApprovalConfirm("full_auto")}
-                    disabled={busy || siteAccessBlocked || hasQtyDiscrepancy || !!user?.grn_blocked_shipment || !supplierDocNum.trim() || !billDate}
-                    title={hasQtyDiscrepancy ? "Actual qty does not match shipped qty - click 'Mark Discrepancy' instead" : ((!supplierDocNum.trim() || !billDate) ? "Enter the Supplier Invoice Number and Bill Date first" : undefined)}
-                    className="h-8 rounded-sm bg-[#6941C6] hover:bg-[#53389E] text-white px-4 text-[13px] font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    data-testid="grn-approve-full-auto-button"
-                  >
-                    <ArrowsClockwise size={14} className="mr-1" /> {busy ? "Posting..." : "Post GRN in SAP"}
-                  </Button>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <span className="flex items-center justify-center w-5 h-5 rounded-full bg-[#1D2939] text-white text-xs font-bold shrink-0">1</span>
+                    <Button
+                      onClick={runGrnValidation}
+                      disabled={validatingGrn || busy || siteAccessBlocked || hasQtyDiscrepancy || !!user?.grn_blocked_shipment || !siteId}
+                      variant={grnValidated ? "outline" : "default"}
+                      title={!siteId ? "Select a Site first" : hasQtyDiscrepancy ? "Actual qty does not match shipped qty - click 'Mark Discrepancy' instead" : undefined}
+                      className="h-8 rounded-sm px-4 text-[13px] font-bold transition-colors"
+                      data-testid="grn-validate-button"
+                    >
+                      <ArrowsClockwise size={14} className="mr-1" /> {validatingGrn ? "Validating..." : grnValidated ? "Validated \u2713" : "Validate GRN"}
+                    </Button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`flex items-center justify-center w-5 h-5 rounded-full text-white text-xs font-bold shrink-0 ${grnValidated ? "bg-[#1D2939]" : "bg-[#D0D5DD]"}`}>2</span>
+                    <Button
+                      onClick={() => openApprovalConfirm("full_auto")}
+                      disabled={busy || !grnValidated || !supplierDocNum.trim() || !billDate}
+                      title={!grnValidated ? "Run Validate GRN first" : ((!supplierDocNum.trim() || !billDate) ? "Enter the Supplier Invoice Number and Bill Date first" : undefined)}
+                      className="h-8 rounded-sm bg-[#6941C6] hover:bg-[#53389E] text-white px-4 text-[13px] font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      data-testid="grn-approve-full-auto-button"
+                    >
+                      <ArrowsClockwise size={14} className="mr-1" /> {busy ? "Posting..." : "Post GRN in SAP"}
+                    </Button>
+                  </div>
                   <Button onClick={() => setRejectOpen(true)} disabled={busy} className="h-8 rounded-sm bg-[#B42318] hover:bg-[#912018] text-white px-4 text-[13px] font-bold transition-colors" data-testid="grn-reject-button">
                     <XCircle size={14} className="mr-1" /> Reject
                   </Button>
@@ -1193,6 +1252,23 @@ export default function GrnApprovalPage() {
                     <WarningCircle size={14} /> Quantity mismatch detected: Actual Qty differs from Ship Qty on one or more items. Posting is disabled - please click "Mark Discrepancy" instead to record it.
                   </div>
                 )}
+
+                <Dialog open={showGrnValidationErrorBox} onOpenChange={setShowGrnValidationErrorBox}>
+                  <DialogContent className="max-w-lg rounded-sm" data-testid="grn-validation-error-box">
+                    <DialogHeader>
+                      <DialogTitle className="flex items-center gap-2 text-[#912018]"><WarningCircle size={18} /> Validation found {grnValidationIssues.length} issue{grnValidationIssues.length === 1 ? "" : "s"}</DialogTitle>
+                      <DialogDescription>Fix these before posting the GRN in SAP - SAP would reject it otherwise.</DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-2 max-h-80 overflow-y-auto">
+                      {grnValidationIssues.map((issue, idx) => (
+                        <div key={idx} className="bg-[#FEF3F2] border border-[#FDA29B] rounded-sm p-2.5 text-sm text-[#912018]" data-testid={`grn-validation-issue-${idx}`}>
+                          {issue.message}
+                        </div>
+                      ))}
+                    </div>
+                    <Button onClick={() => setShowGrnValidationErrorBox(false)} className="w-full rounded-sm" data-testid="grn-validation-error-ok-button">OK</Button>
+                  </DialogContent>
+                </Dialog>
               </div>
             )}
 

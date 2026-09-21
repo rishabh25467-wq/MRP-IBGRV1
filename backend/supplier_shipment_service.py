@@ -53,6 +53,7 @@ discrepancy and puts the shipment back to "in_transit" for re-review.
 Staff can also still directly Approve/Reject straight from "discrepancy"
 if they decide to override rather than wait for an edit.
 """
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -61,6 +62,7 @@ from pymongo.errors import DuplicateKeyError
 
 import inventory_service
 import sap_po_client
+import stock_transfer_service
 import time
 
 logger = logging.getLogger(__name__)
@@ -1222,6 +1224,127 @@ def group_items_by_po_for_gr(doc: dict, sap_po_client=None) -> dict:
             spec["item_products"].pop(item_number, None)
             spec["item_skip_reasons"][item_number] = reason
     return grouped
+
+
+async def validate_grn(db, doc: dict, sap_po_client=None, sap_po_analytics_client=None, sap_material_client=None, sap_valuation_client=None) -> dict:
+    """Sep 21 2026, user's explicit ask - "Validate GRN" pre-flight
+    check for the Full-Auto GRN path (the real path used going forward,
+    per user's explicit clarification - Playwright/Manual modes aren't
+    real traffic anymore). ZERO side effects: no SAP write, no Mongo
+    update. Checks run CONCURRENTLY (same "shorten this time" ask
+    already applied to `stock_transfer_service.validate_stock_transfer_
+    order` - see that function's docstring for the parallelization
+    rationale).
+
+    Directly targets 4 real classes of incident hit this session:
+    1. Stale/renumbered PO item reference (PO 29581's "Incorrect
+       purchase order reference Item UUID" - reuses `_verify_po_items_
+       live` via `group_items_by_po_for_gr`, already computed).
+    2. Cancelled PO/item (the PO 25271 class of issue) - live SAP
+       lookup of each PO's current lifecycle status.
+    3. Remaining Open PO Qty doesn't cover what's being received - live
+       SAP analytics query (`sap_po_analytics_client`, the SAME source
+       already trusted elsewhere in this app for open-qty numbers).
+    4. Material Activation (site-level) and Valuation at the receiving
+       site - `sap_material_client.resolve_material_info`'s
+       `active_sites` list, and the same proactive Valuation check
+       already built for STOs earlier this session."""
+    site_id = doc.get("site_id")
+    po_items = group_items_by_po_for_gr(doc, sap_po_client)
+    issues = []
+    for po_number, spec in po_items.items():
+        for item_number, reason in (spec.get("item_skip_reasons") or {}).items():
+            issues.append({"po_number": po_number, "item_number": item_number, "field": "reference", "level": "error", "message": reason})
+
+    all_product_ids = sorted({pid for spec in po_items.values() for pid in (spec.get("item_products") or {}).values()})
+
+    async def _cancellation_issues():
+        out = []
+        if not sap_po_client or not po_items:
+            return out
+        async def _one(po_number):
+            spec = po_items[po_number]
+            try:
+                rows, _ = await asyncio.to_thread(sap_po_client._fetch_between, int(po_number), int(po_number))
+            except Exception as e:
+                logger.warning(f"Validate GRN: live PO status lookup failed for {po_number} ({e})")
+                return []
+            rows_by_item = {r["item_number"]: r for r in rows if r.get("po_number") == po_number}
+            local = []
+            for item_number, product_id in (spec.get("item_products") or {}).items():
+                row = rows_by_item.get(item_number)
+                if row and "cancel" in (row.get("lifecycle_status_text") or "").lower():
+                    local.append({"po_number": po_number, "item_number": item_number, "field": "cancelled", "level": "error",
+                                  "message": f"PO {po_number} item {item_number} ({product_id}) is Cancelled in SAP - cannot receive against it."})
+            return local
+        results = await asyncio.gather(*[_one(p) for p in po_items])
+        for r in results:
+            out.extend(r)
+        return out
+
+    async def _open_qty_issues():
+        out = []
+        if not sap_po_analytics_client or not po_items:
+            return out
+        try:
+            open_qtys = await asyncio.to_thread(sap_po_analytics_client.fetch_open_po_quantities, list(po_items.keys()))
+        except Exception as e:
+            logger.warning(f"Validate GRN: live open-qty check failed ({e})")
+            return out
+        for po_number, spec in po_items.items():
+            po_open = open_qtys.get(po_number) or {}
+            for item_number, requested_qty in (spec.get("item_qtys") or {}).items():
+                info = po_open.get(item_number)
+                if info is None:
+                    continue
+                if (requested_qty or 0) > info["open_qty"] + 1e-6:
+                    product_id = (spec.get("item_products") or {}).get(item_number, "")
+                    out.append({"po_number": po_number, "item_number": item_number, "field": "quantity", "level": "error",
+                                "message": f"PO {po_number} item {item_number} ({product_id}): SAP shows only {info['open_qty']:g} open quantity remaining, but {requested_qty:g} is being received."})
+        return out
+
+    async def _activation_issues():
+        if not sap_material_client or not site_id:
+            return []
+        async def _one(product_id):
+            try:
+                info = await asyncio.to_thread(sap_material_client.resolve_material_info, product_id)
+            except Exception as e:
+                logger.warning(f"Validate GRN: live activation check failed for {product_id} ({e})")
+                return None
+            active_sites = (info or {}).get("active_sites") or []
+            if site_id not in active_sites:
+                return {"po_number": None, "item_number": None, "field": "activation", "level": "error",
+                        "message": f"{product_id} is not activated at site {site_id} yet - ask your SAP admin to activate it there, then re-validate."}
+            return None
+        results = await asyncio.gather(*[_one(p) for p in all_product_ids])
+        return [r for r in results if r]
+
+    async def _valuation_issues():
+        if not sap_valuation_client or not site_id:
+            return []
+        fake_doc = {"ship_to_site_id": site_id, "items": [{"product_id": p} for p in all_product_ids]}
+        missing = await asyncio.to_thread(stock_transfer_service._missing_valuation_products, db, sap_valuation_client, fake_doc)
+        return [{"po_number": None, "item_number": None, "field": "valuation", "level": "error",
+                 "message": f"{p} has no Cost/Valuation set up at site {site_id} yet - ask your SAP admin to activate Valuation there, then re-validate."} for p in missing]
+
+    group_results = await asyncio.gather(_cancellation_issues(), _open_qty_issues(), _activation_issues(), _valuation_issues())
+    for r in group_results:
+        issues.extend(r)
+    return {"ok": not any(i["level"] == "error" for i in issues), "issues": issues}
+
+
+def build_grn_preview_doc(db, doc_code: str, site_id: str, warehouse_id: str, item_actual_qtys: dict) -> dict:
+    """Sep 21 2026, user's explicit ask - read-only counterpart to
+    `prepare_approval` (same item/actual_qty overlay logic, MINUS the
+    Mongo write) so `validate_grn` can run against exactly what's about
+    to be submitted, before anything is persisted."""
+    doc = get_shipment_by_code(db, doc_code)
+    items = []
+    for it in doc["items"]:
+        key = (it["po_number"], it["item_number"])
+        items.append({**it, "actual_qty": item_actual_qtys.get(key, it["ship_qty"])})
+    return {**doc, "items": items, "site_id": site_id, "warehouse_id": warehouse_id}
 
 
 def prepare_approval(db, doc_code: str, approved_by: str, approved_by_user_id: str, supplier_doc_num: str, bill_date: str, site_id: str,

@@ -7298,9 +7298,8 @@ async def validate_stock_transfer_order_endpoint(payload: StockTransferValidateR
     """Sep 21 2026, user's explicit ask - Step 1 of the new 2-step STO
     flow ("Validate STO"). Zero side effects - see
     stock_transfer_service.validate_stock_transfer_order's docstring."""
-    result = await asyncio.to_thread(
-        stock_transfer_service.validate_stock_transfer_order, db, payload.model_dump(),
-        sap_sto_client, sap_valuation_client, sap_inventory_client, sap_hsn_client,
+    result = await stock_transfer_service.validate_stock_transfer_order(
+        db, payload.model_dump(), sap_sto_client, sap_valuation_client, sap_inventory_client, sap_hsn_client,
     )
     return result
 
@@ -8697,6 +8696,25 @@ def _recent_po_grn_conflict(doc_code: str, po_numbers: set) -> str:
         f"please wait about a minute before posting another automated GRN against the same PO, so SAP has time to "
         f"finish assigning that Delivery ID without ambiguity."
     )
+
+
+@api_router.post("/admin/grn/{doc_code}/validate")
+async def post_admin_grn_validate(doc_code: str, payload: GrnApproveRequest, request: Request):
+    """Sep 21 2026, user's explicit ask - Step 1 of the new 2-step GRN
+    flow ("Validate GRN"), Full-Auto path only (the real path used
+    going forward). Zero side effects - see supplier_shipment_service.
+    validate_grn's docstring."""
+    if not _has_site_access(request.state.user, payload.site_id):
+        raise HTTPException(status_code=403, detail="You are not bound to this site")
+    item_actual_qtys = {(i.po_number, i.item_number): i.actual_qty for i in payload.item_actual_qtys}
+    try:
+        preview_doc = await asyncio.to_thread(
+            supplier_shipment_service.build_grn_preview_doc, db, doc_code, payload.site_id, payload.warehouse_id, item_actual_qtys)
+    except supplier_shipment_service.ShipmentNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    result = await supplier_shipment_service.validate_grn(
+        db, preview_doc, sap_po_client, sap_po_analytics_client, sap_material_client, sap_valuation_client)
+    return result
 
 
 @api_router.post("/admin/grn/{doc_code}/approve-full-auto")

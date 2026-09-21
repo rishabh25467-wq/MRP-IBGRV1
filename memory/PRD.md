@@ -523,6 +523,35 @@ Delivery # assigned) - only 2 items (PO 29581) were genuinely never received (pe
 - Backend restarted clean, no errors. Not yet run through `testing_agent` (backend-only default-
   param + one dead-code-path removal, verified by code inspection across every call site via grep).
 
+## FEATURE: 2-step "Validate STO" then "Review & Create STO" (Sep 21 2026, same session)
+User's explicit ask, directly targeting the STO-526/527 class of live incident above - split STO
+creation into 2 clearly-labeled steps so nothing writes to SAP until stock/valuation/activation
+are all confirmed clean first.
+- New `stock_transfer_service.validate_stock_transfer_order()` - ZERO side effects (no Mongo doc,
+  no stock relocation, no SAP Maintain write): (1) cache-based structural resolution (reused via a
+  new extracted helper `_resolve_and_validate_items`, same rules `create_stock_transfer_order`
+  already enforced, behavior unchanged there), (2) LIVE SAP stock check on ONLY the exact
+  warehouse+items the user entered (user's explicit ask - no broader "better source" suggestions),
+  (3) destination-site Valuation check (reuses today's earlier proactive check), (4) Activation/
+  Planning check via SAP's own read-only `check()` dry-run (already existed, used later in the
+  flow - just moved earlier, zero side effects). Per user's explicit ask, only issues that would
+  truly make SAP reject the order come back as blocking `level: "error"`.
+- New `POST /api/stock-transfer/validate` endpoint (server.py).
+- Frontend (`StockTransferPage.js`): single "Review & Create" button split into "1. Validate STO"
+  (must be clicked and pass clean first) and "2. Review & Create Stock Transfer Order" (disabled
+  until Validate passes). Validation resets automatically if items/site/location/date change
+  afterward. Failures show in a modal "error box" (plain-language, one bullet per issue) with an
+  OK button to dismiss.
+- Tested via `testing_agent`: all 7 scenarios pass (gating, validating/validated states, reset-on-
+  edit, client vs server validation split, error box, existing Create flow regression, Recent
+  Orders list regression) - iteration_190.json, zero bugs found.
+- CORRECTION to an earlier same-session misdiagnosis: when investigating STO-526/527, "P1-MOV"
+  shown in the live app was wrongly assumed to indicate an out-of-sync/outdated deployment. It is
+  NOT - `movDisplayName()` in StockTransferPage.js deliberately renames "{SITE}-HOLD" to
+  "{SITE}-MOV" for display only (friendlier than "HOLD"; matches the warehouse's real SAP name,
+  "MOVEMENT GODOWN-P1"). The real root cause for those 2 stuck STOs remains the stale-HOLD-cache
+  issue documented above, now fixed for future STOs.
+
 ## BUG FIX: {SITE}-HOLD wrongly offered/picked as an STO's own SOURCE warehouse (Sep 21 2026)
 Real live incident (STO-000526 P1->P8, STO-000527 P3->P2, deployed LIVE app, AFTER today's earlier
 STO relocation fix): both reached "created_in_sap" fine, but SAP's own Delivery Proposal release

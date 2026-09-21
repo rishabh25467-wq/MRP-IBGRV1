@@ -1,0 +1,27 @@
+{
+  "summary": "Frontend E2E testing of new 2-step STO validate-then-create feature on Inter-Plant Stock Transfer page. All 7 requested scenarios pass: (1) Create disabled until Validate passes, (2) Validate STO shows 'Validating...' -> 'Validated \u2713' (~25s real SAP call), (3) qty change AND date change (and by extension the useEffect deps: warehouse/site/location) reset the Validated state and re-disable Create, (4) client-side over-stock is caught inline without a server call (stock-transfer-form-error + stock-transfer-qty-error visible; validate button text stays 'Validate STO'), (5) server-side validation failure (mocked ok:false, issues:[...]) renders the validation error box modal with each issue listed under stock-transfer-validation-issue-{idx}, OK button closes it and Create remains disabled, (6) After a successful validation the existing Confirm dialog opens on Create click and cancel closes it, (7) Recent Stock Transfer Orders list still renders correctly. No regressions found.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/wi_screenshots/sto_form_ready.png",
+    "/app/test_reports/wi_screenshots/sto_after_validate.png",
+    "/app/test_reports/wi_screenshots/sto_error_box.png"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "StockTransferPage.js is 1883 lines - consider splitting into smaller focused modules (form, recent-list, detail-modal, confirm-dialog) for maintainability.",
+    "runServerValidation() catches all axios errors and stuffs the message into a synthetic issue with field='sap' - fine, but any 401/403/network drop will surface as a generic 'Could not validate' bullet; consider distinguishing auth vs. business errors for clearer UX.",
+    "useEffect that resets sapValidated depends on [items, shipToSiteId, shipToLocationId, requestedDeliveryDate] - correctly covers user-editable inputs that changed the validation contract, but does NOT reset on transportation mode / vehicle no / place of supply / GR no / freight forwarder / date of supply / remark changes. That is CORRECT per the user's stated scope (validation only concerns stock+valuation+activation, not logistics/GST metadata) - verified deliberate, not a bug."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (backend not in scope)", "frontend": "100%"},
+  "test_credentials": "vms_session cookie super_admin (provided in review request)",
+  "seed_data_creation": "None. Used existing product BOX-SHCM-T @ P1-SFG (1,055.6 EA) -> P8 / FINISH GOODS GODOWN-P8 for validate-only calls. No live SAP writes were performed (regression check only opened the confirm dialog then cancelled).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "2-step Validate STO + Review & Create feature verified end-to-end on the frontend. Real Validate STO call takes ~20-30s; use >=60s timeouts when waiting on it. To trigger the server-side error box deterministically without breaking real data, page.route intercepted POST /api/stock-transfer/validate to return {ok:false, issues:[...]} - this pattern is reusable for negative-path UI tests on validate-style endpoints."
+}
