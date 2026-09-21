@@ -736,6 +736,7 @@ async def root():
     return {"message": "SAP BOM Lookup API"}
 
 
+
 @api_router.get("/public/sap-integrations")
 async def get_public_sap_integrations_doc():
     """Public, no-auth reference page (user's explicit ask, Sep 18 2026):
