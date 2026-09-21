@@ -256,6 +256,155 @@ def _next_sto_id(db) -> str:
     return f"STO-{counter['seq']:06d}"
 
 
+def _resolve_and_validate_items(db, items: list, ship_to_site_id: str, sap_hsn_client=None) -> tuple:
+    """Sep 21 2026, extracted out of `create_stock_transfer_order` so the
+    new `validate_stock_transfer_order` pre-flight check (user's explicit
+    ask - "before writing anything, confirm stock status...") can reuse
+    the EXACT same cache-based resolution/sufficiency rules without also
+    writing a Mongo doc. Behavior unchanged - still raises
+    `StockTransferValidationError` on the first bad line, same messages
+    as before. Returns (resolved_items, ship_from_site_id)."""
+    resolved_items = []
+    ship_from_site_id = None
+    hsn_codes = hsn_cache_service.get_hsn_codes_cached(db, [(raw.get("product_id") or "").strip().upper() for raw in items], sap_hsn_client)
+    for idx, raw in enumerate(items, start=1):
+        product_id = (raw.get("product_id") or "").strip().upper()
+        source_warehouse_id = (raw.get("source_warehouse_id") or "").strip()
+        requested_qty = raw.get("requested_qty")
+        if not product_id:
+            raise StockTransferValidationError(f"Line {idx}: Product is required.")
+        if not source_warehouse_id:
+            raise StockTransferValidationError(f"Line {idx} ({product_id}): Source Warehouse is required.")
+        if requested_qty is None or requested_qty <= 0:
+            raise StockTransferValidationError(f"Line {idx} ({product_id}): Requested Quantity must be greater than zero.")
+
+        stock = get_product_stock_locations(db, product_id)
+        location = next((l for l in stock["locations"] if l["warehouse_id"] == source_warehouse_id), None)
+        if location is None:
+            raise StockTransferValidationError(f"Line {idx} ({product_id}): No usable stock currently found in warehouse '{source_warehouse_id}'.")
+        if requested_qty > location["qty"]:
+            raise StockTransferValidationError(
+                f"Line {idx} ({product_id}): Insufficient Stock. Please enter a quantity equal to or less than the available inventory ({location['qty']:g})."
+            )
+
+        item_ship_from_site = location["site_id"]
+        if ship_from_site_id is None:
+            ship_from_site_id = item_ship_from_site
+        elif item_ship_from_site != ship_from_site_id:
+            raise StockTransferValidationError(
+                f"Line {idx} ({product_id}): its Source Warehouse is at site {item_ship_from_site}, but earlier line(s) ship from {ship_from_site_id}. "
+                "A Stock Transfer Order can only have one Ship-from Site - create a separate STO for this item."
+            )
+
+        resolved_items.append({
+            "line_no": idx,
+            "product_id": product_id,
+            "description": stock.get("description"),
+            "unit_of_measure": stock.get("unit_of_measure"),
+            "hsn_code": hsn_codes.get(product_id),
+            "source_warehouse_id": source_warehouse_id,
+            "source_warehouse_name": location.get("warehouse_name"),
+            "ship_from_site_id": item_ship_from_site,
+            "available_qty": location["qty"],
+            "requested_qty": requested_qty,
+            "availability_status": "Available",
+        })
+
+    if ship_from_site_id == ship_to_site_id:
+        raise StockTransferValidationError("Ship-to Site cannot be the same as Ship-from Site.")
+    ship_from_company, _ = company_and_set_of_books_for_site(ship_from_site_id)
+    ship_to_company, _ = company_and_set_of_books_for_site(ship_to_site_id)
+    if ship_from_company != ship_to_company:
+        raise StockTransferValidationError(f"Ship-to Site {ship_to_site_id} does not belong to the same Company as Ship-from Site {ship_from_site_id}.")
+    return resolved_items, ship_from_site_id
+
+
+def validate_stock_transfer_order(db, payload: dict, sap_sto_client=None, sap_valuation_client=None, sap_inventory_client=None, sap_hsn_client=None) -> dict:
+    """Sep 21 2026, user's explicit ask ("break down the create STO
+    process in 2 parts... step 1 before writing anything, confirm stock
+    status, activation, valuation SAP") - a dedicated pre-flight check
+    with ZERO side effects: no Mongo doc created, no stock physically
+    relocated, no SAP Maintain write. Directly targets the 3 classes of
+    real live incident hit this same session (STO-000526/527's stale-
+    HOLD-cache stock issue, today's earlier Valuation gaps, and the
+    long-running "No valid planning data"/missing-Activation class of
+    SAP rejection).
+
+    Per user's explicit ask: only issues that would truly make SAP
+    reject the order come back as `level: "error"` (these are what the
+    frontend gates "Review & Create" on) - there is no softer
+    "warning" class yet, kept here for future use if ever needed.
+
+    1. Cache-based structural resolution (`_resolve_and_validate_items`,
+       same rules `create_stock_transfer_order` itself enforces).
+    2. Live stock check - the user's explicit ask was to check ONLY the
+       exact warehouse/items entered, nothing broader - queries SAP
+       directly (not the cache, which can go stale - see the HOLD
+       staleness bug fixed earlier this session) for exactly that.
+    3. Valuation check at the destination site (reuses the existing
+       proactive check from earlier today).
+    4. Activation/Planning check - SAP's own read-only `check()` call
+       (same one `submit_order_to_sap` makes later; a pure dry-run, no
+       write) against the resolved items, run here with zero side
+       effects instead of only after the order's already been created."""
+    issues = []
+    ship_to_site_id = (payload.get("ship_to_site_id") or "").strip().upper()
+    raw_items = payload.get("items") or []
+    if not raw_items:
+        return {"ok": False, "issues": [{"product_id": None, "field": "items", "level": "error", "message": "At least one item is required."}]}
+    if not ship_to_site_id:
+        return {"ok": False, "issues": [{"product_id": None, "field": "ship_to_site_id", "level": "error", "message": "Ship-to Site is required."}]}
+
+    try:
+        resolved_items, ship_from_site_id = _resolve_and_validate_items(db, raw_items, ship_to_site_id, sap_hsn_client)
+    except StockTransferValidationError as e:
+        return {"ok": False, "issues": [{"product_id": None, "field": "items", "level": "error", "message": str(e)}]}
+
+    if sap_inventory_client:
+        for it in resolved_items:
+            try:
+                rows = sap_inventory_client.get_inventory_detail(
+                    site_id=it["ship_from_site_id"], warehouse_ids=[it["source_warehouse_id"]], product_ids=[it["product_id"]])
+                live_qty = sum(r.get("qty") or 0 for r in rows if is_usable_stock_status(r.get("stock_status"), r.get("restricted", False)))
+            except Exception as e:
+                logger.warning(f"Validate STO: live stock check failed for {it['product_id']}/{it['source_warehouse_id']} ({e}) - skipping this item's live check")
+                continue
+            if live_qty < it["requested_qty"]:
+                issues.append({
+                    "product_id": it["product_id"], "field": "stock", "level": "error",
+                    "message": f"{it['product_id']}: SAP shows only {live_qty:g} {it['unit_of_measure'] or ''} available right now in {it['source_warehouse_id']}, but {it['requested_qty']:g} was requested.".strip(),
+                })
+
+    fake_doc = {"ship_to_site_id": ship_to_site_id, "items": resolved_items}
+    for product_id in _missing_valuation_products(db, sap_valuation_client, fake_doc):
+        issues.append({
+            "product_id": product_id, "field": "valuation", "level": "error",
+            "message": f"{product_id} has no Cost/Valuation set up at site {ship_to_site_id} yet - ask your SAP admin to activate Valuation there, then re-validate.",
+        })
+
+    if sap_sto_client:
+        check_items = [{
+            "product_id": it["product_id"], "requested_qty": it["requested_qty"],
+            "unit_code": it.get("unit_of_measure") or "EA", "description": it.get("description"),
+            "requested_local_datetime": f"{(payload.get('requested_delivery_date') or datetime.now(timezone.utc).date().isoformat())}T12:00:00.0000000Z",
+        } for it in resolved_items]
+        try:
+            sap_sto_client.check(ship_from_site_id, ship_to_site_id, ship_to_site_id, check_items, None)
+        except SAPSTOError as e:
+            error_text = str(e)
+            m = _MISSING_PLANNING_RE.search(error_text)
+            m2 = _MISSING_SUPPLY_PLANNING_RE.search(error_text)
+            if m:
+                issues.append({"product_id": m.group(1), "field": "activation", "level": "error", "message": f"{m.group(1)} is not activated (Planning/Logistics/Valuation) at site {m.group(2)} yet - ask your SAP admin to activate this material there, then re-validate."})
+            elif m2:
+                for it in resolved_items:
+                    issues.append({"product_id": it["product_id"], "field": "activation", "level": "error", "message": f"Site {m2.group(1)}'s Supply Planning setup is missing - ask your SAP admin to check this site's setup, then re-validate."})
+            else:
+                issues.append({"product_id": None, "field": "sap", "level": "error", "message": f"SAP rejected this order: {error_text}"})
+
+    return {"ok": not any(i["level"] == "error" for i in issues), "issues": issues}
+
+
 def create_stock_transfer_order(db, payload: dict, created_by: str, sap_hsn_client=None, created_by_user_id: str = None) -> dict:
     """Full server-side re-validation (defense in depth - the frontend
     already enforces every one of these rules) against the CURRENT cache,
@@ -343,58 +492,7 @@ def create_stock_transfer_order(db, payload: dict, created_by: str, sap_hsn_clie
     if ship_to_location_id not in ship_to_warehouses:
         raise StockTransferValidationError(f"'{ship_to_location_id}' is not a known warehouse at Ship-to Site {ship_to_site_id}.")
 
-    resolved_items = []
-    ship_from_site_id = None
-    hsn_codes = hsn_cache_service.get_hsn_codes_cached(db, [(raw.get("product_id") or "").strip().upper() for raw in items], sap_hsn_client)
-    for idx, raw in enumerate(items, start=1):
-        product_id = (raw.get("product_id") or "").strip().upper()
-        source_warehouse_id = (raw.get("source_warehouse_id") or "").strip()
-        requested_qty = raw.get("requested_qty")
-        if not product_id:
-            raise StockTransferValidationError(f"Line {idx}: Product is required.")
-        if not source_warehouse_id:
-            raise StockTransferValidationError(f"Line {idx} ({product_id}): Source Warehouse is required.")
-        if requested_qty is None or requested_qty <= 0:
-            raise StockTransferValidationError(f"Line {idx} ({product_id}): Requested Quantity must be greater than zero.")
-
-        stock = get_product_stock_locations(db, product_id)
-        location = next((l for l in stock["locations"] if l["warehouse_id"] == source_warehouse_id), None)
-        if location is None:
-            raise StockTransferValidationError(f"Line {idx} ({product_id}): No usable stock currently found in warehouse '{source_warehouse_id}'.")
-        if requested_qty > location["qty"]:
-            raise StockTransferValidationError(
-                f"Line {idx} ({product_id}): Insufficient Stock. Please enter a quantity equal to or less than the available inventory ({location['qty']:g})."
-            )
-
-        item_ship_from_site = location["site_id"]
-        if ship_from_site_id is None:
-            ship_from_site_id = item_ship_from_site
-        elif item_ship_from_site != ship_from_site_id:
-            raise StockTransferValidationError(
-                f"Line {idx} ({product_id}): its Source Warehouse is at site {item_ship_from_site}, but earlier line(s) ship from {ship_from_site_id}. "
-                "A Stock Transfer Order can only have one Ship-from Site - create a separate STO for this item."
-            )
-
-        resolved_items.append({
-            "line_no": idx,
-            "product_id": product_id,
-            "description": stock.get("description"),
-            "unit_of_measure": stock.get("unit_of_measure"),
-            "hsn_code": hsn_codes.get(product_id),
-            "source_warehouse_id": source_warehouse_id,
-            "source_warehouse_name": location.get("warehouse_name"),
-            "ship_from_site_id": item_ship_from_site,
-            "available_qty": location["qty"],
-            "requested_qty": requested_qty,
-            "availability_status": "Available",
-        })
-
-    if ship_from_site_id == ship_to_site_id:
-        raise StockTransferValidationError("Ship-to Site cannot be the same as Ship-from Site.")
-    ship_from_company, _ = company_and_set_of_books_for_site(ship_from_site_id)
-    ship_to_company, _ = company_and_set_of_books_for_site(ship_to_site_id)
-    if ship_from_company != ship_to_company:
-        raise StockTransferValidationError(f"Ship-to Site {ship_to_site_id} does not belong to the same Company as Ship-from Site {ship_from_site_id}.")
+    resolved_items, ship_from_site_id = _resolve_and_validate_items(db, items, ship_to_site_id, sap_hsn_client)
 
     now = datetime.now(timezone.utc)
     sto_doc = {

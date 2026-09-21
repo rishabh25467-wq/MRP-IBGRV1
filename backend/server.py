@@ -7287,6 +7287,24 @@ class StockTransferItemCreate(BaseModel):
     requested_qty: float
 
 
+class StockTransferValidateRequest(BaseModel):
+    ship_to_site_id: str
+    requested_delivery_date: Optional[str] = None
+    items: list[StockTransferItemCreate]
+
+
+@api_router.post("/stock-transfer/validate")
+async def validate_stock_transfer_order_endpoint(payload: StockTransferValidateRequest):
+    """Sep 21 2026, user's explicit ask - Step 1 of the new 2-step STO
+    flow ("Validate STO"). Zero side effects - see
+    stock_transfer_service.validate_stock_transfer_order's docstring."""
+    result = await asyncio.to_thread(
+        stock_transfer_service.validate_stock_transfer_order, db, payload.model_dump(),
+        sap_sto_client, sap_valuation_client, sap_inventory_client, sap_hsn_client,
+    )
+    return result
+
+
 class StockTransferOrderCreate(BaseModel):
     ship_to_site_id: str
     ship_to_location_id: str

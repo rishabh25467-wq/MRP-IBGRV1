@@ -691,6 +691,53 @@ export default function StockTransferPage() {
   const [sapSubmitMessage, setSapSubmitMessage] = useState(null);
   const [stepStatuses, setStepStatuses] = useState({}); // { [stepKey]: "pending" | "active" | "done" | "failed" }
 
+  // Sep 21 2026, user's explicit ask - split Create into 2 explicit
+  // steps: "Validate STO" (zero side effects - live stock/valuation/
+  // activation pre-check) must pass clean before "Review & Create STO"
+  // is even clickable. Any edit to items/destination/date invalidates
+  // a previous pass, forcing re-validation (see the effect below).
+  const [validating, setValidating] = useState(false);
+  const [sapValidated, setSapValidated] = useState(false);
+  const [validationIssues, setValidationIssues] = useState([]);
+  const [showValidationErrorBox, setShowValidationErrorBox] = useState(false);
+
+  useEffect(() => {
+    setSapValidated(false);
+  }, [items, shipToSiteId, shipToLocationId, requestedDeliveryDate]);
+
+  const runServerValidation = async () => {
+    const validationError = runValidation();
+    setFormError(validationError);
+    if (validationError) { toast.error(validationError); return; }
+    setValidating(true);
+    try {
+      const { data } = await axios.post(`${API}/stock-transfer/validate`, {
+        ship_to_site_id: shipToSiteId,
+        requested_delivery_date: requestedDeliveryDate,
+        items: items.map((i) => ({
+          product_id: i.product_id,
+          source_warehouse_id: i.source_warehouse_id,
+          requested_qty: Number(i.requested_qty),
+        })),
+      });
+      if (data.ok) {
+        setSapValidated(true);
+        toast.success("Validation passed - stock, valuation and SAP activation all look good.");
+      } else {
+        setSapValidated(false);
+        setValidationIssues(data.issues || []);
+        setShowValidationErrorBox(true);
+      }
+    } catch (e) {
+      setSapValidated(false);
+      const msg = e?.response?.data?.detail || "Could not validate this Stock Transfer Order.";
+      setValidationIssues([{ product_id: null, field: "sap", level: "error", message: msg }]);
+      setShowValidationErrorBox(true);
+    } finally {
+      setValidating(false);
+    }
+  };
+
   const shipFromSiteId = items.find((i) => i.ship_from_site_id)?.ship_from_site_id || "";
 
   const refreshItemStock = async (itemKey, productId) => {
@@ -1467,9 +1514,49 @@ export default function StockTransferPage() {
           </div>
         )}
 
-        <Button onClick={openConfirmDialog} disabled={submitting} className="w-full sm:w-auto" data-testid="stock-transfer-create-button">
-          Review &amp; Create Stock Transfer Order <ArrowRight size={14} className="ml-1.5" />
-        </Button>
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+          <div className="flex items-center gap-2">
+            <span className="flex items-center justify-center w-5 h-5 rounded-full bg-[#1D2939] text-white text-xs font-bold shrink-0">1</span>
+            <Button
+              onClick={runServerValidation}
+              disabled={validating}
+              variant={sapValidated ? "outline" : "default"}
+              className="w-full sm:w-auto"
+              data-testid="stock-transfer-validate-button"
+            >
+              {validating ? "Validating..." : sapValidated ? "Validated ✓" : "Validate STO"}
+            </Button>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className={`flex items-center justify-center w-5 h-5 rounded-full text-white text-xs font-bold shrink-0 ${sapValidated ? "bg-[#1D2939]" : "bg-[#D0D5DD]"}`}>2</span>
+            <Button
+              onClick={openConfirmDialog}
+              disabled={submitting || !sapValidated}
+              className="w-full sm:w-auto"
+              data-testid="stock-transfer-create-button"
+              title={!sapValidated ? "Run Validate STO first" : undefined}
+            >
+              Review &amp; Create Stock Transfer Order <ArrowRight size={14} className="ml-1.5" />
+            </Button>
+          </div>
+        </div>
+
+        <Dialog open={showValidationErrorBox} onOpenChange={setShowValidationErrorBox}>
+          <DialogContent className="max-w-lg" data-testid="stock-transfer-validation-error-box">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-[#912018]"><WarningCircle size={18} /> Validation found {validationIssues.length} issue{validationIssues.length === 1 ? "" : "s"}</DialogTitle>
+              <DialogDescription>Fix these before creating the Stock Transfer Order - SAP would reject it otherwise.</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2 max-h-80 overflow-y-auto">
+              {validationIssues.map((issue, idx) => (
+                <div key={idx} className="bg-[#FEF3F2] border border-[#FDA29B] rounded-sm p-2.5 text-sm text-[#912018]" data-testid={`stock-transfer-validation-issue-${idx}`}>
+                  {issue.message}
+                </div>
+              ))}
+            </div>
+            <Button onClick={() => setShowValidationErrorBox(false)} className="w-full" data-testid="stock-transfer-validation-error-ok-button">OK</Button>
+          </DialogContent>
+        </Dialog>
         {/* Sep 7 2026, user's explicit ask: hide this aggregated "Action
             Needed" panel from the main page - the exact same Activate
             action already surfaces inline on each affected order's own
