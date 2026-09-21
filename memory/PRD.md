@@ -475,6 +475,8 @@ creation from PR, blocking the PO - even though the material genuinely exists an
   SAP's real uppercase code either way.
 - Live-verified: both the cache aggregation and the SOAP call now return the real match for
   "POLY5X7LD" after normalization. Backend restarted clean, no errors.
+- User-confirmed fixed after a fresh PR re-fetch (their first retest hit stale frontend state
+  from before the fix - a full page refresh + re-fetch resolved it).
 
 ## FEATURE: live PO item-number verification before GRN submission (Sep 21 2026, same session)
 Follow-up to the S000073/PO 29581 investigation above - proactive safety net so the exact same
