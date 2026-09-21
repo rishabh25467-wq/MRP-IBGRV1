@@ -63,6 +63,7 @@ import sap_po_client
 import time
 from sap_playwright_supplier_pgr_service import _build_notification_id
 from sap_wip_clearing_client import company_and_set_of_books_for_site, inbound_staging_area_for_site
+from sap_material_valuation_data_client import friendly_valuation_error
 
 # Sep 17 2026, Manual GRN feature - the auth_users collection name is
 # duplicated here as a plain string (NOT `import auth_service`) because
@@ -1699,7 +1700,7 @@ def manually_confirm_inbound_delivery(db, doc_code: str, po_number: str, inbound
     return get_shipment_by_code(db, doc_code)
 
 
-def mark_put_away_confirmed(db, doc_code: str, po_number: str, confirmed: bool, events: list, target_areas: dict = None, final_attempt: bool = False) -> None:
+def mark_put_away_confirmed(db, doc_code: str, po_number: str, confirmed: bool, events: list, target_areas: dict = None, final_attempt: bool = False, site_id: str = None) -> None:
     """Sep 19 2026 - patches `put_away_confirmed`/`events`/
     `put_away_target_areas` onto one PO's own `sap_gr_result.per_po`
     entry (never touches status or `inbound_delivery_id`) - set by the
@@ -1729,12 +1730,19 @@ def mark_put_away_confirmed(db, doc_code: str, po_number: str, confirmed: bool, 
     `sap_sync_status` to "put_away_failed" and stores a plain-English
     `grn_alert_message` (the real SAP note) so the GRN Approval screen
     shows a clear, dismissible error instead of a misleading "posted"
-    badge."""
+    badge.
+
+    Sep 21 2026, user's explicit ask - `site_id`, if given, is used to
+    rewrite a recognized "Valuation not set up" SAP rejection (see
+    sap_material_valuation_data_client.friendly_valuation_error) into a
+    plain-English message distinct from a generic "item not active"
+    error, instead of showing SAP's raw jargon verbatim."""
     update = {"sap_gr_result.per_po.$.put_away_confirmed": confirmed, "sap_gr_result.per_po.$.events": events}
     if target_areas:
         update["sap_gr_result.per_po.$.put_away_target_areas"] = target_areas
     if not confirmed and final_attempt:
         reason = events[-1] if events else "SAP did not finish receiving this Goods Receipt after repeated attempts."
+        reason = friendly_valuation_error(reason, site_id) if site_id else reason
         update["sap_sync_status"] = "put_away_failed"
         update["grn_alert_message"] = f"PO {po_number}: {reason} Ask your SAP admin to resolve this, then use Retry Put Away below."
     db[SHIPMENTS_COLLECTION].update_one(

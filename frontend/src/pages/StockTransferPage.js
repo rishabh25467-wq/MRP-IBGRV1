@@ -222,10 +222,16 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
             {matchingNotification && (
               <div className="mt-3 bg-[#FFFAEB] border border-[#FEC84B] rounded-sm p-2 space-y-2" data-testid="stock-transfer-detail-activate-panel">
                 <p className="text-[#93370D]">
-                  Product <span className="font-bold">{matchingNotification.product_id}</span> has no Planning/Valuation data set up at site <span className="font-bold">{matchingNotification.site_id}</span> - this is why SAP rejected it.
+                  Product <span className="font-bold">{matchingNotification.product_id}</span>{" "}
+                  {matchingNotification.type === "missing_valuation"
+                    ? <>has no Cost/Valuation set up at site <span className="font-bold">{matchingNotification.site_id}</span></>
+                    : <>is not activated (Planning/Logistics) at site <span className="font-bold">{matchingNotification.site_id}</span></>}
+                  {" "}- this is why SAP rejected it.
                 </p>
                 {(() => {
                   const result = activateResults?.[matchingNotification._id];
+                  const isValuationNotif = matchingNotification.type === "missing_valuation";
+                  const resolved = isValuationNotif ? result?.valuation === "ok" : result?.planning_logistics === "ok";
                   if (result) {
                     return (
                       <div className="space-y-1" data-testid={`stock-transfer-detail-activate-result-${matchingNotification._id}`}>
@@ -237,7 +243,7 @@ export const OrderDetailBody = ({ order, retryingStoId, onRetryOrder, retryingEr
                             Valuation: {result.valuation === "ok" ? "Activated successfully." : cleanSapMessage(result.valuation)}
                           </p>
                         )}
-                        {result.planning_logistics === "ok" && (
+                        {resolved && (
                           <Button size="sm" variant="outline" onClick={() => onRetryOrder(matchingNotification.sto_id)} disabled={retryingStoId === matchingNotification.sto_id} data-testid={`stock-transfer-detail-activate-retry-${matchingNotification.sto_id}`}>
                             {retryingStoId === matchingNotification.sto_id ? <CircleNotch size={14} className="animate-spin" /> : `Retry ${matchingNotification.sto_id}`}
                           </Button>

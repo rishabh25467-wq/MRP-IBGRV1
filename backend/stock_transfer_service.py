@@ -519,13 +519,44 @@ def _create_missing_planning_notification_if_matched(db, sto_id: str, error_mess
         _upsert_missing_planning_notification(db, sto_id, item["product_id"], site_id, error_message)
 
 
-def _upsert_missing_planning_notification(db, sto_id: str, product_id: str, site_id: str, error_message: str) -> None:
+def _upsert_missing_planning_notification(db, sto_id: str, product_id: str, site_id: str, error_message: str, notif_type: str = "missing_planning_data") -> None:
     db[NOTIFICATIONS_COLLECTION].update_one(
-        {"type": "missing_planning_data", "product_id": product_id, "site_id": site_id, "resolved": False},
+        {"type": notif_type, "product_id": product_id, "site_id": site_id, "resolved": False},
         {"$set": {"message": error_message, "sto_id": sto_id},
          "$setOnInsert": {"_id": str(uuid.uuid4()), "created_at": datetime.now(timezone.utc)}},
         upsert=True,
     )
+
+
+def _missing_valuation_products(db, sap_valuation_client, doc: dict) -> list:
+    """Sep 21 2026, user's explicit ask: proactively check the
+    DESTINATION site's Valuation before ever calling SAP's Check step -
+    previously a Valuation gap only surfaced much later, at GRN/
+    receiving time (see sap_material_valuation_data_client.
+    friendly_valuation_error's docstring for the exact same check on
+    that side). Returns the list of product_ids on this order with no
+    Valuation record at ship_to_site_id yet - empty if all good, OR if
+    ship_to_site_id isn't in SAPValuationClient.SITE_TO_PERMANENT_
+    ESTABLISHMENT_UUID yet (has_valuation_level's docstring: fail-open,
+    never false-block an order over a site we simply don't have a
+    mapping for)."""
+    if not sap_valuation_client:
+        return []
+    product_ids = [it["product_id"] for it in doc["items"]]
+    uuid_by_id = {
+        c["_id"]: c.get("product_uuid")
+        for c in db["component_master"].find({"_id": {"$in": product_ids}}, {"product_uuid": 1})
+    }
+    product_uuids = [u for u in uuid_by_id.values() if u]
+    if not product_uuids:
+        return []
+    has_level = sap_valuation_client.has_valuation_level(product_uuids, doc["ship_to_site_id"])
+    if has_level is None:
+        return []
+    return [
+        product_id for product_id in product_ids
+        if uuid_by_id.get(product_id) and has_level.get(uuid_by_id[product_id].upper()) is False
+    ]
 
 
 def list_open_admin_notifications(db) -> list:
@@ -654,6 +685,23 @@ def submit_order_to_sap(db, sap_sto_client, sto_id: str, job_id: str = None, sap
             raise
 
     note_text = _build_gst_note_text(doc, _price_hsn_for_note(db, doc, sap_valuation_client))
+    # Sep 21 2026, user's explicit ask - check the destination site's
+    # Valuation BEFORE ever calling SAP's Check step, so a missing
+    # Valuation surfaces here (clear message, same Action Needed +
+    # Retry flow as a missing-Planning rejection) instead of only much
+    # later at GRN/receiving time.
+    missing_valuation = _missing_valuation_products(db, sap_valuation_client, doc)
+    if missing_valuation:
+        products_text = ", ".join(missing_valuation)
+        plural = len(missing_valuation) > 1
+        message = (
+            f"{products_text} {'have' if plural else 'has'} no Cost/Valuation set up at site {doc['ship_to_site_id']} yet - "
+            f"ask your SAP admin to activate Valuation for {'these materials' if plural else 'this material'} there, then Retry below."
+        )
+        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"status": "sap_failed", "error_message": message}})
+        for product_id in missing_valuation:
+            _upsert_missing_planning_notification(db, sto_id, product_id, doc["ship_to_site_id"], message, notif_type="missing_valuation")
+        raise StockTransferValidationError(message)
     try:
         if job_id:
             job_store.update_job(db, job_id, {"step": "checking"})

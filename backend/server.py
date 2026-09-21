@@ -7728,8 +7728,19 @@ async def post_activate_material_site(payload: ActivateMaterialSiteRequest, requ
             sap_material_valuation_data_client, product_category_id, set_of_books_id,
         )
         result["valuation"] = valuation_result["status"]
-    if payload.notification_id and result.get("planning_logistics") == "ok":
-        await asyncio.to_thread(stock_transfer_service.resolve_admin_notification, db, payload.notification_id)
+    if payload.notification_id:
+        # Sep 21 2026 fix - resolving must check the FIELD this specific
+        # notification is actually about: a "missing_valuation" one
+        # should only resolve once Valuation genuinely succeeded, not
+        # just because Planning/Logistics (always "ok" here, since that
+        # was never the problem) came back fine - previously this always
+        # checked `planning_logistics`, so a still-broken Valuation
+        # notification would incorrectly disappear the moment ANY
+        # activation attempt ran.
+        notif = await asyncio.to_thread(db[stock_transfer_service.NOTIFICATIONS_COLLECTION].find_one, {"_id": payload.notification_id})
+        success_field = "valuation" if notif and notif.get("type") == "missing_valuation" else "planning_logistics"
+        if result.get(success_field) == "ok":
+            await asyncio.to_thread(stock_transfer_service.resolve_admin_notification, db, payload.notification_id)
     return result
 
 
@@ -8881,7 +8892,7 @@ async def _auto_finish_full_auto_grn(doc_code: str, po_numbers: list, site_id: s
             if result["confirmed"]:
                 pending_put_away.discard(po_number)
             await asyncio.to_thread(
-                supplier_shipment_service.mark_put_away_confirmed, db, doc_code, po_number, result["confirmed"], events, result["target_areas"], is_last_attempt,
+                supplier_shipment_service.mark_put_away_confirmed, db, doc_code, po_number, result["confirmed"], events, result["target_areas"], is_last_attempt, site_id,
             )
         await _check_delivery_ids()
         if not pending_put_away and not pending_delivery_id:

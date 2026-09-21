@@ -181,6 +181,30 @@ class SAPValuationClient:
     # app (BOM screen, Inventory, Purchasing Plan all route through here).
     MOVING_AVERAGE_PRICE_TYPE_CODE = "1"
 
+    def has_valuation_level(self, product_uuids, site_id: str):
+        """Returns {product_uuid: bool} for whether each product has a
+        genuine Valuation LEVEL record at `site_id`'s own
+        PermanentEstablishmentUUID (SITE_TO_PERMANENT_ESTABLISHMENT_UUID
+        above), or None (not an empty dict) if `site_id` isn't in that
+        mapping yet - callers must treat None as "can't tell, don't
+        block" rather than "confirmed missing" (Sep 21 2026, user's
+        explicit ask: proactively catch "no Valuation at destination
+        site" BEFORE creating a Stock Transfer Order, instead of only
+        discovering it much later when GRN/receiving fails).
+
+        Unlike get_standard_costs, this deliberately does NOT fall back
+        to another site's level - a product whose only Valuation level
+        is at a DIFFERENT site correctly comes back False here, matching
+        what would actually block a real SAP write at this site."""
+        site_pe_uuid = SITE_TO_PERMANENT_ESTABLISHMENT_UUID.get((site_id or "").strip().upper())
+        if not site_pe_uuid:
+            return None
+        product_uuids = list({uuid.upper() for uuid in product_uuids if uuid})
+        if not product_uuids:
+            return {}
+        level_map = self._fetch_valuation_level_ids(product_uuids)
+        return {pid: any(pe == site_pe_uuid for _lvl, pe in levels) for pid, levels in level_map.items()}
+
     def get_standard_costs(self, product_uuids, site_id: str = None):
         """Returns {product_uuid: {"amount": float, "currency": str} | None}
         - despite the method name (kept for callers), this returns the

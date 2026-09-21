@@ -52,6 +52,34 @@ class SAPMaterialValuationDataError(Exception):
     pass
 
 
+# Sep 21 2026, user's explicit ask - "detect Valuation-missing
+# specifically and word it clearly" in BOTH the STO creation and GRN
+# Put Away flows, instead of showing SAP's raw jargon. Every phrasing
+# below is a real, live-confirmed SAP rejection for "no Valuation set
+# up for this material at this site yet" (see PRD.md Sep 21 2026
+# entries) - a DIFFERENT root cause than "site/Planning not active".
+_VALUATION_MISSING_PATTERNS = (
+    "valuation data missing", "account det. group is missing", "financials pu",
+)
+_MATERIAL_IN_ERROR_RE = re.compile(r"for material (\S+)", re.IGNORECASE)
+
+
+def friendly_valuation_error(raw_message: str, site_id: str) -> str:
+    """Rewrites a known "Valuation not set up" SAP rejection into a
+    plain-English message naming the material (if the raw text has one)
+    + site, so whoever reads it (and the SAP admin they hand it to)
+    knows exactly what's broken - distinct from a generic "item/site not
+    active" error. Returns the raw `raw_message` unchanged if it doesn't
+    match any known pattern."""
+    text = (raw_message or "").lower()
+    if not any(p in text for p in _VALUATION_MISSING_PATTERNS):
+        return raw_message
+    m = _MATERIAL_IN_ERROR_RE.search(raw_message or "")
+    material = m.group(1).rstrip(",;") if m else "This item"
+    return (f"{material} has no Cost/Valuation set up at site {site_id} yet - ask your SAP admin "
+            f"to activate Valuation for it there, then Retry below.")
+
+
 def _extract_note(xml: str):
     m = re.search(r"<(?:\w+:)?Note>(.*?)</(?:\w+:)?Note>", xml, re.S)
     return m.group(1).strip() if m else None

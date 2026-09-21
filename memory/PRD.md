@@ -302,6 +302,39 @@ on P1 despite its missing "with task" model) - see same file's dedicated section
   Test asserts SAP is never called for a nonexistent product; that's no longer true by
   design. Needs updating in a future session (not blocking, not in original scope).
 
+## Proactive "Valuation not active" detection - STO creation + GRN (Sep 21 2026, this session)
+User's ask: 2 distinct root causes ("site/Planning not active" vs "Valuation not active") can
+block STO creation and GRN receiving - want them told apart with a clear message + Retry, not
+generic SAP jargon.
+- New `SAPValuationClient.has_valuation_level(product_uuids, site_id)` - returns `{uuid: bool}`
+  for whether a genuine Valuation LEVEL exists at that site's own PermanentEstablishmentUUID
+  (does NOT fall back to another site's level, unlike `get_standard_costs`) - or `None` if
+  `site_id` isn't in `SITE_TO_PERMANENT_ESTABLISHMENT_UUID` yet (fail-open, never false-block).
+- New shared `sap_material_valuation_data_client.friendly_valuation_error(raw_message,
+  site_id)` - rewrites known "Valuation not set up" SAP rejections ("valuation data missing",
+  "account det. group is missing", "financials pu") into plain English naming the material +
+  site; passes through unrecognized text unchanged.
+- **STO creation**: `stock_transfer_service._missing_valuation_products()` now runs BEFORE
+  SAP's own Check step in `submit_order_to_sap` - if the destination site has no Valuation for
+  any item, marks the STO `sap_failed` with the clear message and upserts an
+  `admin_notifications` doc with `type: "missing_valuation"` (new type, alongside the existing
+  `missing_planning_data`) - reuses the SAME "Action Needed" panel + Retry button already on
+  `StockTransferPage.js`, now type-aware (message + which result field ("valuation" vs
+  "planning_logistics") actually gates the Retry button showing/notification resolving).
+- **GRN**: `supplier_shipment_service.mark_put_away_confirmed()` now takes a `site_id` param
+  and runs the final failure `reason` through `friendly_valuation_error` before building
+  `grn_alert_message` - server.py's `_auto_finish_full_auto_grn` already had `site_id` in scope.
+- `post_activate_material_site`'s notification-resolve logic is now type-aware too (fetches the
+  notification's own `type`, checks `valuation`/`planning_logistics` accordingly) - previously
+  ALWAYS checked `planning_logistics`, which would incorrectly resolve a still-broken
+  "missing_valuation" notification the instant any activation attempt ran (since Planning was
+  never the problem for that type).
+- Live-verified the core logic directly against real SAP data: `has_valuation_level` for
+  G12NUT correctly returns True@P7/P2, False@P9, None@P6 (no PE mapping); `_missing_valuation_
+  products` correctly returns `['G12NUT']` for ship_to_site_id=P9 and `[]` for P7. Did NOT
+  create a real STO end-to-end (would need real GST/warehouse fields) - logic-level
+  verification only; should be exercised for real the next time an STO actually hits this path.
+
 ## BUG FIX: "Set Valuation" lost the helpful "ask SAP admin" guidance for brand-new sites (Sep 21 2026, same session)
 User tested G12NUT @ P9 (a site that NEVER had ANY prior Valuation record) via the app -
 Planning/Logistics/Availability activated fine, but Valuation showed the BARE SAP error
