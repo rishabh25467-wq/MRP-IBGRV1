@@ -651,7 +651,28 @@ receiving completely. Replaced with a pure API-based flow:
   Playwright, correct per-line SAP error surfaced). Minor edge case (empty items list) fixed
   post-review: now 400s instead of silently reporting "received".
 
-## Other fixes this session (Sep 21 2026)
+## Follow-up fixes on top of Playwright removal (Sep 21 2026, same session)
+Real live incident (STO-000132, site P2, products SCR755WM/SCR525WM) surfaced 2 more bugs right
+after the Playwright removal above:
+1. `inbound_staging_area_for_site` default was WRONG - the "Sep 20 blanket -RM for every site"
+   claim was based on a false positive (see the CORRECTION comment in `sap_wip_clearing_client.py`
+   itself for the full story - "-RM" can silently succeed by pulling unrelated pre-existing fungible
+   stock instead of the genuinely-just-received batch, hiding the real bug until a product with
+   ZERO stock at "-RM" exposes it loudly). Reverted default to "-HOLD" for every site, keeping ONLY
+   P8 ("P8-RM", user's own direct real-time confirmation) and P3 (its own bin) as overrides.
+2. `retry_receipt_relocation` only ever updated `receipt_relocation`, never `receipt_status`/
+   `receipt_error` - so a genuinely-fixed-by-retry order stayed stuck showing "Receipt Failed" with
+   a stale message forever. Fixed to properly map the retry's own result to `receipt_status`.
+3. A one-time double-movement side effect of bug #1 (SCR755WM got moved twice - once from the wrong
+   P2-RM, once from the correct P2-HOLD after the fix) left P2-RM short 1 EA and P2-SFG over by 1 EA.
+   Attempted an automated compensating reversal (P2-SFG -> P2-RM) 3x - SAP consistently rejects this
+   specific REVERSE direction with a generic error (forward movements work fine) - **needs a manual
+   correction in SAP directly, still outstanding, ask user before closing this out**.
+4. UI cleanup (user's direct ask, screenshot of old Playwright-era progress bar) - removed the
+   "Queued" state, fake ETA countdown (`AVG_SECONDS_PER_DELIVERY`/`etaText`), and the striped
+   animated progress bar from `InboundReceiptsPage.js` - now a single plain "Moving stock…" spinner.
+- Tested via testing_agent (iteration_193): 100% pass, all 3 fixes verified (warehouse defaults per
+  site, retry status-update, UI cleanup DOM checks). STO-000132 confirmed "Received" with both GM IDs.
 - Fixed `_relocate_items_to_source_hold_warehouse`'s stock-check query bug (STO-000129/G12LW at P1):
   `get_inventory_detail`'s `product_ids` param silently overrides `site_id`/`warehouse_ids` - was
   summing company-wide stock instead of just `{SITE}-HOLD`'s own balance, wrongly skipping the

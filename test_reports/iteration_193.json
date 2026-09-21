@@ -1,0 +1,56 @@
+{
+  "summary": "Verified the 3 follow-up fixes on top of iteration_192's no-Playwright receive change: (1) inbound_staging_area_for_site defaults, (2) retry_receipt_relocation now updates receipt_status/receipt_error, (3) InboundReceiptsPage UI simplification (no Queued/ETA/progress-bar). All three verified via python import + DB inspection + live API + UI DOM check.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "verifications": {
+    "warehouse_defaults": {
+      "P1": "P1-HOLD",
+      "P2": "P2-HOLD",
+      "P3": "P3-Z1-01-A (override)",
+      "P8": "P8-RM (override)",
+      "P9": "P9-HOLD",
+      "PX": "PX-HOLD",
+      "result": "PASS - matches spec exactly"
+    },
+    "retry_receipt_relocation_status_update": {
+      "code_check": "inbound_receipt_service.py line 143-167 - now maps result.status -> receipt_status ('done'->'received', 'partial'->'partial', 'failed'->'failed') and writes receipt_error + receipt_results. Also allows retry from 'failed' status (line 150).",
+      "result": "PASS - code matches described fix"
+    },
+    "sto_000132_state": {
+      "receipt_status": "received",
+      "receipt_error": null,
+      "receipt_relocation.status": "done",
+      "receipt_relocation.to": "P2-SFG",
+      "lines": [
+        {"product_id": "SCR755WM", "ok": true, "gac_id": "281802"},
+        {"product_id": "SCR525WM", "ok": true, "gac_id": "281803"}
+      ],
+      "ui_check": "Completed tab shows 'Received' badge, 'Moved to P2-SFG' link opens popover with GM 281802 (SCR755WM) and GM 281803 (SCR525WM) - screenshot captured",
+      "result": "PASS"
+    },
+    "ui_simplification": {
+      "AVG_SECONDS_PER_DELIVERY_removed": true,
+      "etaText_removed": true,
+      "Queued_state_removed": true,
+      "nowMs_ticker_removed": true,
+      "inbound_receipt_progress_bar_testid_in_DOM": false,
+      "Moving_stock_spinner_present_in_jobBadge": "confirmed at line 64 (single spinner branch with label 'Moving stock…', no detail text)",
+      "job_badge_testid": "inbound-receipt-job-badge-{sto_id} at line 481",
+      "result": "PASS"
+    },
+    "live_receive_test": "SKIPPED as instructed - would write to live SAP. No Pending STOs with gi_status='posted' were available at test time anyway (Pending tab empty for available session). All 3 fixes verified via safe static/DB/API/DOM inspection paths."
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Minor: line 60/64 comment references 'Playwright' - kept intentionally as history annotation, not a bug.",
+    "receipt_status transition in retry: falls back to doc.get('receipt_status') when result.status is an unknown value - safe default but consider logging unexpected status values."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "vms_session cookie provided by user, worked",
+  "seed_data_creation": "none",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All 3 fixes (warehouse defaults for non-P8/P3 sites -> {SITE}-HOLD, retry_receipt_relocation updating receipt_status/error, and InboundReceiptsPage UI cleanup removing Queued/ETA/progress-bar) are verified. Live Receive was not exercised to avoid SAP writes - if a future iteration needs to visually confirm the 'Moving stock…' spinner runtime, use a fresh not-yet-received STO with gi_status='posted' on Pending tab."
+}
