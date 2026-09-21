@@ -1215,7 +1215,7 @@ def prepare_approval(db, doc_code: str, approved_by: str, approved_by_user_id: s
     return get_shipment_by_code(db, doc_code)
 
 
-def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_client, inventory_client, owner_party_id: str, sap_username: str = None, skip_movement: bool = False) -> dict:
+def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_client, inventory_client, owner_party_id: str, sap_username: str = None, skip_movement: bool = True) -> dict:
     """Called after sap_playwright_supplier_pgr_service.
     post_goods_receipt_via_ui returns - `gr_results` is its
     results list. All POs in the shipment must have posted for step 2
@@ -1265,6 +1265,17 @@ def finalize_goods_receipt(db, doc_code: str, gr_results: list, goods_movement_c
     # no longer schedules _auto_finish_full_auto_grn either). See
     # /app/memory/pre_change_grn_buttons_snapshot.md for the pre-change
     # behavior if this ever needs revisiting.
+    #
+    # Sep 21 2026 fix - the above was only ever wired into that ONE
+    # button (`skip_movement=True` passed explicitly). Every OTHER GRN
+    # path (normal Playwright multi-PO approval, Manual GRN "Re-check
+    # SAP") kept calling this with the old default (False) and kept
+    # running the movement step, contradicting the "GRN-only" policy.
+    # Default flipped to True so every caller skips movement unless it
+    # explicitly opts back in (nothing does, currently) - real incident,
+    # shipment S000073 (multi-PO), most lines correctly posted the real
+    # SAP Goods Receipt but showed "movement failed" on this now-obsolete
+    # step.
     if skip_movement:
         sap_movement_result = {"ok": True, "reason": "Warehouse movement skipped by design - GRN-only mode"}
         sap_movement_status = "not_applicable"
@@ -1688,14 +1699,14 @@ def manually_confirm_inbound_delivery(db, doc_code: str, po_number: str, inbound
     all_ok = bool(per_po) and all(p.get("status") == "posted" for p in per_po)
     sap_sync_status = "posted" if all_ok else doc.get("sap_sync_status")
     update = {"sap_gr_result": {"ok": all_ok, "per_po": per_po}, "sap_sync_status": sap_sync_status}
-    if all_ok and doc.get("sap_movement_status") != "posted" and goods_movement_client and doc.get("site_id") and doc.get("warehouse_id"):
-        skipped_line_items = _skipped_line_items_from_gr_results(doc, per_po)
-        # Sep 20 2026: retry_on_lag=True - this runs from the background
-        # Delivery ID auto-fetch loop, always after the GR (and usually
-        # Put Away) already happened, same lag risk as retry_goods_movement.
-        sap_movement_result = _post_goods_movement_for_items(db, doc, goods_movement_client, inventory_client, owner_party_id, doc["site_id"], doc["warehouse_id"], skipped_line_items, retry_on_lag=True)
-        update["sap_movement_status"] = "posted" if sap_movement_result.get("ok") else "pending"
-        update["sap_movement_result"] = sap_movement_result
+    # Sep 21 2026, user's explicit ask ("remove movement from all remaining
+    # GRN paths - make it fully consistent") - this background auto-fetch
+    # path used to be the ONE place still calling _post_goods_movement_for_
+    # items automatically, outside finalize_goods_receipt's own now-default
+    # skip_movement=True. Matches the same "GRN-only, no movement" policy.
+    if all_ok and doc.get("sap_movement_status") != "posted":
+        update["sap_movement_status"] = "not_applicable"
+        update["sap_movement_result"] = {"ok": True, "reason": "Warehouse movement skipped by design - GRN-only mode"}
     db[SHIPMENTS_COLLECTION].update_one({"_id": doc["_id"]}, {"$set": update})
     return get_shipment_by_code(db, doc_code)
 

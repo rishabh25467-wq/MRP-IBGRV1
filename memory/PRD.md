@@ -454,6 +454,30 @@ instead (same page, one flow) - final design below.
   genuine material (permanently changes live SAP financial data) - user should test the real
   write themselves (e.g. Material 368 @ P4/P6/P7 from their screenshot) via this page.
 
+## BUG FIX: "No movement" GRN policy was only applied to ONE button, not all paths (Sep 21 2026)
+Real user report on shipment S000073 (multi-PO): most lines showed "Posted (movement failed)"
+even though the real SAP Goods Receipt succeeded (8/10 items genuinely inbound, SAP Inbound
+Delivery # assigned) - only 2 items (PO 29581) were genuinely never received (permanently
+"Skipped", likely a Cancelled PO/item, same class as the PO 25271 incident).
+- Root cause: the Sep 20 2026 "eliminate any warehouse movement, only complete GRN" decision was
+  only wired into the single "Post GRN in SAP" button (`_start_full_auto_grn_job` passing
+  `skip_movement=True` explicitly). 3 other paths still ran `_post_goods_movement_for_items`
+  automatically: the normal Playwright multi-PO approval flow, Manual GRN's "Re-check SAP"
+  (`check_manual_gr_quantities`), and the background Delivery-ID auto-fetch
+  (`manually_confirm_inbound_delivery`).
+- Fix: `finalize_goods_receipt`'s `skip_movement` param default flipped `False` -> `True` (covers
+  the normal approval flow + Re-check SAP, both call it with no override).
+  `manually_confirm_inbound_delivery`'s own direct `_post_goods_movement_for_items` call replaced
+  with the same `sap_movement_status: "not_applicable"` outcome, matching the button's behavior.
+- Left untouched (user's explicit ask was "all remaining GRN **paths**", i.e. automatic triggers)
+  the manual "Retry Movement" button/`retry_goods_movement` endpoint - a user-initiated action
+  that only ever shows for OLD shipments already stuck on `sap_movement_status: "pending"` from
+  before this fix; going forward no new shipment will ever reach that state so the button is
+  effectively dormant for new GRNs, same "leave historical data/legacy paths alone" pattern
+  already used elsewhere in this app (e.g. paused ERP-sync STOs).
+- Backend restarted clean, no errors. Not yet run through `testing_agent` (backend-only default-
+  param + one dead-code-path removal, verified by code inspection across every call site via grep).
+
 ## BUG FIX: STO "insufficient stock" for already-relocated stock (Sep 21 2026, this session)
 Real user report: creating an STO for an item already activated + already physically moved to
 the SFG/{SITE}-HOLD area still failed with an insufficient/negative-stock rejection.
