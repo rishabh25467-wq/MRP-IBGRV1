@@ -1,0 +1,172 @@
+diff --git a/backend/inbound_receipt_service.py b/backend/inbound_receipt_service.py
+index 68a0d82..df8755f 100644
+--- a/backend/inbound_receipt_service.py
++++ b/backend/inbound_receipt_service.py
+@@ -182,7 +182,40 @@ def _backfill_missing_delivery_ids(db, sap_outbound_delivery_client, doc: dict)
+     return delivery_ids
+ 
+ 
+-def list_pending_receipts(db, sap_outbound_delivery_client, site_id: str = None) -> list:
++def _verify_inbound_delivery_notification(db, sap_inbound_delivery_client, doc: dict) -> list:
++    """Sep 22 2026, user's explicit ask ("stock existence shouldn't be
++    the check") - re-fetches each outbound delivery ID FROM THE INBOUND
++    SIDE (`InboundDeliveryCollection` at the receiving site) instead of
++    only trusting our own `gi_status`/`outbound_delivery_ids` (the
++    SHIPPING side's own records). The Notification's own `ID` is
++    identical to the Outbound Delivery ID that produced it (confirmed
++    live), so this just re-fetches the SAME id string through the
++    INBOUND OData service (`sap_inbound_delivery_client.py`,
++    "provisioned, not currently wired into any live flow" until now) and
++    only trusts it once SAP itself confirms the document + item
++    quantities genuinely exist there too. Cached on the doc
++    (`inbound_delivery_ids`) once verified - never re-checked once set.
++    Returns [] (never raises) if SAP hasn't created it yet - callers
++    decide whether that's fatal."""
++    if doc.get("inbound_delivery_ids"):
++        return doc["inbound_delivery_ids"]
++    if not sap_inbound_delivery_client:
++        return []
++    verified_ids = []
++    for delivery_id in doc.get("outbound_delivery_ids") or []:
++        try:
++            found = sap_inbound_delivery_client.find_delivery_by_id(delivery_id)
++        except Exception as e:
++            logger.warning(f"Inbound Delivery Notification verification failed for {delivery_id}: {e}")
++            continue
++        if found:
++            verified_ids.append(found["id"])
++    if verified_ids:
++        db[STO_COLLECTION].update_one({"_id": doc["_id"]}, {"$set": {"inbound_delivery_ids": verified_ids}})
++    return verified_ids
++
++
++def list_pending_receipts(db, sap_outbound_delivery_client, sap_inbound_delivery_client=None, site_id: str = None) -> list:
+     """Every STO whose Goods Issue has posted (so an Outbound
+     Delivery/Inbound Notification genuinely exists in SAP) and that
+     hasn't been fully received on the app side yet. Each result also
+@@ -203,6 +236,10 @@ def list_pending_receipts(db, sap_outbound_delivery_client, site_id: str = None)
+             delivery_ids = _backfill_missing_delivery_ids(db, sap_outbound_delivery_client, doc)
+             if not delivery_ids:
+                 continue
++        # Sep 22 2026 - best-effort, cached after the first success (see
++        # `_verify_inbound_delivery_notification` above) so this only
++        # costs a live SAP call once per order, not on every page load.
++        inbound_delivery_ids = _verify_inbound_delivery_notification(db, sap_inbound_delivery_client, doc)
+         results.append({
+             "sto_id": doc["_id"],
+             "sap_order_id": (doc.get("sap_order_id") or "").lstrip("0") or doc.get("sap_order_id"),
+@@ -214,6 +251,7 @@ def list_pending_receipts(db, sap_outbound_delivery_client, site_id: str = None)
+             "receipt_status": doc.get("receipt_status") or "pending",
+             "receipt_error": doc.get("receipt_error"),
+             "outbound_delivery_ids": delivery_ids,
++            "inbound_delivery_ids": inbound_delivery_ids,
+             "items": [
+                 {
+                     "line_no": it.get("line_no"),
+@@ -280,7 +318,7 @@ def list_completed_receipts(db, site_id: str = None, date_from: datetime = None,
+     } for doc in docs]
+ 
+ 
+-def prepare_receipt(db, sto_id: str) -> dict:
++def prepare_receipt(db, sto_id: str, sap_inbound_delivery_client=None) -> dict:
+     """Validates the order is receivable and returns its doc - raises
+     ValueError (400 to the caller) for any invalid state."""
+     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
+@@ -298,6 +336,20 @@ def prepare_receipt(db, sto_id: str) -> dict:
+         raise ValueError("No SAP delivery reference found yet for this order - please retry in a moment.")
+     if not doc.get("items"):
+         raise ValueError(f"Stock Transfer Order {sto_id} has no line items - nothing to receive.")
++    # Sep 22 2026, user's explicit ask ("stock existence shouldn't be the
++    # check") - real incident (STO-000137, P8 override bug) showed
++    # `gi_status`/`outbound_delivery_ids` alone (the SHIPPING side's own
++    # records) aren't proof the RECEIVING side has anything to act on
++    # yet. Block Receive until SAP itself confirms the Inbound Delivery
++    # Notification genuinely exists at the receiving site - see
++    # `_verify_inbound_delivery_notification` above.
++    inbound_delivery_ids = _verify_inbound_delivery_notification(db, sap_inbound_delivery_client, doc)
++    if sap_inbound_delivery_client and not inbound_delivery_ids:
++        raise ValueError(
++            "SAP hasn't created the Inbound Delivery Notification at the receiving site yet - please try again in a moment."
++        )
++    doc["inbound_delivery_ids"] = inbound_delivery_ids
++    return doc
+     return doc
+ 
+ 
+diff --git a/backend/server.py b/backend/server.py
+index d2a26ce..5a416c5 100644
+--- a/backend/server.py
++++ b/backend/server.py
+@@ -34,6 +34,7 @@ from sap_sto_client import SAPSTOClient
+ import sap_integration_docs
+ from qms_drawings_client import QMSDrawingsClient, QMSDrawingsError
+ from sap_outbound_delivery_client import SAPOutboundDeliveryClient, SAPOutboundDeliveryError
++from sap_inbound_delivery_client import SAPInboundDeliveryClient
+ from erp_portal_client import ERPPortalClient, ERPPortalError
+ from sap_production_model_client import SAPProductionModelClient, SAPProductionModelError, SAPProductionModelBomClient
+ from sap_boo_client import SAPBooClient, SAPBooError
+@@ -411,6 +412,17 @@ sap_outbound_delivery_client = SAPOutboundDeliveryClient(
+     vhost=os.environ['BYD_ODATA_VHOST'],
+ )
+ 
++# Sep 22 2026, user's explicit ask ("stock existence shouldn't be the
++# check" -> "write the code") - was built + live-tested (see
++# sap_inbound_delivery_client.py's own docstring) but never actually
++# instantiated/wired into any live flow until now.
++sap_inbound_delivery_client = SAPInboundDeliveryClient(
++    endpoint=os.environ['SAP_ODATA_INBOUND_BASE_URL'],
++    username=os.environ['SAP_ODATA_USERNAME'],
++    password=os.environ['SAP_ODATA_PASSWORD'],
++    vhost=os.environ['BYD_ODATA_VHOST'],
++)
++
+ sap_outbound_delivery_analytics_client = SAPOutboundDeliveryAnalyticsClient(
+     instance_url=os.environ['SAP_INSTANCE_URL'],
+     username=os.environ['SAP_ODATA_USERNAME'],
+@@ -7918,7 +7930,7 @@ async def get_inbound_receipt_sites():
+ 
+ @api_router.get("/inbound-receipts/pending")
+ async def get_inbound_receipts_pending(site_id: Optional[str] = None):
+-    return {"orders": await asyncio.to_thread(inbound_receipt_service.list_pending_receipts, db, sap_outbound_delivery_client, site_id)}
++    return {"orders": await asyncio.to_thread(inbound_receipt_service.list_pending_receipts, db, sap_outbound_delivery_client, sap_inbound_delivery_client, site_id)}
+ 
+ 
+ @api_router.get("/inbound-receipts/completed")
+@@ -7937,7 +7949,7 @@ async def post_inbound_receipt(sto_id: str, payload: InboundReceiptRequest, requ
+     actor = (user or {}).get("name") or (user or {}).get("email") or "unknown"
+     overrides = {str(i.line_no): i.received_qty for i in payload.items}
+     try:
+-        doc = await asyncio.to_thread(inbound_receipt_service.prepare_receipt, db, sto_id)
++        doc = await asyncio.to_thread(inbound_receipt_service.prepare_receipt, db, sto_id, sap_inbound_delivery_client)
+     except ValueError as e:
+         raise HTTPException(status_code=400, detail=str(e))
+     if doc.get("receipt_status") == "received":
+diff --git a/frontend/src/pages/InboundReceiptsPage.js b/frontend/src/pages/InboundReceiptsPage.js
+index e5083c6..46a9c8d 100644
+--- a/frontend/src/pages/InboundReceiptsPage.js
++++ b/frontend/src/pages/InboundReceiptsPage.js
+@@ -456,9 +456,22 @@ export default function InboundReceiptsPage() {
+                             {order.sto_id}
+                           </button>
+                           <div className="text-xs text-[#667085]">SAP #{order.sap_order_id}</div>
+-                          {order.outbound_delivery_ids.length > 0 && (
++                          {/* Sep 22 2026, user's explicit ask ("the same
++                              ID will be shown in the receiving page
++                              instead of outbound ID, they are same but
++                              we need to ensure we fetch it from inbound")
++                              - shows the INBOUND-verified id (re-fetched
++                              from InboundDeliveryCollection at the
++                              receiving site) once SAP confirms it exists
++                              there, not just the shipping side's own
++                              outbound_delivery_ids. */}
++                          {order.inbound_delivery_ids?.length > 0 ? (
+                             <div className="text-[11px] text-[#667085] font-mono mt-0.5" data-testid={`inbound-receipt-delivery-ids-${order.sto_id}`}>
+-                              SAP Delivery Notif: {order.outbound_delivery_ids.join(", ")}
++                              Inbound Delivery Notif: {order.inbound_delivery_ids.join(", ")}
++                            </div>
++                          ) : order.outbound_delivery_ids.length > 0 && (
++                            <div className="text-[11px] text-[#B54708] font-mono mt-0.5" data-testid={`inbound-receipt-delivery-ids-${order.sto_id}`}>
++                              Awaiting Inbound Delivery Notif at {order.ship_to_site_id}...
+                             </div>
+                           )}
+                         </TableCell>
