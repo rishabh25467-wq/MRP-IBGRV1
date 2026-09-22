@@ -182,7 +182,40 @@ def _backfill_missing_delivery_ids(db, sap_outbound_delivery_client, doc: dict) 
     return delivery_ids
 
 
-def list_pending_receipts(db, sap_outbound_delivery_client, site_id: str = None) -> list:
+def _verify_inbound_delivery_notification(db, sap_inbound_delivery_client, doc: dict) -> list:
+    """Sep 22 2026, user's explicit ask ("stock existence shouldn't be
+    the check") - re-fetches each outbound delivery ID FROM THE INBOUND
+    SIDE (`InboundDeliveryCollection` at the receiving site) instead of
+    only trusting our own `gi_status`/`outbound_delivery_ids` (the
+    SHIPPING side's own records). The Notification's own `ID` is
+    identical to the Outbound Delivery ID that produced it (confirmed
+    live), so this just re-fetches the SAME id string through the
+    INBOUND OData service (`sap_inbound_delivery_client.py`,
+    "provisioned, not currently wired into any live flow" until now) and
+    only trusts it once SAP itself confirms the document + item
+    quantities genuinely exist there too. Cached on the doc
+    (`inbound_delivery_ids`) once verified - never re-checked once set.
+    Returns [] (never raises) if SAP hasn't created it yet - callers
+    decide whether that's fatal."""
+    if doc.get("inbound_delivery_ids"):
+        return doc["inbound_delivery_ids"]
+    if not sap_inbound_delivery_client:
+        return []
+    verified_ids = []
+    for delivery_id in doc.get("outbound_delivery_ids") or []:
+        try:
+            found = sap_inbound_delivery_client.find_delivery_by_id(delivery_id)
+        except Exception as e:
+            logger.warning(f"Inbound Delivery Notification verification failed for {delivery_id}: {e}")
+            continue
+        if found:
+            verified_ids.append(found["id"])
+    if verified_ids:
+        db[STO_COLLECTION].update_one({"_id": doc["_id"]}, {"$set": {"inbound_delivery_ids": verified_ids}})
+    return verified_ids
+
+
+def list_pending_receipts(db, sap_outbound_delivery_client, sap_inbound_delivery_client=None, site_id: str = None) -> list:
     """Every STO whose Goods Issue has posted (so an Outbound
     Delivery/Inbound Notification genuinely exists in SAP) and that
     hasn't been fully received on the app side yet. Each result also
@@ -203,6 +236,10 @@ def list_pending_receipts(db, sap_outbound_delivery_client, site_id: str = None)
             delivery_ids = _backfill_missing_delivery_ids(db, sap_outbound_delivery_client, doc)
             if not delivery_ids:
                 continue
+        # Sep 22 2026 - best-effort, cached after the first success (see
+        # `_verify_inbound_delivery_notification` above) so this only
+        # costs a live SAP call once per order, not on every page load.
+        inbound_delivery_ids = _verify_inbound_delivery_notification(db, sap_inbound_delivery_client, doc)
         results.append({
             "sto_id": doc["_id"],
             "sap_order_id": (doc.get("sap_order_id") or "").lstrip("0") or doc.get("sap_order_id"),
@@ -214,6 +251,7 @@ def list_pending_receipts(db, sap_outbound_delivery_client, site_id: str = None)
             "receipt_status": doc.get("receipt_status") or "pending",
             "receipt_error": doc.get("receipt_error"),
             "outbound_delivery_ids": delivery_ids,
+            "inbound_delivery_ids": inbound_delivery_ids,
             "items": [
                 {
                     "line_no": it.get("line_no"),
@@ -280,7 +318,7 @@ def list_completed_receipts(db, site_id: str = None, date_from: datetime = None,
     } for doc in docs]
 
 
-def prepare_receipt(db, sto_id: str) -> dict:
+def prepare_receipt(db, sto_id: str, sap_inbound_delivery_client=None) -> dict:
     """Validates the order is receivable and returns its doc - raises
     ValueError (400 to the caller) for any invalid state."""
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
@@ -298,6 +336,20 @@ def prepare_receipt(db, sto_id: str) -> dict:
         raise ValueError("No SAP delivery reference found yet for this order - please retry in a moment.")
     if not doc.get("items"):
         raise ValueError(f"Stock Transfer Order {sto_id} has no line items - nothing to receive.")
+    # Sep 22 2026, user's explicit ask ("stock existence shouldn't be the
+    # check") - real incident (STO-000137, P8 override bug) showed
+    # `gi_status`/`outbound_delivery_ids` alone (the SHIPPING side's own
+    # records) aren't proof the RECEIVING side has anything to act on
+    # yet. Block Receive until SAP itself confirms the Inbound Delivery
+    # Notification genuinely exists at the receiving site - see
+    # `_verify_inbound_delivery_notification` above.
+    inbound_delivery_ids = _verify_inbound_delivery_notification(db, sap_inbound_delivery_client, doc)
+    if sap_inbound_delivery_client and not inbound_delivery_ids:
+        raise ValueError(
+            "SAP hasn't created the Inbound Delivery Notification at the receiving site yet - please try again in a moment."
+        )
+    doc["inbound_delivery_ids"] = inbound_delivery_ids
+    return doc
     return doc
 
 

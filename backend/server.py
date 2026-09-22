@@ -34,6 +34,7 @@ from sap_sto_client import SAPSTOClient
 import sap_integration_docs
 from qms_drawings_client import QMSDrawingsClient, QMSDrawingsError
 from sap_outbound_delivery_client import SAPOutboundDeliveryClient, SAPOutboundDeliveryError
+from sap_inbound_delivery_client import SAPInboundDeliveryClient
 from erp_portal_client import ERPPortalClient, ERPPortalError
 from sap_production_model_client import SAPProductionModelClient, SAPProductionModelError, SAPProductionModelBomClient
 from sap_boo_client import SAPBooClient, SAPBooError
@@ -408,6 +409,17 @@ sap_outbound_delivery_client = SAPOutboundDeliveryClient(
     endpoint=os.environ['BYD_ODATA_BASE'],
     username=os.environ['SAP_USERNAME'],
     password=os.environ['SAP_PASSWORD'],
+    vhost=os.environ['BYD_ODATA_VHOST'],
+)
+
+# Sep 22 2026, user's explicit ask ("stock existence shouldn't be the
+# check" -> "write the code") - was built + live-tested (see
+# sap_inbound_delivery_client.py's own docstring) but never actually
+# instantiated/wired into any live flow until now.
+sap_inbound_delivery_client = SAPInboundDeliveryClient(
+    endpoint=os.environ['SAP_ODATA_INBOUND_BASE_URL'],
+    username=os.environ['SAP_ODATA_USERNAME'],
+    password=os.environ['SAP_ODATA_PASSWORD'],
     vhost=os.environ['BYD_ODATA_VHOST'],
 )
 
@@ -7918,7 +7930,7 @@ async def get_inbound_receipt_sites():
 
 @api_router.get("/inbound-receipts/pending")
 async def get_inbound_receipts_pending(site_id: Optional[str] = None):
-    return {"orders": await asyncio.to_thread(inbound_receipt_service.list_pending_receipts, db, sap_outbound_delivery_client, site_id)}
+    return {"orders": await asyncio.to_thread(inbound_receipt_service.list_pending_receipts, db, sap_outbound_delivery_client, sap_inbound_delivery_client, site_id)}
 
 
 @api_router.get("/inbound-receipts/completed")
@@ -7937,7 +7949,7 @@ async def post_inbound_receipt(sto_id: str, payload: InboundReceiptRequest, requ
     actor = (user or {}).get("name") or (user or {}).get("email") or "unknown"
     overrides = {str(i.line_no): i.received_qty for i in payload.items}
     try:
-        doc = await asyncio.to_thread(inbound_receipt_service.prepare_receipt, db, sto_id)
+        doc = await asyncio.to_thread(inbound_receipt_service.prepare_receipt, db, sto_id, sap_inbound_delivery_client)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if doc.get("receipt_status") == "received":

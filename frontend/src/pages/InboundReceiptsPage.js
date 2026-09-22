@@ -456,9 +456,22 @@ export default function InboundReceiptsPage() {
                             {order.sto_id}
                           </button>
                           <div className="text-xs text-[#667085]">SAP #{order.sap_order_id}</div>
-                          {order.outbound_delivery_ids.length > 0 && (
+                          {/* Sep 22 2026, user's explicit ask ("the same
+                              ID will be shown in the receiving page
+                              instead of outbound ID, they are same but
+                              we need to ensure we fetch it from inbound")
+                              - shows the INBOUND-verified id (re-fetched
+                              from InboundDeliveryCollection at the
+                              receiving site) once SAP confirms it exists
+                              there, not just the shipping side's own
+                              outbound_delivery_ids. */}
+                          {order.inbound_delivery_ids?.length > 0 ? (
                             <div className="text-[11px] text-[#667085] font-mono mt-0.5" data-testid={`inbound-receipt-delivery-ids-${order.sto_id}`}>
-                              SAP Delivery Notif: {order.outbound_delivery_ids.join(", ")}
+                              Inbound Delivery Notif: {order.inbound_delivery_ids.join(", ")}
+                            </div>
+                          ) : order.outbound_delivery_ids.length > 0 && (
+                            <div className="text-[11px] text-[#B54708] font-mono mt-0.5" data-testid={`inbound-receipt-delivery-ids-${order.sto_id}`}>
+                              Awaiting Inbound Delivery Notif at {order.ship_to_site_id}...
                             </div>
                           )}
                         </TableCell>
