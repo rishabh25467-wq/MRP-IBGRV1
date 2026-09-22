@@ -68,7 +68,19 @@ def company_and_set_of_books_for_site(site_id: str):
 # granular bin-level location within its RM warehouse, not the flat
 # "P3-RM" area itself - SITE_INBOUND_STAGING_AREA_OVERRIDE holds any
 # site whose real target area doesn't match the "{site}-HOLD" default.
-SITE_INBOUND_STAGING_AREA_OVERRIDE = {"P3": "P3-Z1-01-A", "P8": "P8-RM"}
+#
+# Sep 22 2026 CORRECTION (user's explicit ask, real live incident
+# STO-000137: "P8 staging area is P8 hold, and the movement should [be]
+# P8 HOLD to destination set in outbound") - the Sep 20 "P8-RM" entry
+# below was WRONG (yet another flip on this exact site - see the Sep 21
+# correction above this same P8 entry went through already). P8 has NO
+# override at all now: falls back to the plain "P8-HOLD" default like
+# every other site except P3. Real stock for STO-000137 that was
+# wrongly left un-relocated in "P8-HOLD" (Receive silently no-op'd as
+# "skipped_same_warehouse" because this override made SAP's real
+# staging area look identical to the STO's own target) needs a manual
+# retry once this is deployed - see retry_receipt_relocation.
+SITE_INBOUND_STAGING_AREA_OVERRIDE = {"P3": "P3-Z1-01-A"}
 
 
 def inbound_staging_area_for_site(site_id: str) -> str:
