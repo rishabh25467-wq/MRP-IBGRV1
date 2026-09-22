@@ -36,6 +36,7 @@ const COMPLETED_STATUS_STYLE = {
 
 const STATUS_STYLE = {
   pending: { label: "Pending Receipt", cls: "bg-[#FEF3C7] text-[#92400E]" },
+  awaiting_sap: { label: "Awaiting SAP", cls: "bg-[#EFF8FF] text-[#175CD3]" },
   partial: { label: "Partially Received", cls: "bg-[#FEE4E2] text-[#B42318]" },
   failed: { label: "Receipt Failed", cls: "bg-[#FEE4E2] text-[#B42318]" },
 };
@@ -52,6 +53,15 @@ const jobBadge = (job) => {
   }
   if (job.status === "done") {
     return { icon: CheckCircle, cls: "text-[#027A48]", iconCls: "", label: "Done", detail: null };
+  }
+  // Sep 22 2026 - the automated GR flow parks a job in "awaiting_sap"
+  // (Acknowledge+Release done, waiting on SAP's own async Warehouse
+  // Order creation + the event-notification webhook to finish it - see
+  // inbound_receipt_service.py) - a distinct label from the instant
+  // "Moving stock…" spinner so it's clear this step depends on SAP's
+  // own timing, not something stuck on our side.
+  if (job.phase === "awaiting_sap") {
+    return { icon: CircleNotch, cls: "text-[#175CD3]", iconCls: "animate-spin", label: "Awaiting SAP…", detail: null };
   }
   // Sep 21 2026, user's explicit ask ("FIX THIS PROGRESS BAR THAT SHOWS
   // OLD PLAYWRIGHT PROGRESS BAR AND UNCLEAR. WE ARE JUST MOVING STOCK.")

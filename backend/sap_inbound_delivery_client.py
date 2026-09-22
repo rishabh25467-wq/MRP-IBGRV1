@@ -3,6 +3,18 @@ posts the Goods Receipt for an Inbound Delivery Notification (Aug 28
 2026, the "Inbound STO Receipt" feature - see stock_transfer_service.py
 module docstring for the outbound side this mirrors).
 
+Sep 22 2026 update: this class is also instantiated a second time in
+server.py (as `sap_kh_inbound_delivery_client`) pointed at the
+`khinbounddelivery` service instead (same underlying SAP object,
+confirmed live - `ID`/`ObjectID` are identical across both services).
+That second instance is the one used for `acknowledge_delivery_note_
+receipt`/`release_delivery` in the new automated GR flow (see
+inbound_receipt_service.start_automated_receipt) - `inboundstockemergent`
+never exposed `AcknowledgeDeliveryNoteReceipt` at all, and
+`PGRBackground`/direct GR posting is confirmed dead below, so this file's
+own `endpoint` (inboundstockemergent) is only used for `find_delivery_by_id`
+in production today.
+
 Discovered live this session:
   - SAP has NO web service/API to create a "Confirmed Inbound Delivery"
     (the doc that carries actual received quantities) directly -
@@ -41,10 +53,14 @@ class SAPInboundDeliveryError(Exception):
 
 
 class SAPInboundDeliveryClient:
-    def __init__(self, endpoint: str, username: str, password: str, vhost: str):
+    def __init__(self, endpoint: str, username: str, password: str, vhost: str, release_action: str = "InboundDeliveryRelease"):
         self.endpoint = endpoint.rstrip("/")
         self.auth = HTTPBasicAuth(username, password)
         self.vhost = vhost
+        # `khinbounddelivery` names this Function Import just "Release"
+        # (confirmed live, Sep 22 2026) - `inboundstockemergent` (this
+        # class's original service) uses "InboundDeliveryRelease".
+        self.release_action = release_action
 
     def find_delivery_by_id(self, delivery_id: str) -> dict:
         """Looks up the Inbound Delivery Notification whose own `ID`
@@ -86,7 +102,66 @@ class SAPInboundDeliveryClient:
                 "unit_code": qty_row.get("unitCode"),
                 "quantity_object_id": qty_row.get("ObjectID"),
             })
-        return {"object_id": row.get("ObjectID"), "uuid": row.get("UUID"), "id": row.get("ID"), "items": parsed_items}
+        return {
+            "object_id": row.get("ObjectID"), "uuid": row.get("UUID"), "id": row.get("ID"), "items": parsed_items,
+            "release_status_code": row.get("ReleaseStatusCode"),
+            "delivery_processing_status_code": row.get("DeliveryProcessingStatusCode"),
+            "delivery_note_status_code": row.get("DeliveryNoteStatusCode"),
+        }
+
+    def acknowledge_delivery_note_receipt(self, delivery_object_id: str) -> None:
+        """AcknowledgeDeliveryNoteReceipt (Function Import) - flips the
+        Notification from "Advised" to "Received" (confirmed live, Sep 22
+        2026). Discovered as a required prerequisite: `Release` itself
+        errors with "action is disabled" until this has run first. Only
+        exposed on the `khinbounddelivery` service (not
+        `inboundstockemergent`) - see module docstring. A 4xx here
+        usually just means the Notification was already acknowledged by
+        an earlier attempt; callers treat it as non-fatal."""
+        session = requests.Session()
+        try:
+            with sap_semaphore:
+                token = self._fetch_csrf_token(session, "InboundDeliveryCollection")
+                resp = session.post(
+                    f"{self.endpoint}/AcknowledgeDeliveryNoteReceipt",
+                    params={"ObjectID": f"'{delivery_object_id}'", "sap-vhost": self.vhost},
+                    auth=self.auth,
+                    headers={"Accept": "application/json", "X-CSRF-Token": token},
+                    timeout=45,
+                )
+        except requests.exceptions.RequestException as e:
+            raise SAPInboundDeliveryError(f"Could not reach SAP: {e}")
+        if resp.status_code >= 400:
+            raise SAPInboundDeliveryError(f"HTTP {resp.status_code}: {resp.text[:500]}")
+
+    def find_object_id(self, delivery_id: str) -> dict:
+        """Lightweight lookup (no $expand) - just the ObjectID + status
+        codes, not line items. Needed because `khinbounddelivery` (used
+        for Acknowledge/Release - see server.py's
+        sap_kh_inbound_delivery_client) exposes a different item
+        navigation property name than `inboundstockemergent`
+        (confirmed live, Sep 22 2026: `find_delivery_by_id`'s
+        `InboundDeliveryItem` expand 404s there) - this avoids relying
+        on item-schema compatibility between the two services at all."""
+        url = f"{self.endpoint}/InboundDeliveryCollection"
+        params = {"$filter": f"ID eq '{delivery_id}'", "$format": "json", "sap-vhost": self.vhost}
+        try:
+            with sap_semaphore:
+                resp = requests.get(url, params=params, auth=self.auth, headers={"Accept": "application/json"}, timeout=30)
+        except requests.exceptions.RequestException as e:
+            raise SAPInboundDeliveryError(f"Could not reach SAP: {e}")
+        if resp.status_code != 200:
+            raise SAPInboundDeliveryError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+        results = resp.json().get("d", {}).get("results", [])
+        if not results:
+            return None
+        row = results[0]
+        return {
+            "object_id": row.get("ObjectID"), "id": row.get("ID"),
+            "release_status_code": row.get("ReleaseStatusCode"),
+            "delivery_processing_status_code": row.get("DeliveryProcessingStatusCode"),
+            "delivery_note_status_code": row.get("DeliveryNoteStatusCode"),
+        }
 
     def update_item_quantity(self, quantity_object_id: str, new_quantity: float) -> None:
         """PATCH an Item's quantity row to something other than what SAP
@@ -117,16 +192,23 @@ class SAPInboundDeliveryClient:
         Released first (confirmed live, Aug 28 2026 - SAP's own action
         model gates PGRBackground on release status, same as the
         outbound side's Delivery needing an explicit release before its
-        own PGI). `TaskBasedIndicator=false` releases it directly instead
-        of forwarding it to a Warehouse Task - we want the Goods Receipt
-        to post immediately, not go through warehouse execution."""
+        own PGI). Must call `acknowledge_delivery_note_receipt` first.
+
+        Sep 22 2026 update: `TaskBasedIndicator=true` now (was `false`) -
+        live testing this session proved site P1 always spawns the real
+        Warehouse Request/Warehouse Order chain regardless of this flag
+        (it's driven by the site's own Material Flow config, not this
+        param), so `true` (forward to warehouse execution, the normal SAP
+        behavior) is the correct/tested value - see
+        inbound_receipt_service.start_automated_receipt for what happens
+        next depending on whether a Warehouse Order actually gets created."""
         session = requests.Session()
         try:
             with sap_semaphore:
                 token = self._fetch_csrf_token(session, "InboundDeliveryCollection")
                 resp = session.post(
-                    f"{self.endpoint}/InboundDeliveryRelease",
-                    params={"ObjectID": f"'{delivery_object_id}'", "TaskBasedIndicator": "false", "sap-vhost": self.vhost},
+                    f"{self.endpoint}/{self.release_action}",
+                    params={"ObjectID": f"'{delivery_object_id}'", "TaskBasedIndicator": "true", "sap-vhost": self.vhost},
                     auth=self.auth,
                     headers={"Accept": "application/json", "X-CSRF-Token": token},
                     timeout=45,

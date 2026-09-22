@@ -79,6 +79,14 @@ def recover_orphaned_jobs(db, message: str) -> list:
     caller can react per `kind`, e.g. persisting a receipt_error onto an
     inbound_receipt job's own STO doc - see server.py's startup block).
 
+    Excludes phase="awaiting_sap" (Sep 22 2026, automated STO GR flow) -
+    that's a genuine, durable wait on SAP's own async Warehouse Order
+    creation + the `/webhooks/sap-put-away` push finishing it, not an
+    in-process-only task killed by this restart (the STO doc's own
+    `receipt_awaiting_deliveries` survives the restart fine either way -
+    only the job's own polling UI would otherwise wrongly flip to
+    "Failed" while the receipt genuinely completes moments later).
+
     Aug 2026 fix (real incident: Proposal 225857 for PL-0037A) - `result`
     used to stay untouched (null, since these jobs never got a chance to
     set it themselves), which hid the frontend's "Resume" button even
@@ -88,7 +96,7 @@ def recover_orphaned_jobs(db, message: str) -> list:
     each is known, well before the job ever finishes) now carries them
     into `result`, in the same shape a normal failure uses."""
     orphaned = list(db[COLLECTION_NAME].find(
-        {"status": {"$in": list(ORPHANABLE_JOB_STATUSES)}},
+        {"status": {"$in": list(ORPHANABLE_JOB_STATUSES)}, "phase": {"$ne": "awaiting_sap"}},
         {"production_proposal_id": 1, "production_order_id": 1, "kind": 1, "sto_id": 1},
     ))
     for job in orphaned:
