@@ -1344,13 +1344,28 @@ runs one Goods Movement SOAP call per line - previously sequential.
   cap of 3 in-flight SAP calls tenant-wide still applies - this only removes the function's OWN artificial
   serialization on top of that cap, doesn't raise the real limit). Result order preserved (zipped back to
   original item order).
-- Live-verified on a real 3-line pending STO (STO-000084, P8): correctness confirmed - 2 lines succeeded
-  (G12NUT/G12FW, real GAC IDs), 1 correctly failed with "Stock does not exist in the STO warehouse" (genuine
-  pre-existing depleted P8-HOLD stock for G12LW, unrelated to this change). Could not get a clean
-  all-succeed multi-line timing number this pass (the failing line's 3 retries-with-backoff dominated total
-  elapsed time) - correctness of concurrent execution + error handling is proven; a clean throughput number
-  needs a multi-line STO where every line genuinely has stock.
 - Not yet run through `testing_agent`.
+
+## Part 9 (Sep 22 2026, same day) - Option 2 (SOAP batching) definitively RULED OUT, live-proven atomic
+Live-tested sending 2 `GoodsAndActivityConfirmation` blocks in ONE SOAP call (1 valid 1 EA move + 1
+deliberately-invalid 999999 EA move, same product/site) directly against production. **Result: the
+ENTIRE call failed as a SOAP Fault (HTTP 500)** - the valid confirmation was rejected too, purely
+because it was bundled with the invalid one. Verified via SAPInventoryClient: no partial posting
+leaked (clean rollback, no corruption), but proves this service treats the whole request as ONE
+atomic transaction - no per-item independence, no safeguard can fix this (it's a platform behavior,
+not a parsing/attribution problem). Batching would make failures WORSE than today (1 bad line would
+fail ALL lines in a batch, vs today's independent per-line success).
+Possible-but-unbuilt alternative: a NEW custom OData service (via SAP OData Service Explorer, same
+mechanism as the existing `khinbounddeliveryexecution`) exposing a Create-capable goods-movement
+entity, since OData's own `$batch` mechanism supports independent per-changeset commits (the right
+primitive for this) - unlike the SOAP service tested here. Unverified, unbuilt, would need the SAP
+admin to expose it and then live-testing to confirm changeset independence actually holds.
+**Current recommendation**: implement Option 1 (HTTP connection/session reuse in
+sap_goods_movement_client.py etc - NOT YET DONE, safe, ~5-15% estimated gain) as the next step;
+do not pursue SOAP batching. Full detailed trail (raw XML, exact test STOs, timings, root-cause
+math for the ~29-30s/8-line observation) recorded in `/app/memory/sto_receipt_performance_
+investigation.md` per user's explicit ask to document everything.
+
 
 
 
