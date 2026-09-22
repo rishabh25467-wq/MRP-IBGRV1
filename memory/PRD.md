@@ -1336,6 +1336,23 @@ User challenged Part 6's test methodology directly: Release was always called be
 - A 3rd fresh STO (000140, order 32818) was created to verify the rewritten code through the actual endpoint end-to-end, but was abandoned before Goods Issue completed (removed from app DB, order 32818 still exists in real SAP awaiting manual GI if the user wants to complete or ignore/cancel it) - the rewrite itself is a straightforward reordering of the exact same calls already proven live above, not new untested logic.
 - Not yet run through `testing_agent`.
 
+## Part 8 (Sep 22 2026, same day) - parallelized per-line relocation calls for multi-line receipts
+User's ask: can a 10-line STO receipt be safely brought under 10s? Relocation (`_relocate_receipt_from_hold`)
+runs one Goods Movement SOAP call per line - previously sequential.
+- `inbound_receipt_service._relocate_receipt_from_hold` now fires all lines' `_trigger_goods_movement` calls
+  concurrently via a `ThreadPoolExecutor(max_workers=SAP_MAX_CONCURRENT_REQUESTS)` (same shared `sap_semaphore`
+  cap of 3 in-flight SAP calls tenant-wide still applies - this only removes the function's OWN artificial
+  serialization on top of that cap, doesn't raise the real limit). Result order preserved (zipped back to
+  original item order).
+- Live-verified on a real 3-line pending STO (STO-000084, P8): correctness confirmed - 2 lines succeeded
+  (G12NUT/G12FW, real GAC IDs), 1 correctly failed with "Stock does not exist in the STO warehouse" (genuine
+  pre-existing depleted P8-HOLD stock for G12LW, unrelated to this change). Could not get a clean
+  all-succeed multi-line timing number this pass (the failing line's 3 retries-with-backoff dominated total
+  elapsed time) - correctness of concurrent execution + error handling is proven; a clean throughput number
+  needs a multi-line STO where every line genuinely has stock.
+- Not yet run through `testing_agent`.
+
+
 
 **User's explicit ask**: disable "Post GRN in SAP" if entered Actual Qty != Ship Qty; user confirmed
 ANY mismatch (over OR under) should block posting, not just shortages.

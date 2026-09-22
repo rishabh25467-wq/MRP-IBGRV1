@@ -58,9 +58,11 @@ start_automated_receipt's own comment block for the exact synchronous
 chain (user's explicit architectural mandate)."""
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import job_store
+from sap_rate_limiter import SAP_MAX_CONCURRENT_REQUESTS
 from sap_wip_clearing_client import company_and_set_of_books_for_site, inbound_staging_area_for_site
 from store_approval_service import _trigger_goods_movement
 
@@ -125,23 +127,36 @@ def _relocate_receipt_from_hold(db, sap_goods_movement_client, doc: dict, quanti
         return {"status": "skipped_no_items"}
     quantity_overrides = quantity_overrides or {}
     owner_party_id, _ = company_and_set_of_books_for_site(site_id)
-    line_results = []
-    for item in items:
-        qty = quantity_overrides.get(str(item["line_no"]), item["requested_qty"])
-        result = _trigger_goods_movement(
-            sap_goods_movement_client, owner_party_id, item["product_id"],
-            hold_warehouse_id, ship_to_location_id,
-            qty, item.get("unit_of_measure") or "EA", site_id,
-        )
-        if not result.get("ok"):
-            raw = result.get("error_detail") or result.get("error") or ""
-            if re.search(r"negative stock not permitted", raw, re.IGNORECASE):
-                error = "Stock does not exist in the STO warehouse"
+    # Sep 22 2026, user's explicit ask ("10 line STO, can it be quicker
+    # safely under 10s") - each line's movement is fully independent
+    # (different product, same source/target warehouse) so these are
+    # safe to fire concurrently instead of one-at-a-time. `sap_semaphore`
+    # (shared tenant-wide, see sap_rate_limiter.py) still caps the real
+    # in-flight SAP call count at 3 regardless of how many threads are
+    # submitted here - this only removes the ARTIFICIAL serialization
+    # this function itself used to add on top of that shared cap.
+    with ThreadPoolExecutor(max_workers=SAP_MAX_CONCURRENT_REQUESTS) as pool:
+        futures = [
+            pool.submit(
+                _trigger_goods_movement, sap_goods_movement_client, owner_party_id, item["product_id"],
+                hold_warehouse_id, ship_to_location_id,
+                quantity_overrides.get(str(item["line_no"]), item["requested_qty"]),
+                item.get("unit_of_measure") or "EA", site_id,
+            )
+            for item in items
+        ]
+        line_results = []
+        for item, future in zip(items, futures):
+            result = future.result()
+            if not result.get("ok"):
+                raw = result.get("error_detail") or result.get("error") or ""
+                if re.search(r"negative stock not permitted", raw, re.IGNORECASE):
+                    error = "Stock does not exist in the STO warehouse"
+                else:
+                    error = result.get("error") or raw or "unknown SAP error"
+                line_results.append({"product_id": item["product_id"], "ok": False, "error": error})
             else:
-                error = result.get("error") or raw or "unknown SAP error"
-            line_results.append({"product_id": item["product_id"], "ok": False, "error": error})
-        else:
-            line_results.append({"product_id": item["product_id"], "ok": True, "gac_id": result.get("external_id")})
+                line_results.append({"product_id": item["product_id"], "ok": True, "gac_id": result.get("external_id")})
     all_ok = all(r["ok"] for r in line_results)
     any_ok = any(r["ok"] for r in line_results)
     status = "done" if all_ok else ("partial" if any_ok else "failed")
