@@ -415,33 +415,46 @@ def receive_stock_transfer_order(db, sap_goods_movement_client, sto_id: str, act
     return {"status": overall, "results": lines, "error": error_summary, "receipt_relocation": relocation}
 
 
-# Sep 2026, user's explicit architectural mandate - a strictly
-# synchronous, transaction-driven action chain per delivery, zero async
-# waiting, zero polling, zero background jobs/webhooks (previous
-# Event-Notification-webhook + 20-min safety-sweep design was rejected
-# outright: it masked SAP's own 2-8min Warehouse Order creation lag
-# instead of surfacing it). For each delivery, in one pass:
-#   Acknowledge -> (quantity overrides, if any) -> Release -> check status:
-#     a) Non-task-based site (e.g. P8) - Release already posted the GR,
-#        DeliveryProcessingStatusCode flips straight to "Finished" -
-#        done, nothing else to do.
-#     b) Task-based site (confirmed live for P1) - Release only spawns
-#        the Warehouse Order chain; try ONE immediate, un-retried lookup
-#        for the Lot SAP just created (find_recent_lots) and confirm its
-#        activities right there in the same request.
-#     c) Neither (b)'s immediate lookup found nothing) - last synchronous
-#        attempt: call PostGoodsReceipt directly. If that also fails,
-#        raise immediately - the receive request itself fails (400) and
-#        the user retries manually a moment later. Never parks, never
-#        waits, never retries in a loop.
+# Sep 22 2026 (LATE, this session) - MAJOR CORRECTION to everything
+# above: the entire "Release-first, then Lot/Warehouse-Order" design
+# was based on a FLAWED prior test where Release was always called
+# before PostGoodsReceipt, and SAP's own action gating then disabled
+# PGRBackground - misread as "PGRBackground needs Release first" /
+# "this site is task-based". Live-proven this session on 2 BRAND NEW,
+# never-touched STOs (one at P1, one at P8 - the exact two sites
+# earlier assumed to be task-based vs non-task-based): calling
+# Acknowledge -> PostGoodsReceipt DIRECTLY, with NO Release call at
+# all, succeeds immediately and posts REAL inventory (confirmed via
+# SAPInventoryClient: P8-HOLD +1 KGM, P1-HOLD +1 EA, exactly the
+# shipped qty, both times) - SAP itself flips ReleaseStatusCode to
+# Released as a side effect. No Warehouse Order / Site Logistics Lot /
+# task chain is involved at all for a fresh delivery. `KBA 3583076`
+# ("PGRBackground disabled") only reproduces once a delivery has
+# ALREADY been Released without an immediate GR (a real, separate,
+# already-known-dead-end state - see STO-000123/P1D1-560) - it is NOT
+# a blanket rule, and Release should NEVER be called proactively by
+# this engine anymore.
+#
+# New order, one pass per delivery, zero polling/waiting anywhere:
+#   Acknowledge -> (quantity overrides, if any) -> PostGoodsReceipt
+#   directly. If that succeeds, done - real GR posted, no Release, no
+#   Lot involved.
+#   If PostGoodsReceipt is rejected (a genuinely already-released-but-
+#   unfinished delivery, or some other tenant-specific block): fall
+#   back to the old Release -> immediate Lot lookup -> ConfirmAsPlanned
+#   route as a SECOND attempt, still in the same synchronous pass. If
+#   that also finds nothing, raise immediately - the receive request
+#   fails and the user retries manually a moment later. Never parks,
+#   never waits, never retries in a loop.
 _SAP_FINISHED_STATUS_CODE = "3"
 
 
 def _apply_quantity_overrides(sap_inbound_delivery_client, delivery_id: str, line_overrides: dict) -> None:
     """`line_overrides`: {product_id: qty} (see build_line_overrides) -
-    PATCHes each item's InboundDeliveryItemQuantity row BEFORE Release,
-    the only lever this OData service exposes for a non-default
-    quantity (see sap_inbound_delivery_client.py module docstring)."""
+    PATCHes each item's InboundDeliveryItemQuantity row BEFORE
+    PostGoodsReceipt, the only lever this OData service exposes for a
+    non-default quantity (see sap_inbound_delivery_client.py module
+    docstring)."""
     if not sap_inbound_delivery_client or not line_overrides:
         return
     try:
@@ -461,7 +474,9 @@ def _apply_quantity_overrides(sap_inbound_delivery_client, delivery_id: str, lin
 def _find_matching_lot(sap_execution_client, site_id: str, product_ids: list) -> dict:
     """Single immediate lookup (see sap_inbound_delivery_execution_client.
     find_recent_lots) - no retry, no wait. Matches by exact site + product
-    set, same heuristic the old webhook matching used."""
+    set, same heuristic the old webhook matching used. Only reached now
+    as a FALLBACK when direct PostGoodsReceipt (the new primary path)
+    itself gets rejected - see start_automated_receipt."""
     if not sap_execution_client:
         return None
     try:
@@ -499,31 +514,40 @@ def start_automated_receipt(
             raise ValueError(f"Could not reach SAP to look up delivery {delivery_id}: {e}")
         if not found:
             continue
+        if found.get("delivery_processing_status_code") == _SAP_FINISHED_STATUS_CODE:
+            continue  # already received (e.g. a repeat click) - nothing to do
         try:
             sap_kh_inbound_delivery_client.acknowledge_delivery_note_receipt(found["object_id"])
         except Exception as e:
             logger.info(f"Acknowledge for {delivery_id} ({sto_id}) skipped/failed (may already be acknowledged): {e}")
         _apply_quantity_overrides(sap_inbound_delivery_client, delivery_id, line_overrides)
+        pgr_error = None
+        try:
+            sap_inbound_delivery_client.post_goods_receipt(found["object_id"])
+        except Exception as e:
+            pgr_error = e
+        if pgr_error is None:
+            continue  # Path A: direct PostGoodsReceipt succeeded, real GR posted
+        # Path B fallback: this specific delivery rejected direct PGR
+        # (e.g. already Released-but-unfinished from an earlier attempt -
+        # see STO-000123/P1D1-560) - try Release -> immediate Lot lookup.
         try:
             sap_kh_inbound_delivery_client.release_delivery(found["object_id"])
         except Exception as e:
             logger.info(f"Release for {delivery_id} ({sto_id}) skipped/failed (may already be released): {e}")
         refreshed = sap_kh_inbound_delivery_client.find_object_id(delivery_id) or found
         if refreshed.get("delivery_processing_status_code") == _SAP_FINISHED_STATUS_CODE:
-            continue  # non-task-based site - GR already posted on Release
+            continue  # Release itself finished it
         lot = _find_matching_lot(sap_execution_client, site_id, all_product_ids)
         if lot:
             for activity in lot.get("activities") or []:
                 if activity.get("status_code") != _SAP_FINISHED_STATUS_CODE:
                     sap_execution_client.confirm_activity_as_planned(activity["object_id"])
             continue
-        try:
-            sap_inbound_delivery_client.post_goods_receipt(found["object_id"])
-        except Exception as e:
-            raise ValueError(
-                f"SAP hasn't finished processing delivery {delivery_id} yet - no Warehouse Order was found and "
-                f"the direct Goods Receipt attempt was rejected ({e}). Please retry the receipt in a moment."
-            )
+        raise ValueError(
+            f"SAP hasn't finished processing delivery {delivery_id} yet - direct Goods Receipt was rejected "
+            f"({pgr_error}) and no Warehouse Order was found either. Please retry the receipt in a moment."
+        )
     return receive_stock_transfer_order(db, sap_goods_movement_client, sto_id, actor, quantity_overrides)
 
 
