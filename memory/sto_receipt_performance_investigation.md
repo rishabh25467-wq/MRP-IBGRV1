@@ -178,3 +178,52 @@ one network round-trip:
 4. A genuinely bigger win (per-item independent batching) would require a NEW custom OData
    service from the SAP admin - unbuilt, unverified, a real ask for the user if they want to
    pursue it.
+
+## 9. FINAL - custom OData `$batch` route investigated and RULED OUT (Sep 22 2026, same day)
+User provided 2 more artifacts to re-check: `InventoryNotification.html` (BO doc) and
+`SiteLogisticsRequest.html` (BO doc), plus `khgoodsandactivityconfirmation.xml` (a real custom
+OData Service Definition export, `SERVICE_NAMESPACE=cust`, backed by BO `APGAC_GA_CFM` - the SAME
+BO the SOAP Goods Movement service in #6 uses).
+
+**Both HTMLs ruled out** (via `analyze_file_tool`):
+- `InventoryNotification`: read-only reporting BO, `Public Write Access: no` on its item node,
+  restricted to `External Warehouse` (3PL) sites only - already known, re-confirmed.
+- `SiteLogisticsRequest`: its `ConfirmationItem` node only records a status/quantity update, does
+  NOT itself trigger or expose a goods-movement write operation - not a viable Create/batch path
+  for this use case either.
+
+**`khgoodsandactivityconfirmation` looked genuinely promising at first** - live-confirmed via its
+real `$metadata` (service is ACTUALLY DEPLOYED at
+`https://my431827.businessbydesign.cloud.sap/sap/byd/odata/cust/v1/khgoodsandactivityconfirmation`,
+`GET $metadata` returns HTTP 200): `GoodsAndActivityConfirmationCollection` AND
+`InventoryChangeItemCollection` both show `sap:creatable="true"`, with a genuine "double-entry"
+line model (`TransferGroupID` pairs 2 `InventoryChangeItem` rows - one per direction - instead of
+the SOAP envelope's single source+target fields) that maps to real UUID fields (`MaterialUUID`,
+`LogisticsAreaUUID`, `OwnerPartyUUID`) needing new resolution logic. This is architecturally the
+right OData v2 `$batch` shape for independent per-line changesets.
+
+**RULED OUT after a live read-only test against production**: `GET GoodsAndActivityConfirmation-
+Collection` with NO expand works fine (200 OK, real historical records returned). The moment
+`$expand=InventoryChangeItem` is added (needed to reach ANY line-level field) - **HTTP 500 SAP
+Internal Server Error (ABAP dump)**, reproduced 3 ways: collection-level expand, single-entity-by-
+ObjectID expand, and querying `InventoryChangeItemCollection` directly. This is the SAME
+underlying ABAP dump already documented in PRD.md ("Query Goods And Activity Confirmations ABAP
+dump" section) for the SOAP `QueryGoodsandActivityConfirmationIn` service - confirms it's a
+tenant-wide platform bug in SAP's own serialization of this BO's item-level node, not a
+request-shape or protocol problem (same crash via OData here, via SOAP there).
+**Why this kills the $batch plan**: any OData Create (POST) against this entity would need SAP to
+serialize the newly-created `InventoryChangeItem` back in its response (standard OData behavior)
+- almost certainly hitting the exact same crash on write, per the "clean write, corrupted
+response" pattern already seen elsewhere in this tenant (e.g. the `set_account_determination_
+and_price` false-error bug). Built but never tested a write, on the user's explicit instruction
+(Sep 22 2026: "fall back to Option 1... accept ~15-20s") - this remains UNVERIFIED-ON-WRITE, not
+definitively dead, but not worth the live-SAP-write risk to test further given the option below
+was already accepted.
+
+**Final decision (user, Sep 22 2026)**: do not pursue this further for now. Implemented Option 1
+(`requests.Session` reuse) in `sap_goods_movement_client.py` instead - safe, ~5-15% modest win.
+**Revised, accepted realistic target for a 10-line STO receipt: ~15-20s**, not the original <10s
+(real SAP per-call latency ~7-9s/call is the hard floor, confirmed empirically in #5, unaffected
+by connection pooling). If the user later wants to pursue the OData route anyway, the exact next
+step is a real WRITE test (single safe `$batch` POST) to see if Create hits the same ABAP dump as
+GET - not yet attempted.

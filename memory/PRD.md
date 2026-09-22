@@ -784,6 +784,30 @@ against vendor RAD-P2-S (336 cached PO line items) - confirmed 49.4s.
 - Inbound generalization fix self-tested (pytest + direct mocked call-path check across
   P1/P2/P3/P8) - not yet run through testing_agent as a dedicated pass.
 
+## Part 6 - STO relocation speed: OData $batch investigated + ruled out, Option 1 shipped (Sep 22 2026)
+Full detail in `/app/memory/sto_receipt_performance_investigation.md` section 9. User asked to
+re-check `InventoryNotification.html`/`SiteLogisticsRequest.html`/`khgoodsandactivityconfirmation.xml`
+for a genuine per-line-independent OData `$batch` path to beat the SOAP atomic-batch limit (#6 in
+that doc). Both HTMLs ruled out (read-only/3PL-only, and status-only respectively).
+`khgoodsandactivityconfirmation` looked promising (live-confirmed deployed, `IS_CREATABLE=true` on
+both the header and item entities, a real double-entry `TransferGroupID` line model) but a live
+read-only test found `$expand=InventoryChangeItem` (or querying `InventoryChangeItemCollection`
+directly) throws HTTP 500 (ABAP dump) on this tenant - the SAME underlying bug already documented
+below ("Query Goods And Activity Confirmations ABAP dump"), just reached via OData instead of SOAP.
+Since a Create/POST would need SAP to serialize the same item node back in its response, this is a
+near-certain landmine on write too (not live-tested on write, per user's explicit choice to stop
+here). **User's decision: accept ~15-20s as the realistic target for a 10-line STO** (real SAP
+per-call latency, ~7-9s/call, is the hard floor - connection pooling can't fix that) and ship the
+safe win instead - added a persistent `requests.Session` to `SAPGoodsMovementClient.__init__`
+(`sap_goods_movement_client.py`), used by both `session.post()` in `goods_movement()`. The client is
+a module-level singleton (`server.py`) reused by every concurrent relocation line
+(`ThreadPoolExecutor` in `inbound_receipt_service._relocate_receipt_from_hold`), so this genuinely
+pools TCP/TLS connections across calls instead of a fresh handshake each time - `requests.Session`
+is documented thread-safe for concurrent use. Self-verified via a live dry-run call (same session
+object reused across 2 calls, envelope unchanged) - backend restarted clean. Not run through
+`testing_agent` (single-file, non-behavioral connection-pooling change, zero API/schema change) -
+should be observed on the next real multi-line STO receipt for the actual timing improvement.
+
 ## Part 5 pointer (Sep 22 2026) - STO Inbound GR fully automated for task-supported sites (P1)
 Full detail in `/app/memory/CHANGELOG.md` "Part 5" - built a new custom SAP OData service
 (`khinbounddeliveryexecution`) + Event Notification webhook (subscribed to the CORRECT Business

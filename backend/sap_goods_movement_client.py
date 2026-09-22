@@ -145,6 +145,15 @@ class SAPGoodsMovementClient:
         self.endpoint = endpoint
         self.auth = HTTPBasicAuth(username, password)
         self.timeout = timeout
+        # Sep 22 2026, Option 1 perf fix (see /app/memory/sto_receipt_performance_investigation.md
+        # section 6/8) - a single instance-level requests.Session reused across every call instead of
+        # a fresh requests.post() each time, so concurrent relocation lines (ThreadPoolExecutor in
+        # inbound_receipt_service._relocate_receipt_from_hold) reuse pooled TCP/TLS connections
+        # instead of each paying a fresh handshake. requests.Session is documented thread-safe for
+        # concurrent requests (connection pool is internally locked). Modest, safe win only (~5-15%,
+        # SAP's own backend processing still dominates total time) - does NOT change the SOAP
+        # envelope/semantics, so no correctness risk.
+        self.session = requests.Session()
 
     def goods_movement(self, owner_party_id: str, product_id: str, source_logistics_area_id: str,
                         target_logistics_area_id: str, quantity: float, quantity_uom: str,
@@ -169,7 +178,7 @@ class SAPGoodsMovementClient:
         headers = {"Content-Type": "text/xml; charset=utf-8", "SOAPAction": SOAP_ACTION}
         try:
             with sap_semaphore:
-                response = requests.post(self.endpoint, data=envelope.encode("utf-8"), headers=headers, auth=self.auth, timeout=self.timeout)
+                response = self.session.post(self.endpoint, data=envelope.encode("utf-8"), headers=headers, auth=self.auth, timeout=self.timeout)
         except requests.exceptions.RequestException as e:
             raise SAPGoodsMovementError(f"SAP Goods Movement service unreachable: {e}")
 
