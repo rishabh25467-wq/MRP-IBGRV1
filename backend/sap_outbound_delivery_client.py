@@ -48,6 +48,15 @@ from Customer Requirement either (checked live). Real working fix:
 standard SAP Note on the Customer Requirement, at CREATE time (zero race
 condition) - see stock_transfer_service.py's `_build_gst_note_text`.
 
+Sep 22 2026 PRECISELY-TIMED re-test (user's ask - "is the lock really instant, or on some
+interval like other schedulers here that run every 30min/4h?"): created a real, live, dummy STO
+(SAP order 32829, P8->P1, 1 KGM IRON-SCR) and attempted a PATCH on `VehicleNo_KUT` at 3 precise
+checkpoints. Result: the Outbound Delivery Request existed just 0.87s after the SOAP Maintain
+call returned, and the VERY FIRST PATCH attempt (~1.27s total elapsed) was ALREADY rejected -
+same as retries at 12s and 63s. CONFIRMED: this document's read-only lock is not a slow/periodic
+batch job like this tenant's other background schedulers - it's applied essentially inline/
+synchronously with the document's own creation, sub-second. No writable window exists at all.
+
 Aug 27 2026, "one delivery per multi-line order" investigation (real
 incident: STO-000046, SAP order 30336, 3 lines - every line correctly
 left the source site, but SAP created 3 SEPARATE Outbound Deliveries,
