@@ -2124,4 +2124,118 @@ scope via ask_human: safe wins + dormant webhook receiver, NOT wiring it into an
   recovered it in ~5s both times. Worth remembering as a standing "if preview looks dead after an
   edit, this is probably why" note rather than a deep investigation each time.
 
+---
+
+## Part 5 (Sep 22 2026, this fork continuation) - STO Inbound Goods Receipt FULLY AUTOMATED for
+task-supported sites (P1), via a new custom SAP OData service + Event Notification webhook.
+SUPERSEDES the "STO Inbound Receiving via API - DEFINITIVELY DEAD" conclusion in PRD.md for
+task-supported sites specifically (that conclusion was correct for the direct-PGR route; this is
+a different route through the Warehouse Order/Operation Activity chain, only usable at
+task-supported sites).
+
+### Root architecture discovered live this session
+Site P1 is a **"Task-Supported Warehouse"**: `Release`-ing an Inbound Delivery Notification there
+does NOT post a Goods Receipt directly. SAP spawns `Warehouse Request -> Warehouse Order
+(SiteLogisticsLot, UI "Warehouse Order") -> Operation -> Operation Activity ("Put Away Task")`,
+and the real GR only posts once that Activity is confirmed via `ConfirmAsPlanned`. Confirmed with
+zero SAP UI touch, live, twice (STO-000111/P8D1-239 and P8D1-257): real inventory landed in
+`P1-HOLD` only after this call, verified via `SAPInventoryClient` both times.
+
+### New custom OData service `khinbounddeliveryexecution` (built live this session, guided the
+user through SAP's OData Service Explorer wizard)
+Exposes `ConfirmedInboundDelivery`, `SiteLogisticsLotSiteLogisticLot` (Warehouse Order),
+`SiteLogisticsLotMaterialOutput` (with `ProductID` - added live mid-session, wasn't there
+originally, needed for correlation), `SiteLogisticsLotOperation/OperationActivity`, and the write
+action `SiteLogisticsLotOperationActivityConfirmAsPlanned(ObjectID)`. Work Center View:
+"Inbound Warehouse Tasks" (Execution work center).
+
+### Dead ends re-confirmed live this session (don't re-attempt)
+- SOAP `QuerySiteLogisticsTaskIn`/`find_tasks_for_site` (`sap_site_logistics_client.py`) - STO
+  Put Away tasks NEVER surface here regardless of status (open or confirmed) - re-tested live
+  twice, ruling out both "it's a query-scope issue" and "it's a timing issue" theories. This
+  tenant's `SiteLogisticsTask` object is a genuinely different underlying BO from the
+  `SiteLogisticsLot`/`SiteLogisticsLotOperationActivity` used by the new OData service, despite
+  both showing as "Put Away Task" in the SAP UI.
+- The dormant webhook plan (Part 4, `/app/memory/sap_event_push_plan.md`) subscribed to the WRONG
+  Business Object (`SiteLogisticsTask`) for this reason - corrected below.
+
+### The real fix: Event Notification webhook on the CORRECT Business Object
+Subscribed SAP's Event Notification (Application and User Management) to **`Site Logistics Lot`**
+(Object Type Code 120, NOT `SiteLogisticsTask`) - confirmed via the BO documentation the user
+uploaded. Live-tested end-to-end, twice: SAP pushes a CloudEvents payload
+(`sap.byd.SiteLogisticsLot.Root.Created.v1`, `data.entity-id` = the Warehouse Order's ObjectID)
+to the EXISTING `/api/webhooks/sap-put-away` receiver (built Part 4) within ~2-8 min of `Release`.
+No polling anywhere in this design.
+- **Webhook reliability finding**: one test's event delivery failed (502) and needed a manual
+  "Resend" in SAP's Event Notification Monitor - root-caused live via that monitor's log: it
+  collided EXACTLY with a backend hot-reload from an active code edit at that moment (confirmed
+  by 4 buffered events landing the INSTANT the reload finished). Not a real SAP/infra reliability
+  gap - just an artifact of editing the backend live during testing. In normal operation (no
+  active edits) this won't recur, and the 20-min safety net below covers it either way (e.g. a
+  real future deploy).
+- Two Event Notification subscriptions currently exist on the SAP side ("…_live" and "…_sapd"),
+  both pointed at our endpoint - harmless (handler is idempotent, safely no-ops on an
+  already-confirmed activity) but a known duplicate the user may want to clean up later.
+
+### Production code (new/changed)
+- New `sap_inbound_delivery_execution_client.py` - `find_lot_by_object_id()`,
+  `confirm_activity_as_planned()`.
+- `sap_inbound_delivery_client.py` - new `acknowledge_delivery_note_receipt()` (required
+  prerequisite before `Release`, confirmed live - `Release` 500s otherwise), new lightweight
+  `find_object_id()` (no `$expand` - `khinbounddelivery`'s item-navigation schema differs from
+  `inboundstockemergent`'s, confirmed live via a 404), constructor now takes `release_action`
+  (khinbounddelivery uses `Release`, inboundstockemergent uses `InboundDeliveryRelease` - 2
+  different Function Import names for the same underlying object). `release_delivery`'s
+  `TaskBasedIndicator` flipped `false` -> `true` (live-tested: P1 spawns the Warehouse Order chain
+  regardless of this flag - `true` is the semantically correct/tested value).
+- `inbound_receipt_service.py` - new `start_automated_receipt()` (Acknowledge+Release, then either
+  finish immediately if SAP posted the GR directly on Release - e.g. non-task-based sites - or
+  park `receipt_status: "awaiting_sap"` with `receipt_awaiting_deliveries` on the STO doc) and
+  `complete_automated_receipt_for_lot()` (called by the webhook handler - matches the newly-created
+  Lot to the oldest still-awaiting STO at that site by exact product-set match (FIFO tiebreak - the
+  only real collision risk is 2 deliveries to the SAME site with an IDENTICAL product set released
+  within moments of each other), calls `ConfirmAsPlanned` per Activity, then runs the EXISTING
+  unchanged `receive_stock_transfer_order`/relocation). `receive_stock_transfer_order` now falls
+  back to `doc["receipt_quantity_overrides"]` if the caller doesn't pass overrides (needed since
+  the webhook fires minutes after the original request, with no overrides in hand).
+- `server.py` - `/webhooks/sap-put-away` now parses the CloudEvents payload and kicks off
+  `complete_automated_receipt_for_lot` as a background task; `post_inbound_receipt`'s job now
+  calls `start_automated_receipt` and stays "running"/phase "awaiting_sap" (not "done") until the
+  webhook (or the timeout sweep) finishes it. New `sap_kh_inbound_delivery_client` (khinbounddelivery
+  endpoint) and `sap_inbound_delivery_execution_client` global instances. New 20-min safety-net
+  background loop `start_awaiting_sap_receipt_timeout_loop` - marks a stuck "awaiting_sap" receipt
+  `failed` (retriable) if the webhook never lands.
+- `job_store.py` `recover_orphaned_jobs()` now excludes `phase="awaiting_sap"` from the startup
+  orphan-recovery sweep (that's a genuine durable wait on SAP, not a dead in-process task - would
+  otherwise wrongly flip to "Failed" on every backend restart while genuinely still in flight).
+- `.env`: `SAP_ODATA_KH_INBOUND_DELIVERY_BASE_URL`, `SAP_ODATA_INBOUND_DELIVERY_EXECUTION_BASE_URL`.
+- `InboundReceiptsPage.js` - new `STATUS_STYLE.awaiting_sap` + `jobBadge()` branch ("Awaiting SAP…"
+  blue spinner, distinct from the plain "Moving stock…" spinner).
+
+### Live verification (multiple real, one-way SAP writes today, real inventory confirmed each time)
+- STO-000111/P8D1-239: full chain incl. `ConfirmAsPlanned` -> `P1-HOLD` 0 -> 1.0 EA (both products).
+- P8D1-238 (no app STO record, ad-hoc): webhook fired correctly with the right `entity-id`,
+  matched via OData - deliberately left unconfirmed (proof-of-webhook-only test).
+- P8D1-257 (no app STO record - created by a different Emergent agent job directly in SAP, not
+  through this app - confirmed with user, not a bug): completed live via the actual new production
+  client classes -> `P1-HOLD` 1.0 -> 2.0 EA (both products) - the real acceptance test of the
+  written code, not just ad-hoc scripts.
+- `testing_agent` (iteration_194): 8/8 backend + all frontend checks pass. Real live "Receive"
+  click on STO-000063 (already-Finished-in-SAP fast path) reached the relocation step and failed on
+  a genuine real SAP stock-availability rejection (P1-HOLD had no stock left after the day's many
+  test runs) - correctly surfaced as `receipt_status: "failed"` with the Retry button available,
+  not a crash. No import/startup errors from any new file.
+- Not yet live-tested end-to-end via the actual "Receive" button + real webhook completion on a
+  genuinely fresh, DB-tracked, task-based STO (every currently-pending P1-bound tracked STO had
+  already been auto-Released/Finished by SAP's own routine background processing by the time this
+  was attempted) - the "awaiting_sap" -> webhook -> relocate path is proven correct piece-by-piece
+  (each function tested directly against live SAP) but not yet observed end-to-end through one
+  single real user click on a brand-new order. Worth doing the first time a genuinely fresh P1-bound
+  STO shows up in the Pending tab.
+
+### Minor code-review notes from testing_agent (non-blocking, not yet fixed)
+- `prepare_receipt` has a harmless duplicate `return doc` dead line.
+- `start_automated_receipt`'s Acknowledge/Release exception handling is intentionally broad
+  (swallows "already done" errors) - could be narrowed to not also swallow a genuine SAP outage.
+
 

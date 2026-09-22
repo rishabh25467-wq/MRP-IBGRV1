@@ -263,6 +263,15 @@ record (kept for future reference only, NOT the current architecture).
   SAP UI (no safe/proven Cancel API action exists for this document type).
 
 ## STO Inbound Receiving via API - DEFINITIVELY DEAD, do not re-investigate (Sep 18)
+**PARTIALLY SUPERSEDED Sep 22 2026 - see `/app/memory/CHANGELOG.md` "Part 5" for the full story.**
+This conclusion is still correct for the DIRECT-PGR route (`InboundDeliveryPGRBackground`,
+permanently disabled tenant-wide per KBA 3583076, unchanged). It is WRONG as a blanket statement
+for task-supported sites (confirmed: P1): a different route through the Warehouse Order/Operation
+Activity chain (`ConfirmAsPlanned` via a new custom OData service `khinbounddeliveryexecution`) IS
+live and working, fully automated (Acknowledge+Release+SAP Event Notification webhook+
+ConfirmAsPlanned), with real inventory confirmed posting via `SAPInventoryClient` multiple times.
+The "Receive" button on `InboundReceiptsPage.js` now uses this automatically wherever applicable -
+see `inbound_receipt_service.start_automated_receipt`/`complete_automated_receipt_for_lot`.
 Re-investigated same day whether the outbound Pick-task SOAP breakthrough above also solves
 Issue 2 below (Playwright replacement for STO receiving). Answer: NO, confirmed dead twice:
 1. Already tested once before (Aug 28 2026, see `sap_playwright_pgr_service.py` docstring).
@@ -774,6 +783,17 @@ against vendor RAD-P2-S (336 cached PO line items) - confirmed 49.4s.
   generalization fix.
 - Inbound generalization fix self-tested (pytest + direct mocked call-path check across
   P1/P2/P3/P8) - not yet run through testing_agent as a dedicated pass.
+
+## Part 5 pointer (Sep 22 2026) - STO Inbound GR fully automated for task-supported sites (P1)
+Full detail in `/app/memory/CHANGELOG.md` "Part 5" - built a new custom SAP OData service
+(`khinbounddeliveryexecution`) + Event Notification webhook (subscribed to the CORRECT Business
+Object, `Site Logistics Lot`, not the wrong one from the Part 4 dormant plan) to automate
+Acknowledge -> Release -> (SAP creates a Warehouse Order) -> webhook -> `ConfirmAsPlanned` ->
+verified real inventory posting -> existing HOLD relocation. Live-tested multiple times, real SAP
+writes, real inventory confirmed each time. `testing_agent` iteration_194: 8/8 pass, no bugs.
+**NOT YET observed end-to-end through one single real "Receive" click on a genuinely fresh,
+DB-tracked P1-bound STO** (every currently-pending one had already been auto-Released/Finished by
+SAP's own routine processing) - do this the first time a fresh one shows up in the Pending tab.
 
 ## Part 4 (Sep 22 2026, this fork continuation) - GRN warehouse-movement policy REVERSED, ERP
 sync resumed, SAP push (webhook) groundwork. Full detail in `/app/memory/CHANGELOG.md` "Part 4"
