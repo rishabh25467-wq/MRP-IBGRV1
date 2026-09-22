@@ -47,7 +47,15 @@ request. A quantity override is typed directly into the Playwright screen's
 own "Actual Quantity" grid cell (the OData `InboundDeliveryItemQuantity`
 PATCH this used to rely on is ALSO blocked tenant-wide: SAP returns
 "Changing data not possible; data is read-only" - see
-build_line_overrides below)."""
+build_line_overrides below).
+
+Sep 2026 UPDATE - superseded by start_automated_receipt below: the
+Playwright path above is dead. `khinbounddelivery`/
+`khinbounddeliveryexecution` (custom OData services) now drive
+Acknowledge/Release/ConfirmAsPlanned/PostGoodsReceipt directly, no
+browser automation, no background job/webhook/polling - see
+start_automated_receipt's own comment block for the exact synchronous
+chain (user's explicit architectural mandate)."""
 import logging
 import re
 from datetime import datetime, timezone
@@ -407,22 +415,71 @@ def receive_stock_transfer_order(db, sap_goods_movement_client, sto_id: str, act
     return {"status": overall, "results": lines, "error": error_summary, "receipt_relocation": relocation}
 
 
-# Sep 22 2026 - the automated GR flow. Acknowledge + Release each
-# delivery (fast, ~1-2s each), then either:
-#  a) the site isn't task-supported (e.g. P8) - Release posts the GR
-#     immediately, DeliveryProcessingStatusCode flips straight to
-#     "Finished" with no Warehouse Order ever created - finish right
-#     away, same as the old flow.
-#  b) the site IS task-supported (confirmed live for P1) - SAP spawns a
-#     Warehouse Order asynchronously (SAP's own background job, not
-#     ours - seconds to a few minutes) and pushes a webhook the moment
-#     it exists (see server.py's /webhooks/sap-put-away and
-#     complete_automated_receipt_for_lot below) - park as "awaiting_sap"
-#     until that lands. No polling anywhere in this path.
+# Sep 2026, user's explicit architectural mandate - a strictly
+# synchronous, transaction-driven action chain per delivery, zero async
+# waiting, zero polling, zero background jobs/webhooks (previous
+# Event-Notification-webhook + 20-min safety-sweep design was rejected
+# outright: it masked SAP's own 2-8min Warehouse Order creation lag
+# instead of surfacing it). For each delivery, in one pass:
+#   Acknowledge -> (quantity overrides, if any) -> Release -> check status:
+#     a) Non-task-based site (e.g. P8) - Release already posted the GR,
+#        DeliveryProcessingStatusCode flips straight to "Finished" -
+#        done, nothing else to do.
+#     b) Task-based site (confirmed live for P1) - Release only spawns
+#        the Warehouse Order chain; try ONE immediate, un-retried lookup
+#        for the Lot SAP just created (find_recent_lots) and confirm its
+#        activities right there in the same request.
+#     c) Neither (b)'s immediate lookup found nothing) - last synchronous
+#        attempt: call PostGoodsReceipt directly. If that also fails,
+#        raise immediately - the receive request itself fails (400) and
+#        the user retries manually a moment later. Never parks, never
+#        waits, never retries in a loop.
 _SAP_FINISHED_STATUS_CODE = "3"
 
 
-def start_automated_receipt(db, sap_kh_inbound_delivery_client, sap_goods_movement_client, sto_id: str, actor: str, quantity_overrides: dict = None) -> dict:
+def _apply_quantity_overrides(sap_inbound_delivery_client, delivery_id: str, line_overrides: dict) -> None:
+    """`line_overrides`: {product_id: qty} (see build_line_overrides) -
+    PATCHes each item's InboundDeliveryItemQuantity row BEFORE Release,
+    the only lever this OData service exposes for a non-default
+    quantity (see sap_inbound_delivery_client.py module docstring)."""
+    if not sap_inbound_delivery_client or not line_overrides:
+        return
+    try:
+        delivery = sap_inbound_delivery_client.find_delivery_by_id(delivery_id)
+    except Exception as e:
+        logger.warning(f"Could not fetch delivery {delivery_id} for quantity override: {e}")
+        return
+    for item in (delivery or {}).get("items") or []:
+        override_qty = line_overrides.get(item["product_id"])
+        if override_qty is not None and item.get("quantity_object_id"):
+            try:
+                sap_inbound_delivery_client.update_item_quantity(item["quantity_object_id"], override_qty)
+            except Exception as e:
+                logger.warning(f"Could not override quantity for {delivery_id}/{item['product_id']}: {e}")
+
+
+def _find_matching_lot(sap_execution_client, site_id: str, product_ids: list) -> dict:
+    """Single immediate lookup (see sap_inbound_delivery_execution_client.
+    find_recent_lots) - no retry, no wait. Matches by exact site + product
+    set, same heuristic the old webhook matching used."""
+    if not sap_execution_client:
+        return None
+    try:
+        candidates = sap_execution_client.find_recent_lots(limit=50)
+    except Exception as e:
+        logger.warning(f"Immediate Warehouse Order lookup failed: {e}")
+        return None
+    target = sorted(product_ids)
+    for lot in candidates:
+        if lot.get("site_id") == site_id and sorted(lot.get("products") or []) == target:
+            return lot
+    return None
+
+
+def start_automated_receipt(
+    db, sap_kh_inbound_delivery_client, sap_inbound_delivery_client, sap_execution_client,
+    sap_goods_movement_client, sto_id: str, actor: str, quantity_overrides: dict = None,
+) -> dict:
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:
         raise ValueError(f"Stock Transfer Order {sto_id} not found.")
@@ -434,19 +491,19 @@ def start_automated_receipt(db, sap_kh_inbound_delivery_client, sap_goods_moveme
     # STO doc for matching rather than re-querying SAP (also sidesteps
     # `khinbounddelivery`'s different item-navigation schema).
     all_product_ids = sorted({it["product_id"] for it in (doc.get("items") or [])})
-    awaiting = {}
+    line_overrides = build_line_overrides(doc, quantity_overrides or {})
     for delivery_id in delivery_ids:
         try:
             found = sap_kh_inbound_delivery_client.find_object_id(delivery_id)
         except Exception as e:
-            logger.error(f"Could not look up delivery {delivery_id} for automated receipt on {sto_id}: {e}")
-            continue
+            raise ValueError(f"Could not reach SAP to look up delivery {delivery_id}: {e}")
         if not found:
             continue
         try:
             sap_kh_inbound_delivery_client.acknowledge_delivery_note_receipt(found["object_id"])
         except Exception as e:
             logger.info(f"Acknowledge for {delivery_id} ({sto_id}) skipped/failed (may already be acknowledged): {e}")
+        _apply_quantity_overrides(sap_inbound_delivery_client, delivery_id, line_overrides)
         try:
             sap_kh_inbound_delivery_client.release_delivery(found["object_id"])
         except Exception as e:
@@ -454,57 +511,20 @@ def start_automated_receipt(db, sap_kh_inbound_delivery_client, sap_goods_moveme
         refreshed = sap_kh_inbound_delivery_client.find_object_id(delivery_id) or found
         if refreshed.get("delivery_processing_status_code") == _SAP_FINISHED_STATUS_CODE:
             continue  # non-task-based site - GR already posted on Release
-        awaiting[delivery_id] = {"site_id": site_id, "expected_products": all_product_ids}
-    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
-        "receipt_status": "awaiting_sap" if awaiting else doc.get("receipt_status"),
-        "receipt_awaiting_deliveries": awaiting,
-        "receipt_quantity_overrides": quantity_overrides or {},
-    }})
-    if awaiting:
-        return {"status": "awaiting_sap", "awaiting_deliveries": list(awaiting.keys())}
+        lot = _find_matching_lot(sap_execution_client, site_id, all_product_ids)
+        if lot:
+            for activity in lot.get("activities") or []:
+                if activity.get("status_code") != _SAP_FINISHED_STATUS_CODE:
+                    sap_execution_client.confirm_activity_as_planned(activity["object_id"])
+            continue
+        try:
+            sap_inbound_delivery_client.post_goods_receipt(found["object_id"])
+        except Exception as e:
+            raise ValueError(
+                f"SAP hasn't finished processing delivery {delivery_id} yet - no Warehouse Order was found and "
+                f"the direct Goods Receipt attempt was rejected ({e}). Please retry the receipt in a moment."
+            )
     return receive_stock_transfer_order(db, sap_goods_movement_client, sto_id, actor, quantity_overrides)
-
-
-def complete_automated_receipt_for_lot(db, sap_execution_client, sap_goods_movement_client, lot: dict):
-    """Called by server.py's webhook handler once a `SiteLogisticsLot.
-    Root.Created` event's entity has been fetched. Matches it to the
-    oldest still-"awaiting_sap" delivery at the same site whose expected
-    product set is an exact match (FIFO tiebreak - real collision only
-    possible if two deliveries to the same site with an IDENTICAL
-    product set were released within moments of each other, a rare
-    edge case; genuinely stuck orders still surface via the Pending tab
-    for manual follow-up). Returns None if nothing matched (an
-    unrelated/already-handled event - not an error)."""
-    if not lot or not lot.get("site_id"):
-        return None
-    lot_products = sorted(lot.get("products") or [])
-    candidates = list(db[STO_COLLECTION].find({"receipt_status": "awaiting_sap", "ship_to_site_id": lot["site_id"]}))
-    candidates.sort(key=lambda d: d.get("receipt_started_at") or d.get("created_at"))
-    match, match_delivery_id = None, None
-    for doc in candidates:
-        for delivery_id, info in (doc.get("receipt_awaiting_deliveries") or {}).items():
-            if sorted(info.get("expected_products") or []) == lot_products:
-                match, match_delivery_id = doc, delivery_id
-                break
-        if match:
-            break
-    if not match:
-        logger.info(f"No awaiting STO matched Lot {lot.get('object_id')} (site {lot['site_id']}, products {lot_products}) - ignoring event.")
-        return None
-    sto_id = match["_id"]
-    for activity in lot.get("activities") or []:
-        if activity.get("status_code") != _SAP_FINISHED_STATUS_CODE:
-            sap_execution_client.confirm_activity_as_planned(activity["object_id"])
-    remaining = dict(match.get("receipt_awaiting_deliveries") or {})
-    remaining.pop(match_delivery_id, None)
-    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"receipt_awaiting_deliveries": remaining}})
-    if remaining:
-        return {"sto_id": sto_id, "status": "awaiting_sap", "awaiting_deliveries": list(remaining.keys())}
-    result = receive_stock_transfer_order(db, sap_goods_movement_client, sto_id, match.get("received_by") or "sap-webhook")
-    job = db[job_store.COLLECTION_NAME].find_one({"sto_id": sto_id, "kind": "inbound_receipt", "status": "running"})
-    if job:
-        job_store.update_job(db, job["_id"], {"status": "done", "phase": "done", "result": result, "error": None})
-    return {"sto_id": sto_id, **result}
 
 
 def build_line_overrides(doc: dict, quantity_overrides: dict) -> dict:

@@ -1283,7 +1283,48 @@ User challenged the "definitively dead" conclusion with SAP KBA 2691388 (direct 
 - SAP-side config (deleted `SHI_P8`, created `P8_SHIPEM`, created Outbound Delivery Run `RDOCWT1`, created test Custom OData service `deliveryrunem`) was **NOT reverted yet** - still pending. **P8 currently has NO no-task Logistics Model** - `SHI_P8` was deleted, only the (non-functional, since MDRO is disabled tenant-wide) `P8_SHIPEM` remains. This needs a no-task replacement model recreated for P8 before any real STO ships through there again with normal (non-task) behavior restored.
 - **P0 for next session**: recreate a `SHI_P8`-equivalent (Standard Shipping, Without Tasks: Yes, Release: Manually) for site P8 to restore normal shipping - or confirm P8_SHIPEM's current (task-based, but non-functional since MDRO disabled) settings don't actually block normal shipping in practice first.
 
-## GRN qty-discrepancy gating (Aug 2026 fork continuation, DONE, live-tested via testing_agent iteration_187, 5/5 pass)
+## Part 6 (Sep 22 2026, same day) - STO Inbound GR pivoted to a STRICTLY SYNCHRONOUS engine, webhook/sweep REMOVED entirely
+User rejected the Part 5 webhook + 20-min safety-sweep architecture outright (SAP's own 2-8min
+Warehouse Order creation lag was being masked by async wait, not surfaced) - mandated a
+transaction-driven chain with **zero polling, zero webhooks, zero background jobs**. Confirmed via
+the user-uploaded `SiteLogisticsRequest` BO doc that `ReleaseForExecution` genuinely exists on that
+BO's root node ("releases all confirmation items... Site Logistics Order and Site Logistics Lot are
+created and released") - but it fires internally as part of the Inbound Delivery's own `Release`
+action, not as a separately-callable step from our side.
+- **Removed entirely**: `/api/webhooks/sap-put-away` route, `_verify_sap_webhook_auth`,
+  `SAP_WEBHOOK_EVENTS_COLLECTION`, `EXTERNAL_WEBHOOK_PATH_PREFIXES` auth bypass, the 20-min
+  `start_awaiting_sap_receipt_timeout_loop` sweep, and `complete_automated_receipt_for_lot`. No SAP
+  Event Notification subscription is used anymore (still exists SAP-side, just nothing listens).
+- **New engine** (`inbound_receipt_service.start_automated_receipt`), one pass per delivery, no
+  retries anywhere in it: Acknowledge -> (quantity overrides if any) -> Release -> check
+  `DeliveryProcessingStatusCode`: if Finished, done (non-task site, GR already posted by Release).
+  Else, ONE immediate `find_recent_lots` lookup (new `sap_inbound_delivery_execution_client` method,
+  no ObjectID filter, matches by site+product-set in Python) -> if found, `ConfirmAsPlanned` each
+  activity, done. Else, one direct `PostGoodsReceipt` attempt as a last resort -> if that also fails,
+  **raises immediately** ("SAP hasn't finished processing... please retry in a moment") - the whole
+  receive request fails (400/job status "failed"), user retries manually a moment later.
+- `post_inbound_receipt` (server.py) now calls this directly - no more "awaiting_sap" job phase.
+  The existing job_id/polling scaffold is UNCHANGED and NOT what the user was rejecting (that's just
+  a normal fire-and-forget request pattern for the UI spinner, resolves in seconds now, not minutes).
+- Bug found+fixed during live testing: `find_recent_lots`'s first version tried
+  `$orderby=SystemAdministrativeData/CreationDateTime desc` - this custom OData service doesn't
+  expose that property (`HTTP 400: Property SystemAdministrativeData not found`), silently returning
+  zero real candidates. Fixed by dropping `$orderby` entirely (relies on SAP's default order + a
+  generous `$top=50`).
+- **Live-tested against 2 real pending STOs** (results shared with user in chat before this write-up):
+  - STO-000111 (P1, task-based, already Released from earlier testing) - Acknowledge/Release
+    correctly no-op'd ("action is disabled"), refreshed status was Finished, real relocation posted
+    (GAC 282822/282823, P1-HOLD -> P1-RM). Full end-to-end success via the new engine.
+  - STO-000123 (P1->P8, IRON-SCR, the exact Sep 19 2026 "leftover real-world state" test order noted
+    above) - Release/PostGoodsReceipt both "action is disabled" (matches the documented KBA 3583076
+    dead-end, not a new bug), no Lot found (P8 genuinely runs "Standard Receiving, Without Tasks" -
+    REC_P8 - so no Lot will ever exist for it). Engine correctly failed fast with a clear message
+    instead of hanging/polling - this is a pre-existing, already-documented dead API path for this
+    specific old STO, needs a manual PGR in SAP UI (unchanged from the Sep 19 note).
+- Not yet run through `testing_agent` - self-tested via 2 real live SAP receive attempts + log
+  inspection per user's explicit ask ("test via code and share reply in chat, then I'll test").
+  User plans to verify the rest directly in SAP.
+
 
 **User's explicit ask**: disable "Post GRN in SAP" if entered Actual Qty != Ship Qty; user confirmed
 ANY mismatch (over OR under) should block posting, not just shortages.

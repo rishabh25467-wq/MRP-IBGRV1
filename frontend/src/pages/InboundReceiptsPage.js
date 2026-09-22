@@ -36,7 +36,6 @@ const COMPLETED_STATUS_STYLE = {
 
 const STATUS_STYLE = {
   pending: { label: "Pending Receipt", cls: "bg-[#FEF3C7] text-[#92400E]" },
-  awaiting_sap: { label: "Awaiting SAP", cls: "bg-[#EFF8FF] text-[#175CD3]" },
   partial: { label: "Partially Received", cls: "bg-[#FEE4E2] text-[#B42318]" },
   failed: { label: "Receipt Failed", cls: "bg-[#FEE4E2] text-[#B42318]" },
 };
@@ -54,24 +53,11 @@ const jobBadge = (job) => {
   if (job.status === "done") {
     return { icon: CheckCircle, cls: "text-[#027A48]", iconCls: "", label: "Done", detail: null };
   }
-  // Sep 22 2026 - the automated GR flow parks a job in "awaiting_sap"
-  // (Acknowledge+Release done, waiting on SAP's own async Warehouse
-  // Order creation + the event-notification webhook to finish it - see
-  // inbound_receipt_service.py) - a distinct label from the instant
-  // "Moving stock…" spinner so it's clear this step depends on SAP's
-  // own timing, not something stuck on our side.
-  if (job.phase === "awaiting_sap") {
-    return { icon: CircleNotch, cls: "text-[#175CD3]", iconCls: "animate-spin", label: "Awaiting SAP…", detail: null };
-  }
-  // Sep 21 2026, user's explicit ask ("FIX THIS PROGRESS BAR THAT SHOWS
-  // OLD PLAYWRIGHT PROGRESS BAR AND UNCLEAR. WE ARE JUST MOVING STOCK.")
-  // - Receive no longer drives Playwright (a real SAP UI browser
-  // automation that took 40-90s/delivery and needed a "Queued" state for
-  // a limited concurrency pool of browser slots). It's now a single,
-  // fast SAP Goods Movement API call - so there's nothing left to queue
-  // or estimate an ETA for. One plain "Moving stock..." spinner covers
-  // the entire (near-instant) action.
-  return { icon: CircleNotch, cls: "text-[#0B6B74]", iconCls: "animate-spin", label: "Moving stock…", detail: null };
+  // Sep 2026 - Receive is now one synchronous action chain
+  // (Acknowledge -> Release -> immediate confirm/Goods Receipt, no
+  // waiting/polling on SAP's own timing) - a single spinner covers the
+  // whole (few-second) action while the request is in flight.
+  return { icon: CircleNotch, cls: "text-[#0B6B74]", iconCls: "animate-spin", label: "Receiving…", detail: null };
 };
 
 // Per-line breakdown popover for the "Warehouse Move" column (user's

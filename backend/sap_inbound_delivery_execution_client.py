@@ -21,13 +21,15 @@ was added live this session (the service originally didn't expose it) -
 required so `inbound_receipt_service.complete_automated_receipt_for_lot`
 can match a newly-created Warehouse Order back to the STO awaiting it.
 
-SAP's own "Event Notification" framework (subscribed to Business Object
-"Site Logistics Lot", not "SiteLogisticsTask" - confirmed live that
-object never gets created for STO Put Away on this tenant) pushes a
-`sap.byd.SiteLogisticsLot.Root.Created.v1` CloudEvents payload to
-server.py's `/api/webhooks/sap-put-away` the moment SAP creates one of
-these - carrying the exact `entity-id` (ObjectID) this client reads via
-`find_lot_by_object_id`. No polling anywhere in this chain."""
+Sep 2026, user's explicit architectural mandate: rejected the Event
+Notification webhook + 20-min safety-sweep design entirely (SAP's own
+Warehouse Order creation can lag 2-8 minutes, which the user does not
+want masked by any async wait/poll/background job). `find_recent_lots`
+below is the replacement - a single, immediate, un-retried lookup
+called synchronously right after Release inside
+inbound_receipt_service.start_automated_receipt. If SAP hasn't created
+the Warehouse Order yet at that exact moment, the receive request fails
+immediately and the user retries manually - no polling anywhere."""
 import requests
 from requests.auth import HTTPBasicAuth
 
@@ -44,18 +46,48 @@ class SAPInboundDeliveryExecutionClient:
         self.auth = HTTPBasicAuth(username, password)
         self.vhost = vhost
 
+    _EXPAND = "SiteLogisticsLotMaterialOutput,SiteLogisticsLotOperation/SiteLogisticsLotOperationActivity"
+
     def find_lot_by_object_id(self, lot_object_id: str) -> dict:
         """Returns {object_id, id, life_cycle_status_code, site_id,
         products: [str,...], activities: [{object_id, status_code}]}, or
-        None if this ObjectID doesn't exist (a malformed/unrelated
-        webhook payload)."""
+        None if this ObjectID doesn't exist."""
         url = f"{self.endpoint}/SiteLogisticsLotSiteLogisticLotCollection"
         params = {
             "$filter": f"ObjectID eq '{lot_object_id}'",
-            "$expand": "SiteLogisticsLotMaterialOutput,SiteLogisticsLotOperation/SiteLogisticsLotOperationActivity",
+            "$expand": self._EXPAND,
             "$format": "json",
             "sap-vhost": self.vhost,
         }
+        results = self._query(url, params)
+        return self._parse_lot_row(results[0]) if results else None
+
+    def find_recent_lots(self, limit: int = 50) -> list:
+        """Sep 2026, user's explicit architectural mandate (zero polling/
+        webhook/background sweep) - a SINGLE, immediate, un-retried
+        lookup at Warehouse Orders SAP has created, called right after
+        Release, so the caller (inbound_receipt_service.
+        start_automated_receipt) can try to match the one SAP just
+        created for THIS delivery in the same synchronous request. No
+        ObjectID filter needed/possible since it isn't known yet -
+        caller matches by site_id + product set. No $orderby - this
+        custom OData service doesn't expose SystemAdministrativeData
+        for sorting (confirmed live: "Property SystemAdministrativeData
+        not found in type SiteLogisticsLotSiteLogisticLot"), so this
+        relies on SAP's own default result order plus a generous $top.
+        Returns [] (never raises past the caller) if SAP hasn't created
+        it yet - the caller treats that as an immediate failure, not
+        something to wait/retry for."""
+        url = f"{self.endpoint}/SiteLogisticsLotSiteLogisticLotCollection"
+        params = {
+            "$top": str(limit),
+            "$expand": self._EXPAND,
+            "$format": "json",
+            "sap-vhost": self.vhost,
+        }
+        return [self._parse_lot_row(row) for row in self._query(url, params)]
+
+    def _query(self, url: str, params: dict) -> list:
         try:
             with sap_semaphore:
                 resp = requests.get(url, params=params, auth=self.auth, headers={"Accept": "application/json"}, timeout=30)
@@ -63,10 +95,9 @@ class SAPInboundDeliveryExecutionClient:
             raise SAPInboundDeliveryExecutionError(f"Could not reach SAP: {e}")
         if resp.status_code != 200:
             raise SAPInboundDeliveryExecutionError(f"HTTP {resp.status_code}: {resp.text[:300]}")
-        results = resp.json().get("d", {}).get("results", [])
-        if not results:
-            return None
-        row = results[0]
+        return resp.json().get("d", {}).get("results", [])
+
+    def _parse_lot_row(self, row: dict) -> dict:
         outputs = self._as_list(row.get("SiteLogisticsLotMaterialOutput"))
         products = sorted({o.get("ProductID") for o in outputs if o.get("ProductID")})
         site_ids = {o.get("SiteID") for o in outputs if o.get("SiteID")}

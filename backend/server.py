@@ -772,82 +772,7 @@ async def root():
     return {"message": "SAP BOM Lookup API"}
 
 
-# Sep 22 2026, user's explicit ask ("SAP pushes us the moment Put Away
-# completes, instead of us polling") - SAP Business ByDesign's own
-# "Event Notification" framework (Application and User Management work
-# center), subscribed to Business Object "Site Logistics Lot" (the
-# Warehouse Order, NOT "SiteLogisticsTask" - confirmed live that object
-# is never created for STO Put Away on this tenant, only for a separate
-# production-logistics scenario), pushes a CloudEvents payload here the
-# moment SAP creates one. Live-tested end-to-end this session: real
-# event landed (~4 min after Release), matched to the correct STO, and
-# `SiteLogisticsLotOperationActivityConfirmAsPlanned` posted a real
-# Goods Receipt - see inbound_receipt_service.py's
-# start_automated_receipt/complete_automated_receipt_for_lot and
-# /app/memory/sap_event_push_plan.md for the full trail.
-SAP_WEBHOOK_EVENTS_COLLECTION = "sap_webhook_events"
 
-
-def _verify_sap_webhook_auth(request: Request) -> bool:
-    expected_user = os.environ.get("SAP_WEBHOOK_USERNAME")
-    expected_pass = os.environ.get("SAP_WEBHOOK_PASSWORD")
-    if not expected_user or not expected_pass:
-        return False
-    header = request.headers.get("authorization", "")
-    if not header.lower().startswith("basic "):
-        return False
-    try:
-        decoded = base64.b64decode(header.split(" ", 1)[1]).decode("utf-8")
-        sent_user, sent_pass = decoded.split(":", 1)
-    except Exception:
-        return False
-    return secrets.compare_digest(sent_user, expected_user) and secrets.compare_digest(sent_pass, expected_pass)
-
-
-@api_router.post("/webhooks/sap-put-away")
-async def sap_put_away_webhook(request: Request):
-    if not _verify_sap_webhook_auth(request):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    raw_body = await request.body()
-    try:
-        parsed_body = await request.json()
-    except Exception:
-        parsed_body = None
-    event_doc = {
-        "_id": str(uuid.uuid4()),
-        "received_at": datetime.now(timezone.utc),
-        "headers": dict(request.headers),
-        "raw_body": raw_body.decode("utf-8", errors="replace"),
-        "parsed_body": parsed_body,
-    }
-    await asyncio.to_thread(db[SAP_WEBHOOK_EVENTS_COLLECTION].insert_one, event_doc)
-    logger.info(f"SAP webhook event received and logged: {event_doc['_id']}")
-
-    # Sep 22 2026 - now wired live. Real payload confirmed this session:
-    # {"type": "sap.byd.SiteLogisticsLot.Root.Created.v1", "data":
-    # {"entity-id": "<ObjectID>", ...}} - fetch that Warehouse Order and
-    # try to finish whichever STO is awaiting it (see
-    # inbound_receipt_service.complete_automated_receipt_for_lot). Ack
-    # 200 regardless of what happens below - SAP doesn't need to retry,
-    # a failure here just leaves the STO in "Awaiting SAP" for manual
-    # follow-up rather than losing the event.
-    event_type = (parsed_body or {}).get("type") or ""
-    entity_id = ((parsed_body or {}).get("data") or {}).get("entity-id")
-    if "SiteLogisticsLot" in event_type and entity_id:
-        async def _process_lot_event():
-            try:
-                lot = await asyncio.to_thread(sap_inbound_delivery_execution_client.find_lot_by_object_id, entity_id)
-                if lot:
-                    outcome = await asyncio.to_thread(
-                        inbound_receipt_service.complete_automated_receipt_for_lot,
-                        db, sap_inbound_delivery_execution_client, sap_goods_movement_client, lot,
-                    )
-                    if outcome:
-                        logger.info(f"Webhook-driven receipt progress for Lot {entity_id}: {outcome}")
-            except Exception as e:
-                logger.error(f"Webhook-driven receipt completion failed for Lot {entity_id}: {e}")
-        asyncio.create_task(_process_lot_event())
-    return {"status": "received"}
 
 
 
@@ -8020,18 +7945,18 @@ async def post_inbound_receipt(sto_id: str, payload: InboundReceiptRequest, requ
     async def run():
         try:
             await asyncio.to_thread(job_store.update_job, db, job_id, {"phase": "processing", "progress_current": 0, "progress_total": total_deliveries})
+            # Sep 2026, user's explicit architectural mandate - one
+            # synchronous action chain per delivery (Acknowledge ->
+            # Release -> immediate Warehouse Order lookup/Goods Receipt),
+            # zero polling/webhook/background sweep. This either finishes
+            # (received/partial) or raises within a few seconds - never
+            # parks in an "awaiting_sap" state.
             final = await asyncio.to_thread(
-                inbound_receipt_service.start_automated_receipt, db, sap_kh_inbound_delivery_client, sap_goods_movement_client, sto_id, actor, overrides,
+                inbound_receipt_service.start_automated_receipt, db,
+                sap_kh_inbound_delivery_client, sap_inbound_delivery_client, sap_inbound_delivery_execution_client,
+                sap_goods_movement_client, sto_id, actor, overrides,
             )
-            if final.get("status") == "awaiting_sap":
-                # SAP hasn't created the Warehouse Order yet - the job
-                # stays "running" (frontend keeps polling) until the
-                # /webhooks/sap-put-away handler finishes it (see
-                # complete_automated_receipt_for_lot) or the safety-net
-                # timeout loop below flags it stuck.
-                await asyncio.to_thread(job_store.update_job, db, job_id, {"phase": "awaiting_sap", "result": final})
-            else:
-                await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
+            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
         except Exception as e:
             logger.error(f"Inbound receipt job {job_id} ({sto_id}) failed: {e}")
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": str(e)})
@@ -9701,37 +9626,7 @@ async def start_inventory_cache_refresh_loop():
     asyncio.create_task(loop())
 
 
-# Sep 22 2026 - safety net for the automated STO GR flow (see
-# inbound_receipt_service.start_automated_receipt). The
-# /webhooks/sap-put-away push is the primary path; this just catches
-# the rare case it never fires (a subscriber misconfiguration, or a
-# tenant-side quirk we haven't hit yet) so a receipt never sits silently
-# "Awaiting SAP" forever with no way for the receiving team to notice.
-AWAITING_SAP_TIMEOUT_MINUTES = 20
-AWAITING_SAP_SWEEP_INTERVAL_SECONDS = 5 * 60
 
-
-@app.on_event("startup")
-async def start_awaiting_sap_receipt_timeout_loop():
-    async def loop():
-        await asyncio.sleep(60)
-        while True:
-            try:
-                cutoff = datetime.now(timezone.utc) - timedelta(minutes=AWAITING_SAP_TIMEOUT_MINUTES)
-                stuck = await asyncio.to_thread(list, db[stock_transfer_service.STO_COLLECTION].find(
-                    {"receipt_status": "awaiting_sap", "receipt_started_at": {"$lt": cutoff}},
-                ))
-                for doc in stuck:
-                    sto_id = doc["_id"]
-                    error = "SAP did not confirm this receipt within the expected time - please retry."
-                    await asyncio.to_thread(db[stock_transfer_service.STO_COLLECTION].update_one, {"_id": sto_id}, {"$set": {"receipt_status": "failed", "receipt_error": error}})
-                    await asyncio.to_thread(db[job_store.COLLECTION_NAME].update_one, {"sto_id": sto_id, "kind": "inbound_receipt", "status": "running"}, {"$set": {"status": "failed", "phase": "failed", "error": error}})
-                    logger.warning(f"Inbound receipt {sto_id} timed out waiting on SAP's Warehouse Order/webhook after {AWAITING_SAP_TIMEOUT_MINUTES}min - marked failed for manual retry.")
-            except Exception as e:
-                logger.error(f"Awaiting-SAP receipt timeout sweep failed: {e}")
-            await asyncio.sleep(AWAITING_SAP_SWEEP_INTERVAL_SECONDS)
-
-    asyncio.create_task(loop())
 
 
 # Supplier Portal Phase 1 fix (Aug 28 2026) - a single SAP PO fetch can
