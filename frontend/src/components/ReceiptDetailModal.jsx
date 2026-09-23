@@ -56,7 +56,15 @@ export function ReceiptDetailModal({ order, mode, onClose, onUpdated }) {
         } else {
           setRelocationJob({ ...job, status: data.status, error: data.error });
           if (data.status === "done") {
-            setFinalResult(data.result);
+            // Sep 24 2026 fix - first-time completion (receive_stock_transfer_order)
+            // returns a WRAPPED object with the real relocation shape (status
+            // "done"/"failed", to, lines, gac_id) nested under `receipt_relocation`,
+            // while a retry (retry_receipt_relocation) returns that same shape
+            // directly with no wrapper. Prefer the nested shape when present so
+            // both paths render identically (this used to show "Received" with no
+            // GM ID on a fresh completion, since `data.result.status` was
+            // "received"/"failed" - the overall receipt status - not "done"/"failed").
+            setFinalResult(data.result?.receipt_relocation || data.result);
             setStep("done");
             onUpdated();
           } else {
