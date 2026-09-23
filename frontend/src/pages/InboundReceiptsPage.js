@@ -484,7 +484,7 @@ export default function InboundReceiptsPage() {
                             {status.label}
                           </span>
                           {order.receipt_error && (
-                            <div className="text-xs text-[#B42318] mt-1 max-w-xs truncate" title={order.receipt_error}>{order.receipt_error}</div>
+                            <div className="text-xs text-[#B42318] mt-1 max-w-xs whitespace-normal break-words" data-testid={`inbound-receipt-error-${order.sto_id}`}>{order.receipt_error}</div>
                           )}
                           {badge && (
                             <div className={`flex items-center gap-1 text-xs font-medium mt-1 whitespace-nowrap ${badge.cls}`} title={badge.detail || ""} data-testid={`inbound-receipt-job-badge-${order.sto_id}`}>
@@ -583,7 +583,7 @@ export default function InboundReceiptsPage() {
                             {status.label}
                           </span>
                           {order.receipt_error && (
-                            <div className="text-xs text-[#B42318] mt-1 max-w-xs truncate" title={order.receipt_error}>{order.receipt_error}</div>
+                            <div className="text-xs text-[#B42318] mt-1 max-w-xs whitespace-normal break-words" data-testid={`inbound-receipts-completed-error-${order.sto_id}`}>{order.receipt_error}</div>
                           )}
                         </TableCell>
                         <TableCell data-testid={`inbound-receipts-completed-relocation-${order.sto_id}`}>

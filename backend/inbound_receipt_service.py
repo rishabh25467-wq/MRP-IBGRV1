@@ -664,10 +664,20 @@ def _humanize_sap_error(raw: str) -> str:
     Anything unrecognized (a raw HTTP/connection error, an untruncated
     JSON/HTML payload) is capped short rather than dumped verbatim to the
     end user (testing_agent iteration_134: a full '{"error":{"code":...'
-    blob was leaking through for STO-000057)."""
+    blob was leaking through for STO-000057).
+
+    Sep 23 2026 fix (real case, STO-000063) - this used to cap at 120
+    chars, which was fine for a single already-raw error but chops a
+    multi-line summary (now several full, human-readable sentences
+    joined with " | ", since _relocate_receipt_from_hold clarifies each
+    line before storing) off mid-word (e.g. "...SAP re…"). Raised the
+    cap and cut at the last space instead of an arbitrary character."""
     if not raw:
         return raw
     match = re.search(r'"value"\s*:\s*"([^"]+)"', raw) or re.search(r'"message"\s*:\s*"([^"]+)"', raw)
     if match:
         return match.group(1)
-    return raw[:120] + ("…" if len(raw) > 120 else "")
+    if len(raw) <= 300:
+        return raw
+    cut = raw[:300].rsplit(" ", 1)[0]
+    return cut + "…"
