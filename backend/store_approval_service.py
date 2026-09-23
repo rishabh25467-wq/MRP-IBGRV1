@@ -152,7 +152,13 @@ _GOODS_MOVEMENT_RETRY_DELAY_SECONDS = 5
 # tooltip) so IT/support can still look it up if a pattern isn't covered.
 def _clarify_goods_movement_error(raw_error: str, material_id: str) -> dict:
     text = raw_error or ""
-    if re.search(r"negative stock not permitted", text, re.IGNORECASE):
+    # Sep 22 2026 fix (real incident, STO-000063) - "No inventory items
+    # found for external id..." is SAP's OTHER common wording for the
+    # exact same "source warehouse doesn't actually have this stock"
+    # rejection, just phrased differently - it was leaking straight
+    # through as raw SAP text (with internal MOV-xxx/I-xxx IDs) on the
+    # Inbound STO Receipt page since only "negative stock" was matched.
+    if re.search(r"negative stock not permitted|no inventory items found for external id", text, re.IGNORECASE):
         return {
             "error": f"Not enough stock in the source warehouse to issue this quantity for {material_id}. Issue a lower quantity or check the RM warehouse balance in SAP.",
             "error_hi": f"{material_id} के लिए इतनी मात्रा जारी करने हेतु सोर्स गोदाम (RM) में पर्याप्त स्टॉक नहीं है। कृपया कम मात्रा जारी करें या SAP में गोदाम का बैलेंस जांचें।",

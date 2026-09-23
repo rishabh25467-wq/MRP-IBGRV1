@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 import job_store
 from sap_rate_limiter import SAP_MAX_CONCURRENT_REQUESTS
 from sap_wip_clearing_client import company_and_set_of_books_for_site, inbound_staging_area_for_site
-from store_approval_service import _trigger_goods_movement
+from store_approval_service import _trigger_goods_movement, _clarify_goods_movement_error
 
 logger = logging.getLogger(__name__)
 
@@ -149,12 +149,16 @@ def _relocate_receipt_from_hold(db, sap_goods_movement_client, doc: dict, quanti
         for item, future in zip(items, futures):
             result = future.result()
             if not result.get("ok"):
+                # Sep 22 2026 fix - was an ad-hoc single-pattern check
+                # (only "negative stock not permitted") that left every
+                # other SAP rejection (e.g. "No inventory items found
+                # for external id...", real incident STO-000063) showing
+                # raw SAP text with internal IDs on this page. Reuses the
+                # SAME shared clarifier the Store Approval Goods Movement
+                # flow already relies on, covering every known pattern.
                 raw = result.get("error_detail") or result.get("error") or ""
-                if re.search(r"negative stock not permitted", raw, re.IGNORECASE):
-                    error = "Stock does not exist in the STO warehouse"
-                else:
-                    error = result.get("error") or raw or "unknown SAP error"
-                line_results.append({"product_id": item["product_id"], "ok": False, "error": error})
+                clarified = _clarify_goods_movement_error(raw, item["product_id"])
+                line_results.append({"product_id": item["product_id"], "ok": False, "error": clarified["error"]})
             else:
                 line_results.append({"product_id": item["product_id"], "ok": True, "gac_id": result.get("external_id")})
     all_ok = all(r["ok"] for r in line_results)
@@ -166,13 +170,39 @@ def _relocate_receipt_from_hold(db, sap_goods_movement_client, doc: dict, quanti
 def retry_receipt_relocation(db, sap_goods_movement_client, sto_id: str) -> dict:
     """Retry button on the Inbound Receipts (Completed tab) page for
     when _relocate_receipt_from_hold failed or partially failed after a
-    successful "Receive"."""
+    successful "Receive".
+
+    Sep 22 2026 fix (real user report - "I've seen many cases where the
+    quantity doesn't get posted"): this used to re-submit EVERY line to
+    SAP's Goods Movement service again, including ones that had already
+    moved successfully on the first attempt. Since that stock is already
+    OUT of the {SITE}-HOLD warehouse by then, re-submitting an
+    already-successful line either (a) gets rejected by SAP as "no
+    stock"/"negative stock" - overwriting a genuinely-successful prior
+    movement's real `gac_id` with a false "failed" error, or (b), if
+    unrelated fungible stock happens to also sit in HOLD, could silently
+    double-move that product. Now only the lines that were NOT `ok` on
+    the previous attempt are ever re-submitted; every already-successful
+    line's original result (its real SAP `gac_id`) is preserved as-is."""
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:
         raise ValueError(f"Stock Transfer Order {sto_id} not found.")
     if doc.get("receipt_status") not in ("received", "partial", "failed"):
         raise ValueError("This order must be received before retrying the warehouse move.")
-    result = _relocate_receipt_from_hold(db, sap_goods_movement_client, doc)
+    prior_lines = (doc.get("receipt_relocation") or {}).get("lines") or []
+    already_ok = {l["product_id"]: l for l in prior_lines if l.get("ok")}
+    # No prior attempt to know about (e.g. relocation never ran at all)
+    # -> retry every line, same as before. Otherwise, only the ones that
+    # didn't already succeed.
+    retry_doc = doc
+    if prior_lines:
+        retry_doc = {**doc, "items": [it for it in (doc.get("items") or []) if it["product_id"] not in already_ok]}
+    result = _relocate_receipt_from_hold(db, sap_goods_movement_client, retry_doc)
+    merged_lines = list(already_ok.values()) + (result.get("lines") or [])
+    all_ok = all(l["ok"] for l in merged_lines) if merged_lines else True
+    any_ok = any(l["ok"] for l in merged_lines)
+    merged_status = "done" if all_ok else ("partial" if any_ok else "failed")
+    result = {**result, "lines": merged_lines, "status": merged_status}
     # Sep 21 2026 fix (real live incident, STO-000132) - this used to
     # ONLY update `receipt_relocation`, leaving `receipt_status`/
     # `receipt_error` frozen on whatever they were from the ORIGINAL
@@ -181,11 +211,10 @@ def retry_receipt_relocation(db, sap_goods_movement_client, sto_id: str) -> dict
     # message forever, even after this retry fully succeeded.
     status_map = {"done": "received", "partial": "partial", "failed": "failed"}
     overall = status_map.get(result.get("status"), doc.get("receipt_status"))
-    lines = result.get("lines") or []
-    error_summary = " | ".join(f"{l['product_id']}: {l['error']}" for l in lines if not l["ok"]) or None
+    error_summary = " | ".join(f"{l['product_id']}: {l['error']}" for l in merged_lines if not l["ok"]) or None
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
         "receipt_relocation": result, "receipt_status": overall, "receipt_error": error_summary,
-        "receipt_results": lines or doc.get("receipt_results"),
+        "receipt_results": merged_lines or doc.get("receipt_results"),
     }})
     return result
 
@@ -272,7 +301,7 @@ def list_pending_receipts(db, sap_outbound_delivery_client, sap_inbound_delivery
             "created_at": doc.get("created_at"),
             "created_by": doc.get("created_by"),
             "receipt_status": doc.get("receipt_status") or "pending",
-            "receipt_error": doc.get("receipt_error"),
+            "receipt_error": _humanize_sap_error(doc.get("receipt_error")),
             "outbound_delivery_ids": delivery_ids,
             "inbound_delivery_ids": inbound_delivery_ids,
             "items": [
