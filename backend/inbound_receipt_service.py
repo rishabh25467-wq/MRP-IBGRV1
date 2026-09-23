@@ -302,6 +302,7 @@ def list_pending_receipts(db, sap_outbound_delivery_client, sap_inbound_delivery
             "created_by": doc.get("created_by"),
             "receipt_status": doc.get("receipt_status") or "pending",
             "receipt_error": _humanize_sap_error(doc.get("receipt_error")),
+            "receipt_relocation": doc.get("receipt_relocation"),
             "outbound_delivery_ids": delivery_ids,
             "inbound_delivery_ids": inbound_delivery_ids,
             "items": [
@@ -317,7 +318,7 @@ def list_pending_receipts(db, sap_outbound_delivery_client, sap_inbound_delivery
         })
     active_jobs = {
         j["sto_id"]: {"job_id": j["_id"], "phase": j.get("phase"), "progress_current": j.get("progress_current"), "progress_total": j.get("progress_total"), "processing_started_at": j.get("processing_started_at")}
-        for j in db[job_store.COLLECTION_NAME].find({"sto_id": {"$in": [r["sto_id"] for r in results]}, "kind": "inbound_receipt", "status": "running"})
+        for j in db[job_store.COLLECTION_NAME].find({"sto_id": {"$in": [r["sto_id"] for r in results]}, "kind": {"$in": ["inbound_receipt", "inbound_relocation"]}, "status": "running"})
     }
     for r in results:
         r["active_job"] = active_jobs.get(r["sto_id"])
@@ -366,6 +367,11 @@ def list_completed_receipts(db, site_id: str = None, date_from: datetime = None,
         "receipt_completed_at": doc.get("receipt_completed_at"),
         "receipt_duration_seconds": doc.get("receipt_duration_seconds"),
         "items_count": len(doc.get("items") or []),
+        "items": [
+            {"line_no": it.get("line_no"), "product_id": it.get("product_id"), "description": it.get("description"),
+             "unit_of_measure": it.get("unit_of_measure"), "requested_qty": it.get("requested_qty")}
+            for it in (doc.get("items") or [])
+        ],
         "receipt_relocation": doc.get("receipt_relocation"),
     } for doc in docs]
 
@@ -537,7 +543,7 @@ def _find_matching_lot(sap_execution_client, site_id: str, product_ids: list) ->
 
 def start_automated_receipt(
     db, sap_kh_inbound_delivery_client, sap_inbound_delivery_client, sap_execution_client,
-    sap_goods_movement_client, sto_id: str, actor: str, quantity_overrides: dict = None,
+    sto_id: str, actor: str, quantity_overrides: dict = None,
 ) -> dict:
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:
@@ -592,7 +598,18 @@ def start_automated_receipt(
             f"SAP hasn't finished processing delivery {delivery_id} yet - direct Goods Receipt was rejected "
             f"({pgr_error}) and no Warehouse Order was found either. Please retry the receipt in a moment."
         )
-    return receive_stock_transfer_order(db, sap_goods_movement_client, sto_id, actor, quantity_overrides)
+    # Sep 23 2026, user's explicit redesign ask - Receive now only posts
+    # the real SAP Goods Receipt here; the {SITE}-HOLD -> destination
+    # Goods Movement is a SEPARATE, explicit step (see
+    # receive_stock_transfer_order/retry_receipt_relocation, fired via
+    # the new /relocate endpoint) triggered only once the user confirms
+    # in the detail modal - lets the slow (~15-20s for a multi-line
+    # order) warehouse move overlap with the time the user spends
+    # reading the modal's preview instead of blocking on it up front.
+    db_doc = db[STO_COLLECTION].find_one({"_id": sto_id}) or {}
+    if not db_doc.get("receipt_relocation"):
+        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"receipt_status": "awaiting_relocation", "receipt_error": None}})
+    return {"status": "goods_receipt_posted"}
 
 
 def build_line_overrides(doc: dict, quantity_overrides: dict) -> dict:

@@ -7950,11 +7950,13 @@ async def post_inbound_receipt(sto_id: str, payload: InboundReceiptRequest, requ
             # Release -> immediate Warehouse Order lookup/Goods Receipt),
             # zero polling/webhook/background sweep. This either finishes
             # (received/partial) or raises within a few seconds - never
-            # parks in an "awaiting_sap" state.
+            # parks in an "awaiting_sap" state. Sep 23 2026 - only posts
+            # the Goods Receipt now; the warehouse move is the separate
+            # /relocate step, fired from the detail modal.
             final = await asyncio.to_thread(
                 inbound_receipt_service.start_automated_receipt, db,
                 sap_kh_inbound_delivery_client, sap_inbound_delivery_client, sap_inbound_delivery_execution_client,
-                sap_goods_movement_client, sto_id, actor, overrides,
+                sto_id, actor, overrides,
             )
             await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
         except Exception as e:
@@ -7990,6 +7992,44 @@ async def post_inbound_receipt_retry_relocation(sto_id: str):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return result
+
+
+@api_router.post("/inbound-receipts/{sto_id}/relocate")
+async def post_inbound_receipt_relocate(sto_id: str, request: Request):
+    """Sep 23 2026, new detail-modal redesign - the SEPARATE second step
+    (warehouse move) of the split Receive flow, fired only once the user
+    confirms in the modal (or clicks the modal's own Retry). Branches
+    to a first-time move (`receive_stock_transfer_order`) or a
+    failed-lines-only retry (`retry_receipt_relocation`) depending on
+    whether a relocation was already attempted - same distinction the
+    Completed tab's retry button already relied on."""
+    user = await asyncio.to_thread(auth_service.get_current_user, request, db)
+    actor = (user or {}).get("name") or (user or {}).get("email") or "unknown"
+    doc = await asyncio.to_thread(db[inbound_receipt_service.STO_COLLECTION].find_one, {"_id": sto_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"Stock Transfer Order {sto_id} not found.")
+    existing_job = await asyncio.to_thread(db[job_store.COLLECTION_NAME].find_one, {"sto_id": sto_id, "status": "running", "kind": "inbound_relocation"})
+    if existing_job:
+        return {"job_id": existing_job["_id"]}
+    has_prior_attempt = bool(doc.get("receipt_relocation"))
+    job_id = str(uuid.uuid4())
+    await asyncio.to_thread(job_store.create_job, db, job_id, {
+        "sto_id": sto_id, "kind": "inbound_relocation", "status": "running", "phase": "moving", "result": None, "error": None,
+    })
+
+    async def run():
+        try:
+            if has_prior_attempt:
+                result = await asyncio.to_thread(inbound_receipt_service.retry_receipt_relocation, db, sap_goods_movement_client, sto_id)
+            else:
+                result = await asyncio.to_thread(inbound_receipt_service.receive_stock_transfer_order, db, sap_goods_movement_client, sto_id, actor, None)
+            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": result, "error": None})
+        except Exception as e:
+            logger.error(f"Inbound relocation job {job_id} ({sto_id}) failed: {e}")
+            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": str(e)})
+
+    asyncio.create_task(run())
+    return {"job_id": job_id}
 
 
 # ==================== Supplier Portal (external vendors, Aug 2026) ====================
