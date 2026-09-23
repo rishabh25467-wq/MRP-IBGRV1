@@ -784,7 +784,57 @@ against vendor RAD-P2-S (336 cached PO line items) - confirmed 49.4s.
 - Inbound generalization fix self-tested (pytest + direct mocked call-path check across
   P1/P2/P3/P8) - not yet run through testing_agent as a dedicated pass.
 
-## Part 6 - STO relocation speed: OData $batch investigated + ruled out, Option 1 shipped (Sep 22 2026)
+## Part 10 (Sep 23 2026) - Inbound Receipts redesign: detail modal, split receive/relocate, error UX fixes
+User's explicit redesign ask, fully implemented + testing_agent verified (13/13 frontend, 1/1
+backend pass, 0 bugs): per-row "Receive" now opens a `ReceiptDetailModal` (new file,
+`components/ReceiptDetailModal.jsx`) that fires the real SAP Goods Receipt (Acknowledge+PGR)
+IMMEDIATELY on open (not gated behind Confirm), overlapping that ~fast call with the time the user
+spends reading the item preview; clicking "Confirm & Receive" then starts the slower ({SITE}-HOLD
+-> real warehouse) relocation with its own progress step. Bulk selection (checkboxes,
+"Receive Selected") REMOVED entirely per user's ask - only single-row receive remains. Completed
+tab table simplified to status badge + plain error text only - no popover, no inline retry button;
+a "View" button opens the same modal read-only with a Retry button if partial/failed.
+
+Backend split: `inbound_receipt_service.start_automated_receipt` now ONLY does Acknowledge+PGR
+(phase 1), sets `receipt_status="awaiting_relocation"` when done, no longer calls relocation
+internally. New route `POST /api/inbound-receipts/{sto_id}/relocate` (phase 2) branches to
+`receive_stock_transfer_order` (first attempt) or `retry_receipt_relocation` (already attempted)
+- reused by both the modal's auto-flow and its Retry button.
+
+Also fixed in this same session (real bugs found via user report "quantity doesn't get posted" +
+live DB inspection of failed/partial STOs):
+1. `retry_receipt_relocation` used to re-submit EVERY line to SAP on retry, including
+   already-successful ones - risked overwriting a real gac_id with a false failure, or
+   double-moving stock. Now only re-attempts lines that weren't `ok` last time; already-successful
+   lines' results (real gac_id) are preserved untouched. Verified twice: once with a stub client on
+   a copied doc, once for real against live STO-000084 (G12NUT/G12FW gac_id 282833/282834 stayed
+   byte-identical across a real retry call).
+2. `_clarify_goods_movement_error` (store_approval_service.py, shared by GRN + STO relocation) only
+   recognized ONE raw SAP error pattern ("negative stock not permitted") - "No inventory items
+   found for external id..." (same root cause, different SAP wording, real case STO-000063) was
+   leaking straight through with raw internal MOV-xxx/I-xxx IDs. Now matches both patterns.
+3. Error text was truncated at a hard 120 chars mid-word for multi-line summaries once several
+   lines' clarified messages got joined - raised to 300 chars, cuts at a word boundary.
+4. Pending tab wasn't humanizing `receipt_error` at all (Completed tab was) - now consistent.
+5. User feedback round 2 on the new modal: (a) error said generic "the source warehouse"/"STO
+   warehouse" - now names the actual warehouse ID (e.g. "P8-HOLD"); (b) per-line result had no
+   quantity - added `quantity`/`unit_of_measure` to every line result; (c) no SAP delivery number
+   (PxDx) visible - added `inbound_delivery_ids`/`outbound_delivery_ids` to both list endpoints,
+   shown at the top of the modal title.
+
+Known non-blocking rough edges (testing_agent code-review notes, not bugs - not yet actioned):
+- Partial STOs currently show in BOTH Pending and Completed tabs (both queries include "partial").
+- View mode has no Retry for a phase-1-only failure (receipt itself failed, no relocation attempted
+  yet) - user must go back to Pending tab, where the same STO is still actionable via "Receive".
+- `list_pending_receipts`'s on-the-fly SAP delivery-ID backfill can occasionally push /pending's
+  response past 30-60s on a cold cache (pre-existing, not from this session's changes).
+- Environment note: hit a real ENOSPC file-watcher crash-loop this session (unrelated to this
+  feature) - fixed by adding `CHOKIDAR_USEPOLLING=true` to frontend/.env. Webpack's own Watchpack
+  (src/ hot-reload) still logs non-fatal ENOSPC warnings - if a frontend code change doesn't seem
+  to appear live, do a manual `sudo supervisorctl restart frontend` rather than assuming hot reload
+  applied it.
+
+## Part 6 pointer (Sep 22 2026) - STO relocation speed investigation, SAP OData $batch ruled out
 Full detail in `/app/memory/sto_receipt_performance_investigation.md` section 9. User asked to
 re-check `InventoryNotification.html`/`SiteLogisticsRequest.html`/`khgoodsandactivityconfirmation.xml`
 for a genuine per-line-independent OData `$batch` path to beat the SOAP atomic-batch limit (#6 in

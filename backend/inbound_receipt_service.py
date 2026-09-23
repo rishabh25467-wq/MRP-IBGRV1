@@ -147,6 +147,7 @@ def _relocate_receipt_from_hold(db, sap_goods_movement_client, doc: dict, quanti
         ]
         line_results = []
         for item, future in zip(items, futures):
+            moved_qty = quantity_overrides.get(str(item["line_no"]), item["requested_qty"])
             result = future.result()
             if not result.get("ok"):
                 # Sep 22 2026 fix - was an ad-hoc single-pattern check
@@ -157,10 +158,10 @@ def _relocate_receipt_from_hold(db, sap_goods_movement_client, doc: dict, quanti
                 # SAME shared clarifier the Store Approval Goods Movement
                 # flow already relies on, covering every known pattern.
                 raw = result.get("error_detail") or result.get("error") or ""
-                clarified = _clarify_goods_movement_error(raw, item["product_id"])
-                line_results.append({"product_id": item["product_id"], "ok": False, "error": clarified["error"]})
+                clarified = _clarify_goods_movement_error(raw, item["product_id"], hold_warehouse_id)
+                line_results.append({"product_id": item["product_id"], "ok": False, "error": clarified["error"], "quantity": moved_qty, "unit_of_measure": item.get("unit_of_measure")})
             else:
-                line_results.append({"product_id": item["product_id"], "ok": True, "gac_id": result.get("external_id")})
+                line_results.append({"product_id": item["product_id"], "ok": True, "gac_id": result.get("external_id"), "quantity": moved_qty, "unit_of_measure": item.get("unit_of_measure")})
     all_ok = all(r["ok"] for r in line_results)
     any_ok = any(r["ok"] for r in line_results)
     status = "done" if all_ok else ("partial" if any_ok else "failed")
@@ -373,6 +374,8 @@ def list_completed_receipts(db, site_id: str = None, date_from: datetime = None,
             for it in (doc.get("items") or [])
         ],
         "receipt_relocation": doc.get("receipt_relocation"),
+        "outbound_delivery_ids": doc.get("outbound_delivery_ids") or [],
+        "inbound_delivery_ids": doc.get("inbound_delivery_ids") or [],
     } for doc in docs]
 
 

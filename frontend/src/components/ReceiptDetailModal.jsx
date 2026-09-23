@@ -114,11 +114,17 @@ export function ReceiptDetailModal({ order, mode, onClose, onUpdated }) {
   const relocationHasIssue = finalResult && (finalResult.status === "partial" || finalResult.status === "failed");
   const bannerCls = !finalResult ? "" : finalResult.status === "failed" ? "text-[#B42318]" : finalResult.status === "partial" ? "text-[#92400E]" : "text-[#027A48]";
 
+  const deliveryId = order.inbound_delivery_ids?.[0] || order.outbound_delivery_ids?.[0];
+
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-lg" data-testid="receipt-detail-modal">
         <DialogHeader>
-          <DialogTitle data-testid="receipt-detail-modal-title">{order.sto_id} — {order.ship_from_site_id} <ArrowRight size={14} className="inline" /> {order.ship_to_site_id}</DialogTitle>
+          <DialogTitle data-testid="receipt-detail-modal-title">
+            {deliveryId && <span className="text-[#0B6B74]" data-testid="receipt-detail-modal-delivery-id">{deliveryId}</span>}
+            {deliveryId && " · "}
+            {order.sto_id} — {order.ship_from_site_id} <ArrowRight size={14} className="inline" /> {order.ship_to_site_id}
+          </DialogTitle>
           <DialogDescription>SAP #{order.sap_order_id} · {order.ship_to_location_name || "—"}</DialogDescription>
         </DialogHeader>
 
@@ -164,10 +170,18 @@ export function ReceiptDetailModal({ order, mode, onClose, onUpdated }) {
             </div>
             {lines.length > 0 && (
               <table className="w-full text-xs border-t border-[#EAECF0] pt-1">
+                <thead>
+                  <tr className="text-[#667085]">
+                    <th className="text-left font-medium py-1">Product</th>
+                    <th className="text-right font-medium py-1">Qty Moved</th>
+                    <th className="text-right font-medium py-1">Result</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {lines.map((l) => (
                     <tr key={l.product_id} className="border-b border-[#EAECF0]">
                       <td className="py-1.5 pr-2 font-mono text-[#344054]">{l.product_id}</td>
+                      <td className="py-1.5 pr-2 text-right text-[#344054]">{l.quantity != null ? `${formatQty(l.quantity)} ${l.unit_of_measure || ""}` : "—"}</td>
                       <td className="py-1.5 text-right">
                         {l.ok ? <span className="text-[#027A48]">GM {l.gac_id}</span> : <span className="text-[#B42318]">{l.error}</span>}
                       </td>

@@ -150,18 +150,18 @@ _GOODS_MOVEMENT_RETRY_DELAY_SECONDS = 5
 # matched against the real SAP Application Log wording seen live this
 # session; the raw text is kept in `error_detail` (shown only as a hover
 # tooltip) so IT/support can still look it up if a pattern isn't covered.
-def _clarify_goods_movement_error(raw_error: str, material_id: str) -> dict:
+def _clarify_goods_movement_error(raw_error: str, material_id: str, warehouse_id: str = None) -> dict:
     text = raw_error or ""
-    # Sep 22 2026 fix (real incident, STO-000063) - "No inventory items
-    # found for external id..." is SAP's OTHER common wording for the
-    # exact same "source warehouse doesn't actually have this stock"
-    # rejection, just phrased differently - it was leaking straight
-    # through as raw SAP text (with internal MOV-xxx/I-xxx IDs) on the
-    # Inbound STO Receipt page since only "negative stock" was matched.
+    # Sep 23 2026 fix (real user feedback - "What's STO warehouse?") -
+    # the generic "the source warehouse"/"RM warehouse" wording didn't
+    # say WHICH warehouse SAP actually checked, leaving the message
+    # unclear. Names the real warehouse ID (e.g. "P1-HOLD") whenever the
+    # caller has it.
+    warehouse_label = warehouse_id or "the source warehouse"
     if re.search(r"negative stock not permitted|no inventory items found for external id", text, re.IGNORECASE):
         return {
-            "error": f"Not enough stock in the source warehouse to issue this quantity for {material_id}. Issue a lower quantity or check the RM warehouse balance in SAP.",
-            "error_hi": f"{material_id} के लिए इतनी मात्रा जारी करने हेतु सोर्स गोदाम (RM) में पर्याप्त स्टॉक नहीं है। कृपया कम मात्रा जारी करें या SAP में गोदाम का बैलेंस जांचें।",
+            "error": f"Not enough stock in {warehouse_label} to move this quantity of {material_id}. Issue a lower quantity or check the warehouse balance in SAP.",
+            "error_hi": f"{material_id} की इतनी मात्रा मूव करने के लिए {warehouse_label} में पर्याप्त स्टॉक नहीं है। कृपया कम मात्रा जारी करें या SAP में गोदाम का बैलेंस जांचें।",
         }
     if re.search(r"logistics area is invalid", text, re.IGNORECASE):
         return {
