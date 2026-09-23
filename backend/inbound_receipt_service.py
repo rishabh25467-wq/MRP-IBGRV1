@@ -58,13 +58,16 @@ start_automated_receipt's own comment block for the exact synchronous
 chain (user's explicit architectural mandate)."""
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor
+import time
 from datetime import datetime, timezone
 
 import job_store
-from sap_rate_limiter import SAP_MAX_CONCURRENT_REQUESTS
 from sap_wip_clearing_client import company_and_set_of_books_for_site, inbound_staging_area_for_site
-from store_approval_service import _trigger_goods_movement, _clarify_goods_movement_error
+from store_approval_service import _clarify_goods_movement_error, is_dry_run
+from sap_goods_movement_client import SAPGoodsMovementError
+
+_RELOCATION_BATCH_MAX_ATTEMPTS = 3
+_RELOCATION_BATCH_RETRY_DELAY_SECONDS = 5
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +97,29 @@ def _receipt_hold_warehouse_id(site_id: str) -> str:
     return inbound_staging_area_for_site(site_id)
 
 
+def _trigger_goods_movement_batch(sap_client, owner_party_id, site_id, lines: list) -> dict:
+    """Retry wrapper around `goods_movement_batch` - same transient-error
+    retry shape as store_approval_service._trigger_goods_movement (3
+    attempts, 5s backoff, bail immediately on an auth failure). Never
+    raises; caller always gets a dict back."""
+    last_error = None
+    for attempt in range(_RELOCATION_BATCH_MAX_ATTEMPTS):
+        try:
+            result = sap_client.goods_movement_batch(owner_party_id, site_id, lines, dry_run=is_dry_run())
+            return {**result, "attempted": True}
+        except SAPGoodsMovementError as e:
+            last_error = e
+            is_auth_failure = "authentication failed" in str(e).lower()
+            logger.error(
+                f"Batch goods movement attempt {attempt + 1}/{_RELOCATION_BATCH_MAX_ATTEMPTS} for site {site_id} "
+                f"({len(lines)} lines) failed: {e}"
+            )
+            if is_auth_failure or attempt == _RELOCATION_BATCH_MAX_ATTEMPTS - 1:
+                break
+            time.sleep(_RELOCATION_BATCH_RETRY_DELAY_SECONDS)
+    return {"attempted": True, "ok": False, "error": str(last_error)}
+
+
 def _relocate_receipt_from_hold(db, sap_goods_movement_client, doc: dict, quantity_overrides: dict = None) -> dict:
     """Called right after a Receive job's finalize_receipt confirms the
     real SAP Goods Receipt posted (received or partial - never for a
@@ -116,7 +142,19 @@ def _relocate_receipt_from_hold(db, sap_goods_movement_client, doc: dict, quanti
     itself (see receive_stock_transfer_order below), not just a
     post-Playwright cleanup step, so it accepts an optional
     `quantity_overrides` ({str(line_no): qty}) the same way the old
-    Playwright grid override did."""
+    Playwright grid override did.
+
+    Sep 24 2026, user's explicit ask ("all pass or all fail at once,
+    nothing moves - 1 Goods Movement ID for all lines") - the old design
+    (Sep 22 2026, see git history) fired one independent SOAP call PER
+    LINE in parallel so a single bad line never blocked the rest. The
+    user explicitly does NOT want that anymore: every line must move
+    together under ONE Goods Movement ID, or none of them move at all.
+    Now a single call to `goods_movement_batch` (see
+    sap_goods_movement_client.py) - SAP itself enforces the atomicity
+    (proven live, see /app/memory/sto_receipt_performance_investigation.md
+    #6), this function just fans the one result back out to every line
+    for display."""
     site_id = doc.get("ship_to_site_id")
     hold_warehouse_id = _receipt_hold_warehouse_id(site_id)
     ship_to_location_id = doc.get("ship_to_location_id")
@@ -127,95 +165,70 @@ def _relocate_receipt_from_hold(db, sap_goods_movement_client, doc: dict, quanti
         return {"status": "skipped_no_items"}
     quantity_overrides = quantity_overrides or {}
     owner_party_id, _ = company_and_set_of_books_for_site(site_id)
-    # Sep 22 2026, user's explicit ask ("10 line STO, can it be quicker
-    # safely under 10s") - each line's movement is fully independent
-    # (different product, same source/target warehouse) so these are
-    # safe to fire concurrently instead of one-at-a-time. `sap_semaphore`
-    # (shared tenant-wide, see sap_rate_limiter.py) still caps the real
-    # in-flight SAP call count at 3 regardless of how many threads are
-    # submitted here - this only removes the ARTIFICIAL serialization
-    # this function itself used to add on top of that shared cap.
-    with ThreadPoolExecutor(max_workers=SAP_MAX_CONCURRENT_REQUESTS) as pool:
-        futures = [
-            pool.submit(
-                _trigger_goods_movement, sap_goods_movement_client, owner_party_id, item["product_id"],
-                hold_warehouse_id, ship_to_location_id,
-                quantity_overrides.get(str(item["line_no"]), item["requested_qty"]),
-                item.get("unit_of_measure") or "EA", site_id,
-            )
-            for item in items
+    line_specs = [
+        {
+            "product_id": item["product_id"],
+            "quantity": quantity_overrides.get(str(item["line_no"]), item["requested_qty"]),
+            "quantity_uom": item.get("unit_of_measure") or "EA",
+            "source_logistics_area_id": hold_warehouse_id,
+            "target_logistics_area_id": ship_to_location_id,
+        }
+        for item in items
+    ]
+    result = _trigger_goods_movement_batch(sap_goods_movement_client, owner_party_id, site_id, line_specs)
+    if result.get("ok"):
+        line_results = [
+            {"product_id": spec["product_id"], "ok": True, "gac_id": result.get("external_id"),
+             "quantity": spec["quantity"], "unit_of_measure": spec["quantity_uom"]}
+            for spec in line_specs
         ]
-        line_results = []
-        for item, future in zip(items, futures):
-            moved_qty = quantity_overrides.get(str(item["line_no"]), item["requested_qty"])
-            result = future.result()
-            if not result.get("ok"):
-                # Sep 22 2026 fix - was an ad-hoc single-pattern check
-                # (only "negative stock not permitted") that left every
-                # other SAP rejection (e.g. "No inventory items found
-                # for external id...", real incident STO-000063) showing
-                # raw SAP text with internal IDs on this page. Reuses the
-                # SAME shared clarifier the Store Approval Goods Movement
-                # flow already relies on, covering every known pattern.
-                raw = result.get("error_detail") or result.get("error") or ""
-                clarified = _clarify_goods_movement_error(raw, item["product_id"], hold_warehouse_id)
-                line_results.append({"product_id": item["product_id"], "ok": False, "error": clarified["error"], "quantity": moved_qty, "unit_of_measure": item.get("unit_of_measure")})
-            else:
-                line_results.append({"product_id": item["product_id"], "ok": True, "gac_id": result.get("external_id"), "quantity": moved_qty, "unit_of_measure": item.get("unit_of_measure")})
-    all_ok = all(r["ok"] for r in line_results)
-    any_ok = any(r["ok"] for r in line_results)
-    status = "done" if all_ok else ("partial" if any_ok else "failed")
-    return {"status": status, "to": ship_to_location_id, "lines": line_results}
+        return {"status": "done", "to": ship_to_location_id, "lines": line_results, "gac_id": result.get("external_id")}
+    # Whole batch was rejected - every line is "not ok", but only the
+    # actual culprit (if SAP's fault text named a real material) gets the
+    # true clarified SAP reason; every other line gets a short note
+    # explaining it was blocked purely because it was bundled with the
+    # failing line, not because anything is wrong with IT specifically.
+    culprit_product_id = result.get("culprit_product_id")
+    raw = result.get("error") or "SAP rejected this batch of movements."
+    clarified = _clarify_goods_movement_error(raw, culprit_product_id or "this batch", hold_warehouse_id)
+    line_results = []
+    for spec in line_specs:
+        is_culprit = culprit_product_id == spec["product_id"]
+        if is_culprit or not culprit_product_id:
+            error = clarified["error"]
+        else:
+            error = f"Not moved - blocked because {culprit_product_id} in the same order failed: {clarified['error']}"
+        line_results.append({
+            "product_id": spec["product_id"], "ok": False, "error": error,
+            "quantity": spec["quantity"], "unit_of_measure": spec["quantity_uom"],
+        })
+    return {"status": "failed", "to": ship_to_location_id, "lines": line_results}
 
 
 def retry_receipt_relocation(db, sap_goods_movement_client, sto_id: str) -> dict:
     """Retry button on the Inbound Receipts (Completed tab) page for
-    when _relocate_receipt_from_hold failed or partially failed after a
-    successful "Receive".
+    when _relocate_receipt_from_hold failed after a successful "Receive".
 
-    Sep 22 2026 fix (real user report - "I've seen many cases where the
-    quantity doesn't get posted"): this used to re-submit EVERY line to
-    SAP's Goods Movement service again, including ones that had already
-    moved successfully on the first attempt. Since that stock is already
-    OUT of the {SITE}-HOLD warehouse by then, re-submitting an
-    already-successful line either (a) gets rejected by SAP as "no
-    stock"/"negative stock" - overwriting a genuinely-successful prior
-    movement's real `gac_id` with a false "failed" error, or (b), if
-    unrelated fungible stock happens to also sit in HOLD, could silently
-    double-move that product. Now only the lines that were NOT `ok` on
-    the previous attempt are ever re-submitted; every already-successful
-    line's original result (its real SAP `gac_id`) is preserved as-is."""
+    Sep 24 2026, user's explicit ask - now that relocation is atomic
+    (see _relocate_receipt_from_hold), a failed attempt means NOTHING
+    moved, so "retry" simply means resubmitting every line together
+    again, exactly like the very first attempt. No more preserving/
+    merging already-succeeded lines from a prior attempt (Sep 22 2026
+    logic, now dead) - with atomic all-or-nothing there is no such thing
+    as a "prior partial success" to preserve."""
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:
         raise ValueError(f"Stock Transfer Order {sto_id} not found.")
     if doc.get("receipt_status") not in ("received", "partial", "failed"):
         raise ValueError("This order must be received before retrying the warehouse move.")
-    prior_lines = (doc.get("receipt_relocation") or {}).get("lines") or []
-    already_ok = {l["product_id"]: l for l in prior_lines if l.get("ok")}
-    # No prior attempt to know about (e.g. relocation never ran at all)
-    # -> retry every line, same as before. Otherwise, only the ones that
-    # didn't already succeed.
-    retry_doc = doc
-    if prior_lines:
-        retry_doc = {**doc, "items": [it for it in (doc.get("items") or []) if it["product_id"] not in already_ok]}
-    result = _relocate_receipt_from_hold(db, sap_goods_movement_client, retry_doc)
-    merged_lines = list(already_ok.values()) + (result.get("lines") or [])
-    all_ok = all(l["ok"] for l in merged_lines) if merged_lines else True
-    any_ok = any(l["ok"] for l in merged_lines)
-    merged_status = "done" if all_ok else ("partial" if any_ok else "failed")
-    result = {**result, "lines": merged_lines, "status": merged_status}
-    # Sep 21 2026 fix (real live incident, STO-000132) - this used to
-    # ONLY update `receipt_relocation`, leaving `receipt_status`/
-    # `receipt_error` frozen on whatever they were from the ORIGINAL
-    # failed/partial attempt - so a genuinely-fixed order kept showing
-    # up in the Pending tab as "Receipt Failed" with a stale error
-    # message forever, even after this retry fully succeeded.
-    status_map = {"done": "received", "partial": "partial", "failed": "failed"}
+    result = _relocate_receipt_from_hold(db, sap_goods_movement_client, doc)
+    lines = result.get("lines") or []
+    status_map = {"done": "received", "failed": "failed"}
     overall = status_map.get(result.get("status"), doc.get("receipt_status"))
-    error_summary = " | ".join(f"{l['product_id']}: {l['error']}" for l in merged_lines if not l["ok"]) or None
+    error_summary = " | ".join(f"{l['product_id']}: {l['error']}" for l in lines if not l["ok"]) or None
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
         "receipt_relocation": result, "receipt_status": overall, "receipt_error": error_summary,
-        "receipt_results": merged_lines or doc.get("receipt_results"),
+        "receipt_results": lines or doc.get("receipt_results"),
     }})
     return result
 
@@ -470,7 +483,7 @@ def receive_stock_transfer_order(db, sap_goods_movement_client, sto_id: str, act
         started_at = started_at.replace(tzinfo=timezone.utc)
     relocation = _relocate_receipt_from_hold(db, sap_goods_movement_client, doc, quantity_overrides)
     status_map = {
-        "done": "received", "partial": "partial", "failed": "failed",
+        "done": "received", "failed": "failed",
         "skipped_same_warehouse": "received", "skipped_no_items": "received",
     }
     overall = status_map.get(relocation.get("status"), "failed")

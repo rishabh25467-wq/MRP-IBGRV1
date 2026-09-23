@@ -102,6 +102,91 @@ def _build_envelope(external_id, external_item_id, site_id, product_id, owner_pa
 </soapenv:Envelope>"""
 
 
+def _build_item_block(external_item_id, product_id, owner_party_id, source_area, target_area,
+                       quantity, unit_code, quantity_type_code,
+                       target_stock_status_code="", target_restricted_use=False) -> str:
+    from xml.sax.saxutils import escape
+    product_id, owner_party_id = escape(product_id), escape(owner_party_id)
+    source_area, target_area = escape(source_area), escape(target_area)
+    quantity_str = format(quantity, "f").rstrip("0").rstrip(".") or "0"
+    restricted_str = "true" if target_restricted_use else "false"
+    return f"""        <InventoryChangeItemGoodsMovement>
+          <ExternalItemID>{external_item_id}</ExternalItemID>
+          <MaterialInternalID>{product_id}</MaterialInternalID>
+          <OwnerPartyInternalID>{owner_party_id}</OwnerPartyInternalID>
+          <InventoryRestrictedUseIndicator>{restricted_str}</InventoryRestrictedUseIndicator>
+          <InventoryStockStatusCode>{target_stock_status_code}</InventoryStockStatusCode>
+          <SourceLogisticsAreaID>{source_area}</SourceLogisticsAreaID>
+          <TargetLogisticsAreaID>{target_area}</TargetLogisticsAreaID>
+          <InventoryItemChangeQuantity>
+            <Quantity unitCode="{unit_code}">{quantity_str}</Quantity>
+            <QuantityTypeCode>{quantity_type_code}</QuantityTypeCode>
+          </InventoryItemChangeQuantity>
+          <SourceInventoryRestrictedUseIndicator>false</SourceInventoryRestrictedUseIndicator>
+        </InventoryChangeItemGoodsMovement>"""
+
+
+# Sep 24 2026, user's explicit ask ("all pass or all fail at once, nothing
+# moves - 1 Goods Movement ID for all lines") - ONE <GoodsAndActivityConfirmation>
+# header (ONE ExternalID/GACID) wrapping every line's own
+# <InventoryChangeItemGoodsMovement> block, instead of the N-separate-calls
+# design in `goods_movement` below. Live-proven atomic (see /app/memory/
+# sto_receipt_performance_investigation.md #6): SAP processes one SOAP call
+# as ONE all-or-nothing BOI transaction regardless of how many item blocks
+# it holds - if any line is invalid, SAP rejects the ENTIRE call as a SOAP
+# Fault (HTTP 500) and posts nothing, confirmed with zero partial/leaked
+# stock movement on a real 2-line test. No documented hard cap on item
+# count for this operation (SAP Help: PSM_ISI_R_II_APGACFM_GOODS_MOVEMENT_IN)
+# - only the usual synchronous payload-size/timeout ceiling, so a very
+# large STO could theoretically time out rather than get rejected cleanly.
+def _build_batch_envelope(external_id, site_id, transaction_dt, item_blocks: list) -> str:
+    from xml.sax.saxutils import escape
+    site_id = escape(site_id)
+    items_xml = "\n".join(item_blocks)
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:glob="http://sap.com/xi/SAPGlobal20/Global">
+  <soapenv:Body>
+    <glob:GoodsAndActivityConfirmationGoodsMovement>
+      <GoodsAndActivityConfirmation>
+        <ExternalID>{external_id}</ExternalID>
+        <SiteID>{site_id}</SiteID>
+        <TransactionDateTime>{transaction_dt}</TransactionDateTime>
+{items_xml}
+      </GoodsAndActivityConfirmation>
+    </glob:GoodsAndActivityConfirmationGoodsMovement>
+  </soapenv:Body>
+</soapenv:Envelope>"""
+
+
+def _extract_soap_fault(xml: str):
+    """A rejected multi-item confirmation comes back as an actual SOAP
+    Fault (HTTP 500), not the HTTP-200-with-<SeverityCode> shape
+    `_extract_sap_error` handles - confirmed live (see investigation doc
+    #6): `<faultText>Negative stock not permitted in logistics area
+    P1-HOLD, material 09200726-01</faultText>`. Prefers `<faultText>`
+    (the real human-readable reason) over the generic `<faultstring>`
+    ("Application exception occurred!")."""
+    text = re.search(r"<faultText>(.*?)</faultText>", xml, re.DOTALL)
+    if text and text.group(1).strip():
+        return text.group(1).strip()
+    fault = re.search(r"<faultstring>(.*?)</faultstring>", xml, re.DOTALL)
+    return fault.group(1).strip() if fault else None
+
+
+def _attribute_fault_to_line(fault_text: str, lines: list):
+    """Best-effort: SAP's own fault text usually names the exact material
+    ID it rejected (see `_extract_soap_fault`'s example) - match it back to
+    one of the lines we sent so the UI can point at the real culprit line
+    instead of showing every line as equally guilty. Returns None (not
+    every SAP fault mentions a material ID) rather than guessing."""
+    if not fault_text:
+        return None
+    for line in lines:
+        if line["product_id"] and line["product_id"] in fault_text:
+            return line["product_id"]
+    return None
+
+
 def _extract_sap_error(xml: str):
     """Same shape SAP's own <Log> block uses everywhere else in this app
     (see store_approval_service._has_sap_log_error) - SeverityCode 3+ is a
@@ -190,4 +275,57 @@ class SAPGoodsMovementClient:
         sap_error = _extract_sap_error(response.text)
         if sap_error:
             return {"ok": False, "external_id": external_id, "error": f"SAP rejected the movement: {sap_error}", "raw_xml": response.text}
+        return {"ok": True, "external_id": _extract_gac_id(response.text) or external_id, "client_reference_id": external_id, "raw_xml": response.text}
+
+    def goods_movement_batch(self, owner_party_id: str, site_id: str, lines: list, dry_run: bool = True,
+                              target_stock_status_code: str = "", target_restricted_use: bool = False) -> dict:
+        """Sep 24 2026 - atomic multi-line version of `goods_movement` above.
+        `lines`: [{product_id, source_logistics_area_id, target_logistics_area_id,
+        quantity, quantity_uom}, ...]. ONE SOAP call, ONE ExternalID/GACID for
+        every line - either every line posts or SAP rejects the whole call and
+        nothing moves (see `_build_batch_envelope` docstring). Never returns a
+        per-line ok/fail split - that's the whole point of "atomic"."""
+        if not lines:
+            raise SAPGoodsMovementError("no lines to move")
+        for line in lines:
+            if line["quantity"] <= 0:
+                raise SAPGoodsMovementError(f"quantity must be > 0 for {line['product_id']}")
+        external_id = f"MOV-{uuid.uuid4().hex[:6].upper()}"
+        transaction_dt = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
+        item_blocks = [
+            _build_item_block(
+                f"I-{uuid.uuid4().hex[:8].upper()}", line["product_id"], owner_party_id,
+                _normalize_logistics_area_id(line["source_logistics_area_id"]),
+                _normalize_logistics_area_id(line["target_logistics_area_id"]),
+                line["quantity"], _resolve_unit_code(line["quantity_uom"]), line["quantity_uom"],
+                target_stock_status_code=target_stock_status_code, target_restricted_use=target_restricted_use,
+            )
+            for line in lines
+        ]
+        envelope = _build_batch_envelope(external_id, site_id, transaction_dt, item_blocks)
+        if dry_run:
+            return {"ok": True, "dry_run": True, "external_id": external_id, "envelope": envelope}
+
+        headers = {"Content-Type": "text/xml; charset=utf-8", "SOAPAction": SOAP_ACTION}
+        try:
+            with sap_semaphore:
+                response = self.session.post(self.endpoint, data=envelope.encode("utf-8"), headers=headers, auth=self.auth, timeout=self.timeout)
+        except requests.exceptions.RequestException as e:
+            raise SAPGoodsMovementError(f"SAP Goods Movement service unreachable: {e}")
+
+        if response.status_code == 401:
+            raise SAPGoodsMovementError("SAP SOAP authentication failed for Goods Movement (check SAP_SOAP_USERNAME/PASSWORD).")
+        # SAP rejects a bad multi-item confirmation as a SOAP Fault (HTTP
+        # 500), not a 200-with-log-error - see _extract_soap_fault docstring.
+        if response.status_code == 500:
+            fault = _extract_soap_fault(response.text) or "SAP rejected this batch of movements."
+            return {"ok": False, "external_id": external_id, "error": fault,
+                     "culprit_product_id": _attribute_fault_to_line(fault, lines), "raw_xml": response.text}
+        if response.status_code != 200:
+            raise SAPGoodsMovementError(f"SAP Goods Movement service responded with HTTP {response.status_code}: {response.text[:500]}")
+
+        sap_error = _extract_sap_error(response.text)
+        if sap_error:
+            return {"ok": False, "external_id": external_id, "error": sap_error,
+                     "culprit_product_id": _attribute_fault_to_line(sap_error, lines), "raw_xml": response.text}
         return {"ok": True, "external_id": _extract_gac_id(response.text) or external_id, "client_reference_id": external_id, "raw_xml": response.text}
