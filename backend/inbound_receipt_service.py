@@ -303,7 +303,7 @@ def list_pending_receipts(db, sap_outbound_delivery_client, sap_inbound_delivery
             "created_by": doc.get("created_by"),
             "receipt_status": doc.get("receipt_status") or "pending",
             "receipt_error": _humanize_sap_error(doc.get("receipt_error")),
-            "receipt_relocation": doc.get("receipt_relocation"),
+            "receipt_relocation": _enrich_relocation_lines(doc),
             "outbound_delivery_ids": delivery_ids,
             "inbound_delivery_ids": inbound_delivery_ids,
             "items": [
@@ -373,10 +373,32 @@ def list_completed_receipts(db, site_id: str = None, date_from: datetime = None,
              "unit_of_measure": it.get("unit_of_measure"), "requested_qty": it.get("requested_qty")}
             for it in (doc.get("items") or [])
         ],
-        "receipt_relocation": doc.get("receipt_relocation"),
+        "receipt_relocation": _enrich_relocation_lines(doc),
         "outbound_delivery_ids": doc.get("outbound_delivery_ids") or [],
         "inbound_delivery_ids": doc.get("inbound_delivery_ids") or [],
     } for doc in docs]
+
+
+def _enrich_relocation_lines(doc: dict) -> dict:
+    """Sep 23 2026 fix (real user report - "why moved qty is -?") -
+    `quantity`/`unit_of_measure` were only added to line results AFTER
+    this fix shipped, so any relocation stored BEFORE that (or any line
+    preserved untouched across a retry, see retry_receipt_relocation)
+    is missing them and shows "-" in the UI forever. Backfills both
+    from the STO's own `items` by product_id at READ time, for every
+    record old or new, without needing to touch stored data."""
+    relocation = doc.get("receipt_relocation")
+    if not relocation or not relocation.get("lines"):
+        return relocation
+    by_product = {it["product_id"]: it for it in (doc.get("items") or [])}
+    enriched_lines = []
+    for line in relocation["lines"]:
+        if line.get("quantity") is None:
+            item = by_product.get(line["product_id"])
+            if item:
+                line = {**line, "quantity": item.get("requested_qty"), "unit_of_measure": item.get("unit_of_measure")}
+        enriched_lines.append(line)
+    return {**relocation, "lines": enriched_lines}
 
 
 def prepare_receipt(db, sto_id: str, sap_inbound_delivery_client=None) -> dict:
