@@ -1,0 +1,26 @@
+{
+  "summary": "Backend-only tests for the Sep 24 2026 atomic all-or-nothing relocation change. 20/20 pytest cases pass (17 unit + 3 live GET regression). Verified: (1) batch SOAP envelope builds ONE <GoodsAndActivityConfirmation> with ONE <ExternalID> wrapping N <InventoryChangeItemGoodsMovement> blocks; (2) `_extract_soap_fault` prefers <faultText> over <faultstring>; (3) `_attribute_fault_to_line` matches culprit product_id or returns None; (4) `goods_movement_batch` HTTP 500 fault -> ok:false + culprit_product_id, HTTP 200 success -> real <GACID> extracted as external_id, HTTP 200 with <SeverityCode>3 also maps to culprit; (5) `_relocate_receipt_from_hold` on success returns status='done' with EVERY line ok:true and sharing the SAME gac_id, on failure returns status='failed' with EVERY line ok:false where the culprit gets the real clarified SAP reason and other lines get 'blocked because {culprit} in the same order failed:...'; (6) `retry_receipt_relocation` resubmits ALL lines in one atomic call (no more preserving prior-success lines); (7) status rollup only produces 'received' or 'failed' - never 'partial'. Regression: GET /api/inbound-receipts/pending (49 orders) and /completed (60 orders) both return 200 with expected shape and quantity/UOM backfill intact. No live SAP write was performed (SAP_GOODS_MOVEMENT_DRY_RUN=false on this tenant, safety mandate honored).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_atomic_relocation_iter196.py",
+    "/app/test_reports/pytest/iter196_atomic_relocation.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "inbound_receipt_service._trigger_goods_movement_batch retries a batch call up to 3 times on SAPGoodsMovementError (transport/HTTP exceptions), but a dict-with-ok:false (a real SAP business rejection like negative stock) is NOT retried - which is correct semantically (SAP has already made a business decision, retrying won't change it). Worth explicitly commenting this distinction so a future maintainer doesn't 'fix' it into retrying on business rejects too.",
+    "retry_receipt_relocation gate (`receipt_status not in (received, partial, failed)`) still accepts 'partial' as a valid prior status even though the new atomic flow never produces one - fine for backward compat with historical STOs but the ValueError message wording implies partial is still a modern state.",
+    "ReceiptDetailModal.jsx 'partial' UI branch is now dead code (as noted in review request) - harmless but a stale-code cleanup candidate.",
+    "Ingress read timeout observed at 60s on cold /pending (SAP delivery-ID backfill inside request thread) - matches iteration_195's identical observation. Not new to this iteration, but still a real latency risk when many older STOs miss `outbound_delivery_ids`."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_atomic_relocation_iter196.py"
+  ],
+  "success_rate": {"backend": "100% (20/20)", "frontend": "not tested (per review request - backend only)"},
+  "test_credentials": "Reused existing synthetic super_admin session u-8qIcJoBrX8l6ZyV2JKWMte5t5GJsd_vzm6WzC1vqc from prior iterations (auth_users user_id test-tid:sto-manual-gi-oid). No new synthetic sessions created; existing session refreshed 7d.",
+  "seed_data_creation": "None - all unit tests use in-memory MagicMock/FakeCollection; live GET tests only READ existing data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Sep 24 2026 atomic relocation is verified working end-to-end at unit level: sap_goods_movement_client.goods_movement_batch builds one envelope with all lines under one ExternalID/GACID, HTTP 500 SOAP Faults are correctly parsed via <faultText> and attributed to the culprit product_id, and inbound_receipt_service._relocate_receipt_from_hold / retry_receipt_relocation both propagate the atomic result correctly. No live SAP relocation was fired in this iteration (production tenant, DRY_RUN=false, no safe test STO was identified with main agent). Distribution of receipt_relocation.status across the 60 completed STOs currently in DB: {done: 25, partial: 1 (historical pre-atomic), failed: 3, skipped_same_warehouse: 2}. Multi-line 'done' STOs from the pre-atomic era (e.g. STO-000144, 8 lines) still show distinct gac_ids per line - expected, we do not rewrite historical data. Any brand-new atomic-era 'done' STO would show all lines sharing ONE gac_id. Preview URL had a transient 60s ingress timeout on first /pending call during this run - resolved after backend restart.",
+  "rca of the issue": "N/A - no bug found. The atomic all-or-nothing redesign is correctly implemented across sap_goods_movement_client (batch envelope, fault parsing, culprit attribution) and inbound_receipt_service (single batch call, no ThreadPoolExecutor, no partial-merge retry). All 20 automated checks pass."
+}
