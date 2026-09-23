@@ -1,5 +1,54 @@
 ## Bug Fix: manual category override didn't unblock auto Store Requests for BOM-having items (2026-09-14)
 
+## Sep 24 2026 - Atomic all-or-nothing STO relocation (Goods Movement) + GM ID display fixes
+User's explicit ask: "We do not intend to have one fail, one pass. All must pass at once or all
+fail. nothing moves." - replaced the Sep 22 2026 parallel-per-line relocation design (one
+independent SOAP call per STO line, so a bad line never blocked good ones) with ONE atomic SOAP
+call per STO covering every line under ONE Goods Movement ID.
+
+**Investigated first (see `/app/memory/sto_receipt_performance_investigation.md` #6)**: confirmed
+PGR (Post Goods Receipt) CANNOT get the same atomic treatment - it's a different SAP service
+(`InboundDeliveryPGRBackground`, an OData Function Import, one call per delivery object) with no
+multi-block envelope primitive; stays per-delivery, unchanged.
+
+**Backend**:
+- `sap_goods_movement_client.py`: new `goods_movement_batch()` - builds ONE
+  `<GoodsAndActivityConfirmation>` (one `ExternalID`/GACID) with N `<InventoryChangeItemGoodsMovement>`
+  blocks (one per line). New `_build_item_block`, `_build_batch_envelope`, `_extract_soap_fault`
+  (parses the SOAP Fault/HTTP 500 shape a rejected batch returns - different from the
+  HTTP-200-with-`<SeverityCode>` shape the old single-item path used), `_attribute_fault_to_line`
+  (best-effort matches SAP's fault text back to the real culprit product_id).
+- `inbound_receipt_service.py`: `_relocate_receipt_from_hold` rewritten - no more
+  `ThreadPoolExecutor`/per-line calls, now one call to new `_trigger_goods_movement_batch` (3-attempt
+  retry wrapper, same shape as the old per-line one). Success = every line shares one `gac_id`.
+  Failure = every line `ok:false`; culprit line gets the real clarified SAP reason, every other line
+  gets "blocked because bundled with X failed". `retry_receipt_relocation` simplified - always
+  resubmits ALL lines together (no more partial-merge-preserve logic, since atomic means there's no
+  such thing as a prior partial success). `receive_stock_transfer_order`'s status_map trimmed
+  ("partial" removed - relocation can no longer produce it going forward, only historical rows
+  still have it).
+- Unit-tested (20/20, `testing_agent` iteration_196): envelope shape, fault parsing, atomic status
+  rollup, regression on pending/completed tabs. No live SAP write risked (dry-run off tenant-wide,
+  fault parser verified against the real recorded SAP fault sample from the investigation doc
+  instead).
+
+**Frontend** (`ReceiptDetailModal.jsx`):
+- Bug fix: the live "receive" completion poll handler read `data.result` raw, but
+  `receive_stock_transfer_order`'s return is WRAPPED (`{status: "received"/"failed", ...,
+  receipt_relocation: {status: "done"/"failed", to, lines, gac_id}}`) while a retry
+  (`retry_receipt_relocation`) returns the inner shape directly - so a fresh completion showed
+  "Received" with no GM ID (status never matched "done") even though the Completed-tab "view" of
+  the same order (which reads `order.receipt_relocation` directly) looked correct. Fixed:
+  `setFinalResult(data.result?.receipt_relocation || data.result)`.
+- Added the shared Goods Movement ID to the top status banner (`· GM {gac_id}`) so it's visible
+  immediately on completion, not just per-line in the table below.
+
+**Docs**: `/app/STO_RECEIVE_BUTTON_MIGRATION.md` regenerated as v3 - new section 0 explaining why
+PGR couldn't get the same atomic treatment, updated backend code (client batch method, service
+rewrite), updated Mongo doc shape (`receipt_relocation.gac_id` shared across lines), updated
+frontend section documenting both `ReceiptDetailModal.jsx` fixes.
+
+
 - Real incident, user-reported: unable to get an automatic Store Request created for `6800-003989-270`
   ("KNOB, 1/4-20 STUD"). Investigation: it has a cached BOM in SAP (Knob + Steel Insert), so
   `is_sub_assembly` was always True for it - and by design, Sub-Assembly components NEVER get an

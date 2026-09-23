@@ -1,21 +1,46 @@
-# STO "Receive" Button — Full Migration Bundle (v2, Sep 23 2026 redesign)
+# STO "Receive" Button — Full Migration Bundle (v3, Sep 24 2026 — atomic relocation)
 
-Everything needed to port the Inbound STO Receipt flow into a new app. This version reflects the
-Sep 23 2026 redesign: a single detail modal (fires the Goods Receipt the instant it opens, then a
-separate confirmed "Warehouse Move" step) replacing the old bulk-select table UI. If you already
-copied the v1 doc, this REPLACES it - the backend split (`/receive` now does ONLY the Goods
-Receipt, a new `/relocate` route does the warehouse move) and the frontend (new
-`ReceiptDetailModal.jsx`, simplified `InboundReceiptsPage.js`, no bulk selection) are both new.
+Everything needed to port the Inbound STO Receipt flow into a new app. This version REPLACES v2
+(Sep 23 2026 redesign doc) - the warehouse-move step (`{SITE}-HOLD` -> real destination) changed
+from "N independent parallel SOAP calls, one per line, so one bad line never blocks the rest" to
+"ONE atomic SOAP call covering every line under ONE Goods Movement ID - either every line moves,
+or NONE of them move" (explicit user mandate: "we do not intend to have one fail, one pass. All
+must pass at once or all fail. nothing moves."). The PGR (Post Goods Receipt) step is UNCHANGED -
+it uses a completely different SAP service (an OData Function Import, one call per delivery
+object) and was confirmed NOT batchable the same way (see section 0).
 
 ```
-Acknowledge -> PostGoodsReceipt (Path A, primary)
+Acknowledge -> PostGoodsReceipt (Path A, primary, per delivery - unchanged, NOT atomic-batchable)
    -> if rejected: Release -> immediate Warehouse-Order lookup -> ConfirmAsPlanned (Path B, fallback)
 [receipt_status = "awaiting_relocation" here - this is the modal's "Confirm" checkpoint]
--> Goods Movement: {SITE}-HOLD -> real target warehouse (relocation, separate step, retryable
-   independently, only re-touches lines that actually failed)
+-> Goods Movement: {SITE}-HOLD -> real target warehouse, ONE atomic SOAP call, ONE Goods
+   Movement ID for every line - all lines succeed together or SAP rejects the whole call and
+   NOTHING moves (retry always resubmits every line again, never a partial subset)
 ```
 
-## 1. Required `.env` variables (backend) — unchanged from v1
+## 0. Why PGR could NOT get the same atomic treatment (read this before assuming it can)
+
+Two completely different SAP services are involved and they behave differently:
+
+- **Goods Movement / relocation** (`InventoryProcessingGoodsAndActivityConfirmationGoodsMovementIn.
+  DoGoodsMovement`, SOAP) - its schema allows ONE `<GoodsAndActivityConfirmation>` (ONE
+  `ExternalID`/GACID) to contain MULTIPLE `<InventoryChangeItemGoodsMovement>` blocks (one per
+  line). Live-tested against production: bundling 2 lines (1 valid + 1 deliberately invalid,
+  "negative stock") in one call made SAP reject the WHOLE call as a SOAP Fault (HTTP 500) -
+  the valid line did NOT post either. Zero partial/leaked stock movement, confirmed via a
+  follow-up inventory read. This is the primitive the atomic redesign below is built on.
+- **Post Goods Receipt** (`InboundDeliveryPGRBackground`, an OData **Function Import**) - takes
+  exactly ONE `ObjectID` (one Inbound Delivery Notification) per call and already posts every
+  item ON THAT delivery in one shot. But this tenant's Goods Issue always creates ONE Outbound
+  Delivery -> ONE Inbound Delivery Notification PER STO LINE (confirmed live), so a 3-line STO
+  is 3 separate delivery objects needing 3 separate `InboundDeliveryPGRBackground` calls - a
+  Function Import has no multi-block envelope trick like the SOAP service above. OData `$batch`
+  could wrap multiple Function Import calls in one HTTP request, but each one would still
+  execute/commit independently inside the batch (no transactional guarantee across them) - this
+  exact combination was never tested and is NOT assumed to work. **Conclusion: PGR stays
+  per-delivery, looped, as it always was; only the relocation step became atomic.**
+
+## 1. Required `.env` variables (backend) — unchanged from v1/v2
 
 ```env
 BYD_ODATA_VHOST="my431827.businessbydesign.cloud.sap"
@@ -30,35 +55,165 @@ SAP_SOAP_PASSWORD="<your value>"
 SAP_GOODS_MOVEMENT_DRY_RUN="false"
 ```
 
-## 2. Backend files — unchanged from v1, copy verbatim from that doc if you don't have them yet
+## 2. Backend files — unchanged from v1/v2, copy verbatim if you don't have them yet
 `sap_rate_limiter.py`, `sap_wip_clearing_client.py`, `sap_inbound_delivery_client.py`,
-`sap_inbound_delivery_execution_client.py`, `sap_goods_movement_client.py` (now with an
-instance-level `requests.Session` for connection reuse - see its `__init__`), `job_store.py`.
-Also still need `store_approval_service._trigger_goods_movement` and (NEW, see below)
-`_clarify_goods_movement_error`.
+`sap_inbound_delivery_execution_client.py`, `job_store.py`. Also still need
+`store_approval_service.is_dry_run` and `_clarify_goods_movement_error` (used ONLY for the
+single-item `goods_movement` flow used elsewhere in the app, e.g. Store Approval - the new
+`goods_movement_batch` method below does NOT touch that flow).
 
-### `store_approval_service.py` extract — UPDATED (adds a real error clarifier + warehouse name)
+### `sap_goods_movement_client.py` — UPDATED (adds the atomic `goods_movement_batch` method)
+The single-item `goods_movement()` method and its `_build_envelope`/`_extract_sap_error`/
+`_extract_gac_id`/`_normalize_logistics_area_id` helpers are UNCHANGED from v2 - keep them (other
+flows in the app, e.g. Store Approval's stock issue, still use single-item `goods_movement`).
+ADD everything below to the same file:
+
 ```python
+def _build_item_block(external_item_id, product_id, owner_party_id, source_area, target_area,
+                       quantity, unit_code, quantity_type_code,
+                       target_stock_status_code="", target_restricted_use=False) -> str:
+    from xml.sax.saxutils import escape
+    product_id, owner_party_id = escape(product_id), escape(owner_party_id)
+    source_area, target_area = escape(source_area), escape(target_area)
+    quantity_str = format(quantity, "f").rstrip("0").rstrip(".") or "0"
+    restricted_str = "true" if target_restricted_use else "false"
+    return f"""        <InventoryChangeItemGoodsMovement>
+          <ExternalItemID>{external_item_id}</ExternalItemID>
+          <MaterialInternalID>{product_id}</MaterialInternalID>
+          <OwnerPartyInternalID>{owner_party_id}</OwnerPartyInternalID>
+          <InventoryRestrictedUseIndicator>{restricted_str}</InventoryRestrictedUseIndicator>
+          <InventoryStockStatusCode>{target_stock_status_code}</InventoryStockStatusCode>
+          <SourceLogisticsAreaID>{source_area}</SourceLogisticsAreaID>
+          <TargetLogisticsAreaID>{target_area}</TargetLogisticsAreaID>
+          <InventoryItemChangeQuantity>
+            <Quantity unitCode="{unit_code}">{quantity_str}</Quantity>
+            <QuantityTypeCode>{quantity_type_code}</QuantityTypeCode>
+          </InventoryItemChangeQuantity>
+          <SourceInventoryRestrictedUseIndicator>false</SourceInventoryRestrictedUseIndicator>
+        </InventoryChangeItemGoodsMovement>"""
+
+
+# ONE <GoodsAndActivityConfirmation> header (ONE ExternalID/GACID) wrapping every line's own
+# <InventoryChangeItemGoodsMovement> block - SAP processes one SOAP call as ONE all-or-nothing
+# BOI transaction regardless of item-block count (live-proven: an invalid line makes SAP reject
+# the WHOLE call as a SOAP Fault/HTTP 500, zero partial posting). No documented hard cap on item
+# count (SAP Help: PSM_ISI_R_II_APGACFM_GOODS_MOVEMENT_IN) - only the usual synchronous
+# payload-size/timeout ceiling, so a very large STO could theoretically time out.
+def _build_batch_envelope(external_id, site_id, transaction_dt, item_blocks: list) -> str:
+    from xml.sax.saxutils import escape
+    site_id = escape(site_id)
+    items_xml = "\n".join(item_blocks)
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:glob="http://sap.com/xi/SAPGlobal20/Global">
+  <soapenv:Body>
+    <glob:GoodsAndActivityConfirmationGoodsMovement>
+      <GoodsAndActivityConfirmation>
+        <ExternalID>{external_id}</ExternalID>
+        <SiteID>{site_id}</SiteID>
+        <TransactionDateTime>{transaction_dt}</TransactionDateTime>
+{items_xml}
+      </GoodsAndActivityConfirmation>
+    </glob:GoodsAndActivityConfirmationGoodsMovement>
+  </soapenv:Body>
+</soapenv:Envelope>"""
+
+
+def _extract_soap_fault(xml: str):
+    """A rejected multi-item confirmation comes back as an actual SOAP Fault (HTTP 500), not the
+    HTTP-200-with-<SeverityCode> shape `_extract_sap_error` handles. Real example:
+    `<faultText>Negative stock not permitted in logistics area P1-HOLD, material
+    09200726-01</faultText>`. Prefers <faultText> (human-readable) over <faultstring>
+    ("Application exception occurred!")."""
+    text = re.search(r"<faultText>(.*?)</faultText>", xml, re.DOTALL)
+    if text and text.group(1).strip():
+        return text.group(1).strip()
+    fault = re.search(r"<faultstring>(.*?)</faultstring>", xml, re.DOTALL)
+    return fault.group(1).strip() if fault else None
+
+
+def _attribute_fault_to_line(fault_text: str, lines: list):
+    """SAP's fault text usually names the exact material ID it rejected - match it back to one
+    of the lines we sent so the UI can point at the real culprit instead of blaming every line
+    equally. Returns None (not every fault names a material) rather than guessing."""
+    if not fault_text:
+        return None
+    for line in lines:
+        if line["product_id"] and line["product_id"] in fault_text:
+            return line["product_id"]
+    return None
+```
+
+Add this method inside `SAPGoodsMovementClient`:
+
+```python
+    def goods_movement_batch(self, owner_party_id: str, site_id: str, lines: list, dry_run: bool = True,
+                              target_stock_status_code: str = "", target_restricted_use: bool = False) -> dict:
+        """Atomic multi-line version of `goods_movement`. `lines`: [{product_id,
+        source_logistics_area_id, target_logistics_area_id, quantity, quantity_uom}, ...].
+        ONE SOAP call, ONE ExternalID/GACID for every line - either every line posts or SAP
+        rejects the whole call and nothing moves. Never returns a per-line ok/fail split - that
+        is the whole point of "atomic"."""
+        if not lines:
+            raise SAPGoodsMovementError("no lines to move")
+        for line in lines:
+            if line["quantity"] <= 0:
+                raise SAPGoodsMovementError(f"quantity must be > 0 for {line['product_id']}")
+        external_id = f"MOV-{uuid.uuid4().hex[:6].upper()}"
+        transaction_dt = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
+        item_blocks = [
+            _build_item_block(
+                f"I-{uuid.uuid4().hex[:8].upper()}", line["product_id"], owner_party_id,
+                _normalize_logistics_area_id(line["source_logistics_area_id"]),
+                _normalize_logistics_area_id(line["target_logistics_area_id"]),
+                line["quantity"], _resolve_unit_code(line["quantity_uom"]), line["quantity_uom"],
+                target_stock_status_code=target_stock_status_code, target_restricted_use=target_restricted_use,
+            )
+            for line in lines
+        ]
+        envelope = _build_batch_envelope(external_id, site_id, transaction_dt, item_blocks)
+        if dry_run:
+            return {"ok": True, "dry_run": True, "external_id": external_id, "envelope": envelope}
+
+        headers = {"Content-Type": "text/xml; charset=utf-8", "SOAPAction": SOAP_ACTION}
+        try:
+            with sap_semaphore:
+                response = self.session.post(self.endpoint, data=envelope.encode("utf-8"), headers=headers, auth=self.auth, timeout=self.timeout)
+        except requests.exceptions.RequestException as e:
+            raise SAPGoodsMovementError(f"SAP Goods Movement service unreachable: {e}")
+
+        if response.status_code == 401:
+            raise SAPGoodsMovementError("SAP SOAP authentication failed for Goods Movement (check SAP_SOAP_USERNAME/PASSWORD).")
+        # SAP rejects a bad multi-item confirmation as a SOAP Fault (HTTP 500), not a
+        # 200-with-log-error - see _extract_soap_fault docstring.
+        if response.status_code == 500:
+            fault = _extract_soap_fault(response.text) or "SAP rejected this batch of movements."
+            return {"ok": False, "external_id": external_id, "error": fault,
+                     "culprit_product_id": _attribute_fault_to_line(fault, lines), "raw_xml": response.text}
+        if response.status_code != 200:
+            raise SAPGoodsMovementError(f"SAP Goods Movement service responded with HTTP {response.status_code}: {response.text[:500]}")
+
+        sap_error = _extract_sap_error(response.text)
+        if sap_error:
+            return {"ok": False, "external_id": external_id, "error": sap_error,
+                     "culprit_product_id": _attribute_fault_to_line(sap_error, lines), "raw_xml": response.text}
+        return {"ok": True, "external_id": _extract_gac_id(response.text) or external_id, "client_reference_id": external_id, "raw_xml": response.text}
+```
+
+### `store_approval_service.py` extract — needed for `is_dry_run` + the error clarifier
+```python
+import os
 import re
 
-_GOODS_MOVEMENT_MAX_ATTEMPTS = 3
-_GOODS_MOVEMENT_RETRY_DELAY_SECONDS = 5
-
-
-def _has_sap_log_error(result: dict) -> str | None:
-    xml = (result or {}).get("raw_xml") or (result or {}).get("envelope") or (result or {}).get("raw") or ""
-    if not xml:
-        return None
-    if re.search(r"<SeverityCode>\s*[3-9]\s*</SeverityCode>", xml):
-        note = re.search(r"<Note>(.*?)</Note>", xml)
-        return note.group(1) if note else "SAP logged an error-severity item for this movement"
-    return None
+def is_dry_run() -> bool:
+    """Read LAZILY (a function, not a module constant) - a module-level os.environ.get() at
+    import time can run BEFORE load_dotenv(), silently staying dry-run forever."""
+    value = os.environ.get("SAP_GOODS_MOVEMENT_DRY_RUN", "true")
+    return value.lower() != "false"
 
 
 def _clarify_goods_movement_error(raw_error: str, material_id: str, warehouse_id: str = None) -> dict:
     """Translates SAP's raw Goods Movement rejection text into a plain-English message a
-    warehouse user can act on - names the ACTUAL warehouse ID when known (real user feedback:
-    a generic "the source warehouse" wasn't clear enough)."""
+    warehouse user can act on - names the ACTUAL warehouse ID when known."""
     text = raw_error or ""
     warehouse_label = warehouse_id or "the source warehouse"
     if re.search(r"negative stock not permitted|no inventory items found for external id", text, re.IGNORECASE):
@@ -73,76 +228,47 @@ def _clarify_goods_movement_error(raw_error: str, material_id: str, warehouse_id
     if re.search(r"unreachable|timeout|connection", text, re.IGNORECASE):
         return {"error": "Could not reach SAP to move this stock. Please retry in a moment.", "error_hi": "इस स्टॉक को मूव करने के लिए SAP से संपर्क नहीं हो सका। कृपया थोड़ी देर बाद पुनः प्रयास करें।"}
     return {"error": f"SAP rejected this stock movement for {material_id}. Contact IT with the Request/Issue ID if this keeps happening.", "error_hi": f"SAP ने {material_id} के लिए यह स्टॉक मूवमेंट अस्वीकार कर दिया। यदि यह बार-बार हो रहा है तो कृपया Request/Issue ID के साथ IT से संपर्क करें।"}
-
-
-def _trigger_goods_movement(sap_client, owner_party_id, product_id, source_warehouse, target_warehouse, quantity, uom, site_id) -> dict:
-    import os
-    import time
-    dry_run = os.environ.get("SAP_GOODS_MOVEMENT_DRY_RUN", "true").lower() != "false"
-    last_error = None
-    for attempt in range(_GOODS_MOVEMENT_MAX_ATTEMPTS):
-        try:
-            result = sap_client.goods_movement(
-                owner_party_id=owner_party_id, product_id=product_id,
-                source_logistics_area_id=source_warehouse, target_logistics_area_id=target_warehouse,
-                quantity=quantity, quantity_uom=uom, site_id=site_id, dry_run=dry_run,
-            )
-            sap_error = _has_sap_log_error(result)
-            if sap_error and result.get("ok"):
-                result = {**result, "ok": False, "error_detail": f"SAP rejected the movement: {sap_error}", "error": sap_error}
-            return {**result, "attempted": True}
-        except Exception as e:
-            last_error = e
-            is_auth_failure = "authentication failed" in str(e).lower()
-            if is_auth_failure or attempt == _GOODS_MOVEMENT_MAX_ATTEMPTS - 1:
-                break
-            time.sleep(_GOODS_MOVEMENT_RETRY_DELAY_SECONDS)
-    return {"ok": False, "error": str(last_error), "attempted": True}
 ```
 
-### `inbound_receipt_service.py` (new file, full - THIS IS THE CORE FILE, fully rewritten for v2)
+### `inbound_receipt_service.py` (THE CORE FILE - relocation section fully rewritten for v3)
+
+Everything from v2 stays the same EXCEPT `_relocate_receipt_from_hold` and
+`retry_receipt_relocation`, which are replaced entirely (no more `ThreadPoolExecutor`, no more
+per-line parallel calls, no more partial-merge-on-retry logic):
 
 ```python
-"""Inbound STO Receipt - fully synchronous, zero polling/webhooks/background sweeps.
+import time
+from sap_goods_movement_client import SAPGoodsMovementError
+from store_approval_service import _clarify_goods_movement_error, is_dry_run
 
-Two SEPARATE steps now (Sep 23 2026 redesign - a detail modal fires step 1 the instant it opens,
-overlapping that fast call with the time the user spends reading the shipment preview; step 2
-only fires once the user explicitly confirms):
-
-  STEP 1 (start_automated_receipt) - Acknowledge -> PostGoodsReceipt directly (Path A). If
-  rejected: Release -> immediate Warehouse Order lookup -> ConfirmAsPlanned (Path B fallback).
-  Sets receipt_status="awaiting_relocation" when done - does NOT move any stock yet.
-
-  STEP 2 (receive_stock_transfer_order / retry_receipt_relocation) - moves stock from
-  {SITE}-HOLD to the STO's real destination warehouse. retry_receipt_relocation ONLY re-attempts
-  lines that failed last time - already-successful lines' real SAP gac_id is never touched again
-  (a real bug: retrying used to re-submit successful lines too, which either falsely turned a
-  success into an error, or could double-move stock)."""
-import logging
-import re
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
-
-import job_store
-from sap_rate_limiter import SAP_MAX_CONCURRENT_REQUESTS
-from sap_wip_clearing_client import company_and_set_of_books_for_site, inbound_staging_area_for_site
-from store_approval_service import _trigger_goods_movement, _clarify_goods_movement_error
-
-logger = logging.getLogger(__name__)
-
-STO_COLLECTION = "stock_transfer_orders"
-_PENDING_QUERY = {"gi_status": "posted", "receipt_status": {"$nin": ["received"]}}
-_SAP_FINISHED_STATUS_CODE = "3"
+_RELOCATION_BATCH_MAX_ATTEMPTS = 3
+_RELOCATION_BATCH_RETRY_DELAY_SECONDS = 5
 
 
-def _receipt_hold_warehouse_id(site_id: str) -> str:
-    return inbound_staging_area_for_site(site_id)
+def _trigger_goods_movement_batch(sap_client, owner_party_id, site_id, lines: list) -> dict:
+    """Retry wrapper around `goods_movement_batch` - 3 attempts, 5s backoff, bail immediately on
+    an auth failure (transport/HTTP-level errors only - a real SAP business rejection, e.g.
+    negative stock, is a semantic decision and is NEVER retried, only transient/connection
+    errors are). Never raises; caller always gets a dict back."""
+    last_error = None
+    for attempt in range(_RELOCATION_BATCH_MAX_ATTEMPTS):
+        try:
+            result = sap_client.goods_movement_batch(owner_party_id, site_id, lines, dry_run=is_dry_run())
+            return {**result, "attempted": True}
+        except SAPGoodsMovementError as e:
+            last_error = e
+            is_auth_failure = "authentication failed" in str(e).lower()
+            if is_auth_failure or attempt == _RELOCATION_BATCH_MAX_ATTEMPTS - 1:
+                break
+            time.sleep(_RELOCATION_BATCH_RETRY_DELAY_SECONDS)
+    return {"attempted": True, "ok": False, "error": str(last_error)}
 
 
 def _relocate_receipt_from_hold(db, sap_goods_movement_client, doc: dict, quantity_overrides: dict = None) -> dict:
-    """STEP 2's actual work. Never raises - failure here must never undo an already-successful
-    receipt; caller stores the result. Fires all lines concurrently (still capped at
-    SAP_MAX_CONCURRENT_REQUESTS in-flight via sap_semaphore inside _trigger_goods_movement)."""
+    """Moves every line's stock from {SITE}-HOLD to the STO's real destination warehouse in ONE
+    atomic SOAP call - either all lines move (status "done", every line shares the SAME gac_id)
+    or none do (status "failed", every line marked not-ok). Never raises - failure here must
+    never undo an already-successful Goods Receipt; caller stores the result."""
     site_id = doc.get("ship_to_site_id")
     hold_warehouse_id = _receipt_hold_warehouse_id(site_id)
     ship_to_location_id = doc.get("ship_to_location_id")
@@ -153,478 +279,135 @@ def _relocate_receipt_from_hold(db, sap_goods_movement_client, doc: dict, quanti
         return {"status": "skipped_no_items"}
     quantity_overrides = quantity_overrides or {}
     owner_party_id, _ = company_and_set_of_books_for_site(site_id)
-    with ThreadPoolExecutor(max_workers=SAP_MAX_CONCURRENT_REQUESTS) as pool:
-        futures = [
-            pool.submit(
-                _trigger_goods_movement, sap_goods_movement_client, owner_party_id, item["product_id"],
-                hold_warehouse_id, ship_to_location_id,
-                quantity_overrides.get(str(item["line_no"]), item["requested_qty"]),
-                item.get("unit_of_measure") or "EA", site_id,
-            )
-            for item in items
+    line_specs = [
+        {
+            "product_id": item["product_id"],
+            "quantity": quantity_overrides.get(str(item["line_no"]), item["requested_qty"]),
+            "quantity_uom": item.get("unit_of_measure") or "EA",
+            "source_logistics_area_id": hold_warehouse_id,
+            "target_logistics_area_id": ship_to_location_id,
+        }
+        for item in items
+    ]
+    result = _trigger_goods_movement_batch(sap_goods_movement_client, owner_party_id, site_id, line_specs)
+    if result.get("ok"):
+        line_results = [
+            {"product_id": spec["product_id"], "ok": True, "gac_id": result.get("external_id"),
+             "quantity": spec["quantity"], "unit_of_measure": spec["quantity_uom"]}
+            for spec in line_specs
         ]
-        line_results = []
-        for item, future in zip(items, futures):
-            moved_qty = quantity_overrides.get(str(item["line_no"]), item["requested_qty"])
-            result = future.result()
-            if not result.get("ok"):
-                raw = result.get("error_detail") or result.get("error") or ""
-                clarified = _clarify_goods_movement_error(raw, item["product_id"], hold_warehouse_id)
-                line_results.append({"product_id": item["product_id"], "ok": False, "error": clarified["error"], "quantity": moved_qty, "unit_of_measure": item.get("unit_of_measure")})
-            else:
-                line_results.append({"product_id": item["product_id"], "ok": True, "gac_id": result.get("external_id"), "quantity": moved_qty, "unit_of_measure": item.get("unit_of_measure")})
-    all_ok = all(r["ok"] for r in line_results)
-    any_ok = any(r["ok"] for r in line_results)
-    status = "done" if all_ok else ("partial" if any_ok else "failed")
-    return {"status": status, "to": ship_to_location_id, "lines": line_results}
+        return {"status": "done", "to": ship_to_location_id, "lines": line_results, "gac_id": result.get("external_id")}
+    # Whole batch was rejected - every line is "not ok". Only the actual culprit (if SAP's fault
+    # text named a real material) gets the true clarified SAP reason; every other line gets a
+    # short note explaining it was blocked purely because it was bundled with the failing line.
+    culprit_product_id = result.get("culprit_product_id")
+    raw = result.get("error") or "SAP rejected this batch of movements."
+    clarified = _clarify_goods_movement_error(raw, culprit_product_id or "this batch", hold_warehouse_id)
+    line_results = []
+    for spec in line_specs:
+        is_culprit = culprit_product_id == spec["product_id"]
+        error = clarified["error"] if (is_culprit or not culprit_product_id) else \
+            f"Not moved - blocked because {culprit_product_id} in the same order failed: {clarified['error']}"
+        line_results.append({
+            "product_id": spec["product_id"], "ok": False, "error": error,
+            "quantity": spec["quantity"], "unit_of_measure": spec["quantity_uom"],
+        })
+    return {"status": "failed", "to": ship_to_location_id, "lines": line_results}
 
 
 def retry_receipt_relocation(db, sap_goods_movement_client, sto_id: str) -> dict:
-    """Retries STEP 2 - ONLY the lines that failed last time; already-successful lines' results
-    are preserved untouched (see module docstring for why this matters)."""
+    """Retry button on the Completed tab for when relocation failed. A failed attempt means
+    NOTHING moved, so "retry" always resubmits every line together again, exactly like the
+    first attempt - no more preserving/merging already-succeeded lines from a prior attempt
+    (there is no such thing as a "prior partial success" with atomic all-or-nothing)."""
     doc = db[STO_COLLECTION].find_one({"_id": sto_id})
     if not doc:
         raise ValueError(f"Stock Transfer Order {sto_id} not found.")
     if doc.get("receipt_status") not in ("received", "partial", "failed"):
         raise ValueError("This order must be received before retrying the warehouse move.")
-    prior_lines = (doc.get("receipt_relocation") or {}).get("lines") or []
-    already_ok = {l["product_id"]: l for l in prior_lines if l.get("ok")}
-    retry_doc = doc
-    if prior_lines:
-        retry_doc = {**doc, "items": [it for it in (doc.get("items") or []) if it["product_id"] not in already_ok]}
-    result = _relocate_receipt_from_hold(db, sap_goods_movement_client, retry_doc)
-    merged_lines = list(already_ok.values()) + (result.get("lines") or [])
-    all_ok = all(l["ok"] for l in merged_lines) if merged_lines else True
-    any_ok = any(l["ok"] for l in merged_lines)
-    merged_status = "done" if all_ok else ("partial" if any_ok else "failed")
-    result = {**result, "lines": merged_lines, "status": merged_status}
-    status_map = {"done": "received", "partial": "partial", "failed": "failed"}
+    result = _relocate_receipt_from_hold(db, sap_goods_movement_client, doc)
+    lines = result.get("lines") or []
+    status_map = {"done": "received", "failed": "failed"}
     overall = status_map.get(result.get("status"), doc.get("receipt_status"))
-    error_summary = " | ".join(f"{l['product_id']}: {l['error']}" for l in merged_lines if not l["ok"]) or None
+    error_summary = " | ".join(f"{l['product_id']}: {l['error']}" for l in lines if not l["ok"]) or None
     db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {
         "receipt_relocation": result, "receipt_status": overall, "receipt_error": error_summary,
-        "receipt_results": merged_lines or doc.get("receipt_results"),
+        "receipt_results": lines or doc.get("receipt_results"),
     }})
     return result
-
-
-def _enrich_relocation_lines(doc: dict) -> dict:
-    """Backfills `quantity`/`unit_of_measure` for any line stored BEFORE that field existed
-    (or preserved untouched across a retry) from the STO's own `items`, at READ time - fixes
-    display for every record old or new without touching stored data."""
-    relocation = doc.get("receipt_relocation")
-    if not relocation or not relocation.get("lines"):
-        return relocation
-    by_product = {it["product_id"]: it for it in (doc.get("items") or [])}
-    enriched_lines = []
-    for line in relocation["lines"]:
-        if line.get("quantity") is None:
-            item = by_product.get(line["product_id"])
-            if item:
-                line = {**line, "quantity": item.get("requested_qty"), "unit_of_measure": item.get("unit_of_measure")}
-        enriched_lines.append(line)
-    return {**relocation, "lines": enriched_lines}
-
-
-def list_ship_to_sites_with_pending_receipts(db) -> list:
-    return sorted(s for s in db[STO_COLLECTION].distinct("ship_to_site_id", _PENDING_QUERY) if s)
-
-
-def list_pending_receipts(db, site_id: str = None) -> list:
-    """Simplified from the real app (which also live-verifies/backfills SAP delivery IDs here -
-    port that from your own STO-creation tracking if needed). `active_job` surfaces a
-    currently-running job of EITHER kind (receipt or relocation) so a page refresh/second tab
-    still shows the live state."""
-    query = dict(_PENDING_QUERY)
-    if site_id:
-        query["ship_to_site_id"] = site_id
-    docs = list(db[STO_COLLECTION].find(query).sort("created_at", -1).limit(200))
-    results = []
-    for doc in docs:
-        results.append({
-            "sto_id": doc["_id"],
-            "sap_order_id": (doc.get("sap_order_id") or "").lstrip("0") or doc.get("sap_order_id"),
-            "ship_from_site_id": doc.get("ship_from_site_id"),
-            "ship_to_site_id": doc.get("ship_to_site_id"),
-            "ship_to_location_name": doc.get("ship_to_location_name"),
-            "created_at": doc.get("created_at"),
-            "receipt_status": doc.get("receipt_status") or "pending",
-            "receipt_error": _humanize_sap_error(doc.get("receipt_error")),
-            "receipt_relocation": _enrich_relocation_lines(doc),
-            "outbound_delivery_ids": doc.get("outbound_delivery_ids") or [],
-            "inbound_delivery_ids": doc.get("inbound_delivery_ids") or [],
-            "items": [
-                {"line_no": it.get("line_no"), "product_id": it.get("product_id"), "description": it.get("description"),
-                 "unit_of_measure": it.get("unit_of_measure"), "requested_qty": it.get("requested_qty")}
-                for it in (doc.get("items") or [])
-            ],
-        })
-    active_jobs = {
-        j["sto_id"]: {"job_id": j["_id"], "phase": j.get("phase")}
-        for j in db[job_store.COLLECTION_NAME].find({"sto_id": {"$in": [r["sto_id"] for r in results]}, "kind": {"$in": ["inbound_receipt", "inbound_relocation"]}, "status": "running"})
-    }
-    for r in results:
-        r["active_job"] = active_jobs.get(r["sto_id"])
-    return results
-
-
-def list_completed_receipts(db, site_id: str = None, date_from: datetime = None, date_to: datetime = None) -> list:
-    query = {"receipt_status": {"$in": ["received", "partial", "failed"]}}
-    if site_id:
-        query["ship_to_site_id"] = site_id
-    if date_from or date_to:
-        date_range = {}
-        if date_from:
-            date_range["$gte"] = date_from
-        if date_to:
-            date_range["$lte"] = date_to
-        query["receipt_completed_at"] = date_range
-    docs = list(db[STO_COLLECTION].find(query).sort("receipt_completed_at", -1).limit(300))
-    return [{
-        "sto_id": doc["_id"],
-        "sap_order_id": (doc.get("sap_order_id") or "").lstrip("0") or doc.get("sap_order_id"),
-        "ship_from_site_id": doc.get("ship_from_site_id"),
-        "ship_to_site_id": doc.get("ship_to_site_id"),
-        "ship_to_location_name": doc.get("ship_to_location_name"),
-        "receipt_status": doc.get("receipt_status"),
-        "receipt_error": _humanize_sap_error(doc.get("receipt_error")),
-        "received_at": doc.get("received_at"),
-        "receipt_completed_at": doc.get("receipt_completed_at"),
-        "receipt_duration_seconds": doc.get("receipt_duration_seconds"),
-        "items": [
-            {"line_no": it.get("line_no"), "product_id": it.get("product_id"), "description": it.get("description"),
-             "unit_of_measure": it.get("unit_of_measure"), "requested_qty": it.get("requested_qty")}
-            for it in (doc.get("items") or [])
-        ],
-        "receipt_relocation": _enrich_relocation_lines(doc),
-        "outbound_delivery_ids": doc.get("outbound_delivery_ids") or [],
-        "inbound_delivery_ids": doc.get("inbound_delivery_ids") or [],
-    } for doc in docs]
-
-
-def prepare_receipt(db, sto_id: str) -> dict:
-    doc = db[STO_COLLECTION].find_one({"_id": sto_id})
-    if not doc:
-        raise ValueError(f"Stock Transfer Order {sto_id} not found.")
-    if doc.get("gi_status") != "posted":
-        raise ValueError("This order's Goods Issue hasn't posted in SAP yet - nothing to receive.")
-    if not doc.get("outbound_delivery_ids"):
-        raise ValueError("No SAP delivery reference found yet for this order - please retry in a moment.")
-    if not doc.get("items"):
-        raise ValueError(f"Stock Transfer Order {sto_id} has no line items - nothing to receive.")
-    return doc
-
-
-def receive_stock_transfer_order(db, sap_goods_movement_client, sto_id: str, actor: str, quantity_overrides: dict = None) -> dict:
-    """STEP 2, first attempt (see retry_receipt_relocation for subsequent retries)."""
-    doc = db[STO_COLLECTION].find_one({"_id": sto_id}) or {}
-    if quantity_overrides is None:
-        quantity_overrides = doc.get("receipt_quantity_overrides") or {}
-    now = datetime.now(timezone.utc)
-    started_at = doc.get("receipt_started_at")
-    if started_at and started_at.tzinfo is None:
-        started_at = started_at.replace(tzinfo=timezone.utc)
-    relocation = _relocate_receipt_from_hold(db, sap_goods_movement_client, doc, quantity_overrides)
-    status_map = {"done": "received", "partial": "partial", "failed": "failed",
-                  "skipped_same_warehouse": "received", "skipped_no_items": "received"}
-    overall = status_map.get(relocation.get("status"), "failed")
-    lines = relocation.get("lines") or []
-    error_summary = " | ".join(f"{l['product_id']}: {l['error']}" for l in lines if not l["ok"]) or None
-    update = {
-        "receipt_status": overall, "receipt_results": lines, "receipt_relocation": relocation,
-        "receipt_error": error_summary, "received_at": now if overall in ("received", "partial") else doc.get("received_at"),
-        "received_by": actor, "receipt_completed_at": now,
-        "receipt_duration_seconds": round((now - started_at).total_seconds()) if started_at else None,
-    }
-    db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": update})
-    return {"status": overall, "results": lines, "error": error_summary, "receipt_relocation": relocation}
-
-
-def build_line_overrides(doc: dict, quantity_overrides: dict) -> dict:
-    quantity_overrides = quantity_overrides or {}
-    result = {}
-    for it in (doc.get("items") or []):
-        override = quantity_overrides.get(str(it["line_no"]))
-        if override is not None and abs(float(override) - float(it["requested_qty"])) > 1e-6:
-            result[it["product_id"]] = float(override)
-    return result
-
-
-def _find_matching_lot(sap_execution_client, site_id: str, product_ids: list) -> dict:
-    if not sap_execution_client:
-        return None
-    try:
-        candidates = sap_execution_client.find_recent_lots(limit=50)
-    except Exception as e:
-        logger.warning(f"Immediate Warehouse Order lookup failed: {e}")
-        return None
-    target = sorted(product_ids)
-    for lot in candidates:
-        if lot.get("site_id") == site_id and sorted(lot.get("products") or []) == target:
-            return lot
-    return None
-
-
-def _apply_quantity_overrides(sap_inbound_delivery_client, delivery_id: str, line_overrides: dict) -> None:
-    if not sap_inbound_delivery_client or not line_overrides:
-        return
-    try:
-        delivery = sap_inbound_delivery_client.find_delivery_by_id(delivery_id)
-    except Exception as e:
-        logger.warning(f"Could not fetch delivery {delivery_id} for quantity override: {e}")
-        return
-    for item in (delivery or {}).get("items") or []:
-        override_qty = line_overrides.get(item["product_id"])
-        if override_qty is not None and item.get("quantity_object_id"):
-            try:
-                sap_inbound_delivery_client.update_item_quantity(item["quantity_object_id"], override_qty)
-            except Exception as e:
-                logger.warning(f"Could not override quantity for {delivery_id}/{item['product_id']}: {e}")
-
-
-def start_automated_receipt(
-    db, sap_kh_inbound_delivery_client, sap_inbound_delivery_client, sap_execution_client,
-    sto_id: str, actor: str, quantity_overrides: dict = None,
-) -> dict:
-    """STEP 1 ONLY (Sep 23 2026 split) - THIS is what the modal fires the instant it opens.
-    Does NOT move any stock - sets receipt_status="awaiting_relocation" when done, and the
-    modal's "Confirm" then fires STEP 2 (receive_stock_transfer_order) separately."""
-    doc = db[STO_COLLECTION].find_one({"_id": sto_id})
-    if not doc:
-        raise ValueError(f"Stock Transfer Order {sto_id} not found.")
-    delivery_ids = doc.get("inbound_delivery_ids") or doc.get("outbound_delivery_ids") or []
-    site_id = doc.get("ship_to_site_id")
-    all_product_ids = sorted({it["product_id"] for it in (doc.get("items") or [])})
-    line_overrides = build_line_overrides(doc, quantity_overrides or {})
-    for delivery_id in delivery_ids:
-        try:
-            found = sap_kh_inbound_delivery_client.find_object_id(delivery_id)
-        except Exception as e:
-            raise ValueError(f"Could not reach SAP to look up delivery {delivery_id}: {e}")
-        if not found:
-            continue
-        if found.get("delivery_processing_status_code") == _SAP_FINISHED_STATUS_CODE:
-            continue  # already received (e.g. a repeat click) - nothing to do
-        try:
-            sap_kh_inbound_delivery_client.acknowledge_delivery_note_receipt(found["object_id"])
-        except Exception as e:
-            logger.info(f"Acknowledge for {delivery_id} ({sto_id}) skipped/failed (may already be acknowledged): {e}")
-        _apply_quantity_overrides(sap_inbound_delivery_client, delivery_id, line_overrides)
-        pgr_error = None
-        try:
-            # PATH A - direct PostGoodsReceipt, NO Release call first (calling Release before this
-            # disables PGRBackground for this tenant once already-released-without-GR).
-            sap_inbound_delivery_client.post_goods_receipt(found["object_id"])
-        except Exception as e:
-            pgr_error = e
-        if pgr_error is None:
-            continue  # Path A succeeded
-        # PATH B fallback - this delivery rejected direct PGR (already Released-but-unfinished).
-        try:
-            sap_kh_inbound_delivery_client.release_delivery(found["object_id"])
-        except Exception as e:
-            logger.info(f"Release for {delivery_id} ({sto_id}) skipped/failed (may already be released): {e}")
-        refreshed = sap_kh_inbound_delivery_client.find_object_id(delivery_id) or found
-        if refreshed.get("delivery_processing_status_code") == _SAP_FINISHED_STATUS_CODE:
-            continue
-        lot = _find_matching_lot(sap_execution_client, site_id, all_product_ids)
-        if lot:
-            for activity in lot.get("activities") or []:
-                if activity.get("status_code") != _SAP_FINISHED_STATUS_CODE:
-                    sap_execution_client.confirm_activity_as_planned(activity["object_id"])
-            continue
-        raise ValueError(
-            f"SAP hasn't finished processing delivery {delivery_id} yet - direct Goods Receipt was rejected "
-            f"({pgr_error}) and no Warehouse Order was found either. Please retry the receipt in a moment."
-        )
-    db_doc = db[STO_COLLECTION].find_one({"_id": sto_id}) or {}
-    if not db_doc.get("receipt_relocation"):
-        db[STO_COLLECTION].update_one({"_id": sto_id}, {"$set": {"receipt_status": "awaiting_relocation", "receipt_error": None}})
-    return {"status": "goods_receipt_posted"}
-
-
-def _humanize_sap_error(raw: str) -> str:
-    """Extracts just the message text from a raw SAP JSON fault; caps anything else at 300
-    chars (cut at a word boundary, not mid-word) rather than dumping it verbatim."""
-    if not raw:
-        return raw
-    match = re.search(r'"value"\s*:\s*"([^"]+)"', raw) or re.search(r'"message"\s*:\s*"([^"]+)"', raw)
-    if match:
-        return match.group(1)
-    if len(raw) <= 300:
-        return raw
-    cut = raw[:300].rsplit(" ", 1)[0]
-    return cut + "…"
 ```
 
-## 3. `server.py` wiring — client instantiation (unchanged) + routes (UPDATED for v2, 6 routes now)
-
+`receive_stock_transfer_order` (first-time move, calls `_relocate_receipt_from_hold` the same way
+as before) only needs its `status_map` trimmed - the relocation step can no longer produce
+`"partial"`, only `"done"`/`"failed"`/`"skipped_*"`:
 ```python
-import inbound_receipt_service
-from sap_inbound_delivery_client import SAPInboundDeliveryClient
-from sap_inbound_delivery_execution_client import SAPInboundDeliveryExecutionClient
-from sap_goods_movement_client import SAPGoodsMovementClient
-
-sap_inbound_delivery_client = SAPInboundDeliveryClient(
-    endpoint=os.environ['SAP_ODATA_INBOUND_BASE_URL'], username=os.environ['SAP_ODATA_USERNAME'],
-    password=os.environ['SAP_ODATA_PASSWORD'], vhost=os.environ['BYD_ODATA_VHOST'],
-)
-sap_kh_inbound_delivery_client = SAPInboundDeliveryClient(
-    endpoint=os.environ['SAP_ODATA_KH_INBOUND_DELIVERY_BASE_URL'], username=os.environ['SAP_ODATA_USERNAME'],
-    password=os.environ['SAP_ODATA_PASSWORD'], vhost=os.environ['BYD_ODATA_VHOST'], release_action="Release",
-)
-sap_inbound_delivery_execution_client = SAPInboundDeliveryExecutionClient(
-    endpoint=os.environ['SAP_ODATA_INBOUND_DELIVERY_EXECUTION_BASE_URL'], username=os.environ['SAP_ODATA_USERNAME'],
-    password=os.environ['SAP_ODATA_PASSWORD'], vhost=os.environ['BYD_ODATA_VHOST'],
-)
-sap_goods_movement_client = SAPGoodsMovementClient(
-    endpoint=os.environ['SAP_SOAP_GOODS_MOVEMENT_ENDPOINT'], username=os.environ['SAP_SOAP_USERNAME'],
-    password=os.environ['SAP_SOAP_PASSWORD'],
-)
-
-
-# ==================== Inbound STO Receipt routes (v2) ====================
-
-class InboundReceiptItem(BaseModel):
-    line_no: int
-    received_qty: float
-
-
-class InboundReceiptRequest(BaseModel):
-    items: List[InboundReceiptItem] = []
-
-
-@api_router.get("/inbound-receipts/sites")
-async def get_inbound_receipt_sites():
-    return {"sites": await asyncio.to_thread(inbound_receipt_service.list_ship_to_sites_with_pending_receipts, db)}
-
-
-@api_router.get("/inbound-receipts/pending")
-async def get_inbound_receipts_pending(site_id: Optional[str] = None):
-    return {"orders": await asyncio.to_thread(inbound_receipt_service.list_pending_receipts, db, site_id)}
-
-
-@api_router.get("/inbound-receipts/completed")
-async def get_inbound_receipts_completed(site_id: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None):
-    try:
-        parsed_from = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc) if date_from else None
-        parsed_to = (datetime.fromisoformat(date_to) + timedelta(days=1)).replace(tzinfo=timezone.utc) if date_to else None
-    except ValueError:
-        raise HTTPException(status_code=400, detail="date_from/date_to must be YYYY-MM-DD")
-    return {"orders": await asyncio.to_thread(inbound_receipt_service.list_completed_receipts, db, site_id, parsed_from, parsed_to)}
-
-
-# STEP 1 - fired by the modal the instant it opens (mode="receive").
-@api_router.post("/inbound-receipts/{sto_id}/receive")
-async def post_inbound_receipt(sto_id: str, payload: InboundReceiptRequest, request: Request):
-    user = await asyncio.to_thread(auth_service.get_current_user, request, db)  # replace with your own auth
-    actor = (user or {}).get("name") or (user or {}).get("email") or "unknown"
-    overrides = {str(i.line_no): i.received_qty for i in payload.items}
-    try:
-        doc = await asyncio.to_thread(inbound_receipt_service.prepare_receipt, db, sto_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    if doc.get("receipt_status") == "received":
-        return {"already_received": True, "result": {"status": "received", "results": doc.get("receipt_results") or []}}
-
-    existing_job = await asyncio.to_thread(db[job_store.COLLECTION_NAME].find_one, {"sto_id": sto_id, "status": "running", "kind": "inbound_receipt"})
-    if existing_job:
-        return {"job_id": existing_job["_id"]}
-
-    job_id = str(uuid.uuid4())
-    await asyncio.to_thread(db[inbound_receipt_service.STO_COLLECTION].update_one, {"_id": sto_id}, {"$set": {"receipt_started_at": datetime.now(timezone.utc)}})
-    await asyncio.to_thread(job_store.create_job, db, job_id, {
-        "sto_id": sto_id, "kind": "inbound_receipt", "status": "running", "phase": "processing", "result": None, "error": None,
-    })
-
-    async def run():
-        try:
-            final = await asyncio.to_thread(
-                inbound_receipt_service.start_automated_receipt, db,
-                sap_kh_inbound_delivery_client, sap_inbound_delivery_client, sap_inbound_delivery_execution_client,
-                sto_id, actor, overrides,
-            )
-            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": final, "error": None})
-        except Exception as e:
-            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": str(e)})
-            await asyncio.to_thread(db[inbound_receipt_service.STO_COLLECTION].update_one, {"_id": sto_id}, {"$set": {"receipt_status": "failed", "receipt_error": str(e)}})
-
-    asyncio.create_task(run())
-    return {"job_id": job_id}
-
-
-@api_router.get("/inbound-receipts/receive-status/{job_id}")
-async def get_inbound_receipt_job_status(job_id: str):
-    job = await asyncio.to_thread(job_store.get_job, db, job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Unknown job_id")
-    return job
-
-
-# STEP 2 (NEW route, v2) - fired by the modal's "Confirm" button, or its "Retry Warehouse Move"
-# button. Branches to a first-time move or a failed-lines-only retry.
-@api_router.post("/inbound-receipts/{sto_id}/relocate")
-async def post_inbound_receipt_relocate(sto_id: str, request: Request):
-    user = await asyncio.to_thread(auth_service.get_current_user, request, db)
-    actor = (user or {}).get("name") or (user or {}).get("email") or "unknown"
-    doc = await asyncio.to_thread(db[inbound_receipt_service.STO_COLLECTION].find_one, {"_id": sto_id})
-    if not doc:
-        raise HTTPException(status_code=404, detail=f"Stock Transfer Order {sto_id} not found.")
-    existing_job = await asyncio.to_thread(db[job_store.COLLECTION_NAME].find_one, {"sto_id": sto_id, "status": "running", "kind": "inbound_relocation"})
-    if existing_job:
-        return {"job_id": existing_job["_id"]}
-    has_prior_attempt = bool(doc.get("receipt_relocation"))
-    job_id = str(uuid.uuid4())
-    await asyncio.to_thread(job_store.create_job, db, job_id, {
-        "sto_id": sto_id, "kind": "inbound_relocation", "status": "running", "phase": "moving", "result": None, "error": None,
-    })
-
-    async def run():
-        try:
-            if has_prior_attempt:
-                result = await asyncio.to_thread(inbound_receipt_service.retry_receipt_relocation, db, sap_goods_movement_client, sto_id)
-            else:
-                result = await asyncio.to_thread(inbound_receipt_service.receive_stock_transfer_order, db, sap_goods_movement_client, sto_id, actor, None)
-            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "done", "phase": "done", "result": result, "error": None})
-        except Exception as e:
-            await asyncio.to_thread(job_store.update_job, db, job_id, {"status": "failed", "phase": "failed", "result": None, "error": str(e)})
-
-    asyncio.create_task(run())
-    return {"job_id": job_id}
+    status_map = {
+        "done": "received", "failed": "failed",
+        "skipped_same_warehouse": "received", "skipped_no_items": "received",
+    }
 ```
+Everything else in `inbound_receipt_service.py` (STEP 1's `start_automated_receipt`,
+`list_pending_receipts`, `list_completed_receipts`, `_enrich_relocation_lines`,
+`prepare_receipt`, `build_line_overrides`, `_humanize_sap_error`) is UNCHANGED from v2 - copy
+verbatim.
 
-## 4. MongoDB doc shape on `stock_transfer_orders` (updated `receipt_status` values)
+## 3. `server.py` wiring — UNCHANGED from v2 (same 6 routes, same client instantiation)
+No route signatures changed - `/receive`, `/relocate`, `/retry-receipt-relocation`,
+`/receive-status/{job_id}`, `/pending`, `/completed` all keep calling the exact same
+`inbound_receipt_service` function names as before; only what happens INSIDE
+`_relocate_receipt_from_hold`/`retry_receipt_relocation` changed. See v2's section 3 for the
+full route code if you don't have it yet - copy verbatim, nothing to update here.
 
-`receipt_status` now has 5 possible values: `"pending"` -> `"awaiting_relocation"` (Step 1 done,
-Step 2 not yet) -> `"received"` / `"partial"` / `"failed"` (Step 2's outcome). A "partial"/"failed"
-row is still queryable/actionable in `list_pending_receipts` (not `"received"`) - a
-`"partial"/"failed"` row ALSO shows in `list_completed_receipts`. `outbound_delivery_ids`/
-`inbound_delivery_ids` (SAP delivery numbers, e.g. `"P1D1-541"`) must be populated on the doc for
-the modal to show them.
+## 4. MongoDB doc shape on `stock_transfer_orders`
 
+`receipt_status`: `"pending"` -> `"awaiting_relocation"` (Step 1/PGR done, Step 2/relocation not
+yet) -> `"received"` / `"failed"` (Step 2's outcome - `"partial"` can no longer be PRODUCED by
+new relocations, only ever seen on STOs relocated before this v3 change; keep it in any status
+filter/query for backward compatibility with historical data, just don't expect new rows to get
+it). `receipt_relocation` shape after this change:
 ```json
 {
-  "_id": "STO-000142", "sap_order_id": "0000032871",
-  "ship_from_site_id": "P9", "ship_to_site_id": "P2", "ship_to_location_id": "P2-RM",
-  "ship_to_location_name": "P2 Raw Material", "gi_status": "posted",
-  "outbound_delivery_ids": ["P9D1-431"], "inbound_delivery_ids": ["P9D1-431"],
-  "items": [{"line_no": 1, "product_id": "G12NUT", "description": "...", "unit_of_measure": "EA", "requested_qty": 100}],
-  "receipt_status": "pending", "created_at": "2026-09-22T10:00:00Z"
+  "status": "done",
+  "to": "P8-SFG",
+  "gac_id": "283220",
+  "lines": [
+    {"product_id": "G12LW", "ok": true, "gac_id": "283220", "quantity": 1.0, "unit_of_measure": "EA"},
+    {"product_id": "G12NUT", "ok": true, "gac_id": "283220", "quantity": 2.0, "unit_of_measure": "EA"}
+  ]
 }
 ```
+Note EVERY line shares the SAME `gac_id` now (one Goods Movement ID per STO, not one per line).
+On failure, every line has `"ok": false` - the culprit line's `error` is the real clarified SAP
+reason, every other line's `error` says it was blocked because it was bundled with the culprit.
 
-## 5. Frontend — 2 files: `ReceiptDetailModal.jsx` (NEW) + `InboundReceiptsPage.js` (simplified)
+`outbound_delivery_ids`/`inbound_delivery_ids` (SAP delivery numbers, e.g. `"P1D1-541"`) must
+still be populated on the doc for the modal to show them - unchanged from v2.
+
+## 5. Frontend — 2 files, `ReceiptDetailModal.jsx` (UPDATED) + `InboundReceiptsPage.js` (unchanged)
 
 Copy both files EXACTLY as they exist right now in this app:
-- `/app/frontend/src/components/ReceiptDetailModal.jsx` - the shared modal (receive/view modes,
-  fires Step 1 on open, Step 2 on Confirm, staged progress bar, per-line result with quantity
-  moved, Retry buttons for either step's failure).
-- `/app/frontend/src/pages/InboundReceiptsPage.js` - Pending/Completed tables (NO bulk selection,
-  NO per-row popover/expand - "Receive"/"View" buttons just open the modal).
+- `/app/frontend/src/components/ReceiptDetailModal.jsx` - UPDATED twice this session:
+  1. The poll handler that lands the relocation job's result now does
+     `setFinalResult(data.result?.receipt_relocation || data.result)` instead of
+     `setFinalResult(data.result)`. **Why this matters**: the first-time completion path
+     (`receive_stock_transfer_order`) returns a WRAPPED object (`{status: "received"/"failed",
+     results, error, receipt_relocation: {status: "done"/"failed", to, lines, gac_id}}`) where
+     the overall `status` uses receipt-terminology ("received"), not relocation-terminology
+     ("done") - while a retry (`retry_receipt_relocation`) returns the inner relocation shape
+     directly. Reading `data.result` raw only worked for retries; it silently showed "Received"
+     with no GM ID on a genuinely-fresh completion because `status !== "done"` never matched.
+     If you see the same symptom (no GM ID / wrong banner text right after a fresh Confirm &
+     Receive, but the Completed tab's OWN "view" looks fine) - this is the exact bug, check this
+     line first.
+  2. The "done" status banner now also shows the shared Goods Movement ID inline (`· GM
+     {finalResult.gac_id}`) instead of only showing it per-line in the table below - since every
+     line now shares ONE id, showing it once at the top is clearer.
+- `/app/frontend/src/pages/InboundReceiptsPage.js` - unchanged from v2 (Pending/Completed
+  tables, no bulk selection, "Receive"/"View" buttons open the modal).
 
-Both use `axios`, `@phosphor-icons/react`, and shadcn/ui (`button`, `input`, `progress`, `dialog`,
-`table`, `select`, `sonner`). Swap `NavTabs`/`SapConnectionStatus`/`ErpConnectionStatus`/
-`useAuth` for your own app's equivalents (or remove them).
+Both use `axios`, `@phosphor-icons/react`, and shadcn/ui (`button`, `progress`, `dialog`,
+`table`, `sonner`). Swap `NavTabs`/`useAuth`/connection-status widgets for your own app's
+equivalents (or remove them).
 
 Add the route:
 ```jsx
@@ -632,23 +415,33 @@ Add the route:
 ```
 
 ## 6. Checklist to wire this into the new app
-1. Copy the backend files (section 2) - note `store_approval_service`'s extract now includes
-   `_clarify_goods_movement_error`, not just the retry wrapper.
+1. Copy the backend files (section 2) - `sap_goods_movement_client.py` needs BOTH the old
+   single-item `goods_movement` (still used elsewhere, e.g. Store Approval) AND the new
+   `goods_movement_batch` (used only by inbound receipt relocation).
 2. Add the `.env` keys (section 1).
 3. Add `job_store.ensure_indexes(db)` to your startup block (once).
-4. Wire client instantiations + ALL 6 routes into `server.py` (section 3) - note `/receive` no
-   longer does the warehouse move, and `/relocate` is a NEW route.
+4. Wire client instantiations + all 6 routes into `server.py` (unchanged from v2, see that
+   doc's section 3 if you need the full route code).
 5. Make sure your STO-creation flow populates `gi_status`, `outbound_delivery_ids`,
    `inbound_delivery_ids`, `ship_to_site_id`, `ship_to_location_id`,
    `items[].product_id/unit_of_measure/requested_qty` (section 4).
-6. Copy both frontend files (section 5), add the route.
-7. Set `SAP_GOODS_MOVEMENT_DRY_RUN="false"` only once you've reviewed a batch of dry runs.
-8. Test with one real never-touched STO end-to-end - watch for the modal firing Step 1 fast, then
-   Step 2's progress bar, then the final per-line result with quantity + gac_id.
+6. Copy both frontend files (section 5, note the 2 `ReceiptDetailModal.jsx` fixes above), add
+   the route.
+7. Set `SAP_GOODS_MOVEMENT_DRY_RUN="false"` only once you've reviewed a batch of dry runs -
+   dry-run mode returns the built envelope without ever calling SAP, safe to inspect first.
+8. Test with one real never-touched multi-line STO end-to-end - confirm ALL lines land the SAME
+   `gac_id` on success, and that a deliberately-bad line (e.g. request more than what's in HOLD)
+   blocks EVERY line in that STO, not just the bad one.
 
 ## 7. Known rough edges (not yet fixed here, low priority)
-- Partial STOs show in BOTH Pending and Completed tabs (both queries include "partial").
-- No Retry-from-view for a Step-1-only failure (user must use the Pending tab's "Receive" again).
+- Partial STOs (historical, pre-v3) show in BOTH Pending and Completed tabs (both queries
+  include `"partial"` for backward compatibility).
+- No Retry-from-view for a Step-1-only (PGR) failure (user must use the Pending tab's "Receive"
+  again) - PGR itself was never made atomic (see section 0), so this isn't expected to change.
+- A very large STO (15+ lines) bundled into one atomic call is UNTESTED at that size - only
+  proven live with 2 lines. No documented SAP hard cap on item count, but the usual
+  synchronous-call payload/timeout ceiling still applies; if you hit timeouts on very large
+  orders, this is the first place to look.
 - If your dev environment shows an ENOSPC file-watcher crash-loop, add `CHOKIDAR_USEPOLLING=true`
   to `frontend/.env` (fixes the `public/` folder watcher; webpack's own `src/` watcher may still
   log non-fatal warnings - do a manual frontend restart if a change doesn't seem to apply).
