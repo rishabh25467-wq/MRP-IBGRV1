@@ -167,6 +167,13 @@ export function ReceiptDetailModal({ order, mode, onClose, onUpdated }) {
             <div className={`flex items-center gap-2 text-sm font-medium mb-2 ${bannerCls}`}>
               {finalResult.status === "failed" || finalResult.status === "partial" ? <WarningCircle size={16} weight="fill" /> : <CheckCircle size={16} weight="fill" />}
               {finalResult.status === "done" ? `Moved to ${finalResult.to}` : finalResult.status === "partial" ? "Partially moved" : finalResult.status === "failed" ? "Warehouse move failed" : "Received"}
+              {/* Sep 24 2026, user's explicit ask ("show goods movement ID here
+                  itself immediately") - since the atomic relocation fix, every
+                  line shares ONE gac_id, so it's shown once here right in the
+                  banner instead of making the user scan the per-line table below. */}
+              {finalResult.status === "done" && finalResult.gac_id && (
+                <span className="text-[#667085] font-normal" data-testid="receipt-detail-modal-gac-id">· GM {finalResult.gac_id}</span>
+              )}
             </div>
             {lines.length > 0 && (
               <table className="w-full text-xs border-t border-[#EAECF0] pt-1">
